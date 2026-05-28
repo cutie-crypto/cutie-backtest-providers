@@ -381,6 +381,7 @@ async def catalog(authorization: Optional[str] = Header(default=None)):
                 "data_source": DATA_SOURCE,
                 "markets": ["spot"],
                 "timeframes": ["1h", "4h", "1d"],
+                "symbols": ["BTCUSDT"],
                 "default": True,
                 "health": "ok",
                 "param_schema": {

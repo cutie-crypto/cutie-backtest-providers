@@ -240,6 +240,11 @@ def _check_data_directory() -> tuple[bool, list[str]]:
     return len(pairs) > 0, sorted(pairs)
 
 
+def _pair_file_to_symbol(pair_file_name: str) -> str:
+    """Convert Freqtrade file pair name BTC_USDT to Cutie symbol BTCUSDT."""
+    return pair_file_name.replace("_", "").replace("/", "").upper()
+
+
 def _cleanup_reports() -> None:
     """Remove oldest reports if over MAX_REPORTS."""
     if not REPORTS_DIR.is_dir():
@@ -588,6 +593,8 @@ async def catalog(authorization: Optional[str] = Header(None)):
 
     engine_version = _get_engine_version() or "unknown"
     strategies = _list_strategies()
+    has_data, available_pairs = _check_data_directory()
+    available_symbols = [_pair_file_to_symbol(pair) for pair in available_pairs] if has_data else ["BTCUSDT"]
 
     tools: list[dict] = []
 
@@ -606,6 +613,7 @@ async def catalog(authorization: Optional[str] = Header(None)):
                 "data_source": "freqtrade_data",
                 "markets": ["spot"],
                 "timeframes": SUPPORTED_TIMEFRAMES,
+                "symbols": available_symbols,
                 "default": is_default,
                 "health": "ok",
                 "param_schema": {
@@ -639,6 +647,7 @@ async def catalog(authorization: Optional[str] = Header(None)):
             "data_source": "freqtrade_data",
             "markets": ["spot"],
             "timeframes": SUPPORTED_TIMEFRAMES,
+            "symbols": available_symbols,
             "default": True,
             "health": "unavailable",
             "param_schema": {
