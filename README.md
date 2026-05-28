@@ -21,12 +21,13 @@ GET  /catalog             # Bearer auth. Returns { schema, tools[] }
 POST /cutie/backtest      # Bearer auth. JSON body. Returns backtest result.
 ```
 
-See [IMPL W3.8 §5](https://github.com/cutie-crypto/cutie-backtest-providers/blob/main/backtesting-py/cutie_backtesting_provider.py) for the full schema specification.
+See the Cutie Feature 37 W3.8 Provider Bridge IMPL in `cutie-docs` for the full schema specification. The provider source in this repository is a reference implementation of that contract.
 
 ## Quick Start (backtesting.py)
 
 ```bash
-cd backtesting-py
+git clone https://github.com/cutie-crypto/cutie-backtest-providers.git
+cd cutie-backtest-providers/backtesting-py
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 
@@ -40,6 +41,37 @@ Then register with the connector:
 cutie-connector backtest-tool add \
   --id local-backtesting-py \
   --base-url http://127.0.0.1:8765 \
+  --api-key your-token \
+  --default
+```
+
+## Quick Start (Freqtrade)
+
+Freqtrade may require additional system dependencies on some hosts. If `pip install freqtrade` fails, follow the official Freqtrade installation guide for the target OS, then run the provider service from this directory.
+
+```bash
+git clone https://github.com/cutie-crypto/cutie-backtest-providers.git
+cd cutie-backtest-providers/freqtrade
+python3 -m venv .venv && . .venv/bin/activate
+pip install freqtrade -r requirements.txt
+
+freqtrade create-userdir --userdir user_data
+freqtrade download-data \
+  --userdir user_data \
+  --exchange binance \
+  --pairs BTC/USDT \
+  --timeframes 1h
+
+CUTIE_BACKTEST_PROVIDER_TOKEN="your-token" \
+  uvicorn cutie_freqtrade_provider:app --host 127.0.0.1 --port 8766
+```
+
+Then register with the connector:
+
+```bash
+cutie-connector backtest-tool add \
+  --id local-freqtrade \
+  --base-url http://127.0.0.1:8766 \
   --api-key your-token \
   --default
 ```
