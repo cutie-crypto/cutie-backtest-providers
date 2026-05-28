@@ -25,55 +25,43 @@ See the Cutie Feature 37 W3.8 Provider Bridge IMPL in `cutie-docs` for the full 
 
 ## Quick Start (backtesting.py)
 
-```bash
-git clone https://github.com/cutie-crypto/cutie-backtest-providers.git
-cd cutie-backtest-providers/backtesting-py
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-
-CUTIE_BACKTEST_PROVIDER_TOKEN="your-token" \
-  uvicorn cutie_backtesting_provider:app --host 127.0.0.1 --port 8765
-```
-
-Then register with the connector:
+Recommended install. This creates a user `systemd` service, starts the provider,
+checks `/health`, registers it with `cutie-connector`, and refreshes the tool
+catalog.
 
 ```bash
-cutie-connector backtest-tool add \
-  --id local-backtesting-py \
-  --base-url http://127.0.0.1:8765 \
-  --api-key your-token \
-  --default
+PROVIDER_REPO_DIR="$HOME/.cutie-backtest-providers/cutie-backtest-providers"
+if [ -d "$PROVIDER_REPO_DIR/.git" ]; then
+  git -C "$PROVIDER_REPO_DIR" pull --ff-only
+else
+  mkdir -p "$(dirname "$PROVIDER_REPO_DIR")"
+  git clone https://github.com/cutie-crypto/cutie-backtest-providers.git "$PROVIDER_REPO_DIR"
+fi
+
+CUTIE_BACKTEST_PROVIDER_TOKEN="local-dev-token" \
+  "$PROVIDER_REPO_DIR/scripts/install-backtesting-py-provider.sh"
 ```
 
 ## Quick Start (Freqtrade)
 
 Freqtrade may require additional system dependencies on some hosts. If `pip install freqtrade` fails, follow the official Freqtrade installation guide for the target OS, then run the provider service from this directory.
 
-```bash
-git clone https://github.com/cutie-crypto/cutie-backtest-providers.git
-cd cutie-backtest-providers/freqtrade
-python3 -m venv .venv && . .venv/bin/activate
-pip install freqtrade -r requirements.txt
-
-freqtrade create-userdir --userdir user_data
-freqtrade download-data \
-  --userdir user_data \
-  --exchange okx \
-  --pairs BTC/USDT \
-  --timeframes 1h 4h
-
-CUTIE_BACKTEST_PROVIDER_TOKEN="your-token" \
-  uvicorn cutie_freqtrade_provider:app --host 127.0.0.1 --port 8766
-```
-
-Then register with the connector:
+Recommended install. This creates a Freqtrade `user_data` directory, installs the
+sample strategy, downloads BTC/USDT data from OKX for `1h` and `4h`, creates a
+user `systemd` service, checks `/health`, registers it with `cutie-connector`,
+and refreshes the tool catalog.
 
 ```bash
-cutie-connector backtest-tool add \
-  --id local-freqtrade \
-  --base-url http://127.0.0.1:8766 \
-  --api-key your-token \
-  --default
+PROVIDER_REPO_DIR="$HOME/.cutie-backtest-providers/cutie-backtest-providers"
+if [ -d "$PROVIDER_REPO_DIR/.git" ]; then
+  git -C "$PROVIDER_REPO_DIR" pull --ff-only
+else
+  mkdir -p "$(dirname "$PROVIDER_REPO_DIR")"
+  git clone https://github.com/cutie-crypto/cutie-backtest-providers.git "$PROVIDER_REPO_DIR"
+fi
+
+CUTIE_BACKTEST_PROVIDER_TOKEN="local-dev-token" \
+  "$PROVIDER_REPO_DIR/scripts/install-freqtrade-provider.sh"
 ```
 
 ## Writing Your Own Provider
