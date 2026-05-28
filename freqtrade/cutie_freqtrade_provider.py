@@ -50,6 +50,7 @@ MAX_REPORTS = 100
 PROVIDER_ID = "local-freqtrade"
 ENGINE_NAME = "Freqtrade"
 DEFAULT_PORT = 8766
+DEFAULT_EXCHANGE = os.environ.get("CUTIE_FREQTRADE_DEFAULT_EXCHANGE", "okx").lower()
 
 SUPPORTED_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
@@ -547,7 +548,7 @@ async def catalog(authorization: Optional[str] = Header(None)):
                         },
                         "exchange": {
                             "type": "string",
-                            "default": "binance",
+                            "default": DEFAULT_EXCHANGE,
                             "description": "Exchange name for config",
                         },
                     },
@@ -580,7 +581,7 @@ async def catalog(authorization: Optional[str] = Header(None)):
                     },
                     "exchange": {
                         "type": "string",
-                        "default": "binance",
+                        "default": DEFAULT_EXCHANGE,
                         "description": "Exchange name for config",
                     },
                 },
@@ -643,7 +644,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
         if not strategy_name:
             strategy_name = "SampleStrategy"
 
-    exchange = provider_params.get("exchange", "binance")
+    exchange = provider_params.get("exchange", DEFAULT_EXCHANGE)
 
     # Validate strategy exists
     available_strategies = _list_strategies()
