@@ -143,6 +143,58 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _extract_requested_strategy_name(body: dict[str, Any]) -> Optional[str]:
+    backtest = _as_dict(body.get("backtest"))
+    strategy = _as_dict(backtest.get("strategy"))
+    value = strategy.get("strategy_name") or strategy.get("name")
+    return str(value).strip() if value else None
+
+
+def _strategy_semantics(
+    body: dict[str, Any],
+    executed_strategy_name: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Describe whether the local Freqtrade class is verified against Cutie's draft.
+
+    The provider can run a local strategy class, but it cannot prove that the
+    class implements the natural-language/spec rules in the Cutie draft. Keep
+    this explicit so sample/reference runs are not presented as full strategy
+    verification.
+    """
+    requested_strategy_name = _extract_requested_strategy_name(body)
+    is_sample_strategy = executed_strategy_name.lower().startswith("sample")
+    mode = "sample_reference_only" if is_sample_strategy else "provider_strategy_class_not_verified"
+
+    return (
+        {
+            "requested_strategy_name": requested_strategy_name,
+            "executed_strategy_name": executed_strategy_name,
+            "strategy_binding": mode,
+        },
+        {
+            "strategy_match": mode,
+            "matches_current_strategy": False,
+            "strategy_warning": (
+                "This provider ran a sample/reference Freqtrade strategy, not a verified "
+                "implementation of the current Cutie strategy."
+                if is_sample_strategy
+                else
+                "Cutie did not verify that the selected local Freqtrade class fully "
+                "implements the current Cutie strategy rules."
+            ),
+        },
+        {
+            "requested_strategy_name": requested_strategy_name,
+            "executed_strategy_name": executed_strategy_name,
+            "strategy_match": mode,
+        },
+    )
+
+
 def _list_strategies() -> list[str]:
     """List available Freqtrade strategy class names in userdir/strategies/."""
     strategies_dir = FREQTRADE_USERDIR / "strategies"
@@ -922,6 +974,10 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
         result_hash = _compute_hash(parsed)
 
         port = int(os.environ.get("CUTIE_BACKTEST_PORT", str(DEFAULT_PORT)))
+        strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
+            body,
+            strategy_name,
+        )
 
         response = {
             "result_status": "success",
@@ -941,17 +997,20 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
                 "slippage_bps": int(slippage_bps),
                 "exchange": exchange,
                 "strategy_name": strategy_name,
+                **strategy_assumptions,
                 "real_market_data": True,
                 "no_live_trading": True,
             },
             "limitations": {
                 "verification": "external_unverified",
                 "verified_by_cutie": False,
+                **strategy_limitations,
                 "sample_size": "provider_reported",
                 "data_quality": "provider_reported",
             },
             "raw_report": {
                 "freqtrade_summary": json.dumps(parsed.get("raw_summary", {})),
+                "strategy_semantics": strategy_raw_report,
             },
         }
 

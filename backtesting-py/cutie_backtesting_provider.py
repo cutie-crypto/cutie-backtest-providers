@@ -217,6 +217,49 @@ def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
     return df
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _extract_requested_strategy_name(body: dict[str, Any]) -> Optional[str]:
+    backtest = _as_dict(body.get("backtest"))
+    strategy = _as_dict(backtest.get("strategy"))
+    value = strategy.get("strategy_name") or strategy.get("name")
+    return str(value).strip() if value else None
+
+
+def _strategy_semantics(
+    body: dict[str, Any],
+    ema_fast: int,
+    ema_slow: int,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    requested_strategy_name = _extract_requested_strategy_name(body)
+    executed_strategy_name = f"EMA Cross ({ema_fast}/{ema_slow})"
+    mode = "provider_parametric_ema_cross_not_verified"
+    warning = (
+        "This provider ran its built-in EMA cross implementation with the selected "
+        "parameters. Cutie did not verify that it fully implements the current "
+        "strategy draft rules."
+    )
+    return (
+        {
+            "requested_strategy_name": requested_strategy_name,
+            "executed_strategy_name": executed_strategy_name,
+            "strategy_binding": mode,
+        },
+        {
+            "strategy_match": mode,
+            "matches_current_strategy": False,
+            "strategy_warning": warning,
+        },
+        {
+            "requested_strategy_name": requested_strategy_name,
+            "executed_strategy_name": executed_strategy_name,
+            "strategy_match": mode,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # EMA Cross Strategy
 # ---------------------------------------------------------------------------
@@ -727,6 +770,11 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         f"{exchange_id} public OHLCV, {candle_count} candles, "
         f"{trade_count} trades, return {total_return_pct:.2f}%"
     )
+    strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
+        body,
+        ema_fast,
+        ema_slow,
+    )
 
     return JSONResponse(content=_json_safe({
         "result_status": "success",
@@ -745,17 +793,20 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             "fee_bps": int(fee_bps),
             "slippage_bps": int(slippage_bps),
             "exchange": exchange_id,
+            **strategy_assumptions,
             "real_market_data": True,
             "no_live_trading": True,
         },
         "limitations": {
             "verification": "external_unverified",
             "verified_by_cutie": False,
+            **strategy_limitations,
             "sample_size": sample_size,
             "data_quality": "provider_reported",
         },
         "raw_report": {
             "provider_summary": provider_summary,
+            "strategy_semantics": strategy_raw_report,
         },
     }))
 
