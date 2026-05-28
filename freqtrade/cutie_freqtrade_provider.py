@@ -844,7 +844,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             "--timerange", timerange,
             "--export", "trades",
             "--backtest-directory", str(backtest_dir),
-            "--no-header",
+            "--no-color",
         ]
 
         logger.info("Running Freqtrade: %s", " ".join(cmd))
