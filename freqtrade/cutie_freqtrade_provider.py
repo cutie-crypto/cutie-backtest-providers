@@ -200,7 +200,7 @@ def _list_strategies() -> list[str]:
     strategies_dir = FREQTRADE_USERDIR / "strategies"
     if not strategies_dir.is_dir():
         return []
-    result = []
+    result = set()
     for f in strategies_dir.iterdir():
         if f.suffix == ".py" and f.stem != "__init__" and not f.stem.startswith("_"):
             try:
@@ -211,7 +211,7 @@ def _list_strategies() -> list[str]:
                 r"class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*IStrategy[^)]*\)",
                 content,
             )
-            result.extend(classes or [f.stem])
+            result.update(classes or [f.stem])
     return sorted(result)
 
 
