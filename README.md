@@ -58,9 +58,9 @@ pip install freqtrade -r requirements.txt
 freqtrade create-userdir --userdir user_data
 freqtrade download-data \
   --userdir user_data \
-  --exchange binance \
+  --exchange okx \
   --pairs BTC/USDT \
-  --timeframes 1h
+  --timeframes 1h 4h
 
 CUTIE_BACKTEST_PROVIDER_TOKEN="your-token" \
   uvicorn cutie_freqtrade_provider:app --host 127.0.0.1 --port 8766

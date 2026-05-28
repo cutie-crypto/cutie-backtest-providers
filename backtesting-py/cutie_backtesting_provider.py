@@ -36,6 +36,7 @@ PROVIDER_ID = "local-backtesting-py"
 PROVIDER_NAME = "Local Backtesting.py"
 ENGINE_NAME = "backtesting.py"
 DATA_SOURCE = "ccxt_public_ohlcv"
+DEFAULT_EXCHANGE = os.environ.get("CUTIE_BACKTEST_DEFAULT_EXCHANGE", "okx").lower()
 
 BASE_DIR = Path(__file__).resolve().parent
 REPORTS_DIR = BASE_DIR / "reports"
@@ -260,7 +261,8 @@ async def health():
     # Check ccxt import and exchange init
     try:
         import ccxt
-        exchange = ccxt.binance({"enableRateLimit": True})
+        exchange_class = getattr(ccxt, DEFAULT_EXCHANGE)
+        exchange = exchange_class({"enableRateLimit": True})
         checks["ccxt"] = True
         checks["exchange"] = exchange.id
     except Exception as e:
@@ -342,7 +344,7 @@ async def catalog(authorization: Optional[str] = Header(default=None)):
                         },
                         "exchange": {
                             "type": "string",
-                            "default": "binance",
+                            "default": DEFAULT_EXCHANGE,
                         },
                     },
                 },
@@ -468,7 +470,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             "error_type": "INVALID_PARAMS",
             "error_message": "ema_fast and ema_slow must be integers",
         })
-    exchange_id = str(params.get("exchange", "binance")).lower()
+    exchange_id = str(params.get("exchange", DEFAULT_EXCHANGE)).lower()
 
     if ema_fast < 2:
         return JSONResponse(content={
