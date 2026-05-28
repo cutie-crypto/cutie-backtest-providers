@@ -27,6 +27,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -143,14 +144,22 @@ def _camel_to_snake(name: str) -> str:
 
 
 def _list_strategies() -> list[str]:
-    """List available strategy .py files in userdir/strategies/."""
+    """List available Freqtrade strategy class names in userdir/strategies/."""
     strategies_dir = FREQTRADE_USERDIR / "strategies"
     if not strategies_dir.is_dir():
         return []
     result = []
     for f in strategies_dir.iterdir():
         if f.suffix == ".py" and f.stem != "__init__" and not f.stem.startswith("_"):
-            result.append(f.stem)
+            try:
+                content = f.read_text()
+            except OSError:
+                content = ""
+            classes = re.findall(
+                r"class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*IStrategy[^)]*\)",
+                content,
+            )
+            result.extend(classes or [f.stem])
     return sorted(result)
 
 
@@ -236,7 +245,7 @@ def _find_latest_backtest_result(results_dir: Path, export_filename: Optional[st
 
     json_files = [
         f for f in results_dir.iterdir()
-        if f.suffix == ".json" and f.stem.startswith("backtest-result")
+        if f.suffix in (".json", ".zip") and f.stem.startswith("backtest-result")
     ]
     if not json_files:
         return None
@@ -269,8 +278,18 @@ def _parse_freqtrade_result(result_path: Path, pair: str) -> dict:
       ...
     }
     """
-    with open(result_path, "r") as f:
-        raw = json.load(f)
+    if result_path.suffix == ".zip":
+        with zipfile.ZipFile(result_path) as archive:
+            result_members = [
+                name for name in archive.namelist()
+                if name.endswith(".json") and "_config" not in name
+            ]
+            if not result_members:
+                raise ValueError("No result JSON found in Freqtrade zip output")
+            raw = json.loads(archive.read(result_members[0]))
+    else:
+        with open(result_path, "r") as f:
+            raw = json.load(f)
 
     # Navigate to strategy results - take first strategy
     strategy_data = raw.get("strategy", {})
@@ -770,7 +789,12 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     provider_run_id = f"ft_{run_id}"
-    export_filename = str(REPORTS_DIR / f"{provider_run_id}")
+    backtest_dir = REPORTS_DIR / provider_run_id
+    backtest_dir.mkdir(parents=True, exist_ok=True)
+    stake_amount = max(
+        Decimal("1"),
+        min(initial_capital * Decimal("0.1"), initial_capital * Decimal("0.99")),
+    )
 
     ft_config = {
         "exchange": {
@@ -778,16 +802,27 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             "key": "",
             "secret": "",
             "pair_whitelist": [pair],
+            "pair_blacklist": [],
         },
+        "pairlists": [{"method": "StaticPairList"}],
         "stake_currency": pair.split("/")[-1] if "/" in pair else "USDT",
-        "stake_amount": float(initial_capital),
+        "stake_amount": float(stake_amount),
+        "dry_run_wallet": float(initial_capital),
         "dry_run": True,
         "trading_mode": "spot",
         "margin_mode": "",
         "timeframe": timeframe,
-        "fee": {
-            "buy": fee_ratio,
-            "sell": fee_ratio,
+        "fee": fee_ratio,
+        "max_open_trades": 1,
+        "entry_pricing": {
+            "price_side": "same",
+            "use_order_book": True,
+            "order_book_top": 1,
+        },
+        "exit_pricing": {
+            "price_side": "same",
+            "use_order_book": True,
+            "order_book_top": 1,
         },
     }
 
@@ -808,7 +843,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             "--userdir", str(FREQTRADE_USERDIR),
             "--timerange", timerange,
             "--export", "trades",
-            "--export-filename", export_filename,
+            "--backtest-directory", str(backtest_dir),
             "--no-header",
         ]
 
@@ -844,16 +879,11 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
 
         # ----- Parse results -----
 
-        # Freqtrade writes to export_filename.json or backtest_results/ directory
+        # Freqtrade writes a backtest-result zip/json into the selected directory.
         results_dir = FREQTRADE_USERDIR / "backtest_results"
-        result_path = _find_latest_backtest_result(results_dir, export_filename)
-
+        result_path = _find_latest_backtest_result(backtest_dir)
         if not result_path:
-            # Try with .json suffix
-            result_path = _find_latest_backtest_result(
-                results_dir,
-                export_filename + ".json",
-            )
+            result_path = _find_latest_backtest_result(results_dir)
 
         if not result_path:
             return _business_failure(
@@ -862,8 +892,9 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
                 error_type="STRATEGY_ERROR",
                 error_message=(
                     f"Freqtrade completed but result file not found. "
-                    f"Checked: {export_filename}, {results_dir}. "
-                    f"Stdout: {proc.stdout[:500] if proc.stdout else '(empty)'}"
+                    f"Checked: {backtest_dir}, {results_dir}. "
+                    f"Stdout: {proc.stdout[:500] if proc.stdout else '(empty)'} "
+                    f"Stderr: {proc.stderr[:500] if proc.stderr else '(empty)'}"
                 ),
             )
 
@@ -879,7 +910,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             )
 
         # Copy result to reports directory for serving
-        report_dest = REPORTS_DIR / f"{provider_run_id}.json"
+        report_dest = REPORTS_DIR / f"{provider_run_id}{result_path.suffix}"
         try:
             shutil.copy2(result_path, report_dest)
         except Exception:
@@ -900,7 +931,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             "engine_version": engine_version,
             "data_source": "freqtrade_data",
             "result_hash": result_hash,
-            "report_url": f"http://127.0.0.1:{port}/reports/{provider_run_id}.json",
+            "report_url": f"http://127.0.0.1:{port}/reports/{provider_run_id}{result_path.suffix}",
             "report_url_scope": "local_machine_only",
             "metrics": parsed["metrics"],
             "equity_curve": parsed["equity_curve"],

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -127,6 +128,17 @@ def _write_cache(key: str, data: list) -> None:
             json.dump(data, f)
     except Exception as e:
         logger.warning("Cache write failed for %s: %s", key, e)
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert non-finite floats into JSON-safe nulls."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
@@ -716,7 +728,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         f"{trade_count} trades, return {total_return_pct:.2f}%"
     )
 
-    return JSONResponse(content={
+    return JSONResponse(content=_json_safe({
         "result_status": "success",
         "provider_name": PROVIDER_NAME,
         "provider_run_id": f"bt_{run_id}",
@@ -745,7 +757,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         "raw_report": {
             "provider_summary": provider_summary,
         },
-    })
+    }))
 
 
 # ---------------------------------------------------------------------------
