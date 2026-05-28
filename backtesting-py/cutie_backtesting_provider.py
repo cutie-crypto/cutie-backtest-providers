@@ -1,0 +1,810 @@
+"""
+Cutie Backtest Provider: backtesting.py + ccxt
+
+Local HTTP provider that runs backtesting.py with ccxt public OHLCV data.
+Conforms to cutie.external_backtest.request/response.v1 schema (IMPL W3.8 §5).
+
+Usage:
+    CUTIE_BACKTEST_PROVIDER_TOKEN="your-token" \
+      uvicorn cutie_backtesting_provider:app --host 127.0.0.1 --port 8765
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import re
+import time
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any, Optional
+
+import pandas as pd
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+PORT = int(os.environ.get("CUTIE_BACKTEST_PORT", "8765"))
+AUTH_TOKEN = os.environ.get("CUTIE_BACKTEST_PROVIDER_TOKEN", "")
+
+PROVIDER_ID = "local-backtesting-py"
+PROVIDER_NAME = "Local Backtesting.py"
+ENGINE_NAME = "backtesting.py"
+DATA_SOURCE = "ccxt_public_ohlcv"
+
+BASE_DIR = Path(__file__).resolve().parent
+REPORTS_DIR = BASE_DIR / "reports"
+CACHE_DIR = BASE_DIR / "cache" / "ohlcv"
+MAX_REPORTS = 100
+CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
+logger = logging.getLogger("cutie_backtesting_provider")
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="Cutie Backtesting.py Provider", version="1.0.0")
+
+
+@app.on_event("startup")
+async def startup_warning():
+    if not AUTH_TOKEN:
+        logger.warning("CUTIE_BACKTEST_PROVIDER_TOKEN not set — running without authentication (dev mode)")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _engine_version() -> str:
+    try:
+        import backtesting
+        return getattr(backtesting, "__version__", "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _verify_bearer(authorization: Optional[str]) -> None:
+    """Validate Bearer token. Raises 401 on mismatch."""
+    if not AUTH_TOKEN:
+        # No token configured -- accept anything (dev mode)
+        return
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or parts[1] != AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def _enforce_reports_retention() -> None:
+    """Keep at most MAX_REPORTS HTML report files, delete oldest by mtime."""
+    if not REPORTS_DIR.exists():
+        return
+    files = sorted(
+        [f for f in REPORTS_DIR.iterdir() if f.is_file() and f.suffix == ".html"],
+        key=lambda f: f.stat().st_mtime,
+    )
+    while len(files) > MAX_REPORTS:
+        oldest = files.pop(0)
+        try:
+            oldest.unlink()
+        except OSError as e:
+            logger.warning("Failed to delete old report %s: %s", oldest, e)
+
+
+def _cache_key(exchange: str, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> str:
+    return f"{exchange}_{symbol}_{timeframe}_{start_ms}_{end_ms}.json"
+
+
+def _read_cache(key: str) -> Optional[list]:
+    path = CACHE_DIR / key
+    if not path.exists():
+        return None
+    age = time.time() - path.stat().st_mtime
+    if age > CACHE_TTL_SECONDS:
+        path.unlink(missing_ok=True)
+        return None
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning("Cache read failed for %s: %s", key, e)
+        return None
+
+
+def _write_cache(key: str, data: list) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = CACHE_DIR / key
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.warning("Cache write failed for %s: %s", key, e)
+
+
+def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
+                 start_sec: int, end_sec: int) -> pd.DataFrame:
+    """Fetch OHLCV from ccxt with local file cache."""
+    import ccxt
+
+    start_ms = start_sec * 1000
+    end_ms = end_sec * 1000
+
+    cache_key = _cache_key(exchange_id, symbol, timeframe, start_ms, end_ms)
+    cached = _read_cache(cache_key)
+    if cached is not None:
+        ohlcv = cached
+    else:
+        exchange_class = getattr(ccxt, exchange_id, None)
+        if exchange_class is None:
+            raise ValueError(f"Unsupported exchange: {exchange_id}")
+        exchange = exchange_class({"enableRateLimit": True})
+
+        # Normalize symbol: BTCUSDT / btcusdt -> BTC/USDT
+        upper_symbol = symbol.upper()
+        normalized_symbol = upper_symbol
+        if "/" not in upper_symbol:
+            # Try common patterns: BTCUSDT -> BTC/USDT
+            for quote in ("USDT", "USDC", "BUSD", "BTC", "ETH", "BNB"):
+                if upper_symbol.endswith(quote) and len(upper_symbol) > len(quote):
+                    base = upper_symbol[: len(upper_symbol) - len(quote)]
+                    normalized_symbol = f"{base}/{quote}"
+                    break
+
+        ohlcv: list = []
+        since = start_ms
+        limit = 1000  # typical exchange limit
+
+        while since < end_ms:
+            try:
+                batch = exchange.fetch_ohlcv(
+                    normalized_symbol, timeframe, since=since, limit=limit
+                )
+            except ccxt.BadSymbol:
+                raise ValueError(f"Symbol not supported on {exchange_id}: {symbol}")
+            except ccxt.RateLimitExceeded:
+                raise RuntimeError("RATE_LIMITED")
+            except ccxt.NetworkError as e:
+                raise RuntimeError(f"Network error fetching OHLCV: {e}")
+
+            if not batch:
+                break
+
+            for candle in batch:
+                if candle[0] <= end_ms:
+                    ohlcv.append(candle)
+
+            last_ts = batch[-1][0]
+            if last_ts <= since:
+                break
+            since = last_ts + 1
+
+        if ohlcv:
+            _write_cache(cache_key, ohlcv)
+
+    if not ohlcv:
+        raise ValueError("NO_DATA")
+
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("timestamp", inplace=True)
+    df = df[~df.index.duplicated(keep="first")]
+    df.sort_index(inplace=True)
+
+    # Ensure float dtype
+    for col in ("Open", "High", "Low", "Close", "Volume"):
+        df[col] = df[col].astype(float)
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# EMA Cross Strategy
+# ---------------------------------------------------------------------------
+
+def _build_strategy(ema_fast: int, ema_slow: int):
+    """Build a backtesting.py Strategy class with given EMA parameters."""
+    from backtesting import Strategy
+    from backtesting.lib import crossover
+
+    class EmaCrossStrategy(Strategy):
+        _ema_fast = ema_fast
+        _ema_slow = ema_slow
+
+        def init(self):
+            close = self.data.Close
+            self.fast_ema = self.I(
+                lambda x: pd.Series(x).ewm(span=self._ema_fast, adjust=False).mean(),
+                close,
+                name=f"EMA({self._ema_fast})",
+            )
+            self.slow_ema = self.I(
+                lambda x: pd.Series(x).ewm(span=self._ema_slow, adjust=False).mean(),
+                close,
+                name=f"EMA({self._ema_slow})",
+            )
+
+        def next(self):
+            if crossover(self.fast_ema, self.slow_ema):
+                self.buy()
+            elif crossover(self.slow_ema, self.fast_ema):
+                self.position.close()
+
+    return EmaCrossStrategy
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health():
+    """Health check -- no auth required (IMPL §5.2)."""
+    checks: dict[str, Any] = {}
+    ok = True
+
+    # Check backtesting import
+    try:
+        import backtesting  # noqa: F401
+        checks["backtesting"] = True
+    except ImportError:
+        checks["backtesting"] = False
+        ok = False
+
+    # Check ccxt import and exchange init
+    try:
+        import ccxt
+        exchange = ccxt.binance({"enableRateLimit": True})
+        checks["ccxt"] = True
+        checks["exchange"] = exchange.id
+    except Exception as e:
+        checks["ccxt"] = False
+        checks["exchange_error"] = str(e)
+        ok = False
+
+    # Check pandas import
+    try:
+        import pandas  # noqa: F401
+        checks["pandas"] = True
+    except ImportError:
+        checks["pandas"] = False
+        ok = False
+
+    # Check reports dir writable
+    try:
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        test_file = REPORTS_DIR / ".write_test"
+        test_file.write_text("ok")
+        test_file.unlink()
+        checks["reports_writable"] = True
+    except Exception:
+        checks["reports_writable"] = False
+        ok = False
+
+    data_ready = checks.get("ccxt", False) and checks.get("backtesting", False)
+
+    if ok:
+        return JSONResponse({
+            "ok": True,
+            "provider_id": PROVIDER_ID,
+            "engine_name": ENGINE_NAME,
+            "engine_version": _engine_version(),
+            "data_ready": data_ready,
+            "checked_at": int(time.time()),
+        })
+    else:
+        return JSONResponse({
+            "ok": False,
+            "error_type": "DEPENDENCY_CHECK_FAILED",
+            "error_message": f"Failed checks: {checks}",
+        })
+
+
+@app.get("/catalog")
+async def catalog(authorization: Optional[str] = Header(default=None)):
+    """Return provider tool catalog (IMPL §5.3)."""
+    _verify_bearer(authorization)
+
+    return JSONResponse({
+        "schema": "cutie.backtest_provider_catalog.v1",
+        "tools": [
+            {
+                "tool_id": "local.backtesting_py.ema_cross",
+                "kind": "external_http",
+                "name": "Local Backtesting.py EMA Cross",
+                "provider_name": PROVIDER_NAME,
+                "engine_name": ENGINE_NAME,
+                "engine_version": _engine_version(),
+                "data_source": DATA_SOURCE,
+                "markets": ["spot"],
+                "timeframes": ["1h", "4h", "1d"],
+                "default": True,
+                "health": "ok",
+                "param_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "ema_fast": {
+                            "type": "number",
+                            "default": 20,
+                            "minimum": 2,
+                        },
+                        "ema_slow": {
+                            "type": "number",
+                            "default": 60,
+                            "minimum": 3,
+                        },
+                        "exchange": {
+                            "type": "string",
+                            "default": "binance",
+                        },
+                    },
+                },
+                "expected_outputs": ["metrics", "equity_curve", "trades", "report_url"],
+            }
+        ],
+    })
+
+
+@app.post("/cutie/backtest")
+async def run_backtest(request: Request, authorization: Optional[str] = Header(default=None)):
+    """Execute backtest (IMPL §5.4 / §5.5)."""
+    _verify_bearer(authorization)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_REQUEST",
+            "error_message": "Request body must be valid JSON",
+        })
+
+    bt_req = body.get("backtest", {})
+    provider_info = body.get("provider", {})
+
+    run_id = re.sub(r'[^a-zA-Z0-9_\-]', '', str(bt_req.get("run_id", "unknown")))[:64]
+    tool_id = bt_req.get("provider_tool_id", "")
+    params = bt_req.get("provider_params", {})
+    symbol = bt_req.get("symbol", "")
+    market = bt_req.get("market", "spot")
+    timeframe = bt_req.get("timeframe", "")
+    start_at = bt_req.get("start_at")
+    end_at = bt_req.get("end_at")
+    initial_capital_str = bt_req.get("initial_capital", "10000")
+    fee_bps_str = bt_req.get("fee_bps", "10")
+    slippage_bps_str = bt_req.get("slippage_bps", "5")
+
+    # --- Validate tool_id ---
+    if tool_id and tool_id != "local.backtesting_py.ema_cross":
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "TOOL_NOT_FOUND",
+            "error_message": f"Unknown provider_tool_id: {tool_id}",
+        })
+
+    # --- Validate symbol ---
+    if not symbol:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": "symbol is required",
+        })
+
+    # --- Validate timeframe ---
+    supported_timeframes = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
+    if timeframe not in supported_timeframes:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": f"Unsupported timeframe: {timeframe}. Supported: {sorted(supported_timeframes)}",
+        })
+
+    # --- Validate date range ---
+    if start_at is None or end_at is None:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": "start_at and end_at are required (unix seconds)",
+        })
+    try:
+        start_at = int(start_at)
+        end_at = int(end_at)
+    except (TypeError, ValueError):
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": "start_at and end_at must be integers (unix seconds)",
+        })
+    if start_at >= end_at:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": "start_at must be before end_at",
+        })
+
+    # --- Parse Decimal fields ---
+    try:
+        initial_capital = Decimal(str(initial_capital_str))
+        fee_bps = Decimal(str(fee_bps_str))
+        slippage_bps = Decimal(str(slippage_bps_str))
+    except (InvalidOperation, TypeError, ValueError) as e:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": f"Cannot parse decimal fields: {e}",
+        })
+
+    if initial_capital <= 0:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": "initial_capital must be positive",
+        })
+
+    # --- Parse strategy params ---
+    try:
+        ema_fast = int(params.get("ema_fast", 20))
+        ema_slow = int(params.get("ema_slow", 60))
+    except (ValueError, TypeError):
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": "ema_fast and ema_slow must be integers",
+        })
+    exchange_id = str(params.get("exchange", "binance")).lower()
+
+    if ema_fast < 2:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": f"ema_fast must be >= 2 (got {ema_fast})",
+        })
+    if ema_slow < 3:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": f"ema_slow must be >= 3 (got {ema_slow})",
+        })
+    if ema_fast >= ema_slow:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INVALID_PARAMS",
+            "error_message": "ema_fast must be less than ema_slow",
+        })
+
+    # --- Fetch OHLCV ---
+    try:
+        df = _fetch_ohlcv(exchange_id, symbol, timeframe, start_at, end_at)
+    except ValueError as e:
+        error_msg = str(e)
+        if error_msg == "NO_DATA":
+            return JSONResponse(content={
+                "result_status": "failed",
+                "provider_name": PROVIDER_NAME,
+                "provider_run_id": f"bt_{run_id}",
+                "engine_name": ENGINE_NAME,
+                "engine_version": _engine_version(),
+                "data_source": DATA_SOURCE,
+                "error_type": "NO_DATA",
+                "error_message": f"No OHLCV data available for {symbol} {timeframe} in requested range",
+                "assumptions": {},
+                "limitations": {"reason": "data_missing"},
+                "raw_report": {},
+            })
+        elif "not supported" in error_msg.lower() or "Unsupported" in error_msg:
+            return JSONResponse(content={
+                "result_status": "failed",
+                "provider_name": PROVIDER_NAME,
+                "provider_run_id": f"bt_{run_id}",
+                "engine_name": ENGINE_NAME,
+                "engine_version": _engine_version(),
+                "data_source": DATA_SOURCE,
+                "error_type": "SYMBOL_UNSUPPORTED",
+                "error_message": error_msg,
+                "assumptions": {},
+                "limitations": {"reason": "symbol_unsupported"},
+                "raw_report": {},
+            })
+        else:
+            return JSONResponse(content={
+                "result_status": "failed",
+                "provider_name": PROVIDER_NAME,
+                "provider_run_id": f"bt_{run_id}",
+                "engine_name": ENGINE_NAME,
+                "engine_version": _engine_version(),
+                "data_source": DATA_SOURCE,
+                "error_type": "INVALID_PARAMS",
+                "error_message": error_msg,
+                "assumptions": {},
+                "limitations": {},
+                "raw_report": {},
+            })
+    except RuntimeError as e:
+        error_msg = str(e)
+        if "RATE_LIMITED" in error_msg:
+            return JSONResponse(content={
+                "result_status": "failed",
+                "provider_name": PROVIDER_NAME,
+                "provider_run_id": f"bt_{run_id}",
+                "engine_name": ENGINE_NAME,
+                "engine_version": _engine_version(),
+                "data_source": DATA_SOURCE,
+                "error_type": "RATE_LIMITED",
+                "error_message": "Exchange rate limit exceeded, please retry later",
+                "assumptions": {},
+                "limitations": {"reason": "rate_limited"},
+                "raw_report": {},
+            })
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "provider_run_id": f"bt_{run_id}",
+            "engine_name": ENGINE_NAME,
+            "engine_version": _engine_version(),
+            "data_source": DATA_SOURCE,
+            "error_type": "PROVIDER_ERROR",
+            "error_message": error_msg,
+            "assumptions": {},
+            "limitations": {},
+            "raw_report": {},
+        })
+
+    if len(df) < max(ema_fast, ema_slow) + 1:
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "provider_run_id": f"bt_{run_id}",
+            "engine_name": ENGINE_NAME,
+            "engine_version": _engine_version(),
+            "data_source": DATA_SOURCE,
+            "error_type": "NO_DATA",
+            "error_message": (
+                f"Insufficient data: got {len(df)} candles, "
+                f"need at least {max(ema_fast, ema_slow) + 1} for EMA({ema_fast}/{ema_slow})"
+            ),
+            "assumptions": {},
+            "limitations": {"reason": "insufficient_data"},
+            "raw_report": {},
+        })
+
+    # --- Run backtest ---
+    try:
+        from backtesting import Backtest
+
+        # Commission: fee_bps / 10000 (basis points to ratio)
+        commission = float(fee_bps / Decimal("10000"))
+
+        StrategyClass = _build_strategy(ema_fast, ema_slow)
+        bt = Backtest(
+            df,
+            StrategyClass,
+            cash=float(initial_capital),
+            commission=commission,
+            exclusive_orders=True,
+        )
+        stats = bt.run()
+
+        # Generate HTML report
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        report_filename = f"{run_id}.html"
+        report_path = REPORTS_DIR / report_filename
+        bt.plot(filename=str(report_path), open_browser=False)
+        _enforce_reports_retention()
+
+    except Exception as e:
+        logger.exception("Backtest execution failed")
+        return JSONResponse(content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "provider_run_id": f"bt_{run_id}",
+            "engine_name": ENGINE_NAME,
+            "engine_version": _engine_version(),
+            "data_source": DATA_SOURCE,
+            "error_type": "PROVIDER_ERROR",
+            "error_message": f"Backtest execution failed: {e}",
+            "assumptions": {},
+            "limitations": {},
+            "raw_report": {},
+        })
+
+    # --- Build equity curve ---
+    equity_curve: list[dict] = []
+    if hasattr(stats, "_equity_curve") and stats._equity_curve is not None:
+        eq = stats._equity_curve
+        for idx, row in eq.iterrows():
+            ts = int(idx.timestamp()) if hasattr(idx, "timestamp") else 0
+            equity_curve.append({
+                "t": ts,
+                "equity": round(float(row.get("Equity", row.iloc[0])), 2),
+            })
+    else:
+        # Fallback: start and end
+        start_ts = int(df.index[0].timestamp()) if hasattr(df.index[0], "timestamp") else start_at
+        end_ts = int(df.index[-1].timestamp()) if hasattr(df.index[-1], "timestamp") else end_at
+        final_equity = float(stats.get("Equity Final [$]", initial_capital))
+        equity_curve = [
+            {"t": start_ts, "equity": float(initial_capital)},
+            {"t": end_ts, "equity": round(final_equity, 2)},
+        ]
+
+    # Downsample equity curve if too large (keep at most 500 points)
+    if len(equity_curve) > 500:
+        step = len(equity_curve) // 500
+        equity_curve = equity_curve[::step]
+        # Always include last point
+        last_eq = stats._equity_curve
+        if last_eq is not None and len(last_eq) > 0:
+            last_idx = last_eq.index[-1]
+            last_ts = int(last_idx.timestamp()) if hasattr(last_idx, "timestamp") else end_at
+            equity_curve.append({
+                "t": last_ts,
+                "equity": round(float(last_eq.iloc[-1].get("Equity", last_eq.iloc[-1].iloc[0])), 2),
+            })
+
+    # --- Build trades list ---
+    trades_list: list[dict] = []
+    if hasattr(stats, "_trades") and stats._trades is not None:
+        for _, trade in stats._trades.iterrows():
+            entry_time = trade.get("EntryTime")
+            exit_time = trade.get("ExitTime")
+            entry_ts = int(entry_time.timestamp()) if hasattr(entry_time, "timestamp") else 0
+            exit_ts = int(exit_time.timestamp()) if hasattr(exit_time, "timestamp") else 0
+            pnl = float(trade.get("PnL", 0))
+            size = trade.get("Size", 0)
+            side = "long" if size > 0 else "short"
+            trades_list.append({
+                "side": side,
+                "entry_at": entry_ts,
+                "exit_at": exit_ts,
+                "pnl": round(pnl, 2),
+            })
+
+    # --- Extract metrics ---
+    total_return_pct = float(stats.get("Return [%]", 0))
+    win_rate_pct = float(stats.get("Win Rate [%]", 0))
+    max_drawdown_pct = abs(float(stats.get("Max. Drawdown [%]", 0)))
+    trade_count = int(stats.get("# Trades", 0))
+
+    metrics = {
+        "total_return_pct": round(total_return_pct, 2),
+        "win_rate_pct": round(win_rate_pct, 2),
+        "max_drawdown_pct": round(max_drawdown_pct, 2),
+        "trade_count": trade_count,
+    }
+
+    # --- Result hash ---
+    metrics_json = json.dumps(metrics, sort_keys=True)
+    result_hash = f"sha256:{hashlib.sha256(metrics_json.encode()).hexdigest()}"
+
+    # --- Determine sample size description ---
+    candle_count = len(df)
+    if candle_count < 100:
+        sample_size = "small"
+    elif candle_count < 1000:
+        sample_size = "medium"
+    else:
+        sample_size = "large"
+
+    report_url = f"http://127.0.0.1:{PORT}/reports/{report_filename}"
+
+    # --- Provider summary ---
+    provider_summary = (
+        f"EMA Cross ({ema_fast}/{ema_slow}) on {symbol} {timeframe}, "
+        f"{exchange_id} public OHLCV, {candle_count} candles, "
+        f"{trade_count} trades, return {total_return_pct:.2f}%"
+    )
+
+    return JSONResponse(content={
+        "result_status": "success",
+        "provider_name": PROVIDER_NAME,
+        "provider_run_id": f"bt_{run_id}",
+        "engine_name": ENGINE_NAME,
+        "engine_version": _engine_version(),
+        "data_source": DATA_SOURCE,
+        "result_hash": result_hash,
+        "report_url": report_url,
+        "report_url_scope": "local_machine_only",
+        "metrics": metrics,
+        "equity_curve": equity_curve,
+        "trades": trades_list,
+        "assumptions": {
+            "fee_bps": int(fee_bps),
+            "slippage_bps": int(slippage_bps),
+            "exchange": exchange_id,
+            "real_market_data": True,
+            "no_live_trading": True,
+        },
+        "limitations": {
+            "verification": "external_unverified",
+            "verified_by_cutie": False,
+            "sample_size": sample_size,
+            "data_quality": "provider_reported",
+        },
+        "raw_report": {
+            "provider_summary": provider_summary,
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
+# Static file serving for HTML reports
+# ---------------------------------------------------------------------------
+
+@app.get("/reports/{filename}")
+async def serve_report(filename: str):
+    """Serve generated HTML report files."""
+    # Sanitize filename to prevent path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_path = REPORTS_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    return FileResponse(str(file_path), media_type="text/html")
+
+
+# ---------------------------------------------------------------------------
+# Global exception handler -- all responses must be JSON
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "INTERNAL_ERROR",
+            "error_message": str(exc),
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "HTTP_ERROR",
+            "error_message": exc.detail,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "cutie_backtesting_provider:app",
+        host="127.0.0.1",
+        port=PORT,
+        log_level="info",
+    )
