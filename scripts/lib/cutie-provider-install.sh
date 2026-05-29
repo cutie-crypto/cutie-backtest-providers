@@ -552,6 +552,37 @@ resolve_cutie_connector_bin() {
   return 1
 }
 
+resolve_existing_connector_source_id() {
+  local config_file="$HOME/.cutie-connector/config.json"
+  local base_url="http://127.0.0.1:$PORT"
+  if [ ! -f "$config_file" ] || ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
+
+  python3 - "$config_file" "$base_url" <<'PY' 2>/dev/null
+import json
+import sys
+
+config_path, base_url = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(config_path))
+except Exception:
+    sys.exit(1)
+
+catalog_url = base_url.rstrip("/") + "/catalog"
+backtest_url = base_url.rstrip("/") + "/cutie/backtest"
+for source in data.get("backtest_provider_sources") or []:
+    if not isinstance(source, dict):
+        continue
+    if source.get("base_url") == base_url or source.get("catalog_url") == catalog_url or source.get("backtest_url") == backtest_url:
+        source_id = source.get("id")
+        if isinstance(source_id, str) and source_id.strip():
+            print(source_id.strip())
+            sys.exit(0)
+sys.exit(1)
+PY
+}
+
 provider_register_connector() {
   echo "[4/5] Registering with cutie-connector"
   local connector_bin
@@ -562,6 +593,13 @@ provider_register_connector() {
     return 0
   fi
   echo "      using connector: $connector_bin"
+
+  local existing_source_id
+  existing_source_id="$(resolve_existing_connector_source_id)" || true
+  if [ -n "$existing_source_id" ] && [ "$existing_source_id" != "$SOURCE_ID" ]; then
+    echo "      reusing existing provider source id: $existing_source_id"
+    SOURCE_ID="$existing_source_id"
+  fi
 
   if ! "$connector_bin" backtest-tool add \
       --id "$SOURCE_ID" \
