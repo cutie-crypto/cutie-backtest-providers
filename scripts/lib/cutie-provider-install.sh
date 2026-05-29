@@ -165,6 +165,96 @@ provider_init_config() {
 
 # --- step 1: deps ------------------------------------------------------------
 
+provider_system_packages() {
+  # Ubuntu/OpenClaw/Hermes baseline deps for Python venv + native wheels +
+  # connector/provider self-check tooling. Keep the list explicit so the FAILED
+  # diagnostic is copy-pasteable for ops when sudo/root is unavailable.
+  printf '%s\n' \
+    python3 \
+    python3-venv \
+    python3-dev \
+    build-essential \
+    pkg-config \
+    curl \
+    git \
+    lsof
+}
+
+_missing_system_packages() {
+  if ! command -v dpkg >/dev/null 2>&1; then
+    return 0
+  fi
+  provider_system_packages | while IFS= read -r pkg; do
+    [ -n "$pkg" ] || continue
+    dpkg -s "$pkg" >/dev/null 2>&1 || printf '%s\n' "$pkg"
+  done
+}
+
+_apt_install_command() {
+  local pkgs
+  pkgs="$(provider_system_packages | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  printf 'sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y %s' "$pkgs"
+}
+
+_install_missing_system_packages() {
+  local pkgs="$1"
+  if [ -z "$pkgs" ]; then
+    return 0
+  fi
+
+  echo "[0/5] Installing missing system dependencies: $(printf '%s' "$pkgs" | tr '\n' ' ')"
+  if [ "$(id -u)" = "0" ]; then
+    if ! apt-get update >>"$CUTIE_RUN_LOG" 2>&1; then
+      _diag "apt-get update failed while installing system dependencies."
+      return 1
+    fi
+    # shellcheck disable=SC2086
+    DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs >>"$CUTIE_RUN_LOG" 2>&1
+    return $?
+  fi
+
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    if ! sudo apt-get update >>"$CUTIE_RUN_LOG" 2>&1; then
+      _diag "sudo apt-get update failed while installing system dependencies."
+      return 1
+    fi
+    # shellcheck disable=SC2086
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs >>"$CUTIE_RUN_LOG" 2>&1
+    return $?
+  fi
+
+  return 2
+}
+
+provider_install_system_deps() {
+  # Only auto-manage packages on apt/dpkg hosts. Other platforms keep the old
+  # behavior and fail later with the concrete venv/pip/provider diagnostic.
+  if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local missing
+  missing="$(_missing_system_packages)"
+  if [ -z "$missing" ]; then
+    return 0
+  fi
+
+  if _install_missing_system_packages "$missing"; then
+    return 0
+  fi
+
+  local rc=$?
+  _diag "Missing Ubuntu packages: $(printf '%s' "$missing" | tr '\n' ' ')"
+  _diag "Run this command on the OpenClaw/Hermes machine, then re-run this installer:"
+  _diag "$(_apt_install_command)"
+  if [ "$rc" = "2" ]; then
+    print_failed "SYSTEM_DEPENDENCY_PERMISSION" "Missing system dependencies and this user cannot run passwordless sudo."
+  else
+    print_failed "SYSTEM_DEPENDENCY_INSTALL_FAILED" "Could not install required Ubuntu system dependencies."
+  fi
+  return 1
+}
+
 # Creates/repairs the venv and installs requirements + validator deps.
 # Idempotent: reuses an existing healthy venv.
 # Caller may export EXTRA_PIP_ARGS for extra packages (e.g. "freqtrade").
@@ -412,15 +502,41 @@ EOF
 
 # --- step 4: connector registration (graceful when absent) ------------------
 
+resolve_cutie_connector_bin() {
+  local found
+  found="$(command -v cutie-connector 2>/dev/null)" || true
+  if [ -n "$found" ] && [ -x "$found" ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "$HOME/.cutie-connector/bin/cutie-connector" \
+    "$HOME/.npm-global/bin/cutie-connector" \
+    "/usr/local/bin/cutie-connector" \
+    "/usr/bin/cutie-connector"
+  do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 provider_register_connector() {
   echo "[4/5] Registering with cutie-connector"
-  if ! command -v cutie-connector >/dev/null 2>&1; then
+  local connector_bin
+  connector_bin="$(resolve_cutie_connector_bin)" || true
+  if [ -z "$connector_bin" ]; then
     # Not a failure: provider is healthy + validated. §3.1 "等待 connector 上报".
     CUTIE_OUTCOME="AWAITING_CONNECTOR"
     return 0
   fi
+  echo "      using connector: $connector_bin"
 
-  if ! cutie-connector backtest-tool add \
+  if ! "$connector_bin" backtest-tool add \
       --id "$SOURCE_ID" \
       --base-url "http://127.0.0.1:$PORT" \
       --api-key "$TOKEN" \
@@ -431,9 +547,9 @@ provider_register_connector() {
   fi
 
   # test + refresh are best-effort signal; add already refreshed the catalog.
-  cutie-connector backtest-tool test "$SOURCE_ID" >>"$CUTIE_RUN_LOG" 2>&1 || \
+  "$connector_bin" backtest-tool test "$SOURCE_ID" >>"$CUTIE_RUN_LOG" 2>&1 || \
     _diag "cutie-connector backtest-tool test reported a problem (non-fatal; see run log)."
-  if ! cutie-connector backtest-tool refresh >>"$CUTIE_RUN_LOG" 2>&1; then
+  if ! "$connector_bin" backtest-tool refresh >>"$CUTIE_RUN_LOG" 2>&1; then
     _diag "cutie-connector backtest-tool refresh failed (catalog may be stale; see run log)."
   fi
   # Nudge a running connector to re-report on next heartbeat (best effort).
@@ -450,6 +566,7 @@ provider_run_install() {
   CUTIE_OUTCOME=""
 
   provider_init_config || return 1
+  provider_install_system_deps || return 1
   provider_install_deps || return 1
 
   # Optional provider-specific preparation (e.g. freqtrade data download).
