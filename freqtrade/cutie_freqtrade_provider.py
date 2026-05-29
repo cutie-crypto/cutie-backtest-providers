@@ -1087,8 +1087,8 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             "engine_version": engine_version,
             "data_source": DATA_SOURCE,
             "result_hash": result_hash,
-            # report_url is a relative path/ref only (IMPL §7); no scheme/host/port.
-            "report_url": f"/reports/{provider_run_id}{result_path.suffix}",
+            # report_url is a relative path/ref only (IMPL §7); no scheme/host/absolute path.
+            "report_url": f"reports/{provider_run_id}{result_path.suffix}",
             "report_url_scope": "local_machine_only",
             "metrics": parsed["metrics"],
             "initial_capital": _decimal_str(initial_capital, places=2),

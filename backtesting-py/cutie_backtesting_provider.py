@@ -811,8 +811,8 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     else:
         sample_size = "large"
 
-    # report_url is a relative path/ref only (IMPL §7); no scheme/host/port.
-    report_url = f"/reports/{report_filename}"
+    # report_url is a relative path/ref only (IMPL §7); no scheme/host/absolute path.
+    report_url = f"reports/{report_filename}"
 
     # --- Provider summary ---
     provider_summary = (
