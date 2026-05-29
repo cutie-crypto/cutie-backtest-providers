@@ -1,95 +1,92 @@
 #!/usr/bin/env bash
-set -euo pipefail
+#
+# Copy-and-run installer + self-check for the Cutie Freqtrade provider.
+# (IMPL W3.9 §3.1 普通 KOL 流程 + §13 P0c)
+#
+# A non-developer KOL can paste this into an OpenClaw / Hermes terminal, hand it
+# to ops, or attach it to a ticket. It installs Freqtrade + deps, prepares a
+# user_data dir, downloads sample OHLCV data, starts the provider on 127.0.0.1,
+# runs the validator self-check, registers with cutie-connector if present, and
+# prints exactly ONE outcome: READY / FAILED / AWAITING_CONNECTOR.
+#
+# Configurable via env (all optional):
+#   CUTIE_BACKTEST_PROVIDER_PORT   (default 8766)
+#   CUTIE_BACKTEST_PROVIDER_TOKEN  (default local-dev-token)
+#   CUTIE_BACKTEST_SOURCE_ID       (default local-freqtrade)
+#   CUTIE_BACKTEST_SERVICE_NAME    (default cutie-freqtrade-provider.service)
+#   CUTIE_FREQTRADE_EXCHANGE       (default okx)
+#   CUTIE_FREQTRADE_PAIRS          (default "BTC/USDT")
+#   CUTIE_FREQTRADE_TIMEFRAMES     (default "1h 4h")
+#   PYTHON_BIN                     (default python3)
+#
+# Re-running is safe (idempotent): a healthy provider is reused; data already
+# present is not re-downloaded by Freqtrade.
+#
+# Note: Freqtrade may need extra system libraries on some hosts. If dependency
+# install fails, the FAILED diagnostic will point ops at the Freqtrade install
+# guide; install those first, then re-run this script.
 
-PORT="${CUTIE_BACKTEST_PROVIDER_PORT:-8766}"
-TOKEN="${CUTIE_BACKTEST_PROVIDER_TOKEN:-local-dev-token}"
-SOURCE_ID="${CUTIE_BACKTEST_SOURCE_ID:-local-freqtrade}"
-SERVICE_NAME="${CUTIE_BACKTEST_SERVICE_NAME:-cutie-freqtrade-provider.service}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# shellcheck source=lib/cutie-provider-install.sh
+. "$SCRIPT_DIR/lib/cutie-provider-install.sh"
+
+PROVIDER_LABEL="Freqtrade"
+PROVIDER_DIR="$REPO_DIR/freqtrade"
+PROVIDER_MODULE="cutie_freqtrade_provider:app"
+DEFAULT_PORT="8766"
+DEFAULT_SOURCE_ID="local-freqtrade"
+DEFAULT_SERVICE_NAME="cutie-freqtrade-provider.service"
+
+# Freqtrade is not pinned in requirements.txt; pull it in alongside.
+EXTRA_PIP_ARGS="freqtrade"
+
 EXCHANGE="${CUTIE_FREQTRADE_EXCHANGE:-okx}"
 PAIRS="${CUTIE_FREQTRADE_PAIRS:-BTC/USDT}"
 TIMEFRAMES="${CUTIE_FREQTRADE_TIMEFRAMES:-1h 4h}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROVIDER_DIR="$REPO_DIR/freqtrade"
-VENV_DIR="$PROVIDER_DIR/.venv"
-USERDIR="$PROVIDER_DIR/user_data"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+# provider_prepare: set up Freqtrade user_data, strategy, and OHLCV data.
+# Called by the shared lib after deps install, before starting the provider.
+# Must print_failed + return 1 on hard failure.
+provider_prepare() {
+  local userdir="$PROVIDER_DIR/user_data"
+  local freqtrade_bin="$VENV_DIR/bin/freqtrade"
 
-echo "[1/6] Installing Freqtrade provider dependencies"
-cd "$PROVIDER_DIR"
-"$PYTHON_BIN" -m venv "$VENV_DIR"
-"$VENV_DIR/bin/python" -m pip install --upgrade pip
-"$VENV_DIR/bin/python" -m pip install freqtrade -r requirements.txt
+  # Tell the running provider where its data lives + which binary to use.
+  PROVIDER_EXTRA_ENV="FREQTRADE_USERDIR=$userdir FREQTRADE_CMD=$freqtrade_bin CUTIE_FREQTRADE_DEFAULT_EXCHANGE=$EXCHANGE"
+  PROVIDER_SERVICE_ENV="Environment=FREQTRADE_USERDIR=$userdir
+Environment=FREQTRADE_CMD=$freqtrade_bin
+Environment=CUTIE_FREQTRADE_DEFAULT_EXCHANGE=$EXCHANGE"
 
-echo "[2/6] Preparing Freqtrade user_data and sample strategy"
-"$VENV_DIR/bin/freqtrade" create-userdir --userdir "$USERDIR" >/dev/null 2>&1 || true
-mkdir -p "$USERDIR/strategies"
-cp -f sample_strategies/SampleStrategy.py "$USERDIR/strategies/SampleStrategy.py"
-
-echo "[3/6] Downloading OHLCV data: exchange=$EXCHANGE pairs=$PAIRS timeframes=$TIMEFRAMES"
-read -r -a PAIR_ARGS <<< "$PAIRS"
-read -r -a TIMEFRAME_ARGS <<< "$TIMEFRAMES"
-"$VENV_DIR/bin/freqtrade" download-data \
-  --userdir "$USERDIR" \
-  --exchange "$EXCHANGE" \
-  --pairs "${PAIR_ARGS[@]}" \
-  --timeframes "${TIMEFRAME_ARGS[@]}"
-
-echo "[4/6] Installing user systemd service: $SERVICE_NAME"
-mkdir -p "$HOME/.config/systemd/user"
-cat > "$HOME/.config/systemd/user/$SERVICE_NAME" <<SERVICE
-[Unit]
-Description=Cutie Freqtrade Provider
-After=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=$PROVIDER_DIR
-Environment=CUTIE_BACKTEST_PROVIDER_TOKEN=$TOKEN
-Environment=CUTIE_BACKTEST_PROVIDER_PORT=$PORT
-Environment=FREQTRADE_USERDIR=$USERDIR
-Environment=FREQTRADE_CMD=$VENV_DIR/bin/freqtrade
-Environment=CUTIE_FREQTRADE_DEFAULT_EXCHANGE=$EXCHANGE
-ExecStart=$VENV_DIR/bin/uvicorn cutie_freqtrade_provider:app --host 127.0.0.1 --port $PORT
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=default.target
-SERVICE
-
-if command -v loginctl >/dev/null 2>&1; then
-  loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
-fi
-
-systemctl --user daemon-reload
-systemctl --user enable --now "$SERVICE_NAME"
-
-echo "[5/6] Waiting for provider health"
-for _ in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:$PORT/health" >/tmp/cutie-freqtrade-health.json 2>/dev/null; then
-    cat /tmp/cutie-freqtrade-health.json
-    echo
-    break
+  echo "[1b/5] Preparing Freqtrade user_data + sample strategy"
+  "$freqtrade_bin" create-userdir --userdir "$userdir" >>"$CUTIE_RUN_LOG" 2>&1 || true
+  mkdir -p "$userdir/strategies"
+  if [ -f "$PROVIDER_DIR/sample_strategies/SampleStrategy.py" ]; then
+    cp -f "$PROVIDER_DIR/sample_strategies/SampleStrategy.py" "$userdir/strategies/SampleStrategy.py"
   fi
-  sleep 1
-done
-curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null
 
-echo "[6/6] Registering provider with cutie-connector"
-if command -v cutie-connector >/dev/null 2>&1; then
-  cutie-connector backtest-tool add \
-    --id "$SOURCE_ID" \
-    --base-url "http://127.0.0.1:$PORT" \
-    --api-key "$TOKEN" \
-    --default
-  cutie-connector backtest-tool test "$SOURCE_ID"
-  cutie-connector backtest-tool refresh
-  systemctl --user restart cutie-connector >/dev/null 2>&1 || true
-else
-  echo "cutie-connector command not found; install or upgrade Cutie Connector first." >&2
-  exit 1
-fi
+  echo "[1c/5] Downloading OHLCV data: exchange=$EXCHANGE pairs=$PAIRS timeframes=$TIMEFRAMES"
+  # bash 3.2 compatible word-splitting of the space-separated lists.
+  # shellcheck disable=SC2086
+  set -- $PAIRS
+  local pair_args="$*"
+  # shellcheck disable=SC2086
+  set -- $TIMEFRAMES
+  local tf_args="$*"
+  # shellcheck disable=SC2086
+  if ! "$freqtrade_bin" download-data \
+      --userdir "$userdir" \
+      --exchange "$EXCHANGE" \
+      --pairs $pair_args \
+      --timeframes $tf_args >>"$CUTIE_RUN_LOG" 2>&1; then
+    _diag "Freqtrade download-data failed for $EXCHANGE $PAIRS [$TIMEFRAMES] (see run log)."
+    _diag "Check network access to $EXCHANGE and that the pairs/timeframes are valid."
+    print_failed "DATA_NOT_DOWNLOADED" "Could not download Freqtrade historical OHLCV data."
+    return 1
+  fi
+  return 0
+}
 
-echo "Done. Provider source: $SOURCE_ID, service: $SERVICE_NAME"
+provider_run_install
+exit $?

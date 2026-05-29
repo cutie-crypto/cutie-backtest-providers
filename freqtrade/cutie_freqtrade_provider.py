@@ -49,9 +49,17 @@ REPORTS_DIR = Path(os.environ.get("REPORTS_DIR", "./reports"))
 MAX_REPORTS = 100
 
 PROVIDER_ID = "local-freqtrade"
+PROVIDER_NAME = "Freqtrade Local"
+PROVIDER_VERSION = "1.0.0"
+PROVIDER_HOMEPAGE_URL = "https://www.freqtrade.io/"
+PROVIDER_MAINTAINER = "cutie-backtest-providers"
 ENGINE_NAME = "Freqtrade"
+DATA_SOURCE = "freqtrade_data"
+RESPONSE_SCHEMA = "cutie.external_backtest.response.v1"
 DEFAULT_PORT = 8766
 DEFAULT_EXCHANGE = os.environ.get("CUTIE_FREQTRADE_DEFAULT_EXCHANGE", "okx").lower()
+EXECUTION_TIMEOUT_MS = BACKTEST_TIMEOUT * 1000
+EXECUTION_MAX_RANGE_DAYS = 365
 
 SUPPORTED_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
@@ -274,6 +282,30 @@ def _compute_hash(data: dict) -> str:
     return f"sha256:{hashlib.sha256(raw).hexdigest()}"
 
 
+def _decimal_str(value: Any, places: int = 8) -> str:
+    """Render a money/quantity value as a decimal string (IMPL §6.2).
+
+    Money/quantity fields (equity, pnl, capital, fee) must be serialized as
+    decimal strings, never JSON floats. Non-finite or unparseable values
+    fall back to "0".
+    """
+    import math
+
+    if isinstance(value, Decimal):
+        dec = value
+    else:
+        if isinstance(value, float) and not math.isfinite(value):
+            return "0"
+        try:
+            dec = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return "0"
+    quantized = dec.quantize(Decimal(1).scaleb(-places))
+    normalized = quantized.normalize()
+    # Avoid scientific notation (e.g. 1E+4 -> 10000)
+    return f"{normalized:f}"
+
+
 # ---------------------------------------------------------------------------
 # Freqtrade result parsing
 # ---------------------------------------------------------------------------
@@ -383,7 +415,7 @@ def _parse_freqtrade_result(result_path: Path, pair: str) -> dict:
             continue
         trade_entry: dict[str, Any] = {
             "side": "long" if not t.get("is_short", False) else "short",
-            "pnl": t.get("profit_abs", 0),
+            "pnl": _decimal_str(t.get("profit_abs", 0), places=8),
         }
         # Parse timestamps
         open_date = t.get("open_date")
@@ -473,7 +505,7 @@ def _build_equity_curve(strat_result: dict, trades: list[dict]) -> list[dict]:
                     dt = dt.replace(tzinfo=timezone.utc)
                     curve.append({
                         "t": int(dt.timestamp()),
-                        "equity": float(cumulative),
+                        "equity": _decimal_str(cumulative, places=8),
                     })
                 except ValueError:
                     continue
@@ -497,7 +529,7 @@ def _build_equity_curve(strat_result: dict, trades: list[dict]) -> list[dict]:
         cumulative_pnl += pnl
         curve.append({
             "t": close_ts,
-            "equity": float(cumulative_pnl),
+            "equity": _decimal_str(cumulative_pnl, places=8),
         })
     return curve
 
@@ -583,9 +615,110 @@ async def health():
     }
 
 
+def _build_catalog_tool(
+    tool_id: str,
+    name: str,
+    strategy_default: str,
+    engine_version: str,
+    available_symbols: list[str],
+    is_default: bool,
+) -> dict[str, Any]:
+    """Build one tool entry in the cutie.backtest_provider_catalog.v1 shape (IMPL §5.1).
+
+    Does NOT include `health` — health is derived by the connector from /health
+    and smoke/catalog checks, never declared in the provider catalog.
+    """
+    return {
+        "tool_id": tool_id,
+        "kind": "external_http",
+        "name": name,
+        "description": (
+            "Runs a local Freqtrade strategy class via the Freqtrade CLI on the "
+            "local Freqtrade data directory; results parsed from the official "
+            "backtest result file."
+        ),
+        "wrapper_type": "local_cli",
+        "provider_name": PROVIDER_NAME,
+        "engine_name": ENGINE_NAME,
+        "engine_version": engine_version,
+        "data_source": {
+            "type": "provider_reported",
+            "name": DATA_SOURCE,
+            "description": (
+                "Historical OHLCV from the local Freqtrade data directory; Cutie "
+                "does not verify coverage, pairlist reproducibility, or data quality."
+            ),
+            "coverage_hint": (
+                f"Pairs present in user_data/data: {', '.join(available_symbols)}"
+                if available_symbols
+                else "No local data downloaded yet"
+            ),
+            "external_unverified": True,
+        },
+        "supported_symbols": available_symbols,
+        "markets": ["spot"],
+        "timeframes": SUPPORTED_TIMEFRAMES,
+        "is_default": is_default,
+        "execution": {
+            "mode": "sync",
+            "timeout_ms": EXECUTION_TIMEOUT_MS,
+            "max_range_days": EXECUTION_MAX_RANGE_DAYS,
+            "max_parallel_runs": 1,
+            "async_supported": False,
+        },
+        "adapter": {
+            "requires_manual_export": False,
+            "working_dir_policy": "ephemeral_or_provider_managed",
+            "result_file_patterns": ["backtest-result-*.json", "backtest-result-*.zip"],
+            "upstream_auth_local_only": True,
+        },
+        "param_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "strategy_name": {
+                    "type": "string",
+                    "default": strategy_default,
+                    "description": "Freqtrade strategy class name",
+                },
+                "exchange": {
+                    "type": "string",
+                    "default": DEFAULT_EXCHANGE,
+                    "description": "Exchange name for config",
+                },
+            },
+        },
+        "output_schema": {
+            "metrics": ["total_return_pct", "win_rate_pct", "max_drawdown_pct", "trade_count"],
+            "artifacts": ["report_url"],
+            "series": ["equity_curve"],
+            "tables": ["trades"],
+        },
+        "report_capabilities": {
+            "report_url": True,
+            "scope": "local_machine_only",
+            "formats": ["json"],
+            "retention_hint": "last_100_runs",
+        },
+        "failure_codes": [
+            "INVALID_PARAMS",
+            "NO_DATA",
+            "ENGINE_ERROR",
+            "REPORT_UNAVAILABLE",
+        ],
+        "security": {
+            "network_scope": "openclaw_hermes_local_or_private",
+            "requires_user_secret": False,
+            "secrets_stay_local": True,
+            "live_trading": False,
+            "filesystem_paths_exposed": False,
+        },
+    }
+
+
 @app.get("/catalog")
 async def catalog(authorization: Optional[str] = Header(None)):
-    """Return provider catalog (schema cutie.backtest_provider_catalog.v1).
+    """Return provider catalog (schema cutie.backtest_provider_catalog.v1, IMPL §5.1).
 
     Dynamically generates tools from available strategies.
     """
@@ -601,76 +734,34 @@ async def catalog(authorization: Optional[str] = Header(None)):
     if strategies:
         # First strategy is default
         for idx, strategy_name in enumerate(strategies):
-            tool_id = f"local.freqtrade.{_camel_to_snake(strategy_name)}"
-            is_default = idx == 0
-            tool: dict[str, Any] = {
-                "tool_id": tool_id,
-                "kind": "external_http",
-                "name": f"Local Freqtrade {strategy_name}",
-                "provider_name": "Freqtrade Local",
-                "engine_name": ENGINE_NAME,
-                "engine_version": engine_version,
-                "data_source": "freqtrade_data",
-                "markets": ["spot"],
-                "timeframes": SUPPORTED_TIMEFRAMES,
-                "symbols": available_symbols,
-                "default": is_default,
-                "health": "ok",
-                "param_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "strategy_name": {
-                            "type": "string",
-                            "default": strategy_name,
-                            "description": "Freqtrade strategy class name",
-                        },
-                        "exchange": {
-                            "type": "string",
-                            "default": DEFAULT_EXCHANGE,
-                            "description": "Exchange name for config",
-                        },
-                    },
-                },
-                "expected_outputs": ["metrics", "trades", "report_url"],
-            }
-            tools.append(tool)
+            tools.append(_build_catalog_tool(
+                tool_id=f"local.freqtrade.{_camel_to_snake(strategy_name)}",
+                name=f"Local Freqtrade {strategy_name}",
+                strategy_default=strategy_name,
+                engine_version=engine_version,
+                available_symbols=available_symbols,
+                is_default=(idx == 0),
+            ))
     else:
-        # No strategies - provide a default tool entry marked unhealthy
-        tools.append({
-            "tool_id": "local.freqtrade.default_strategy",
-            "kind": "external_http",
-            "name": "Local Freqtrade Default Strategy",
-            "provider_name": "Freqtrade Local",
-            "engine_name": ENGINE_NAME,
-            "engine_version": engine_version,
-            "data_source": "freqtrade_data",
-            "markets": ["spot"],
-            "timeframes": SUPPORTED_TIMEFRAMES,
-            "symbols": available_symbols,
-            "default": True,
-            "health": "unavailable",
-            "param_schema": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "strategy_name": {
-                        "type": "string",
-                        "default": "SampleStrategy",
-                        "description": "Freqtrade strategy class name",
-                    },
-                    "exchange": {
-                        "type": "string",
-                        "default": DEFAULT_EXCHANGE,
-                        "description": "Exchange name for config",
-                    },
-                },
-            },
-            "expected_outputs": ["metrics", "trades", "report_url"],
-        })
+        # No strategies installed yet. Connector will derive unhealthy from /health.
+        tools.append(_build_catalog_tool(
+            tool_id="local.freqtrade.default_strategy",
+            name="Local Freqtrade Default Strategy",
+            strategy_default="SampleStrategy",
+            engine_version=engine_version,
+            available_symbols=available_symbols,
+            is_default=True,
+        ))
 
     return {
         "schema": "cutie.backtest_provider_catalog.v1",
+        "provider": {
+            "provider_id": PROVIDER_ID,
+            "provider_name": PROVIDER_NAME,
+            "provider_version": PROVIDER_VERSION,
+            "homepage_url": PROVIDER_HOMEPAGE_URL,
+            "maintainer": PROVIDER_MAINTAINER,
+        },
         "tools": tools,
     }
 
@@ -690,8 +781,9 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
         body = await request.json()
     except Exception:
         return JSONResponse(status_code=400, content={
+            "schema": RESPONSE_SCHEMA,
             "result_status": "failed",
-            "provider_name": "Freqtrade Local",
+            "provider_name": PROVIDER_NAME,
             "error_type": "INVALID_REQUEST",
             "error_message": "Request body must be valid JSON",
         })
@@ -819,8 +911,8 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             engine_version=engine_version,
             error_type="NO_DATA",
             error_message=(
-                f"No OHLCV data found in {FREQTRADE_USERDIR}/data/. "
-                f"Download data first: freqtrade download-data --userdir {FREQTRADE_USERDIR} "
+                "No OHLCV data found in the Freqtrade data directory. "
+                f"Download data first: freqtrade download-data "
                 f"--exchange {exchange} --pairs {pair} --timeframes {timeframe}"
             ),
         )
@@ -922,7 +1014,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             return _business_failure(
                 run_id=run_id,
                 engine_version=engine_version,
-                error_type="STRATEGY_ERROR",
+                error_type="ENGINE_ERROR",
                 error_message=f"Freqtrade backtesting timed out after {BACKTEST_TIMEOUT}s",
             )
 
@@ -934,7 +1026,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             return _business_failure(
                 run_id=run_id,
                 engine_version=engine_version,
-                error_type="STRATEGY_ERROR",
+                error_type="ENGINE_ERROR",
                 error_message=f"Freqtrade backtesting failed (exit {proc.returncode}): {error_output}",
             )
 
@@ -947,15 +1039,14 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             result_path = _find_latest_backtest_result(results_dir)
 
         if not result_path:
+            # Avoid leaking absolute local paths into the response (IMPL §7/§12).
             return _business_failure(
                 run_id=run_id,
                 engine_version=engine_version,
-                error_type="STRATEGY_ERROR",
+                error_type="REPORT_UNAVAILABLE",
                 error_message=(
-                    f"Freqtrade completed but result file not found. "
-                    f"Checked: {backtest_dir}, {results_dir}. "
-                    f"Stdout: {proc.stdout[:500] if proc.stdout else '(empty)'} "
-                    f"Stderr: {proc.stderr[:500] if proc.stderr else '(empty)'}"
+                    "Freqtrade completed but the backtest result file was not found "
+                    "in the run or backtest_results directory."
                 ),
             )
 
@@ -966,7 +1057,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             return _business_failure(
                 run_id=run_id,
                 engine_version=engine_version,
-                error_type="STRATEGY_ERROR",
+                error_type="ENGINE_ERROR",
                 error_message=f"Failed to parse Freqtrade result: {e}",
             )
 
@@ -982,28 +1073,30 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
         # Compute result hash
         result_hash = _compute_hash(parsed)
 
-        port = int(os.environ.get("CUTIE_BACKTEST_PORT", str(DEFAULT_PORT)))
         strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
             body,
             strategy_name,
         )
 
         response = {
+            "schema": RESPONSE_SCHEMA,
             "result_status": "success",
-            "provider_name": "Freqtrade Local",
+            "provider_name": PROVIDER_NAME,
             "provider_run_id": provider_run_id,
             "engine_name": ENGINE_NAME,
             "engine_version": engine_version,
-            "data_source": "freqtrade_data",
+            "data_source": DATA_SOURCE,
             "result_hash": result_hash,
-            "report_url": f"http://127.0.0.1:{port}/reports/{provider_run_id}{result_path.suffix}",
+            # report_url is a relative path/ref only (IMPL §7); no scheme/host/port.
+            "report_url": f"/reports/{provider_run_id}{result_path.suffix}",
             "report_url_scope": "local_machine_only",
             "metrics": parsed["metrics"],
+            "initial_capital": _decimal_str(initial_capital, places=2),
             "equity_curve": parsed["equity_curve"],
             "trades": parsed["trades"],
             "assumptions": {
-                "fee_bps": int(fee_bps),
-                "slippage_bps": int(slippage_bps),
+                "fee_bps": _decimal_str(fee_bps, places=4),
+                "slippage_bps": _decimal_str(slippage_bps, places=4),
                 "exchange": exchange,
                 "strategy_name": strategy_name,
                 **strategy_assumptions,
@@ -1041,12 +1134,13 @@ def _business_failure(
 ) -> dict:
     """Return a business failure response (provider is healthy, but backtest cannot proceed)."""
     return {
+        "schema": RESPONSE_SCHEMA,
         "result_status": "failed",
-        "provider_name": "Freqtrade Local",
+        "provider_name": PROVIDER_NAME,
         "provider_run_id": f"ft_{run_id}",
         "engine_name": ENGINE_NAME,
         "engine_version": engine_version,
-        "data_source": "freqtrade_data",
+        "data_source": DATA_SOURCE,
         "error_type": error_type,
         "error_message": error_message,
         "assumptions": {},
@@ -1085,12 +1179,15 @@ async def get_report(filename: str):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    # 401/403 from Bearer auth -> AUTH_FAILED; other HTTP errors -> INVALID_REQUEST.
+    error_type = "AUTH_FAILED" if exc.status_code in (401, 403) else "INVALID_REQUEST"
     return JSONResponse(
         status_code=exc.status_code,
         content={
+            "schema": RESPONSE_SCHEMA,
             "result_status": "failed",
-            "provider_name": "Freqtrade Local",
-            "error_type": f"HTTP_{exc.status_code}",
+            "provider_name": PROVIDER_NAME,
+            "error_type": error_type,
             "error_message": str(exc.detail),
         },
     )
@@ -1102,9 +1199,10 @@ async def general_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={
+            "schema": RESPONSE_SCHEMA,
             "result_status": "failed",
-            "provider_name": "Freqtrade Local",
-            "error_type": "INTERNAL_ERROR",
+            "provider_name": PROVIDER_NAME,
+            "error_type": "ENGINE_ERROR",
             "error_message": str(exc),
         },
     )

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cutie-backtest-provider-validator"
+version = "1.0.0"
+description = "Validate a Cutie backtest provider against the W3.9 v1 HTTP contract (IMPL §8)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "httpx>=0.24",
+]
+
+[project.optional-dependencies]
+# Only needed for in-process (--app) validation of FastAPI reference providers.
+asgi = [
+    "fastapi",
+]
+
+[project.scripts]
+cutie-backtest-provider-validator = "cutie_backtest_provider_validator.cli:main"
+
+[tool.setuptools]
+packages = ["cutie_backtest_provider_validator"]

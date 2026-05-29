@@ -35,9 +35,16 @@ AUTH_TOKEN = os.environ.get("CUTIE_BACKTEST_PROVIDER_TOKEN", "")
 
 PROVIDER_ID = "local-backtesting-py"
 PROVIDER_NAME = "Local Backtesting.py"
+PROVIDER_VERSION = "1.0.0"
+PROVIDER_HOMEPAGE_URL = "https://kernc.github.io/backtesting.py/"
+PROVIDER_MAINTAINER = "cutie-backtest-providers"
 ENGINE_NAME = "backtesting.py"
 DATA_SOURCE = "ccxt_public_ohlcv"
+RESPONSE_SCHEMA = "cutie.external_backtest.response.v1"
+TOOL_ID = "local.backtesting_py.ema_cross"
 DEFAULT_EXCHANGE = os.environ.get("CUTIE_BACKTEST_DEFAULT_EXCHANGE", "okx").lower()
+EXECUTION_TIMEOUT_MS = 120000
+EXECUTION_MAX_RANGE_DAYS = 365
 
 BASE_DIR = Path(__file__).resolve().parent
 REPORTS_DIR = BASE_DIR / "reports"
@@ -141,6 +148,28 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _decimal_str(value: Any, places: int = 8) -> str:
+    """Render a money/quantity value as a decimal string (IMPL §6.2).
+
+    Money/quantity fields (equity, price, qty, cost, fee, capital) must be
+    serialized as decimal strings, never JSON floats. Non-finite or unparseable
+    values fall back to "0".
+    """
+    if isinstance(value, Decimal):
+        dec = value
+    else:
+        if isinstance(value, float) and not math.isfinite(value):
+            return "0"
+        try:
+            dec = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return "0"
+    quantized = dec.quantize(Decimal(1).scaleb(-places))
+    normalized = quantized.normalize()
+    # Avoid scientific notation (e.g. 1E+4 -> 10000)
+    return f"{normalized:f}"
+
+
 def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
                  start_sec: int, end_sec: int) -> pd.DataFrame:
     """Fetch OHLCV from ccxt with local file cache."""
@@ -235,7 +264,9 @@ def _strategy_semantics(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     requested_strategy_name = _extract_requested_strategy_name(body)
     executed_strategy_name = f"EMA Cross ({ema_fast}/{ema_slow})"
-    mode = "provider_parametric_ema_cross_not_verified"
+    # IMPL §9.4: this provider only runs a built-in EMA cross, not the Cutie
+    # strategy draft, so strategy_match must be provider_strategy_class_not_verified.
+    mode = "provider_strategy_class_not_verified"
     warning = (
         "This provider ran its built-in EMA cross implementation with the selected "
         "parameters. Cutie did not verify that it fully implements the current "
@@ -258,6 +289,43 @@ def _strategy_semantics(
             "strategy_match": mode,
         },
     )
+
+
+def _validation_failure(error_type: str, error_message: str, status_code: int = 200) -> JSONResponse:
+    """Early validation failure: provider could not even start a backtest."""
+    return JSONResponse(status_code=status_code, content={
+        "schema": RESPONSE_SCHEMA,
+        "result_status": "failed",
+        "provider_name": PROVIDER_NAME,
+        "error_type": error_type,
+        "error_message": error_message,
+    })
+
+
+def _business_failure(
+    run_id: str,
+    error_type: str,
+    error_message: str,
+    reason: Optional[str] = None,
+) -> JSONResponse:
+    """Business failure with provider metadata (IMPL §6.3)."""
+    limitations: dict[str, Any] = {}
+    if reason:
+        limitations["reason"] = reason
+    return JSONResponse(content={
+        "schema": RESPONSE_SCHEMA,
+        "result_status": "failed",
+        "provider_name": PROVIDER_NAME,
+        "provider_run_id": f"bt_{run_id}",
+        "engine_name": ENGINE_NAME,
+        "engine_version": _engine_version(),
+        "data_source": DATA_SOURCE,
+        "error_type": error_type,
+        "error_message": error_message,
+        "assumptions": {},
+        "limitations": limitations,
+        "raw_report": {},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -365,25 +433,58 @@ async def health():
 
 @app.get("/catalog")
 async def catalog(authorization: Optional[str] = Header(default=None)):
-    """Return provider tool catalog (IMPL §5.3)."""
+    """Return provider tool catalog (IMPL §5.1 cutie.backtest_provider_catalog.v1)."""
     _verify_bearer(authorization)
 
     return JSONResponse({
         "schema": "cutie.backtest_provider_catalog.v1",
+        "provider": {
+            "provider_id": PROVIDER_ID,
+            "provider_name": PROVIDER_NAME,
+            "provider_version": PROVIDER_VERSION,
+            "homepage_url": PROVIDER_HOMEPAGE_URL,
+            "maintainer": PROVIDER_MAINTAINER,
+        },
         "tools": [
             {
-                "tool_id": "local.backtesting_py.ema_cross",
+                "tool_id": TOOL_ID,
                 "kind": "external_http",
                 "name": "Local Backtesting.py EMA Cross",
+                "description": (
+                    "Runs a built-in EMA cross strategy with backtesting.py on "
+                    "ccxt public OHLCV data; in-process Python provider."
+                ),
+                "wrapper_type": "python_inprocess",
                 "provider_name": PROVIDER_NAME,
                 "engine_name": ENGINE_NAME,
                 "engine_version": _engine_version(),
-                "data_source": DATA_SOURCE,
+                "data_source": {
+                    "type": "provider_reported",
+                    "name": DATA_SOURCE,
+                    "description": (
+                        "Public OHLCV fetched via ccxt; Cutie does not verify "
+                        "coverage, gaps, or unclosed candles."
+                    ),
+                    "coverage_hint": "BTCUSDT 1h/4h/1d from exchange public API",
+                    "external_unverified": True,
+                },
+                "supported_symbols": ["BTCUSDT"],
                 "markets": ["spot"],
                 "timeframes": ["1h", "4h", "1d"],
-                "symbols": ["BTCUSDT"],
-                "default": True,
-                "health": "ok",
+                "is_default": True,
+                "execution": {
+                    "mode": "sync",
+                    "timeout_ms": EXECUTION_TIMEOUT_MS,
+                    "max_range_days": EXECUTION_MAX_RANGE_DAYS,
+                    "max_parallel_runs": 1,
+                    "async_supported": False,
+                },
+                "adapter": {
+                    "requires_manual_export": False,
+                    "working_dir_policy": "ephemeral_or_provider_managed",
+                    "result_file_patterns": ["*.html"],
+                    "upstream_auth_local_only": True,
+                },
                 "param_schema": {
                     "type": "object",
                     "additionalProperties": False,
@@ -404,7 +505,33 @@ async def catalog(authorization: Optional[str] = Header(default=None)):
                         },
                     },
                 },
-                "expected_outputs": ["metrics", "equity_curve", "trades", "report_url"],
+                "output_schema": {
+                    "metrics": ["total_return_pct", "win_rate_pct", "max_drawdown_pct", "trade_count"],
+                    "artifacts": ["report_url"],
+                    "series": ["equity_curve"],
+                    "tables": ["trades"],
+                },
+                "report_capabilities": {
+                    "report_url": True,
+                    "scope": "local_machine_only",
+                    "formats": ["html"],
+                    "retention_hint": "last_100_runs",
+                },
+                "failure_codes": [
+                    "INVALID_PARAMS",
+                    "SYMBOL_UNSUPPORTED",
+                    "NO_DATA",
+                    "INSUFFICIENT_DATA",
+                    "RATE_LIMITED",
+                    "ENGINE_ERROR",
+                ],
+                "security": {
+                    "network_scope": "openclaw_hermes_local_or_private",
+                    "requires_user_secret": False,
+                    "secrets_stay_local": True,
+                    "live_trading": False,
+                    "filesystem_paths_exposed": False,
+                },
             }
         ],
     })
@@ -418,12 +545,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse(status_code=400, content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_REQUEST",
-            "error_message": "Request body must be valid JSON",
-        })
+        return _validation_failure("INVALID_REQUEST", "Request body must be valid JSON", status_code=400)
 
     bt_req = body.get("backtest", {})
     provider_info = body.get("provider", {})
@@ -441,58 +563,31 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     slippage_bps_str = bt_req.get("slippage_bps", "5")
 
     # --- Validate tool_id ---
-    if tool_id and tool_id != "local.backtesting_py.ema_cross":
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "TOOL_NOT_FOUND",
-            "error_message": f"Unknown provider_tool_id: {tool_id}",
-        })
+    if tool_id and tool_id != TOOL_ID:
+        return _validation_failure("TOOL_NOT_FOUND", f"Unknown provider_tool_id: {tool_id}")
 
     # --- Validate symbol ---
     if not symbol:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": "symbol is required",
-        })
+        return _validation_failure("INVALID_PARAMS", "symbol is required")
 
     # --- Validate timeframe ---
     supported_timeframes = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
     if timeframe not in supported_timeframes:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": f"Unsupported timeframe: {timeframe}. Supported: {sorted(supported_timeframes)}",
-        })
+        return _validation_failure(
+            "TIMEFRAME_UNSUPPORTED",
+            f"Unsupported timeframe: {timeframe}. Supported: {sorted(supported_timeframes)}",
+        )
 
     # --- Validate date range ---
     if start_at is None or end_at is None:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": "start_at and end_at are required (unix seconds)",
-        })
+        return _validation_failure("INVALID_PARAMS", "start_at and end_at are required (unix seconds)")
     try:
         start_at = int(start_at)
         end_at = int(end_at)
     except (TypeError, ValueError):
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": "start_at and end_at must be integers (unix seconds)",
-        })
+        return _validation_failure("INVALID_PARAMS", "start_at and end_at must be integers (unix seconds)")
     if start_at >= end_at:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": "start_at must be before end_at",
-        })
+        return _validation_failure("INVALID_PARAMS", "start_at must be before end_at")
 
     # --- Parse Decimal fields ---
     try:
@@ -500,55 +595,25 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         fee_bps = Decimal(str(fee_bps_str))
         slippage_bps = Decimal(str(slippage_bps_str))
     except (InvalidOperation, TypeError, ValueError) as e:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": f"Cannot parse decimal fields: {e}",
-        })
+        return _validation_failure("INVALID_PARAMS", f"Cannot parse decimal fields: {e}")
 
     if initial_capital <= 0:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": "initial_capital must be positive",
-        })
+        return _validation_failure("INVALID_PARAMS", "initial_capital must be positive")
 
     # --- Parse strategy params ---
     try:
         ema_fast = int(params.get("ema_fast", 20))
         ema_slow = int(params.get("ema_slow", 60))
     except (ValueError, TypeError):
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": "ema_fast and ema_slow must be integers",
-        })
+        return _validation_failure("INVALID_PARAMS", "ema_fast and ema_slow must be integers")
     exchange_id = str(params.get("exchange", DEFAULT_EXCHANGE)).lower()
 
     if ema_fast < 2:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": f"ema_fast must be >= 2 (got {ema_fast})",
-        })
+        return _validation_failure("INVALID_PARAMS", f"ema_fast must be >= 2 (got {ema_fast})")
     if ema_slow < 3:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": f"ema_slow must be >= 3 (got {ema_slow})",
-        })
+        return _validation_failure("INVALID_PARAMS", f"ema_slow must be >= 3 (got {ema_slow})")
     if ema_fast >= ema_slow:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "error_type": "INVALID_PARAMS",
-            "error_message": "ema_fast must be less than ema_slow",
-        })
+        return _validation_failure("INVALID_PARAMS", "ema_fast must be less than ema_slow")
 
     # --- Fetch OHLCV ---
     try:
@@ -556,94 +621,37 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     except ValueError as e:
         error_msg = str(e)
         if error_msg == "NO_DATA":
-            return JSONResponse(content={
-                "result_status": "failed",
-                "provider_name": PROVIDER_NAME,
-                "provider_run_id": f"bt_{run_id}",
-                "engine_name": ENGINE_NAME,
-                "engine_version": _engine_version(),
-                "data_source": DATA_SOURCE,
-                "error_type": "NO_DATA",
-                "error_message": f"No OHLCV data available for {symbol} {timeframe} in requested range",
-                "assumptions": {},
-                "limitations": {"reason": "data_missing"},
-                "raw_report": {},
-            })
+            return _business_failure(
+                run_id,
+                "NO_DATA",
+                f"No OHLCV data available for {symbol} {timeframe} in requested range",
+                reason="data_missing",
+            )
         elif "not supported" in error_msg.lower() or "Unsupported" in error_msg:
-            return JSONResponse(content={
-                "result_status": "failed",
-                "provider_name": PROVIDER_NAME,
-                "provider_run_id": f"bt_{run_id}",
-                "engine_name": ENGINE_NAME,
-                "engine_version": _engine_version(),
-                "data_source": DATA_SOURCE,
-                "error_type": "SYMBOL_UNSUPPORTED",
-                "error_message": error_msg,
-                "assumptions": {},
-                "limitations": {"reason": "symbol_unsupported"},
-                "raw_report": {},
-            })
+            return _business_failure(run_id, "SYMBOL_UNSUPPORTED", error_msg, reason="symbol_unsupported")
         else:
-            return JSONResponse(content={
-                "result_status": "failed",
-                "provider_name": PROVIDER_NAME,
-                "provider_run_id": f"bt_{run_id}",
-                "engine_name": ENGINE_NAME,
-                "engine_version": _engine_version(),
-                "data_source": DATA_SOURCE,
-                "error_type": "INVALID_PARAMS",
-                "error_message": error_msg,
-                "assumptions": {},
-                "limitations": {},
-                "raw_report": {},
-            })
+            return _business_failure(run_id, "INVALID_PARAMS", error_msg)
     except RuntimeError as e:
         error_msg = str(e)
         if "RATE_LIMITED" in error_msg:
-            return JSONResponse(content={
-                "result_status": "failed",
-                "provider_name": PROVIDER_NAME,
-                "provider_run_id": f"bt_{run_id}",
-                "engine_name": ENGINE_NAME,
-                "engine_version": _engine_version(),
-                "data_source": DATA_SOURCE,
-                "error_type": "RATE_LIMITED",
-                "error_message": "Exchange rate limit exceeded, please retry later",
-                "assumptions": {},
-                "limitations": {"reason": "rate_limited"},
-                "raw_report": {},
-            })
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "provider_run_id": f"bt_{run_id}",
-            "engine_name": ENGINE_NAME,
-            "engine_version": _engine_version(),
-            "data_source": DATA_SOURCE,
-            "error_type": "PROVIDER_ERROR",
-            "error_message": error_msg,
-            "assumptions": {},
-            "limitations": {},
-            "raw_report": {},
-        })
+            return _business_failure(
+                run_id,
+                "RATE_LIMITED",
+                "Exchange rate limit exceeded, please retry later",
+                reason="rate_limited",
+            )
+        return _business_failure(run_id, "ENGINE_ERROR", error_msg)
 
     if len(df) < max(ema_fast, ema_slow) + 1:
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "provider_run_id": f"bt_{run_id}",
-            "engine_name": ENGINE_NAME,
-            "engine_version": _engine_version(),
-            "data_source": DATA_SOURCE,
-            "error_type": "NO_DATA",
-            "error_message": (
+        return _business_failure(
+            run_id,
+            "INSUFFICIENT_DATA",
+            (
                 f"Insufficient data: got {len(df)} candles, "
                 f"need at least {max(ema_fast, ema_slow) + 1} for EMA({ema_fast}/{ema_slow})"
             ),
-            "assumptions": {},
-            "limitations": {"reason": "insufficient_data"},
-            "raw_report": {},
-        })
+            reason="insufficient_data",
+        )
 
     # --- Run backtest ---
     try:
@@ -671,21 +679,9 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
 
     except Exception as e:
         logger.exception("Backtest execution failed")
-        return JSONResponse(content={
-            "result_status": "failed",
-            "provider_name": PROVIDER_NAME,
-            "provider_run_id": f"bt_{run_id}",
-            "engine_name": ENGINE_NAME,
-            "engine_version": _engine_version(),
-            "data_source": DATA_SOURCE,
-            "error_type": "PROVIDER_ERROR",
-            "error_message": f"Backtest execution failed: {e}",
-            "assumptions": {},
-            "limitations": {},
-            "raw_report": {},
-        })
+        return _business_failure(run_id, "ENGINE_ERROR", f"Backtest execution failed: {e}")
 
-    # --- Build equity curve ---
+    # --- Build equity curve (equity is money -> decimal string, IMPL §6.2) ---
     equity_curve: list[dict] = []
     if hasattr(stats, "_equity_curve") and stats._equity_curve is not None:
         eq = stats._equity_curve
@@ -693,16 +689,16 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             ts = int(idx.timestamp()) if hasattr(idx, "timestamp") else 0
             equity_curve.append({
                 "t": ts,
-                "equity": round(float(row.get("Equity", row.iloc[0])), 2),
+                "equity": _decimal_str(row.get("Equity", row.iloc[0]), places=2),
             })
     else:
         # Fallback: start and end
         start_ts = int(df.index[0].timestamp()) if hasattr(df.index[0], "timestamp") else start_at
         end_ts = int(df.index[-1].timestamp()) if hasattr(df.index[-1], "timestamp") else end_at
-        final_equity = float(stats.get("Equity Final [$]", initial_capital))
+        final_equity = stats.get("Equity Final [$]", initial_capital)
         equity_curve = [
-            {"t": start_ts, "equity": float(initial_capital)},
-            {"t": end_ts, "equity": round(final_equity, 2)},
+            {"t": start_ts, "equity": _decimal_str(initial_capital, places=2)},
+            {"t": end_ts, "equity": _decimal_str(final_equity, places=2)},
         ]
 
     # Downsample equity curve if too large (keep at most 500 points)
@@ -716,10 +712,10 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             last_ts = int(last_idx.timestamp()) if hasattr(last_idx, "timestamp") else end_at
             equity_curve.append({
                 "t": last_ts,
-                "equity": round(float(last_eq.iloc[-1].get("Equity", last_eq.iloc[-1].iloc[0])), 2),
+                "equity": _decimal_str(last_eq.iloc[-1].get("Equity", last_eq.iloc[-1].iloc[0]), places=2),
             })
 
-    # --- Build trades list ---
+    # --- Build trades list (pnl is money -> decimal string, IMPL §6.2) ---
     trades_list: list[dict] = []
     if hasattr(stats, "_trades") and stats._trades is not None:
         for _, trade in stats._trades.iterrows():
@@ -727,14 +723,13 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             exit_time = trade.get("ExitTime")
             entry_ts = int(entry_time.timestamp()) if hasattr(entry_time, "timestamp") else 0
             exit_ts = int(exit_time.timestamp()) if hasattr(exit_time, "timestamp") else 0
-            pnl = float(trade.get("PnL", 0))
             size = trade.get("Size", 0)
             side = "long" if size > 0 else "short"
             trades_list.append({
                 "side": side,
                 "entry_at": entry_ts,
                 "exit_at": exit_ts,
-                "pnl": round(pnl, 2),
+                "pnl": _decimal_str(trade.get("PnL", 0), places=2),
             })
 
     # --- Extract metrics ---
@@ -763,7 +758,8 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     else:
         sample_size = "large"
 
-    report_url = f"http://127.0.0.1:{PORT}/reports/{report_filename}"
+    # report_url is a relative path/ref only (IMPL §7); no scheme/host/port.
+    report_url = f"/reports/{report_filename}"
 
     # --- Provider summary ---
     provider_summary = (
@@ -778,6 +774,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     )
 
     return JSONResponse(content=_json_safe({
+        "schema": RESPONSE_SCHEMA,
         "result_status": "success",
         "provider_name": PROVIDER_NAME,
         "provider_run_id": f"bt_{run_id}",
@@ -788,11 +785,12 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         "report_url": report_url,
         "report_url_scope": "local_machine_only",
         "metrics": metrics,
+        "initial_capital": _decimal_str(initial_capital, places=2),
         "equity_curve": equity_curve,
         "trades": trades_list,
         "assumptions": {
-            "fee_bps": int(fee_bps),
-            "slippage_bps": int(slippage_bps),
+            "fee_bps": _decimal_str(fee_bps, places=4),
+            "slippage_bps": _decimal_str(slippage_bps, places=4),
             "exchange": exchange_id,
             **strategy_assumptions,
             "real_market_data": True,
@@ -840,9 +838,10 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={
+            "schema": RESPONSE_SCHEMA,
             "result_status": "failed",
             "provider_name": PROVIDER_NAME,
-            "error_type": "INTERNAL_ERROR",
+            "error_type": "ENGINE_ERROR",
             "error_message": str(exc),
         },
     )
@@ -850,12 +849,15 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    # 401/403 from Bearer auth -> AUTH_FAILED; other HTTP errors -> INVALID_REQUEST.
+    error_type = "AUTH_FAILED" if exc.status_code in (401, 403) else "INVALID_REQUEST"
     return JSONResponse(
         status_code=exc.status_code,
         content={
+            "schema": RESPONSE_SCHEMA,
             "result_status": "failed",
             "provider_name": PROVIDER_NAME,
-            "error_type": "HTTP_ERROR",
+            "error_type": error_type,
             "error_message": exc.detail,
         },
     )
