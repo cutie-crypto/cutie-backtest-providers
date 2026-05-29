@@ -96,7 +96,31 @@ CUTIE_BACKTEST_PROVIDER_TOKEN="local-dev-token" \
 
 ## Writing Your Own Provider
 
-You don't have to use these reference implementations. Any HTTP service that implements the three endpoints above will work. See the backtesting-py provider as a template.
+You don't have to use these reference implementations. Any HTTP service that
+implements the three endpoints above will work. See
+`templates/python-provider/` for a production-shaped wrapper template.
+
+Once your own provider is running on the OpenClaw / Hermes machine or trusted
+intranet, register it with Cutie in one step:
+
+```bash
+PROVIDER_REPO_DIR="$HOME/.cutie-backtest-providers/cutie-backtest-providers"
+if [ -d "$PROVIDER_REPO_DIR/.git" ]; then
+  git -C "$PROVIDER_REPO_DIR" pull --ff-only
+else
+  mkdir -p "$(dirname "$PROVIDER_REPO_DIR")"
+  git clone https://github.com/cutie-crypto/cutie-backtest-providers.git "$PROVIDER_REPO_DIR"
+fi
+
+CUTIE_BACKTEST_PROVIDER_URL="http://127.0.0.1:8767" \
+  CUTIE_BACKTEST_PROVIDER_TOKEN="replace-with-provider-token" \
+  CUTIE_BACKTEST_SOURCE_ID="my-backtest-provider" \
+  "$PROVIDER_REPO_DIR/scripts/register-custom-provider.sh"
+```
+
+The registration script installs/runs the validator, executes
+`cutie-connector backtest-tool add --default`, refreshes the catalog, and prints
+`READY` only when the tool can be selected from Cutie.
 
 ## License
 
