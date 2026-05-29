@@ -57,6 +57,9 @@ Configurable via environment (all optional):
 | `CUTIE_BACKTEST_SERVICE_NAME` | `cutie-*-provider.service` | systemd unit name |
 | `PYTHON_BIN` | `python3` | Python interpreter |
 
+backtesting.py-only: `CUTIE_BACKTEST_SUPPORTED_SYMBOLS`
+(`BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT`).
+
 Freqtrade-only: `CUTIE_FREQTRADE_EXCHANGE` (`okx`), `CUTIE_FREQTRADE_PAIRS`
 (`BTC/USDT`), `CUTIE_FREQTRADE_TIMEFRAMES` (`1h 4h`).
 
