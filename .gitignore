@@ -4,6 +4,8 @@ __pycache__/
 venv/
 cache/
 reports/
+.runtime/
+user_data/
 *.egg-info/
 dist/
 build/

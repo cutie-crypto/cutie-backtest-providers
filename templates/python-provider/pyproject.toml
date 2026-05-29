@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cutie-byo-provider"
+version = "1.0.0"
+description = "Template for a Cutie BYO (Bring-Your-Own) backtest HTTP provider"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "cutie-backtest-providers" }]
+dependencies = [
+    "fastapi>=0.110",
+    "pydantic>=2.0",
+    "uvicorn>=0.23",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "httpx>=0.24",
+]
+
+[project.scripts]
+cutie-byo-provider = "cutie_byo_provider.app:main"
+
+[tool.setuptools.packages.find]
+include = ["cutie_byo_provider*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
