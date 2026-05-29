@@ -135,6 +135,22 @@ def _cache_key(exchange: str, symbol: str, timeframe: str, start_ms: int, end_ms
     return f"{exchange}_{symbol}_{timeframe}_{start_ms}_{end_ms}.json"
 
 
+def _timeframe_milliseconds(timeframe: str) -> int:
+    match = re.fullmatch(r"(\d+)([mhdwM])", str(timeframe or ""))
+    if not match:
+        return 60 * 60 * 1000
+    value = int(match.group(1))
+    unit = match.group(2)
+    multipliers = {
+        "m": 60 * 1000,
+        "h": 60 * 60 * 1000,
+        "d": 24 * 60 * 60 * 1000,
+        "w": 7 * 24 * 60 * 60 * 1000,
+        "M": 30 * 24 * 60 * 60 * 1000,
+    }
+    return value * multipliers[unit]
+
+
 def _read_cache(key: str) -> Optional[list]:
     path = CACHE_DIR / key
     if not path.exists():
@@ -200,7 +216,9 @@ def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
     import ccxt
 
     start_ms = start_sec * 1000
-    end_ms = end_sec * 1000
+    end_ms = min(end_sec * 1000, int(time.time() * 1000))
+    if end_ms <= start_ms:
+        raise ValueError("NO_DATA")
 
     cache_key = _cache_key(exchange_id, symbol, timeframe, start_ms, end_ms)
     cached = _read_cache(cache_key)
@@ -225,12 +243,21 @@ def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
 
         ohlcv: list = []
         since = start_ms
-        limit = 1000  # typical exchange limit
+        timeframe_ms = _timeframe_milliseconds(timeframe)
+        max_limit = 300 if exchange_id == "okx" else 1000
 
         while since < end_ms:
+            remaining = max(1, math.ceil((end_ms - since) / timeframe_ms))
+            limit = min(max_limit, remaining)
+            batch_until = min(end_ms, since + timeframe_ms * limit)
+            params: dict[str, Any] = {}
+            if exchange_id == "okx":
+                # ccxt.okx otherwise derives "after" from since + timeframe * limit,
+                # which can point into the future and make OKX reject the request.
+                params["until"] = batch_until
             try:
                 batch = exchange.fetch_ohlcv(
-                    normalized_symbol, timeframe, since=since, limit=limit
+                    normalized_symbol, timeframe, since=since, limit=limit, params=params
                 )
             except ccxt.BadSymbol:
                 raise ValueError(f"Symbol not supported on {exchange_id}: {symbol}")
@@ -248,8 +275,9 @@ def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
 
             last_ts = batch[-1][0]
             if last_ts <= since:
-                break
-            since = last_ts + 1
+                since += timeframe_ms
+            else:
+                since = last_ts + timeframe_ms
 
         if ohlcv:
             _write_cache(cache_key, ohlcv)
