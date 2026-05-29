@@ -17,10 +17,11 @@
 #   CUTIE_FREQTRADE_EXCHANGE       (default okx)
 #   CUTIE_FREQTRADE_PAIRS          (default "BTC/USDT")
 #   CUTIE_FREQTRADE_TIMEFRAMES     (default "1h 4h")
+#   CUTIE_BACKTEST_RESTART_PROVIDER (default 1; restart healthy service to apply latest config)
 #   PYTHON_BIN                     (default python3)
 #
-# Re-running is safe (idempotent): a healthy provider is reused; data already
-# present is not re-downloaded by Freqtrade.
+# Re-running is safe (idempotent): the provider is restarted to pick up latest
+# code/config; data already present is not re-downloaded by Freqtrade.
 #
 # Note: Freqtrade may need extra system libraries on some hosts. If dependency
 # install fails, the FAILED diagnostic will point ops at the Freqtrade install
@@ -41,6 +42,7 @@ DEFAULT_SERVICE_NAME="cutie-freqtrade-provider.service"
 
 # Freqtrade is not pinned in requirements.txt; pull it in alongside.
 EXTRA_PIP_ARGS="freqtrade"
+export CUTIE_BACKTEST_RESTART_PROVIDER="${CUTIE_BACKTEST_RESTART_PROVIDER:-1}"
 
 EXCHANGE="${CUTIE_FREQTRADE_EXCHANGE:-okx}"
 PAIRS="${CUTIE_FREQTRADE_PAIRS:-BTC/USDT}"

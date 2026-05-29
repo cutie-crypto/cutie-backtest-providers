@@ -136,6 +136,8 @@ print_failed() {
 #   CUTIE_BACKTEST_PROVIDER_TOKEN  -> TOKEN         (default: local-dev-token)
 #   CUTIE_BACKTEST_SOURCE_ID       -> SOURCE_ID
 #   CUTIE_BACKTEST_SERVICE_NAME    -> SERVICE_NAME
+#   CUTIE_BACKTEST_RESTART_PROVIDER
+#     1 = restart a healthy provider to apply latest code/config (default from entrypoints)
 #   PYTHON_BIN                     -> python interpreter (default python3)
 
 provider_init_config() {
@@ -353,6 +355,10 @@ _provider_running() {
 }
 
 _stop_provider_for_restart() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  fi
+
   # Stop a stale provider that is already listening on our port. Prefer the PID
   # file from previous installer runs; fall back to the listener PID when lsof is
   # available. This is only used after validator rejects a healthy provider,
@@ -380,8 +386,13 @@ provider_start() {
   # Health-based (not PID-based) so it also reuses a systemd-managed instance
   # from a previous run, where this process holds no PID file.
   if _health_ok; then
-    echo "      already running and healthy (reusing)."
-    return 0
+    if [ "${CUTIE_BACKTEST_RESTART_PROVIDER:-0}" = "1" ]; then
+      echo "      already running and healthy; restarting to apply latest provider code/config."
+      _stop_provider_for_restart
+    else
+      echo "      already running and healthy (reusing)."
+      return 0
+    fi
   fi
 
   # Stop a stale instance we started before (nohup mode) before re-launching.

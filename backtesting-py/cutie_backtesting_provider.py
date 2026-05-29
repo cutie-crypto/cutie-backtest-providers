@@ -43,6 +43,10 @@ DATA_SOURCE = "ccxt_public_ohlcv"
 RESPONSE_SCHEMA = "cutie.external_backtest.response.v1"
 TOOL_ID = "local.backtesting_py.ema_cross"
 DEFAULT_EXCHANGE = os.environ.get("CUTIE_BACKTEST_DEFAULT_EXCHANGE", "okx").lower()
+DEFAULT_SUPPORTED_SYMBOLS = (
+    "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,"
+    "ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT"
+)
 EXECUTION_TIMEOUT_MS = 120000
 EXECUTION_MAX_RANGE_DAYS = 365
 
@@ -77,6 +81,26 @@ def _engine_version() -> str:
         return getattr(backtesting, "__version__", "unknown")
     except Exception:
         return "unknown"
+
+
+def _normalize_catalog_symbol(raw: Any) -> str:
+    compact = re.sub(r"[^A-Za-z0-9]", "", str(raw or "")).upper()
+    if not compact:
+        return ""
+    for quote in ("USDT", "USDC", "USD", "BTC", "ETH", "BNB"):
+        if compact.endswith(quote) and len(compact) > len(quote):
+            return compact
+    return f"{compact}USDT"
+
+
+def _supported_symbols() -> list[str]:
+    raw = os.environ.get("CUTIE_BACKTEST_SUPPORTED_SYMBOLS", DEFAULT_SUPPORTED_SYMBOLS)
+    symbols: list[str] = []
+    for item in re.split(r"[\s,]+", raw):
+        symbol = _normalize_catalog_symbol(item)
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    return symbols or [_normalize_catalog_symbol("BTCUSDT")]
 
 
 def _verify_bearer(authorization: Optional[str]) -> None:
@@ -435,6 +459,7 @@ async def health():
 async def catalog(authorization: Optional[str] = Header(default=None)):
     """Return provider tool catalog (IMPL §5.1 cutie.backtest_provider_catalog.v1)."""
     _verify_bearer(authorization)
+    supported_symbols = _supported_symbols()
 
     return JSONResponse({
         "schema": "cutie.backtest_provider_catalog.v1",
@@ -465,10 +490,10 @@ async def catalog(authorization: Optional[str] = Header(default=None)):
                         "Public OHLCV fetched via ccxt; Cutie does not verify "
                         "coverage, gaps, or unclosed candles."
                     ),
-                    "coverage_hint": "BTCUSDT 1h/4h/1d from exchange public API",
+                    "coverage_hint": f"{', '.join(supported_symbols[:5])} 1h/4h/1d from exchange public API",
                     "external_unverified": True,
                 },
-                "supported_symbols": ["BTCUSDT"],
+                "supported_symbols": supported_symbols,
                 "markets": ["spot"],
                 "timeframes": ["1h", "4h", "1d"],
                 "is_default": True,
