@@ -352,6 +352,27 @@ _provider_running() {
   return 1
 }
 
+_stop_provider_for_restart() {
+  # Stop a stale provider that is already listening on our port. Prefer the PID
+  # file from previous installer runs; fall back to the listener PID when lsof is
+  # available. This is only used after validator rejects a healthy provider,
+  # which usually means the old process is still serving an older protocol.
+  if _provider_running; then
+    kill "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null || true
+    sleep 1
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    local pid
+    pid="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -n 1)"
+    if [ -n "$pid" ]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+  return 0
+}
+
 provider_start() {
   echo "[2/5] Starting $PROVIDER_LABEL provider on 127.0.0.1:$PORT"
 
@@ -493,11 +514,17 @@ EOF
     else
       _diag "validator self-check failed (see run log / $RUNTIME_DIR/validator.json)."
     fi
-    print_failed "SELF_CHECK_FAILED" "The provider self-check (validator) did not pass."
     return 1
   fi
   echo "      self-check passed."
   return 0
+}
+
+provider_restart_after_validator_failure() {
+  echo "[3b/5] Self-check failed; restarting provider once to clear a stale process"
+  CUTIE_DIAG_LINES=""
+  _stop_provider_for_restart
+  provider_start
 }
 
 # --- step 4: connector registration (graceful when absent) ------------------
@@ -578,7 +605,14 @@ provider_run_install() {
   fi
 
   provider_start || return 1
-  provider_validate || return 1
+  if ! provider_validate; then
+    if provider_restart_after_validator_failure && provider_validate; then
+      :
+    else
+      print_failed "SELF_CHECK_FAILED" "The provider self-check (validator) did not pass."
+      return 1
+    fi
+  fi
   provider_register_connector || return 1
 
   echo "[5/5] Done."
