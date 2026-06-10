@@ -89,6 +89,35 @@ print_awaiting_connector() {
   echo "=================================================================="
 }
 
+print_restart_required() {
+  echo ""
+  echo "=================================================================="
+  echo " [!] $PROVIDER_LABEL provider INSTALLED, connector restart required (需重启 connector)"
+  echo "=================================================================="
+  echo "  provider URL  : http://127.0.0.1:$PORT"
+  echo "  source id     : $SOURCE_ID"
+  echo "  run log       : $CUTIE_RUN_LOG"
+  echo ""
+  echo "  The provider is healthy and registered in the connector config,"
+  echo "  but the running cutie-connector has NOT reported the new tool to"
+  echo "  the Cutie platform yet (old connector without hot-reload, or the"
+  echo "  automatic restart failed)."
+  echo ""
+  echo "  ---- COPY THIS to OpenClaw / Hermes / ops ----"
+  echo "  Restart the cutie-connector process on this machine, e.g.:"
+  echo ""
+  echo "    pkill -f 'cutie-connector start' ; cutie-connector start &"
+  echo ""
+  echo "  (or restart it the same way it was originally started:"
+  echo "   systemd / pm2 / your agent's process manager)"
+  echo ""
+  echo "  Then refresh \"我的回测工具\" in Cutie — the tool should appear"
+  echo "  within ~1 heartbeat (30s). Re-running this installer afterwards"
+  echo "  will re-verify and print READY."
+  echo "  ----------------------------------------------"
+  echo "=================================================================="
+}
+
 print_failed() {
   # $1 = short reason category, $2 = one-line human message
   local category="$1"
@@ -628,11 +657,125 @@ provider_register_connector() {
   if ! "$connector_bin" backtest-tool refresh >>"$CUTIE_RUN_LOG" 2>&1; then
     _diag "cutie-connector backtest-tool refresh failed (catalog may be stale; see run log)."
   fi
-  # Nudge a running connector to re-report on next heartbeat (best effort).
-  systemctl --user restart cutie-connector >/dev/null 2>&1 || true
 
-  CUTIE_OUTCOME="READY"
+  # Nudge a running connector to re-report. Connector >= 3.4.6 hot-reloads
+  # backtest config within ~30s, so a failed restart is no longer fatal —
+  # but we still try, and we no longer swallow the result silently.
+  provider_restart_connector
+
+  # Close the loop: only claim READY once the Cutie server actually shows
+  # backtest_run in this connector's reported capabilities. This kills the
+  # "installed locally but the platform never heard about it" false success.
+  if provider_verify_reported; then
+    CUTIE_OUTCOME="READY"
+  else
+    CUTIE_OUTCOME="RESTART_REQUIRED"
+  fi
   return 0
+}
+
+provider_restart_connector() {
+  # The connector may run under systemd --user, system systemd, pm2, or a
+  # plain shell (e.g. started by an agent). Try the managed forms; report
+  # the outcome instead of silently ignoring it.
+  if systemctl --user restart cutie-connector >>"$CUTIE_RUN_LOG" 2>&1; then
+    echo "      connector restarted (systemd --user)"
+    return 0
+  fi
+  if systemctl restart cutie-connector >>"$CUTIE_RUN_LOG" 2>&1; then
+    echo "      connector restarted (systemd)"
+    return 0
+  fi
+  if command -v pm2 >/dev/null 2>&1 && pm2 restart cutie-connector >>"$CUTIE_RUN_LOG" 2>&1; then
+    echo "      connector restarted (pm2)"
+    return 0
+  fi
+  echo "      connector restart not available (no managed service found);"
+  echo "      relying on connector hot-reload (>= 3.4.6) to pick up the new tool."
+  _diag "connector restart skipped: not running under systemd/pm2 (hot-reload or manual restart needed)."
+  return 1
+}
+
+provider_verify_reported() {
+  # Poll the Cutie server self endpoint with the connector's own token until
+  # THIS provider's tools show up in the reported catalog (matched by tool_id,
+  # not just the generic backtest_run capability — another provider already
+  # installed on the same connector must not produce a false READY).
+  # ~100s covers hot-reload (<=30s detect) plus a few heartbeats; older
+  # connectors need a successful restart instead.
+  local config_file="$HOME/.cutie-connector/config.json"
+  if [ ! -f "$config_file" ] || ! command -v python3 >/dev/null 2>&1; then
+    _diag "verify skipped: connector config or python3 unavailable."
+    return 1
+  fi
+
+  local server_url token expected_tool_ids
+  server_url="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("server_url",""))' "$config_file" 2>/dev/null)" || true
+  token="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("connector_token",""))' "$config_file" 2>/dev/null)" || true
+  # tool_ids registered for THIS provider: local config keeps endpoints
+  # (server snapshot never does, by design), so match by our port.
+  expected_tool_ids="$(python3 - "$config_file" "127.0.0.1:$PORT" <<'PY' 2>/dev/null
+import json, sys
+config_path, hostport = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(config_path))
+except Exception:
+    sys.exit(0)
+for tool in data.get("backtest_tools") or []:
+    if not isinstance(tool, dict):
+        continue
+    if hostport in str(tool.get("endpoint") or ""):
+        tool_id = tool.get("tool_id")
+        if isinstance(tool_id, str) and tool_id.strip():
+            print(tool_id.strip())
+PY
+)" || true
+  if [ -z "$server_url" ] || [ -z "$token" ]; then
+    _diag "verify skipped: server_url/connector_token missing in config."
+    return 1
+  fi
+  if [ -z "$expected_tool_ids" ]; then
+    _diag "verify skipped: no local tool_ids found for this provider (catalog refresh may have failed)."
+    return 1
+  fi
+
+  # READY requires a FRESH report: tool_id match alone is not enough, because
+  # /self returns the last snapshot — on re-install the old tool_id is still
+  # there even if the running connector never picked up the new config. So we
+  # also require connector_status=online and a heartbeat newer than this
+  # install (the post-install heartbeat is what carries the fresh catalog).
+  local started_at
+  started_at="$(date +%s)"
+  echo "      verifying this provider's tools are visible on the Cutie platform (~2 min max)..."
+  local attempt response verdict
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    response="$(curl -fsS --max-time 10 -H "Authorization: Bearer $token" \
+      "${server_url%/}/v1/connector/self" 2>>"$CUTIE_RUN_LOG")" || response=""
+    if [ -n "$response" ]; then
+      verdict="$(printf '%s' "$response" | CUTIE_EXPECTED_TOOL_IDS="$expected_tool_ids" python3 - "$started_at" <<'PY' 2>/dev/null
+import json, os, sys
+started_at = int(sys.argv[1])
+try:
+    data = json.load(sys.stdin).get("data") or {}
+except Exception:
+    sys.exit(0)
+expected = {line.strip() for line in os.environ.get("CUTIE_EXPECTED_TOOL_IDS", "").splitlines() if line.strip()}
+reported = set(data.get("backtest_tool_ids") or [])
+heartbeat_at = int(data.get("last_heartbeat_at") or 0)
+matched = sorted(expected & reported)
+if data.get("connector_status") == "online" and heartbeat_at >= started_at and matched:
+    print(matched[0])
+PY
+)" || verdict=""
+      if [ -n "$verdict" ]; then
+        echo "      platform confirmed: tool '$verdict' reported by a fresh heartbeat (attempt $attempt)"
+        return 0
+      fi
+    fi
+    [ "$attempt" -lt 10 ] && sleep 10
+  done
+  _diag "platform did not freshly report this provider's tools within ~2 min (connector likely needs a manual restart)."
+  return 1
 }
 
 # --- top-level orchestration -------------------------------------------------
@@ -668,6 +811,7 @@ provider_run_install() {
   case "$CUTIE_OUTCOME" in
     READY)              print_ready ;;
     AWAITING_CONNECTOR) print_awaiting_connector ;;
+    RESTART_REQUIRED)   print_restart_required ;;
     *)                  print_ready ;;
   esac
   return 0
