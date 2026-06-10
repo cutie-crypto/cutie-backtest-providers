@@ -62,7 +62,7 @@ Environment=FREQTRADE_CMD=$freqtrade_bin
 Environment=CUTIE_FREQTRADE_DEFAULT_EXCHANGE=$EXCHANGE"
 
   echo "[1b/5] Preparing Freqtrade user_data + sample strategy"
-  "$freqtrade_bin" create-userdir --userdir "$userdir" >>"$CUTIE_RUN_LOG" 2>&1 || true
+  "$freqtrade_bin" create-userdir --userdir "$userdir" >>"$CUTIE_RUN_LOG" 2>&1 || _diag "freqtrade create-userdir failed (non-fatal if userdir already exists; see run log)."
   mkdir -p "$userdir/strategies"
   if [ -f "$PROVIDER_DIR/sample_strategies/SampleStrategy.py" ]; then
     cp -f "$PROVIDER_DIR/sample_strategies/SampleStrategy.py" "$userdir/strategies/SampleStrategy.py"

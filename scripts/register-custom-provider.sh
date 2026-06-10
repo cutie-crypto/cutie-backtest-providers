@@ -113,9 +113,22 @@ fi
 
 "$CONNECTOR_BIN" backtest-tool test "$SOURCE_ID" >>"$RUN_LOG" 2>&1 || true
 "$CONNECTOR_BIN" backtest-tool refresh >>"$RUN_LOG" 2>&1 || true
-systemctl --user restart cutie-connector >/dev/null 2>&1 || true
 
-echo "[4/4] Done."
-echo "READY"
-echo "provider_url=$PROVIDER_URL"
-echo "source_id=$SOURCE_ID"
+# 复用 lib 的多形态重启 + 平台侧闭环验证。此前这里 `systemctl --user
+# restart || true` 静默吞错后无条件打 READY——Cutie-Claw-1 事故的姊妹路径。
+CUTIE_RUN_LOG="$RUN_LOG"
+CUTIE_VERIFY_HOSTPORT="$(printf '%s' "$PROVIDER_URL" | sed -E 's#^[a-z]+://##; s#/.*$##')"
+export CUTIE_VERIFY_HOSTPORT
+provider_restart_connector || true
+
+echo "[4/4] Verifying the tool is visible on the Cutie platform"
+if provider_verify_reported; then
+  echo "READY"
+  echo "provider_url=$PROVIDER_URL"
+  echo "source_id=$SOURCE_ID"
+else
+  echo "RESTART_REQUIRED"
+  echo "provider_url=$PROVIDER_URL"
+  echo "source_id=$SOURCE_ID"
+  echo "message=Provider registered in connector config, but the running connector has not reported it to Cutie yet. Restart the cutie-connector process on this machine (the same way it was started), then refresh the Cutie page."
+fi

@@ -709,12 +709,18 @@ provider_verify_reported() {
     return 1
   fi
 
-  local server_url token expected_tool_ids
+  local server_url token expected_tool_ids hostport
   server_url="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("server_url",""))' "$config_file" 2>/dev/null)" || true
   token="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("connector_token",""))' "$config_file" 2>/dev/null)" || true
   # tool_ids registered for THIS provider: local config keeps endpoints
-  # (server snapshot never does, by design), so match by our port.
-  expected_tool_ids="$(python3 - "$config_file" "127.0.0.1:$PORT" <<'PY' 2>/dev/null
+  # (server snapshot never does, by design), so match by our host:port.
+  # register-custom-provider.sh 等调用方可用 CUTIE_VERIFY_HOSTPORT 覆盖。
+  hostport="${CUTIE_VERIFY_HOSTPORT:-127.0.0.1:${PORT:-}}"
+  if [ -z "$hostport" ] || [ "$hostport" = "127.0.0.1:" ]; then
+    _diag "verify skipped: no host:port to match local tools."
+    return 1
+  fi
+  expected_tool_ids="$(python3 - "$config_file" "$hostport" <<'PY' 2>/dev/null
 import json, sys
 config_path, hostport = sys.argv[1], sys.argv[2]
 try:
