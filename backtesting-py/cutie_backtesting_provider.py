@@ -720,6 +720,9 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
                 reason="rate_limited",
             )
         return _business_failure(run_id, "ENGINE_ERROR", error_msg)
+    except Exception as e:
+        logger.exception("OHLCV fetch unexpected error")
+        return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch market data: {e}")
 
     if len(df) < max(ema_fast, ema_slow) + 1:
         return _business_failure(
