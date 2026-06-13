@@ -177,6 +177,32 @@ def _write_cache(key: str, data: list) -> None:
         logger.warning("Cache write failed for %s: %s", key, e)
 
 
+def _safe_float(series: Any, key: str, default: float = 0.0) -> float:
+    """Extract a float metric from a pd.Series or dict, with None/NaN protection.
+
+    pd.Series.get(key, default) returns the stored value (even if None/NaN)
+    when the key exists — the default is only used for missing keys.
+    """
+    raw = series.get(key, default) if hasattr(series, "get") else default
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+        return val if math.isfinite(val) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(series: Any, key: str, default: int = 0) -> int:
+    raw = series.get(key, default) if hasattr(series, "get") else default
+    if raw is None:
+        return default
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _json_safe(value: Any) -> Any:
     """Convert non-finite floats into JSON-safe nulls."""
     if isinstance(value, float):
@@ -734,133 +760,135 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         logger.exception("Backtest execution failed")
         return _business_failure(run_id, "ENGINE_ERROR", f"Backtest execution failed: {e}")
 
-    # --- Build equity curve (equity is money -> decimal string, IMPL §6.2) ---
-    equity_curve: list[dict] = []
-    if hasattr(stats, "_equity_curve") and stats._equity_curve is not None:
-        eq = stats._equity_curve
-        for idx, row in eq.iterrows():
-            ts = int(idx.timestamp()) if hasattr(idx, "timestamp") else 0
-            equity_curve.append({
-                "t": ts,
-                "equity": _decimal_str(row.get("Equity", row.iloc[0]), places=2),
-            })
-    else:
-        # Fallback: start and end
-        start_ts = int(df.index[0].timestamp()) if hasattr(df.index[0], "timestamp") else start_at
-        end_ts = int(df.index[-1].timestamp()) if hasattr(df.index[-1], "timestamp") else end_at
-        final_equity = stats.get("Equity Final [$]", initial_capital)
-        equity_curve = [
-            {"t": start_ts, "equity": _decimal_str(initial_capital, places=2)},
-            {"t": end_ts, "equity": _decimal_str(final_equity, places=2)},
-        ]
+    # --- Build result (W3.10: entire post-processing wrapped in try-except) ---
+    try:
+        equity_curve: list[dict] = []
+        if hasattr(stats, "_equity_curve") and stats._equity_curve is not None:
+            eq = stats._equity_curve
+            for idx, row in eq.iterrows():
+                ts = int(idx.timestamp()) if hasattr(idx, "timestamp") else 0
+                raw_equity = row.get("Equity", None)
+                if raw_equity is None:
+                    raw_equity = row.iloc[0] if len(row) > 0 else initial_capital
+                equity_curve.append({
+                    "t": ts,
+                    "equity": _decimal_str(raw_equity, places=2),
+                })
+        else:
+            start_ts = int(df.index[0].timestamp()) if hasattr(df.index[0], "timestamp") else start_at
+            end_ts = int(df.index[-1].timestamp()) if hasattr(df.index[-1], "timestamp") else end_at
+            final_equity = _safe_float(stats, "Equity Final [$]", float(initial_capital))
+            equity_curve = [
+                {"t": start_ts, "equity": _decimal_str(initial_capital, places=2)},
+                {"t": end_ts, "equity": _decimal_str(final_equity, places=2)},
+            ]
 
-    # Downsample equity curve if too large (keep at most 500 points)
-    if len(equity_curve) > 500:
-        step = len(equity_curve) // 500
-        equity_curve = equity_curve[::step]
-        # Always include last point
-        last_eq = stats._equity_curve
-        if last_eq is not None and len(last_eq) > 0:
-            last_idx = last_eq.index[-1]
-            last_ts = int(last_idx.timestamp()) if hasattr(last_idx, "timestamp") else end_at
-            equity_curve.append({
-                "t": last_ts,
-                "equity": _decimal_str(last_eq.iloc[-1].get("Equity", last_eq.iloc[-1].iloc[0]), places=2),
-            })
+        if len(equity_curve) > 500:
+            step = len(equity_curve) // 500
+            equity_curve = equity_curve[::step]
+            last_eq = stats._equity_curve
+            if last_eq is not None and len(last_eq) > 0:
+                last_idx = last_eq.index[-1]
+                last_ts = int(last_idx.timestamp()) if hasattr(last_idx, "timestamp") else end_at
+                raw_last = last_eq.iloc[-1].get("Equity", None)
+                if raw_last is None:
+                    raw_last = last_eq.iloc[-1].iloc[0] if len(last_eq.iloc[-1]) > 0 else initial_capital
+                equity_curve.append({
+                    "t": last_ts,
+                    "equity": _decimal_str(raw_last, places=2),
+                })
 
-    # --- Build trades list (pnl is money -> decimal string, IMPL §6.2) ---
-    trades_list: list[dict] = []
-    if hasattr(stats, "_trades") and stats._trades is not None:
-        for _, trade in stats._trades.iterrows():
-            entry_time = trade.get("EntryTime")
-            exit_time = trade.get("ExitTime")
-            entry_ts = int(entry_time.timestamp()) if hasattr(entry_time, "timestamp") else 0
-            exit_ts = int(exit_time.timestamp()) if hasattr(exit_time, "timestamp") else 0
-            size = trade.get("Size", 0)
-            side = "long" if size > 0 else "short"
-            trades_list.append({
-                "side": side,
-                "entry_at": entry_ts,
-                "exit_at": exit_ts,
-                "pnl": _decimal_str(trade.get("PnL", 0), places=2),
-            })
+        trades_list: list[dict] = []
+        if hasattr(stats, "_trades") and stats._trades is not None:
+            for _, trade in stats._trades.iterrows():
+                entry_time = trade.get("EntryTime")
+                exit_time = trade.get("ExitTime")
+                entry_ts = int(entry_time.timestamp()) if hasattr(entry_time, "timestamp") else 0
+                exit_ts = int(exit_time.timestamp()) if hasattr(exit_time, "timestamp") else 0
+                size = trade.get("Size", 0) or 0
+                side = "long" if size > 0 else "short"
+                trades_list.append({
+                    "side": side,
+                    "entry_at": entry_ts,
+                    "exit_at": exit_ts,
+                    "pnl": _decimal_str(trade.get("PnL", 0) or 0, places=2),
+                })
 
-    # --- Extract metrics ---
-    total_return_pct = float(stats.get("Return [%]", 0))
-    win_rate_pct = float(stats.get("Win Rate [%]", 0))
-    max_drawdown_pct = abs(float(stats.get("Max. Drawdown [%]", 0)))
-    trade_count = int(stats.get("# Trades", 0))
+        total_return_pct = _safe_float(stats, "Return [%]", 0.0)
+        win_rate_pct = _safe_float(stats, "Win Rate [%]", 0.0)
+        max_drawdown_pct = abs(_safe_float(stats, "Max. Drawdown [%]", 0.0))
+        trade_count = _safe_int(stats, "# Trades", 0)
 
-    metrics = {
-        "total_return_pct": round(total_return_pct, 2),
-        "win_rate_pct": round(win_rate_pct, 2),
-        "max_drawdown_pct": round(max_drawdown_pct, 2),
-        "trade_count": trade_count,
-    }
+        metrics = {
+            "total_return_pct": round(total_return_pct, 2),
+            "win_rate_pct": round(win_rate_pct, 2),
+            "max_drawdown_pct": round(max_drawdown_pct, 2),
+            "trade_count": trade_count,
+        }
 
-    # --- Result hash ---
-    metrics_json = json.dumps(metrics, sort_keys=True)
-    result_hash = f"sha256:{hashlib.sha256(metrics_json.encode()).hexdigest()}"
+        metrics_json = json.dumps(metrics, sort_keys=True)
+        result_hash = f"sha256:{hashlib.sha256(metrics_json.encode()).hexdigest()}"
 
-    # --- Determine sample size description ---
-    candle_count = len(df)
-    if candle_count < 100:
-        sample_size = "small"
-    elif candle_count < 1000:
-        sample_size = "medium"
-    else:
-        sample_size = "large"
+        candle_count = len(df)
+        if candle_count < 100:
+            sample_size = "small"
+        elif candle_count < 1000:
+            sample_size = "medium"
+        else:
+            sample_size = "large"
 
-    # report_url is a relative path/ref only (IMPL §7); no scheme/host/absolute path.
-    report_url = f"reports/{report_filename}"
+        report_url = f"reports/{report_filename}"
 
-    # --- Provider summary ---
-    provider_summary = (
-        f"EMA Cross ({ema_fast}/{ema_slow}) on {symbol} {timeframe}, "
-        f"{exchange_id} public OHLCV, {candle_count} candles, "
-        f"{trade_count} trades, return {total_return_pct:.2f}%"
-    )
-    strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
-        body,
-        ema_fast,
-        ema_slow,
-    )
+        provider_summary = (
+            f"EMA Cross ({ema_fast}/{ema_slow}) on {symbol} {timeframe}, "
+            f"{exchange_id} public OHLCV, {candle_count} candles, "
+            f"{trade_count} trades, return {total_return_pct:.2f}%"
+        )
+        strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
+            body,
+            ema_fast,
+            ema_slow,
+        )
 
-    return JSONResponse(content=_json_safe({
-        "schema": RESPONSE_SCHEMA,
-        "result_status": "success",
-        "provider_name": PROVIDER_NAME,
-        "provider_run_id": f"bt_{run_id}",
-        "engine_name": ENGINE_NAME,
-        "engine_version": _engine_version(),
-        "data_source": DATA_SOURCE,
-        "result_hash": result_hash,
-        "report_url": report_url,
-        "report_url_scope": "local_machine_only",
-        "metrics": metrics,
-        "initial_capital": _decimal_str(initial_capital, places=2),
-        "equity_curve": equity_curve,
-        "trades": trades_list,
-        "assumptions": {
-            "fee_bps": _decimal_str(fee_bps, places=4),
-            "slippage_bps": _decimal_str(slippage_bps, places=4),
-            "exchange": exchange_id,
-            **strategy_assumptions,
-            "real_market_data": True,
-            "no_live_trading": True,
-        },
-        "limitations": {
-            "verification": "external_unverified",
-            "verified_by_cutie": False,
-            **strategy_limitations,
-            "sample_size": sample_size,
-            "data_quality": "provider_reported",
-        },
-        "raw_report": {
-            "provider_summary": provider_summary,
-            "strategy_semantics": strategy_raw_report,
-        },
-    }))
+        return JSONResponse(content=_json_safe({
+            "schema": RESPONSE_SCHEMA,
+            "result_status": "success",
+            "provider_name": PROVIDER_NAME,
+            "provider_run_id": f"bt_{run_id}",
+            "engine_name": ENGINE_NAME,
+            "engine_version": _engine_version(),
+            "data_source": DATA_SOURCE,
+            "result_hash": result_hash,
+            "report_url": report_url,
+            "report_url_scope": "local_machine_only",
+            "metrics": metrics,
+            "initial_capital": _decimal_str(initial_capital, places=2),
+            "equity_curve": equity_curve,
+            "trades": trades_list,
+            "assumptions": {
+                "fee_bps": _decimal_str(fee_bps, places=4),
+                "slippage_bps": _decimal_str(slippage_bps, places=4),
+                "exchange": exchange_id,
+                **strategy_assumptions,
+                "real_market_data": True,
+                "no_live_trading": True,
+            },
+            "limitations": {
+                "verification": "external_unverified",
+                "verified_by_cutie": False,
+                **strategy_limitations,
+                "sample_size": sample_size,
+                "data_quality": "provider_reported",
+            },
+            "raw_report": {
+                "provider_summary": provider_summary,
+                "strategy_semantics": strategy_raw_report,
+            },
+        }))
+
+    except Exception as e:
+        logger.exception("Result post-processing failed")
+        return _business_failure(run_id, "ENGINE_ERROR", f"Result processing failed: {e}")
 
 
 # ---------------------------------------------------------------------------
