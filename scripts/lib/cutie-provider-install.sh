@@ -764,11 +764,15 @@ PY
     response="$(curl -fsS --max-time 10 -H "Authorization: Bearer $token" \
       "${server_url%/}/v1/connector/self" 2>>"$CUTIE_RUN_LOG")" || response=""
     if [ -n "$response" ]; then
-      verdict="$(printf '%s' "$response" | CUTIE_EXPECTED_TOOL_IDS="$expected_tool_ids" python3 - "$baseline_hb" <<'PY' 2>/dev/null
+      # Pass the response via env, NOT stdin: `python3 - <<PY` already consumes
+      # stdin for the script, so a piped response would be swallowed by the
+      # heredoc and json.load(sys.stdin) would always read empty -> verify never
+      # confirmed. (Root cause of the persistent false "restart required".)
+      verdict="$(CUTIE_RESP="$response" CUTIE_EXPECTED_TOOL_IDS="$expected_tool_ids" python3 - "$baseline_hb" <<'PY' 2>/dev/null
 import json, os, sys
 baseline_hb = int(sys.argv[1])
 try:
-    data = json.load(sys.stdin).get("data") or {}
+    data = json.loads(os.environ.get("CUTIE_RESP", "")).get("data") or {}
 except Exception:
     sys.exit(0)
 expected = {line.strip() for line in os.environ.get("CUTIE_EXPECTED_TOOL_IDS", "").splitlines() if line.strip()}
