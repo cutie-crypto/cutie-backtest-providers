@@ -41,7 +41,6 @@ PROVIDER_MAINTAINER = "cutie-backtest-providers"
 ENGINE_NAME = "backtesting.py"
 DATA_SOURCE = "ccxt_public_ohlcv"
 RESPONSE_SCHEMA = "cutie.external_backtest.response.v1"
-TOOL_ID = "local.backtesting_py.ema_cross"
 DEFAULT_EXCHANGE = os.environ.get("CUTIE_BACKTEST_DEFAULT_EXCHANGE", "okx").lower()
 DEFAULT_SUPPORTED_SYMBOLS = (
     "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,"
@@ -337,18 +336,17 @@ def _extract_requested_strategy_name(body: dict[str, Any]) -> Optional[str]:
 
 def _strategy_semantics(
     body: dict[str, Any],
-    ema_fast: int,
-    ema_slow: int,
+    executed_strategy_name: str,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     requested_strategy_name = _extract_requested_strategy_name(body)
-    executed_strategy_name = f"EMA Cross ({ema_fast}/{ema_slow})"
-    # IMPL §9.4: this provider only runs a built-in EMA cross, not the Cutie
-    # strategy draft, so strategy_match must be provider_strategy_class_not_verified.
+    # IMPL §9.4: this provider runs a built-in strategy class (selected by
+    # provider_tool_id), not the Cutie strategy draft itself, so strategy_match
+    # must be provider_strategy_class_not_verified (surrogate backtest).
     mode = "provider_strategy_class_not_verified"
     warning = (
-        "This provider ran its built-in EMA cross implementation with the selected "
-        "parameters. Cutie did not verify that it fully implements the current "
-        "strategy draft rules."
+        f"This provider ran its built-in '{executed_strategy_name}' implementation "
+        "with the selected parameters. Cutie did not verify that it fully implements "
+        "the current strategy draft rules."
     )
     return (
         {
@@ -407,11 +405,40 @@ def _business_failure(
 
 
 # ---------------------------------------------------------------------------
-# EMA Cross Strategy
+# Strategy library (multi-tool registry)
+#
+# Each tool's build() takes the request's provider_params dict, validates it
+# (raising ValueError("INVALID_PARAMS:<msg>") on bad input), and returns:
+#   {"strategy": StrategyClass, "executed_name": str, "min_bars": int}
+# The generic backtest pipeline (fetch OHLCV -> Backtest.run -> metrics) is
+# shared across all tools; only the Strategy class + param schema differ.
 # ---------------------------------------------------------------------------
 
-def _build_strategy(ema_fast: int, ema_slow: int):
-    """Build a backtesting.py Strategy class with given EMA parameters."""
+def _rsi_series(values: Any, period: int):
+    """Wilder-smoothed RSI as a numpy array (NaN warmup filled with neutral 50)."""
+    s = pd.Series(values, dtype="float64")
+    delta = s.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1.0 / period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / period, adjust=False).mean()
+    # float64 division: loss==0 & gain>0 -> inf -> RSI 100; 0/0 -> NaN -> filled 50.
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50.0).to_numpy()
+
+
+def _build_ema_cross(params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        ema_fast = int(params.get("ema_fast", 20))
+        ema_slow = int(params.get("ema_slow", 60))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:ema_fast and ema_slow must be integers")
+    if ema_fast < 2:
+        raise ValueError(f"INVALID_PARAMS:ema_fast must be >= 2 (got {ema_fast})")
+    if ema_slow < 3:
+        raise ValueError(f"INVALID_PARAMS:ema_slow must be >= 3 (got {ema_slow})")
+    if ema_fast >= ema_slow:
+        raise ValueError("INVALID_PARAMS:ema_fast must be less than ema_slow")
+
     from backtesting import Strategy
     from backtesting.lib import crossover
 
@@ -438,7 +465,450 @@ def _build_strategy(ema_fast: int, ema_slow: int):
             elif crossover(self.slow_ema, self.fast_ema):
                 self.position.close()
 
-    return EmaCrossStrategy
+    return {
+        "strategy": EmaCrossStrategy,
+        "executed_name": f"EMA Cross ({ema_fast}/{ema_slow})",
+        "min_bars": max(ema_fast, ema_slow) + 1,
+    }
+
+
+def _build_rsi_reversal(params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        period = int(params.get("rsi_period", 14))
+        oversold = float(params.get("oversold", 30))
+        overbought = float(params.get("overbought", 70))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:rsi_period/oversold/overbought must be numbers")
+    if period < 2:
+        raise ValueError(f"INVALID_PARAMS:rsi_period must be >= 2 (got {period})")
+    if not (0 < oversold < overbought < 100):
+        raise ValueError("INVALID_PARAMS:require 0 < oversold < overbought < 100")
+
+    from backtesting import Strategy
+
+    class RsiReversalStrategy(Strategy):
+        _period = period
+        _oversold = oversold
+        _overbought = overbought
+
+        def init(self):
+            self.rsi = self.I(
+                lambda x: _rsi_series(x, self._period),
+                self.data.Close,
+                name=f"RSI({self._period})",
+            )
+
+        def next(self):
+            if not self.position and self.rsi[-1] < self._oversold:
+                self.buy()
+            elif self.position and self.rsi[-1] > self._overbought:
+                self.position.close()
+
+    return {
+        "strategy": RsiReversalStrategy,
+        "executed_name": f"RSI Reversal ({period}, {oversold:g}/{overbought:g})",
+        # F4: Wilder EWM needs more than period+1 bars to converge; require a real warmup.
+        "min_bars": 3 * period + 1,
+    }
+
+
+def _build_bollinger_reversal(params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        period = int(params.get("bb_period", 20))
+        std_mult = float(params.get("bb_std", 2.0))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:bb_period/bb_std must be numbers")
+    if period < 2:
+        raise ValueError(f"INVALID_PARAMS:bb_period must be >= 2 (got {period})")
+    if std_mult <= 0:
+        raise ValueError("INVALID_PARAMS:bb_std must be > 0")
+
+    from backtesting import Strategy
+
+    def _lower_band(values: Any) -> Any:
+        s = pd.Series(values, dtype="float64")
+        ma = s.rolling(period).mean()
+        sd = s.rolling(period).std(ddof=0)
+        return (ma - std_mult * sd).to_numpy()
+
+    class BollingerReversalStrategy(Strategy):
+        _period = period
+
+        def init(self):
+            close = self.data.Close
+            self.mid = self.I(
+                lambda x: pd.Series(x, dtype="float64").rolling(self._period).mean().to_numpy(),
+                close,
+                name=f"BB-mid({self._period})",
+            )
+            self.lower = self.I(_lower_band, close, name="BB-lower")
+
+        def next(self):
+            price = self.data.Close[-1]
+            if not self.position and price < self.lower[-1]:
+                self.buy()
+            elif self.position and price >= self.mid[-1]:
+                self.position.close()
+
+    return {
+        "strategy": BollingerReversalStrategy,
+        "executed_name": f"Bollinger Reversal ({period}, {std_mult:g}sigma)",
+        "min_bars": period + 1,
+    }
+
+
+def _build_bollinger_breakout(params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        period = int(params.get("bb_period", 20))
+        std_mult = float(params.get("bb_std", 2.0))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:bb_period/bb_std must be numbers")
+    if period < 2:
+        raise ValueError(f"INVALID_PARAMS:bb_period must be >= 2 (got {period})")
+    if std_mult <= 0:
+        raise ValueError("INVALID_PARAMS:bb_std must be > 0")
+
+    from backtesting import Strategy
+
+    def _upper_band(values: Any) -> Any:
+        s = pd.Series(values, dtype="float64")
+        ma = s.rolling(period).mean()
+        sd = s.rolling(period).std(ddof=0)
+        return (ma + std_mult * sd).to_numpy()
+
+    class BollingerBreakoutStrategy(Strategy):
+        _period = period
+
+        def init(self):
+            close = self.data.Close
+            self.mid = self.I(
+                lambda x: pd.Series(x, dtype="float64").rolling(self._period).mean().to_numpy(),
+                close,
+                name=f"BB-mid({self._period})",
+            )
+            self.upper = self.I(_upper_band, close, name="BB-upper")
+
+        def next(self):
+            price = self.data.Close[-1]
+            if not self.position and price > self.upper[-1]:
+                self.buy()
+            elif self.position and price < self.mid[-1]:
+                self.position.close()
+
+    return {
+        "strategy": BollingerBreakoutStrategy,
+        "executed_name": f"Bollinger Breakout ({period}, {std_mult:g}sigma)",
+        "min_bars": period + 1,
+    }
+
+
+def _build_breakout(params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        lookback = int(params.get("lookback", 20))
+        exit_lookback = int(params.get("exit_lookback", 10))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:lookback/exit_lookback must be integers")
+    if lookback < 2:
+        raise ValueError(f"INVALID_PARAMS:lookback must be >= 2 (got {lookback})")
+    if exit_lookback < 1:
+        raise ValueError(f"INVALID_PARAMS:exit_lookback must be >= 1 (got {exit_lookback})")
+
+    from backtesting import Strategy
+
+    class BreakoutStrategy(Strategy):
+        _lb = lookback
+        _xlb = exit_lookback
+
+        def init(self):
+            # shift(1): the channel uses prior bars only, no look-ahead on the current bar.
+            self.hh = self.I(
+                lambda x: pd.Series(x, dtype="float64").rolling(self._lb).max().shift(1).to_numpy(),
+                self.data.High,
+                name=f"Donchian-HH({self._lb})",
+            )
+            self.ll = self.I(
+                lambda x: pd.Series(x, dtype="float64").rolling(self._xlb).min().shift(1).to_numpy(),
+                self.data.Low,
+                name=f"Donchian-LL({self._xlb})",
+            )
+
+        def next(self):
+            price = self.data.Close[-1]
+            if not self.position and price > self.hh[-1]:
+                self.buy()
+            elif self.position and price < self.ll[-1]:
+                self.position.close()
+
+    return {
+        "strategy": BreakoutStrategy,
+        "executed_name": f"Donchian Breakout ({lookback}/{exit_lookback})",
+        # F1: exit channel uses exit_lookback; min_bars must cover the longer of the two.
+        "min_bars": max(lookback, exit_lookback) + 1,
+    }
+
+
+def _build_macd(params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        fast = int(params.get("fast", 12))
+        slow = int(params.get("slow", 26))
+        signal_period = int(params.get("signal", 9))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:fast/slow/signal must be integers")
+    if fast < 2:
+        raise ValueError(f"INVALID_PARAMS:fast must be >= 2 (got {fast})")
+    if slow <= fast:
+        raise ValueError("INVALID_PARAMS:slow must be greater than fast")
+    if signal_period < 1:
+        raise ValueError(f"INVALID_PARAMS:signal must be >= 1 (got {signal_period})")
+
+    from backtesting import Strategy
+    from backtesting.lib import crossover
+
+    def _macd_line(values: Any) -> Any:
+        s = pd.Series(values, dtype="float64")
+        return s.ewm(span=fast, adjust=False).mean() - s.ewm(span=slow, adjust=False).mean()
+
+    class MacdStrategy(Strategy):
+        def init(self):
+            close = self.data.Close
+            self.macd = self.I(lambda x: _macd_line(x).to_numpy(), close, name="MACD")
+            self.signal = self.I(
+                lambda x: _macd_line(x).ewm(span=signal_period, adjust=False).mean().to_numpy(),
+                close,
+                name="Signal",
+            )
+
+        def next(self):
+            if crossover(self.macd, self.signal):
+                self.buy()
+            elif crossover(self.signal, self.macd):
+                self.position.close()
+
+    return {
+        "strategy": MacdStrategy,
+        "executed_name": f"MACD ({fast}/{slow}/{signal_period})",
+        # F4: EWMA is an infinite-response filter; signal line needs a real warmup.
+        "min_bars": slow * 3 + signal_period + 1,
+    }
+
+
+# tool_id -> spec. param_schema_properties drives both the catalog param_schema
+# and (via build) the runtime validation. Add new tools here.
+TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.ema_cross": {
+        "name": "Local Backtesting.py EMA Cross",
+        "description": (
+            "Trend-following EMA crossover (fast EMA crosses slow EMA) on ccxt "
+            "public OHLCV; in-process backtesting.py. Suits trending markets."
+        ),
+        "strategy_family": "trend",
+        "is_default": True,
+        "build": _build_ema_cross,
+        "param_schema_properties": {
+            "ema_fast": {"type": "integer", "default": 20, "minimum": 2},
+            "ema_slow": {"type": "integer", "default": 60, "minimum": 3},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.rsi_reversal": {
+        "name": "Local Backtesting.py RSI Reversal",
+        "description": (
+            "Mean-reversion (level-based): hold long while RSI is below the oversold "
+            "threshold, exit while above overbought. Suits range-bound markets — maps "
+            "to KOL '博反弹 / 抄底 / 超卖'. Not for strong trends."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_rsi_reversal,
+        "param_schema_properties": {
+            "rsi_period": {"type": "integer", "default": 14, "minimum": 2},
+            "oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
+            "overbought": {"type": "number", "default": 70, "minimum": 51, "maximum": 99},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bollinger_reversal": {
+        "name": "Local Backtesting.py Bollinger Reversal",
+        "description": (
+            "Mean-reversion: buy when price closes below the lower Bollinger band, "
+            "exit when it returns to the middle band. Suits range-bound markets — "
+            "maps to KOL '触下轨回归 / 抄底'. Not for strong trends."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_bollinger_reversal,
+        "param_schema_properties": {
+            "bb_period": {"type": "integer", "default": 20, "minimum": 2},
+            "bb_std": {"type": "number", "default": 2.0, "minimum": 0.1, "maximum": 5},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bollinger_breakout": {
+        "name": "Local Backtesting.py Bollinger Breakout",
+        "description": (
+            "Breakout: buy when price closes above the upper Bollinger band, exit "
+            "when it falls back to the middle band. Suits volatility expansion — "
+            "maps to KOL '突破上轨 / 放量突破'."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "build": _build_bollinger_breakout,
+        "param_schema_properties": {
+            "bb_period": {"type": "integer", "default": 20, "minimum": 2},
+            "bb_std": {"type": "number", "default": 2.0, "minimum": 0.1, "maximum": 5},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.breakout": {
+        "name": "Local Backtesting.py Donchian Breakout",
+        "description": (
+            "Breakout: buy when price breaks above the N-bar high (Donchian "
+            "channel), exit when it breaks below the M-bar low. Maps to KOL "
+            "'突破关键阻力位'. Channel uses prior bars only (no look-ahead)."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "build": _build_breakout,
+        "param_schema_properties": {
+            "lookback": {"type": "integer", "default": 20, "minimum": 2},
+            "exit_lookback": {"type": "integer", "default": 10, "minimum": 1},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.macd": {
+        "name": "Local Backtesting.py MACD",
+        "description": (
+            "Trend-following: buy when the MACD line crosses above its signal "
+            "line, exit on the opposite cross. Suits trending markets — maps to "
+            "KOL '趋势 / 金叉死叉'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_macd,
+        "param_schema_properties": {
+            "fast": {"type": "integer", "default": 12, "minimum": 2},
+            "slow": {"type": "integer", "default": 26, "minimum": 3},
+            "signal": {"type": "integer", "default": 9, "minimum": 1},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+}
+
+DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
+
+# F10: connector silently downgrades multiple defaults — enforce exactly one at import.
+assert sum(1 for s in TOOL_SPECS.values() if s.get("is_default")) == 1, (
+    "exactly one TOOL_SPECS entry must have is_default=True"
+)
+assert DEFAULT_TOOL_ID in TOOL_SPECS, "DEFAULT_TOOL_ID must be a registered tool"
+
+
+def _validate_params_against_schema(
+    params: dict[str, Any], properties: dict[str, Any]
+) -> Optional[str]:
+    """F2: enforce the catalog param_schema at runtime (single source of truth).
+
+    additionalProperties:false (reject unknown keys) + type (integer/number/string,
+    bool excluded per project governance) + minimum/maximum. Returns an error
+    message, or None if valid. Cross-field rules (fast<slow etc.) stay in build().
+    """
+    for key in params:
+        if key not in properties:
+            return f"unknown parameter '{key}' (not in tool param_schema)"
+    for key, spec in properties.items():
+        if key not in params:
+            continue
+        val = params[key]
+        typ = spec.get("type")
+        if typ in ("integer", "number"):
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                return f"{key} must be a {typ}"
+            if typ == "integer" and not float(val).is_integer():
+                return f"{key} must be an integer (got {val})"
+            if "minimum" in spec and val < spec["minimum"]:
+                return f"{key} must be >= {spec['minimum']} (got {val})"
+            if "maximum" in spec and val > spec["maximum"]:
+                return f"{key} must be <= {spec['maximum']} (got {val})"
+        elif typ == "string":
+            if not isinstance(val, str):
+                return f"{key} must be a string"
+    return None
+
+
+def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[str]) -> dict[str, Any]:
+    """Build one catalog entry from a tool spec; shared fields kept identical across tools."""
+    return {
+        "tool_id": tool_id,
+        "kind": "external_http",
+        "name": spec["name"],
+        "description": spec["description"],
+        "wrapper_type": "python_inprocess",
+        "provider_name": PROVIDER_NAME,
+        "engine_name": ENGINE_NAME,
+        "engine_version": _engine_version(),
+        "data_source": {
+            "type": "provider_reported",
+            "name": DATA_SOURCE,
+            "description": (
+                "Public OHLCV fetched via ccxt; Cutie does not verify "
+                "coverage, gaps, or unclosed candles."
+            ),
+            "coverage_hint": f"{', '.join(supported_symbols[:5])} 1h/4h/1d from exchange public API",
+            "external_unverified": True,
+        },
+        "supported_symbols": supported_symbols,
+        "markets": ["spot"],
+        "timeframes": ["1h", "4h", "1d"],
+        "is_default": spec.get("is_default", False),
+        "execution": {
+            "mode": "sync",
+            "timeout_ms": EXECUTION_TIMEOUT_MS,
+            "max_range_days": EXECUTION_MAX_RANGE_DAYS,
+            "max_parallel_runs": 1,
+            "async_supported": False,
+        },
+        "adapter": {
+            "requires_manual_export": False,
+            "working_dir_policy": "ephemeral_or_provider_managed",
+            "result_file_patterns": ["*.html"],
+            "upstream_auth_local_only": True,
+        },
+        "param_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": spec["param_schema_properties"],
+        },
+        "output_schema": {
+            "metrics": ["total_return_pct", "win_rate_pct", "max_drawdown_pct", "trade_count"],
+            "artifacts": ["report_url"],
+            "series": ["equity_curve"],
+            "tables": ["trades"],
+        },
+        "report_capabilities": {
+            "report_url": True,
+            "scope": "local_machine_only",
+            "formats": ["html"],
+            "retention_hint": "last_100_runs",
+        },
+        "failure_codes": [
+            "INVALID_REQUEST",
+            "INVALID_PARAMS",
+            "TOOL_NOT_FOUND",
+            "SYMBOL_UNSUPPORTED",
+            "TIMEFRAME_UNSUPPORTED",
+            "NO_DATA",
+            "INSUFFICIENT_DATA",
+            "RATE_LIMITED",
+            "ENGINE_ERROR",
+        ],
+        "security": {
+            "network_scope": "openclaw_hermes_local_or_private",
+            "requires_user_secret": False,
+            "secrets_stay_local": True,
+            "live_trading": False,
+            "filesystem_paths_exposed": False,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -525,93 +995,8 @@ async def catalog(authorization: Optional[str] = Header(default=None)):
             "maintainer": PROVIDER_MAINTAINER,
         },
         "tools": [
-            {
-                "tool_id": TOOL_ID,
-                "kind": "external_http",
-                "name": "Local Backtesting.py EMA Cross",
-                "description": (
-                    "Runs a built-in EMA cross strategy with backtesting.py on "
-                    "ccxt public OHLCV data; in-process Python provider."
-                ),
-                "wrapper_type": "python_inprocess",
-                "provider_name": PROVIDER_NAME,
-                "engine_name": ENGINE_NAME,
-                "engine_version": _engine_version(),
-                "data_source": {
-                    "type": "provider_reported",
-                    "name": DATA_SOURCE,
-                    "description": (
-                        "Public OHLCV fetched via ccxt; Cutie does not verify "
-                        "coverage, gaps, or unclosed candles."
-                    ),
-                    "coverage_hint": f"{', '.join(supported_symbols[:5])} 1h/4h/1d from exchange public API",
-                    "external_unverified": True,
-                },
-                "supported_symbols": supported_symbols,
-                "markets": ["spot"],
-                "timeframes": ["1h", "4h", "1d"],
-                "is_default": True,
-                "execution": {
-                    "mode": "sync",
-                    "timeout_ms": EXECUTION_TIMEOUT_MS,
-                    "max_range_days": EXECUTION_MAX_RANGE_DAYS,
-                    "max_parallel_runs": 1,
-                    "async_supported": False,
-                },
-                "adapter": {
-                    "requires_manual_export": False,
-                    "working_dir_policy": "ephemeral_or_provider_managed",
-                    "result_file_patterns": ["*.html"],
-                    "upstream_auth_local_only": True,
-                },
-                "param_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "ema_fast": {
-                            "type": "number",
-                            "default": 20,
-                            "minimum": 2,
-                        },
-                        "ema_slow": {
-                            "type": "number",
-                            "default": 60,
-                            "minimum": 3,
-                        },
-                        "exchange": {
-                            "type": "string",
-                            "default": DEFAULT_EXCHANGE,
-                        },
-                    },
-                },
-                "output_schema": {
-                    "metrics": ["total_return_pct", "win_rate_pct", "max_drawdown_pct", "trade_count"],
-                    "artifacts": ["report_url"],
-                    "series": ["equity_curve"],
-                    "tables": ["trades"],
-                },
-                "report_capabilities": {
-                    "report_url": True,
-                    "scope": "local_machine_only",
-                    "formats": ["html"],
-                    "retention_hint": "last_100_runs",
-                },
-                "failure_codes": [
-                    "INVALID_PARAMS",
-                    "SYMBOL_UNSUPPORTED",
-                    "NO_DATA",
-                    "INSUFFICIENT_DATA",
-                    "RATE_LIMITED",
-                    "ENGINE_ERROR",
-                ],
-                "security": {
-                    "network_scope": "openclaw_hermes_local_or_private",
-                    "requires_user_secret": False,
-                    "secrets_stay_local": True,
-                    "live_trading": False,
-                    "filesystem_paths_exposed": False,
-                },
-            }
+            _catalog_tool(tool_id, spec, supported_symbols)
+            for tool_id, spec in TOOL_SPECS.items()
         ],
     })
 
@@ -642,8 +1027,9 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     slippage_bps_str = bt_req.get("slippage_bps", "5")
 
     # --- Validate tool_id ---
-    if tool_id and tool_id != TOOL_ID:
+    if tool_id and tool_id not in TOOL_SPECS:
         return _validation_failure("TOOL_NOT_FOUND", f"Unknown provider_tool_id: {tool_id}")
+    effective_tool_id = tool_id or DEFAULT_TOOL_ID
 
     # --- Validate symbol ---
     if not symbol:
@@ -679,20 +1065,32 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     if initial_capital <= 0:
         return _validation_failure("INVALID_PARAMS", "initial_capital must be positive")
 
-    # --- Parse strategy params ---
+    # --- Resolve tool + validate params (schema first, then build's business rules) ---
+    if params is None:  # F5: provider_params:null must not be treated as a bad type
+        params = {}
+    if not isinstance(params, dict):  # F5: non-dict -> INVALID_PARAMS, not a 500
+        return _validation_failure("INVALID_PARAMS", "provider_params must be an object")
+    tool_spec = TOOL_SPECS[effective_tool_id]
+    schema_err = _validate_params_against_schema(params, tool_spec["param_schema_properties"])
+    if schema_err:  # F2: enforce catalog schema at runtime (unknown key / type / bounds)
+        return _validation_failure("INVALID_PARAMS", schema_err)
+    raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
+    exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
-        ema_fast = int(params.get("ema_fast", 20))
-        ema_slow = int(params.get("ema_slow", 60))
-    except (ValueError, TypeError):
-        return _validation_failure("INVALID_PARAMS", "ema_fast and ema_slow must be integers")
-    exchange_id = str(params.get("exchange", DEFAULT_EXCHANGE)).lower()
-
-    if ema_fast < 2:
-        return _validation_failure("INVALID_PARAMS", f"ema_fast must be >= 2 (got {ema_fast})")
-    if ema_slow < 3:
-        return _validation_failure("INVALID_PARAMS", f"ema_slow must be >= 3 (got {ema_slow})")
-    if ema_fast >= ema_slow:
-        return _validation_failure("INVALID_PARAMS", "ema_fast must be less than ema_slow")
+        built = tool_spec["build"](params)
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("INVALID_PARAMS:"):
+            return _validation_failure("INVALID_PARAMS", msg[len("INVALID_PARAMS:"):])
+        # F8: a ValueError without the INVALID_PARAMS prefix is an internal bug, not user error.
+        logger.exception("strategy build failed tool=%s", effective_tool_id)
+        return _business_failure(run_id, "ENGINE_ERROR", f"Strategy build failed: {msg}")
+    except Exception as e:  # F8: don't let build bugs become bare 500s with lost context
+        logger.exception("strategy build failed tool=%s", effective_tool_id)
+        return _business_failure(run_id, "ENGINE_ERROR", f"Strategy build failed: {e}")
+    min_bars = int(built["min_bars"])
+    executed_name = str(built["executed_name"])
+    strategy_class = built["strategy"]
 
     # --- Fetch OHLCV ---
     try:
@@ -724,13 +1122,13 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         logger.exception("OHLCV fetch unexpected error")
         return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch market data: {e}")
 
-    if len(df) < max(ema_fast, ema_slow) + 1:
+    if len(df) < min_bars:
         return _business_failure(
             run_id,
             "INSUFFICIENT_DATA",
             (
                 f"Insufficient data: got {len(df)} candles, "
-                f"need at least {max(ema_fast, ema_slow) + 1} for EMA({ema_fast}/{ema_slow})"
+                f"need at least {min_bars} for {executed_name}"
             ),
             reason="insufficient_data",
         )
@@ -742,13 +1140,16 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         # Commission: fee_bps / 10000 (basis points to ratio)
         commission = float(fee_bps / Decimal("10000"))
 
-        StrategyClass = _build_strategy(ema_fast, ema_slow)
+        StrategyClass = strategy_class
         bt = Backtest(
             df,
             StrategyClass,
             cash=float(initial_capital),
             commission=commission,
             exclusive_orders=True,
+            # Settle trades still open at the end (close at last bar) so metrics /
+            # trade_count reflect them instead of silently dropping unrealized PnL.
+            finalize_trades=True,
         )
         stats = bt.run()
 
@@ -843,14 +1244,13 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         report_url = f"reports/{report_filename}"
 
         provider_summary = (
-            f"EMA Cross ({ema_fast}/{ema_slow}) on {symbol} {timeframe}, "
+            f"{executed_name} on {symbol} {timeframe}, "
             f"{exchange_id} public OHLCV, {candle_count} candles, "
             f"{trade_count} trades, return {total_return_pct:.2f}%"
         )
         strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
             body,
-            ema_fast,
-            ema_slow,
+            executed_name,
         )
 
         return JSONResponse(content=_json_safe({
@@ -882,6 +1282,9 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
                 **strategy_limitations,
                 "sample_size": sample_size,
                 "data_quality": "provider_reported",
+                # F9: 0 settled trades -> metrics are zero by default; flag so the
+                # caller can tell "ran but never traded" from "real 0% return".
+                "no_trades_executed": trade_count == 0,
             },
             "raw_report": {
                 "provider_summary": provider_summary,
