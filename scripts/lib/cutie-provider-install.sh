@@ -750,17 +750,23 @@ PY
   # there even if the running connector never picked up the new config. So we
   # also require connector_status=online and a heartbeat newer than this
   # install (the post-install heartbeat is what carries the fresh catalog).
-  local started_at
-  started_at="$(date +%s)"
+  # Fresh-report check uses the SERVER's own heartbeat clock as a baseline and
+  # waits for it to ADVANCE. Never compare the server timestamp against this host's
+  # local clock — cross-machine skew (KOL box vs Cutie server) made the old
+  # `heartbeat_at >= local_now` check fail spuriously even after a successful report.
+  local baseline_hb
+  baseline_hb="$(curl -fsS --max-time 10 -H "Authorization: Bearer $token" \
+    "${server_url%/}/v1/connector/self" 2>>"$CUTIE_RUN_LOG" \
+    | python3 -c 'import sys,json;print(int((json.load(sys.stdin).get("data") or {}).get("last_heartbeat_at") or 0))' 2>/dev/null || echo 0)"
   echo "      verifying this provider's tools are visible on the Cutie platform (~2 min max)..."
   local attempt response verdict
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
     response="$(curl -fsS --max-time 10 -H "Authorization: Bearer $token" \
       "${server_url%/}/v1/connector/self" 2>>"$CUTIE_RUN_LOG")" || response=""
     if [ -n "$response" ]; then
-      verdict="$(printf '%s' "$response" | CUTIE_EXPECTED_TOOL_IDS="$expected_tool_ids" python3 - "$started_at" <<'PY' 2>/dev/null
+      verdict="$(printf '%s' "$response" | CUTIE_EXPECTED_TOOL_IDS="$expected_tool_ids" python3 - "$baseline_hb" <<'PY' 2>/dev/null
 import json, os, sys
-started_at = int(sys.argv[1])
+baseline_hb = int(sys.argv[1])
 try:
     data = json.load(sys.stdin).get("data") or {}
 except Exception:
@@ -769,7 +775,10 @@ expected = {line.strip() for line in os.environ.get("CUTIE_EXPECTED_TOOL_IDS", "
 reported = set(data.get("backtest_tool_ids") or [])
 heartbeat_at = int(data.get("last_heartbeat_at") or 0)
 matched = sorted(expected & reported)
-if data.get("connector_status") == "online" and heartbeat_at >= started_at and matched:
+# READY when a heartbeat NEWER than the baseline reports our tools (server clock
+# only). baseline_hb==0 means the baseline read failed -> any online heartbeat
+# with matched tools is accepted as a sane fallback.
+if data.get("connector_status") == "online" and heartbeat_at > baseline_hb and matched:
     print(matched[0])
 PY
 )" || verdict=""
