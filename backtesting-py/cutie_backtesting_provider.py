@@ -971,7 +971,13 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
             "properties": spec["param_schema_properties"],
         },
         "output_schema": {
-            "metrics": ["total_return_pct", "win_rate_pct", "max_drawdown_pct", "trade_count"],
+            "metrics": [
+                "total_return_pct",
+                "win_rate_pct",
+                "max_drawdown_pct",
+                "trade_count",
+                "buy_hold_return_pct",
+            ],
             "artifacts": ["report_url"],
             "series": ["equity_curve"],
             "tables": ["trades"],
@@ -1321,12 +1327,15 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         win_rate_pct = _safe_float(stats, "Win Rate [%]", 0.0)
         max_drawdown_pct = abs(_safe_float(stats, "Max. Drawdown [%]", 0.0))
         trade_count = _safe_int(stats, "# Trades", 0)
+        # X3: backtesting.py 内置的"买入持有"对照基准，回答"策略到底有没有跑赢直接拿着"。
+        buy_hold_return_pct = _safe_float(stats, "Buy & Hold Return [%]", 0.0)
 
         metrics = {
             "total_return_pct": round(total_return_pct, 2),
             "win_rate_pct": round(win_rate_pct, 2),
             "max_drawdown_pct": round(max_drawdown_pct, 2),
             "trade_count": trade_count,
+            "buy_hold_return_pct": round(buy_hold_return_pct, 2),
         }
 
         metrics_json = json.dumps(metrics, sort_keys=True)
