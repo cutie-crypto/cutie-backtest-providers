@@ -692,6 +692,78 @@ def _build_macd(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _cci_series(high: Any, low: Any, close: Any, period: int):
+    """Commodity Channel Index as a numpy array. NaN warmup / 0-deviation -> NaN/inf,
+    guarded by isfinite() in next()."""
+    tp = (
+        pd.Series(high, dtype="float64")
+        + pd.Series(low, dtype="float64")
+        + pd.Series(close, dtype="float64")
+    ) / 3.0
+    sma = tp.rolling(period).mean()
+    mad = (tp - sma).abs().rolling(period).mean()
+    return ((tp - sma) / (0.015 * mad)).to_numpy()
+
+
+def _build_cci_rsi(params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        cci_period = int(params.get("cci_period", 20))
+        rsi_period = int(params.get("rsi_period", 14))
+        cci_oversold = float(params.get("cci_oversold", -100))
+        cci_overbought = float(params.get("cci_overbought", 100))
+        rsi_oversold = float(params.get("rsi_oversold", 30))
+        rsi_overbought = float(params.get("rsi_overbought", 70))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:cci/rsi params must be numbers")
+    if cci_period < 2 or rsi_period < 2:
+        raise ValueError("INVALID_PARAMS:cci_period and rsi_period must be >= 2")
+    if cci_oversold >= cci_overbought:
+        raise ValueError("INVALID_PARAMS:cci_oversold must be < cci_overbought")
+    if not (0 < rsi_oversold < rsi_overbought < 100):
+        raise ValueError("INVALID_PARAMS:require 0 < rsi_oversold < rsi_overbought < 100")
+
+    from backtesting import Strategy
+
+    class CciRsiStrategy(Strategy):
+        def init(self):
+            self.cci = self.I(
+                lambda h, l, c: _cci_series(h, l, c, cci_period),
+                self.data.High,
+                self.data.Low,
+                self.data.Close,
+                name=f"CCI({cci_period})",
+            )
+            self.rsi = self.I(
+                lambda c: _rsi_series(c, rsi_period),
+                self.data.Close,
+                name=f"RSI({rsi_period})",
+            )
+
+        def next(self):
+            cci = self.cci[-1]
+            rsi = self.rsi[-1]
+            if not (math.isfinite(cci) and math.isfinite(rsi)):
+                return
+            # Dual-indicator mean-reversion, long & short (KOL 'CCI+RSI 双指标超买超卖').
+            if not self.position:
+                if cci < cci_oversold and rsi < rsi_oversold:
+                    self.buy()
+                elif cci > cci_overbought and rsi > rsi_overbought:
+                    self.sell()
+            elif self.position.is_long:
+                if cci > 0 or rsi > 50:
+                    self.position.close()
+            elif self.position.is_short:
+                if cci < 0 or rsi < 50:
+                    self.position.close()
+
+    return {
+        "strategy": CciRsiStrategy,
+        "executed_name": f"CCI+RSI ({cci_period}/{rsi_period})",
+        "min_bars": max(cci_period, rsi_period) * 3 + 1,
+    }
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -789,6 +861,26 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "fast": {"type": "integer", "default": 12, "minimum": 2},
             "slow": {"type": "integer", "default": 26, "minimum": 3},
             "signal": {"type": "integer", "default": 9, "minimum": 1},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.cci_rsi": {
+        "name": "Local Backtesting.py CCI+RSI Dual",
+        "description": (
+            "Dual-indicator mean-reversion, long AND short: go long when CCI and RSI "
+            "are both oversold, short when both overbought; exit when either reverts "
+            "past its midline. Maps to KOL 'CCI+RSI 双指标同步超买超卖'."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_cci_rsi,
+        "param_schema_properties": {
+            "cci_period": {"type": "integer", "default": 20, "minimum": 2},
+            "rsi_period": {"type": "integer", "default": 14, "minimum": 2},
+            "cci_oversold": {"type": "number", "default": -100, "minimum": -300, "maximum": 0},
+            "cci_overbought": {"type": "number", "default": 100, "minimum": 0, "maximum": 300},
+            "rsi_oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
+            "rsi_overbought": {"type": "number", "default": 70, "minimum": 51, "maximum": 99},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
