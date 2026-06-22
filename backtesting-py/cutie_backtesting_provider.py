@@ -1141,10 +1141,17 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         commission = float(fee_bps / Decimal("10000"))
 
         StrategyClass = strategy_class
+        # backtesting.py trades WHOLE units; a small cash on a high-priced asset
+        # (e.g. BTC ~$80k with $10k cash) floors position size to 0 units -> no trades.
+        # Run with a large internal cash so sizing is effectively continuous, then scale
+        # equity/PnL back to the user's capital. Percentage metrics are cash-invariant.
+        user_capital = float(initial_capital)
+        internal_cash = max(user_capital, float(df["Close"].max()) * 100_000.0)
+        equity_scale = user_capital / internal_cash
         bt = Backtest(
             df,
             StrategyClass,
-            cash=float(initial_capital),
+            cash=internal_cash,
             commission=commission,
             exclusive_orders=True,
             # Settle trades still open at the end (close at last bar) so metrics /
@@ -1173,18 +1180,18 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
                 ts = int(idx.timestamp()) if hasattr(idx, "timestamp") else 0
                 raw_equity = row.get("Equity", None)
                 if raw_equity is None:
-                    raw_equity = row.iloc[0] if len(row) > 0 else initial_capital
+                    raw_equity = row.iloc[0] if len(row) > 0 else internal_cash
                 equity_curve.append({
                     "t": ts,
-                    "equity": _decimal_str(raw_equity, places=2),
+                    "equity": _decimal_str(float(raw_equity) * equity_scale, places=2),
                 })
         else:
             start_ts = int(df.index[0].timestamp()) if hasattr(df.index[0], "timestamp") else start_at
             end_ts = int(df.index[-1].timestamp()) if hasattr(df.index[-1], "timestamp") else end_at
-            final_equity = _safe_float(stats, "Equity Final [$]", float(initial_capital))
+            final_equity = _safe_float(stats, "Equity Final [$]", internal_cash)
             equity_curve = [
                 {"t": start_ts, "equity": _decimal_str(initial_capital, places=2)},
-                {"t": end_ts, "equity": _decimal_str(final_equity, places=2)},
+                {"t": end_ts, "equity": _decimal_str(final_equity * equity_scale, places=2)},
             ]
 
         if len(equity_curve) > 500:
@@ -1196,10 +1203,10 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
                 last_ts = int(last_idx.timestamp()) if hasattr(last_idx, "timestamp") else end_at
                 raw_last = last_eq.iloc[-1].get("Equity", None)
                 if raw_last is None:
-                    raw_last = last_eq.iloc[-1].iloc[0] if len(last_eq.iloc[-1]) > 0 else initial_capital
+                    raw_last = last_eq.iloc[-1].iloc[0] if len(last_eq.iloc[-1]) > 0 else internal_cash
                 equity_curve.append({
                     "t": last_ts,
-                    "equity": _decimal_str(raw_last, places=2),
+                    "equity": _decimal_str(float(raw_last) * equity_scale, places=2),
                 })
 
         trades_list: list[dict] = []
@@ -1215,7 +1222,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
                     "side": side,
                     "entry_at": entry_ts,
                     "exit_at": exit_ts,
-                    "pnl": _decimal_str(trade.get("PnL", 0) or 0, places=2),
+                    "pnl": _decimal_str(float(trade.get("PnL", 0) or 0) * equity_scale, places=2),
                 })
 
         total_return_pct = _safe_float(stats, "Return [%]", 0.0)
