@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -289,8 +290,6 @@ def _decimal_str(value: Any, places: int = 8) -> str:
     decimal strings, never JSON floats. Non-finite or unparseable values
     fall back to "0".
     """
-    import math
-
     if isinstance(value, Decimal):
         dec = value
     else:
@@ -304,6 +303,49 @@ def _decimal_str(value: Any, places: int = 8) -> str:
     normalized = quantized.normalize()
     # Avoid scientific notation (e.g. 1E+4 -> 10000)
     return f"{normalized:f}"
+
+
+def _safe_float(data: Any, key: str, default: float = 0.0) -> float:
+    """Extract a float metric from a dict, with None/NaN protection.
+
+    dict.get(key, default) returns the stored value (even if explicitly
+    None) when the key exists -- the default is only used for missing keys.
+    """
+    raw = data.get(key, default) if hasattr(data, "get") else default
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+        return val if math.isfinite(val) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(data: Any, key: str, default: int = 0) -> int:
+    raw = data.get(key, default) if hasattr(data, "get") else default
+    if raw is None:
+        return default
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_decimal(value: Any, default: str = "0") -> Decimal:
+    """Convert a JSON-sourced value to Decimal, defaulting on None/NaN/invalid."""
+    if value is None:
+        return Decimal(default)
+    if isinstance(value, float) and not math.isfinite(value):
+        return Decimal(default)
+    try:
+        dec = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal(default)
+    # Decimal("NaN") / "Infinity" 字符串能成功构造非有限 Decimal，会污染后续
+    # cumulative 累加且无法恢复（2026-07-03 Codex review P2）
+    if not dec.is_finite():
+        return Decimal(default)
+    return dec
 
 
 # ---------------------------------------------------------------------------
@@ -388,13 +430,14 @@ def _parse_freqtrade_result(result_path: Path, pair: str) -> dict:
     strategy_name = list(strategy_data.keys())[0]
     strat_result = strategy_data[strategy_name]
 
-    # Extract metrics
-    total_trades = strat_result.get("total_trades", 0)
-    winning_trades = strat_result.get("winning_trades", 0)
-    profit_total = strat_result.get("profit_total", 0)  # as ratio (0.05 = 5%)
-    profit_total_abs = strat_result.get("profit_total_abs", 0)
-    max_drawdown = strat_result.get("max_drawdown", 0)  # as ratio
-    max_drawdown_abs = strat_result.get("max_drawdown_abs", 0)
+    # Extract metrics (strat_result values may be explicit JSON null -> .get()
+    # returns None even with a default, so use the None/NaN-safe helpers)
+    total_trades = _safe_int(strat_result, "total_trades", 0)
+    winning_trades = _safe_int(strat_result, "winning_trades", 0)
+    profit_total = _safe_float(strat_result, "profit_total", 0.0)  # as ratio (0.05 = 5%)
+    profit_total_abs = _safe_float(strat_result, "profit_total_abs", 0.0)
+    max_drawdown = _safe_float(strat_result, "max_drawdown", 0.0)  # as ratio
+    max_drawdown_abs = _safe_float(strat_result, "max_drawdown_abs", 0.0)
 
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
 
@@ -498,7 +541,7 @@ def _build_equity_curve(strat_result: dict, trades: list[dict]) -> list[dict]:
         for entry in daily_stats:
             if isinstance(entry, list) and len(entry) >= 2:
                 date_str = entry[0]
-                daily_pnl = Decimal(str(entry[1]))
+                daily_pnl = _safe_decimal(entry[1])
                 cumulative += daily_pnl
                 try:
                     dt = datetime.strptime(str(date_str), "%Y-%m-%d")
@@ -525,7 +568,7 @@ def _build_equity_curve(strat_result: dict, trades: list[dict]) -> list[dict]:
         close_ts = _parse_trade_timestamp(t["close_date"])
         if close_ts is None:
             continue
-        pnl = Decimal(str(t.get("profit_abs", 0)))
+        pnl = _safe_decimal(t.get("profit_abs", 0))
         cumulative_pnl += pnl
         curve.append({
             "t": close_ts,
