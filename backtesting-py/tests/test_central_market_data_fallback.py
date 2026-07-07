@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sys
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -172,6 +173,59 @@ def test_central_success_returns_rows(central_configured, monkeypatch):
     assert result is not None
     assert len(result) == 3
     assert result[0] == [0, 1.0, 2.0, 0.5, 1.5, 100.0]
+
+
+def test_long_range_chunks_and_concatenates(central_configured, monkeypatch):
+    """F7 回归（Kimi review）：server 单次请求跨度上限 90 天，回测区间可达 365 天——
+    此前整段区间打一次请求会被 server 参数校验直接拒绝，长区间回测中心缓存零命中。
+    改为按 CENTRAL_MAX_CHUNK_MS 分片请求再拼接，验证 200 天区间产生 3 次分片请求
+    （90+90+20）且结果正确拼接。
+    """
+    monkeypatch.setattr(provider, "_expected_bar_count", lambda *_a, **_kw: 0)  # 聚焦分片逻辑，跳过缺口检测
+
+    requested_ranges: list[tuple[int, int]] = []
+
+    def fake_urlopen(req, timeout=None):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        start_ts = int(qs["start_ts"][0])
+        end_ts = int(qs["end_ts"][0])
+        requested_ranges.append((start_ts, end_ts))
+        item = {"open_time": start_ts, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": [item]}})
+
+    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+
+    total_ms = 200 * 24 * 3600 * 1000  # 200 天，超过 90 天上限
+    result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1d", 0, total_ms)
+
+    assert result is not None
+    assert len(requested_ranges) == 3  # 90 + 90 + 20 天 = 3 个分片
+    assert len(result) == 3
+    # 每个分片跨度不超过 90 天（server 上限）
+    for start_ts, end_ts in requested_ranges:
+        assert end_ts - start_ts <= 90 * 24 * 3600
+
+
+def test_chunk_failure_aborts_whole_request_falls_back_to_ccxt(central_configured, monkeypatch):
+    """任一分片失败/缺口即整体回退 ccxt，不拼"前半段中心 + 后半段 ccxt"的混合数据源。"""
+    monkeypatch.setattr(provider, "_expected_bar_count", lambda *_a, **_kw: 0)
+
+    call_count = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise TimeoutError("simulated timeout on second chunk")
+        item = {"open_time": 0, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": [item]}})
+
+    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+
+    total_ms = 200 * 24 * 3600 * 1000
+    result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1d", 0, total_ms)
+
+    assert result is None  # 第二个分片失败 → 整体 None，触发上层回退 ccxt
+    assert call_count["n"] == 2  # 第三个分片不应再被请求（提前中止）
 
 
 def test_central_available_false_returns_none(central_configured, monkeypatch):
