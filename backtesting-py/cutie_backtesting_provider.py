@@ -18,6 +18,9 @@ import math
 import os
 import re
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Optional
@@ -54,6 +57,19 @@ REPORTS_DIR = BASE_DIR / "reports"
 CACHE_DIR = BASE_DIR / "cache" / "ohlcv"
 MAX_REPORTS = 100
 CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+MAX_CACHE_FILES = 500  # LRU 上限：超出按 mtime 删最旧文件（WS-7 Step 7.3）
+
+# WS-7 Step 7.3：中心行情数据服务（cutie-server /v1/internal/market-data/klines）。
+# 未配置 URL/KEY 时本 provider 完全走原有 ccxt 路径（向后兼容，不强制依赖中心服务）。
+# 中心缓存目前只覆盖 binance spot（见 cutie-server market_kline_cache_service.py 范围声明），
+# 其它 exchange/market 组合直接跳过中心 API，不发请求。
+CENTRAL_MARKET_DATA_URL = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_URL", "").rstrip("/")
+CENTRAL_MARKET_DATA_KEY = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_KEY", "")
+CENTRAL_MARKET_DATA_TIMEOUT_SEC = float(os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC", "5"))
+CENTRAL_SUPPORTED_EXCHANGE = "binance"
+CENTRAL_SUPPORTED_MARKET = "spot"
+# 数据缺口容差：中心 API 返回条数 < 预期条数 * 该比例即视为缺口，回退 ccxt（不是硬失败）。
+CENTRAL_GAP_TOLERANCE_RATIO = 0.9
 
 logger = logging.getLogger("cutie_backtesting_provider")
 
@@ -177,6 +193,107 @@ def _write_cache(key: str, data: list) -> None:
             json.dump(data, f)
     except Exception as e:
         logger.warning("Cache write failed for %s: %s", key, e)
+        return
+    _enforce_cache_lru_limit()
+
+
+def _enforce_cache_lru_limit() -> None:
+    """LRU 上限：OHLCV 缓存文件数超过 MAX_CACHE_FILES 时按 mtime 删最旧的（WS-7 Step 7.3）。
+
+    与 _enforce_reports_retention 同款模式，但对象是 cache/ohlcv/ 而非 reports/——
+    中心 API 接入后 provider 仍会为多币种/多周期/多月份组合持续写入缓存文件，
+    原有仅靠 CACHE_TTL_SECONDS 过期不足以防止长期运行下磁盘无界增长。
+    """
+    if not CACHE_DIR.exists():
+        return
+    files = sorted(
+        [f for f in CACHE_DIR.iterdir() if f.is_file() and f.suffix == ".json"],
+        key=lambda f: f.stat().st_mtime,
+    )
+    while len(files) > MAX_CACHE_FILES:
+        oldest = files.pop(0)
+        try:
+            oldest.unlink()
+        except OSError as e:
+            logger.warning("Failed to delete old cache file %s: %s", oldest, e)
+
+
+def _expected_bar_count(timeframe: str, start_ms: int, end_ms: int) -> int:
+    step_ms = _timeframe_milliseconds(timeframe)
+    if step_ms <= 0:
+        return 0
+    return max(0, (min(end_ms, int(time.time() * 1000)) - start_ms) // step_ms)
+
+
+def _fetch_from_central(
+    exchange_id: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
+) -> Optional[list]:
+    """尝试从 cutie-server 中心行情 API 拉 K 线；任何失败/缺口都返回 None 触发 ccxt 回退。
+
+    回退条件（附录 C.4）：超时 / 5xx / 数据缺口。未配置中心 API 或
+    exchange/market 不在中心缓存覆盖范围内（当前仅 binance spot）时直接跳过，不发请求。
+    """
+    if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_KEY:
+        return None
+    if exchange_id != CENTRAL_SUPPORTED_EXCHANGE or market != CENTRAL_SUPPORTED_MARKET:
+        return None
+
+    normalized_symbol = _normalize_ohlcv_symbol(symbol, market).split("/")[0]
+    params = {
+        "symbol": normalized_symbol,
+        "exchange": exchange_id,
+        "market": market,
+        "interval": timeframe,
+        "start_ts": start_ms // 1000,
+        "end_ts": end_ms // 1000,
+    }
+    url = f"{CENTRAL_MARKET_DATA_URL}/klines?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(
+        url, headers={"X-Internal-Key": CENTRAL_MARKET_DATA_KEY, "Accept": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=CENTRAL_MARKET_DATA_TIMEOUT_SEC) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        if 500 <= e.code < 600:
+            logger.warning("Central market-data 5xx (%s), falling back to ccxt: %s", e.code, e)
+        else:
+            logger.warning("Central market-data HTTP error %s, falling back to ccxt", e.code)
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        logger.warning("Central market-data unreachable/timeout, falling back to ccxt: %s", e)
+        return None
+
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning("Central market-data response not JSON, falling back to ccxt: %s", e)
+        return None
+
+    if body.get("err_code") != 100:
+        logger.warning("Central market-data err_code=%s, falling back to ccxt", body.get("err_code"))
+        return None
+    data = body.get("data") or {}
+    if not data.get("available"):
+        # 组合不支持（如 market=swap）：非错误，静默回退 ccxt。
+        return None
+    items = data.get("items") or []
+    if not items:
+        return None  # 数据缺口（空区间）：回退 ccxt
+
+    expected = _expected_bar_count(timeframe, start_ms, end_ms)
+    if expected and len(items) < expected * CENTRAL_GAP_TOLERANCE_RATIO:
+        logger.warning(
+            "Central market-data gap detected (got=%d expected=%d), falling back to ccxt",
+            len(items),
+            expected,
+        )
+        return None
+
+    return [
+        [item["open_time"] * 1000, item["open"], item["high"], item["low"], item["close"], item["volume"]]
+        for item in items
+    ]
 
 
 def _safe_float(series: Any, key: str, default: float = 0.0) -> float:
@@ -276,6 +393,10 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
     cached = _read_cache(cache_key)
     if cached is not None:
         ohlcv = cached
+    elif (central_ohlcv := _fetch_from_central(exchange_id, market, symbol, timeframe, start_ms, end_ms)) is not None:
+        # WS-7 Step 7.3：中心 API 命中，跳过 ccxt，直接写缓存。
+        ohlcv = central_ohlcv
+        _write_cache(cache_key, ohlcv)
     else:
         exchange_class = getattr(ccxt, exchange_id, None)
         if exchange_class is None:
