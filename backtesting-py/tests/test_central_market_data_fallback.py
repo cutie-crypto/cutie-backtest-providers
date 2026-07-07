@@ -66,6 +66,46 @@ def test_unsupported_market_skips_central_request(central_configured, monkeypatc
     assert result is None
 
 
+def test_non_usdt_quote_skips_central_request(central_configured, monkeypatch):
+    """HIGH-3 回归：非 USDT 计价对（如 ETHBTC）不应走中心 API——中心 API 内部一律映射成
+    USDT pair，若请求方要的是 ETH/BTC，中心 API 会静默返回 ETHUSDT 数据，脏数据无告警。
+    """
+    called = {"count": 0}
+
+    def fake_urlopen(*_a, **_kw):
+        called["count"] += 1
+        raise AssertionError("should not call central API for non-USDT quote symbol")
+
+    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    result = provider._fetch_from_central("binance", "spot", "ETHBTC", "1h", 0, 3600_000)
+    assert result is None
+    assert called["count"] == 0
+
+
+def test_non_usdt_quote_with_slash_skips_central_request(central_configured, monkeypatch):
+    """同上，覆盖已经带 '/' 的输入形式（BTC/USDC）。"""
+
+    def fake_urlopen(*_a, **_kw):
+        raise AssertionError("should not call central API for BTC/USDC")
+
+    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    result = provider._fetch_from_central("binance", "spot", "BTC/USDC", "1h", 0, 3600_000)
+    assert result is None
+
+
+def test_usdt_quote_symbol_does_call_central(central_configured, monkeypatch):
+    """USDT 计价对（如 ETHUSDT）应该正常走中心 API（确认 HIGH-3 修复没有连带把正常路径也堵死）。"""
+    items = [{"open_time": 0, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}]
+
+    def fake_urlopen(*_a, **_kw):
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": items}})
+
+    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    result = provider._fetch_from_central("binance", "spot", "ETHUSDT", "1h", 0, 3600_000)
+    assert result is not None
+    assert len(result) == 1
+
+
 def test_central_timeout_returns_none(central_configured, monkeypatch):
     def fake_urlopen(*_a, **_kw):
         raise TimeoutError("timed out")
@@ -105,7 +145,11 @@ def test_central_data_gap_returns_none(central_configured, monkeypatch):
         return _FakeResponse(
             {
                 "err_code": 100,
-                "data": {"available": True, "count": 1, "items": [{"open_time": 0, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]},
+                "data": {
+                    "available": True,
+                    "count": 1,
+                    "items": [{"open_time": 0, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}],
+                },
             }
         )
 
@@ -117,8 +161,7 @@ def test_central_data_gap_returns_none(central_configured, monkeypatch):
 
 def test_central_success_returns_rows(central_configured, monkeypatch):
     items = [
-        {"open_time": i * 3600, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}
-        for i in range(3)
+        {"open_time": i * 3600, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0} for i in range(3)
     ]
 
     def fake_urlopen(*_a, **_kw):

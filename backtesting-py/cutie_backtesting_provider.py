@@ -232,13 +232,28 @@ def _fetch_from_central(
 
     回退条件（附录 C.4）：超时 / 5xx / 数据缺口。未配置中心 API 或
     exchange/market 不在中心缓存覆盖范围内（当前仅 binance spot）时直接跳过，不发请求。
+
+    HIGH-3 修（2a review）：中心 API（cutie-server market_kline_cache_service）内部把裸
+    symbol 一律映射成 Binance **USDT** 交易对（COIN_TO_PAIR）。此前本函数把归一化后的
+    symbol 无脑剥成 base（`.split("/")[0]`）就发给中心 API——若请求方实际要的是非 USDT
+    计价对（如 ETHBTC、BTC/USDC），中心 API 会静默返回错误 quote 的数据（BTCUSDT 而非
+    BTC/USDC），provider 把这份"看起来正常"但价格体系完全不同的数据当正确结果缓存/喂给
+    回测引擎——没有任何报错，纯粹的脏数据 bug。修复：只有归一化后 quote 恰好是 USDT
+    时才走中心 API，否则直接回退 ccxt（ccxt 走真实 symbol，语义不会错）。
     """
     if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_KEY:
         return None
     if exchange_id != CENTRAL_SUPPORTED_EXCHANGE or market != CENTRAL_SUPPORTED_MARKET:
         return None
 
-    normalized_symbol = _normalize_ohlcv_symbol(symbol, market).split("/")[0]
+    full_normalized = _normalize_ohlcv_symbol(symbol, market)
+    if "/" not in full_normalized:
+        return None
+    base, _, quote = full_normalized.partition("/")
+    if quote != "USDT":
+        # 中心 API 只服务 USDT 计价对；非 USDT quote 直接回退 ccxt，避免张冠李戴。
+        return None
+    normalized_symbol = base
     params = {
         "symbol": normalized_symbol,
         "exchange": exchange_id,
