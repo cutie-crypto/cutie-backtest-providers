@@ -130,8 +130,8 @@ def _enforce_reports_retention() -> None:
             logger.warning("Failed to delete old report %s: %s", oldest, e)
 
 
-def _cache_key(exchange: str, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> str:
-    return f"{exchange}_{symbol}_{timeframe}_{start_ms}_{end_ms}.json"
+def _cache_key(exchange: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> str:
+    return f"{exchange}_{market}_{symbol}_{timeframe}_{start_ms}_{end_ms}.json"
 
 
 def _timeframe_milliseconds(timeframe: str) -> int:
@@ -235,7 +235,31 @@ def _decimal_str(value: Any, places: int = 8) -> str:
     return f"{normalized:f}"
 
 
-def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
+def _normalize_ohlcv_symbol(symbol: str, market: str) -> str:
+    """Normalize BTCUSDT / btcusdt -> BTC/USDT (spot) or BTC/USDT:USDT (futures).
+
+    Futures uses ccxt's unified linear-perpetual-swap symbol convention
+    (BASE/QUOTE:SETTLE, settle == quote for USDT-margined perpetuals), which
+    works across exchanges (okx, binance, bybit, ...) without a dedicated
+    per-exchange futures class.
+    """
+    upper_symbol = symbol.upper()
+    if "/" in upper_symbol:
+        normalized_symbol = upper_symbol
+    else:
+        normalized_symbol = upper_symbol
+        for quote in ("USDT", "USDC", "BUSD", "BTC", "ETH", "BNB"):
+            if upper_symbol.endswith(quote) and len(upper_symbol) > len(quote):
+                base = upper_symbol[: len(upper_symbol) - len(quote)]
+                normalized_symbol = f"{base}/{quote}"
+                break
+    if market == "futures" and ":" not in normalized_symbol and "/" in normalized_symbol:
+        _, quote = normalized_symbol.split("/", 1)
+        normalized_symbol = f"{normalized_symbol}:{quote}"
+    return normalized_symbol
+
+
+def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
                  start_sec: int, end_sec: int) -> pd.DataFrame:
     """Fetch OHLCV from ccxt with local file cache."""
     import ccxt
@@ -245,7 +269,7 @@ def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
     if end_ms <= start_ms:
         raise ValueError("NO_DATA")
 
-    cache_key = _cache_key(exchange_id, symbol, timeframe, start_ms, end_ms)
+    cache_key = _cache_key(exchange_id, market, symbol, timeframe, start_ms, end_ms)
     cached = _read_cache(cache_key)
     if cached is not None:
         ohlcv = cached
@@ -253,18 +277,14 @@ def _fetch_ohlcv(exchange_id: str, symbol: str, timeframe: str,
         exchange_class = getattr(ccxt, exchange_id, None)
         if exchange_class is None:
             raise ValueError(f"Unsupported exchange: {exchange_id}")
-        exchange = exchange_class({"enableRateLimit": True})
+        exchange_options: dict[str, Any] = {"enableRateLimit": True}
+        if market == "futures":
+            # Unified ccxt option: fetch/derive the linear perpetual swap market
+            # instead of spot for the same exchange class.
+            exchange_options["options"] = {"defaultType": "swap"}
+        exchange = exchange_class(exchange_options)
 
-        # Normalize symbol: BTCUSDT / btcusdt -> BTC/USDT
-        upper_symbol = symbol.upper()
-        normalized_symbol = upper_symbol
-        if "/" not in upper_symbol:
-            # Try common patterns: BTCUSDT -> BTC/USDT
-            for quote in ("USDT", "USDC", "BUSD", "BTC", "ETH", "BNB"):
-                if upper_symbol.endswith(quote) and len(upper_symbol) > len(quote):
-                    base = upper_symbol[: len(upper_symbol) - len(quote)]
-                    normalized_symbol = f"{base}/{quote}"
-                    break
+        normalized_symbol = _normalize_ohlcv_symbol(symbol, market)
 
         ohlcv: list = []
         since = start_ms
@@ -777,8 +797,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": True,
         "build": _build_ema_cross,
         "param_schema_properties": {
-            "ema_fast": {"type": "integer", "default": 20, "minimum": 2},
-            "ema_slow": {"type": "integer", "default": 60, "minimum": 3},
+            "ema_fast": {"type": "integer", "default": 20, "minimum": 2, "maximum": 100},
+            "ema_slow": {"type": "integer", "default": 60, "minimum": 3, "maximum": 300},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -793,7 +813,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": False,
         "build": _build_rsi_reversal,
         "param_schema_properties": {
-            "rsi_period": {"type": "integer", "default": 14, "minimum": 2},
+            "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
             "oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
             "overbought": {"type": "number", "default": 70, "minimum": 51, "maximum": 99},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
@@ -810,8 +830,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": False,
         "build": _build_bollinger_reversal,
         "param_schema_properties": {
-            "bb_period": {"type": "integer", "default": 20, "minimum": 2},
-            "bb_std": {"type": "number", "default": 2.0, "minimum": 0.1, "maximum": 5},
+            "bb_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
+            "bb_std": {"type": "number", "default": 2.0, "minimum": 0.1, "maximum": 10},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -826,8 +846,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": False,
         "build": _build_bollinger_breakout,
         "param_schema_properties": {
-            "bb_period": {"type": "integer", "default": 20, "minimum": 2},
-            "bb_std": {"type": "number", "default": 2.0, "minimum": 0.1, "maximum": 5},
+            "bb_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
+            "bb_std": {"type": "number", "default": 2.0, "minimum": 0.1, "maximum": 10},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -842,8 +862,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": False,
         "build": _build_breakout,
         "param_schema_properties": {
-            "lookback": {"type": "integer", "default": 20, "minimum": 2},
-            "exit_lookback": {"type": "integer", "default": 10, "minimum": 1},
+            "lookback": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
+            "exit_lookback": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -858,9 +878,9 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": False,
         "build": _build_macd,
         "param_schema_properties": {
-            "fast": {"type": "integer", "default": 12, "minimum": 2},
-            "slow": {"type": "integer", "default": 26, "minimum": 3},
-            "signal": {"type": "integer", "default": 9, "minimum": 1},
+            "fast": {"type": "integer", "default": 12, "minimum": 2, "maximum": 100},
+            "slow": {"type": "integer", "default": 26, "minimum": 3, "maximum": 300},
+            "signal": {"type": "integer", "default": 9, "minimum": 1, "maximum": 100},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -875,10 +895,10 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": False,
         "build": _build_cci_rsi,
         "param_schema_properties": {
-            "cci_period": {"type": "integer", "default": 20, "minimum": 2},
-            "rsi_period": {"type": "integer", "default": 14, "minimum": 2},
-            "cci_oversold": {"type": "number", "default": -100, "minimum": -300, "maximum": 0},
-            "cci_overbought": {"type": "number", "default": 100, "minimum": 0, "maximum": 300},
+            "cci_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
+            "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
+            "cci_oversold": {"type": "number", "default": -100, "minimum": -500, "maximum": 0},
+            "cci_overbought": {"type": "number", "default": 100, "minimum": 0, "maximum": 500},
             "rsi_oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
             "rsi_overbought": {"type": "number", "default": 70, "minimum": 51, "maximum": 99},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
@@ -949,7 +969,7 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
             "external_unverified": True,
         },
         "supported_symbols": supported_symbols,
-        "markets": ["spot"],
+        "markets": ["spot", "futures"],
         "timeframes": ["1h", "4h", "1d"],
         "is_default": spec.get("is_default", False),
         "execution": {
@@ -993,6 +1013,7 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
             "INVALID_PARAMS",
             "TOOL_NOT_FOUND",
             "SYMBOL_UNSUPPORTED",
+            "MARKET_UNSUPPORTED",
             "TIMEFRAME_UNSUPPORTED",
             "NO_DATA",
             "INSUFFICIENT_DATA",
@@ -1133,6 +1154,13 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
     if not symbol:
         return _validation_failure("INVALID_PARAMS", "symbol is required")
 
+    # --- Validate market ---
+    if market not in ("spot", "futures"):
+        return _validation_failure(
+            "MARKET_UNSUPPORTED",
+            f"Unsupported market: {market}. Supported: ['spot', 'futures']",
+        )
+
     # --- Validate timeframe ---
     supported_timeframes = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
     if timeframe not in supported_timeframes:
@@ -1192,7 +1220,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
 
     # --- Fetch OHLCV ---
     try:
-        df = _fetch_ohlcv(exchange_id, symbol, timeframe, start_at, end_at)
+        df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
     except ValueError as e:
         error_msg = str(e)
         if error_msg == "NO_DATA":
@@ -1352,10 +1380,12 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         report_url = f"reports/{report_filename}"
 
         provider_summary = (
-            f"{executed_name} on {symbol} {timeframe}, "
+            f"{executed_name} on {symbol} {timeframe} ({market}), "
             f"{exchange_id} public OHLCV, {candle_count} candles, "
             f"{trade_count} trades, return {total_return_pct:.2f}%"
         )
+        if market == "futures":
+            provider_summary += "; funding rate not included in PnL"
         strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
             body,
             executed_name,
@@ -1380,6 +1410,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
                 "fee_bps": _decimal_str(fee_bps, places=4),
                 "slippage_bps": _decimal_str(slippage_bps, places=4),
                 "exchange": exchange_id,
+                "market": market,
                 **strategy_assumptions,
                 "real_market_data": True,
                 "no_live_trading": True,
@@ -1393,6 +1424,17 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
                 # F9: 0 settled trades -> metrics are zero by default; flag so the
                 # caller can tell "ran but never traded" from "real 0% return".
                 "no_trades_executed": trade_count == 0,
+                **(
+                    {
+                        "funding_rate_included": False,
+                        "funding_rate_note": (
+                            "Futures backtest excludes perpetual funding rate "
+                            "costs; PnL may be optimistic vs. live futures trading."
+                        ),
+                    }
+                    if market == "futures"
+                    else {}
+                ),
             },
             "raw_report": {
                 "provider_summary": provider_summary,
