@@ -225,6 +225,14 @@ def _expected_bar_count(timeframe: str, start_ms: int, end_ms: int) -> int:
     return max(0, (min(end_ms, int(time.time() * 1000)) - start_ms) // step_ms)
 
 
+# F7 修（Kimi review）：server 侧 handlers/internal/market_data.py 的 MAX_KLINE_RANGE_SECONDS
+# 单次请求跨度上限是 90 天，但 provider 的回测区间最长可达 365 天（EXECUTION_MAX_RANGE_DAYS）。
+# 此前 _fetch_from_central 整段区间打一次请求，长区间回测一律被 server 参数校验拒绝
+# （ERR_INVALID_PARAMS），直接回退 ccxt——中心缓存对长区间 spot 回测形同虚设，白建了
+# Step 7.2 的月度分片缓存却用不上。改为按 90 天分片串行请求再拼接。
+CENTRAL_MAX_CHUNK_MS = 90 * 24 * 60 * 60 * 1000
+
+
 def _fetch_from_central(
     exchange_id: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
 ) -> Optional[list]:
@@ -240,6 +248,10 @@ def _fetch_from_central(
     BTC/USDC），provider 把这份"看起来正常"但价格体系完全不同的数据当正确结果缓存/喂给
     回测引擎——没有任何报错，纯粹的脏数据 bug。修复：只有归一化后 quote 恰好是 USDT
     时才走中心 API，否则直接回退 ccxt（ccxt 走真实 symbol，语义不会错）。
+
+    F7 修（Kimi review）：>90 天的区间按 `CENTRAL_MAX_CHUNK_MS` 分片串行调用中心 API 再
+    拼接。任一分片失败/缺口即整体返回 None（回退 ccxt），维持"要么完整命中中心缓存要么
+    整段走 ccxt"的语义——不会出现"前半段中心数据 + 后半段 ccxt 数据"拼出来的混合序列。
     """
     if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_KEY:
         return None
@@ -254,6 +266,24 @@ def _fetch_from_central(
         # 中心 API 只服务 USDT 计价对；非 USDT quote 直接回退 ccxt，避免张冠李戴。
         return None
     normalized_symbol = base
+
+    all_rows: list = []
+    chunk_start = start_ms
+    while chunk_start < end_ms:
+        chunk_end = min(chunk_start + CENTRAL_MAX_CHUNK_MS, end_ms)
+        chunk_rows = _fetch_central_chunk(exchange_id, market, normalized_symbol, timeframe, chunk_start, chunk_end)
+        if chunk_rows is None:
+            return None  # 任一分片失败/缺口 → 整体回退 ccxt，不拼混合数据源
+        all_rows.extend(chunk_rows)
+        chunk_start = chunk_end
+
+    return all_rows
+
+
+def _fetch_central_chunk(
+    exchange_id: str, market: str, normalized_symbol: str, timeframe: str, start_ms: int, end_ms: int
+) -> Optional[list]:
+    """单个 ≤90 天分片的中心 API 请求 + 解析 + 缺口检测。返回 None 表示该分片失败/缺口。"""
     params = {
         "symbol": normalized_symbol,
         "exchange": exchange_id,
