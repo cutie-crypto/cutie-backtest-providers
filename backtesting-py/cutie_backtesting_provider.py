@@ -131,7 +131,10 @@ def _enforce_reports_retention() -> None:
 
 
 def _cache_key(exchange: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> str:
-    return f"{exchange}_{market}_{symbol}_{timeframe}_{start_ms}_{end_ms}.json"
+    # fully-qualified 输入（BTC/USDT:USDT）含 / 会让 key 变成子目录路径，_write_cache
+    # 不建中间目录导致缓存写入被静默吞掉——文件名字符一律 sanitize
+    safe_symbol = re.sub(r"[^A-Za-z0-9]", "-", symbol)
+    return f"{exchange}_{market}_{safe_symbol}_{timeframe}_{start_ms}_{end_ms}.json"
 
 
 def _timeframe_milliseconds(timeframe: str) -> int:
