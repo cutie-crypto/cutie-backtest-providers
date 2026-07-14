@@ -112,6 +112,22 @@ def value_is_path(value: str) -> bool:
     return bool(PATH_PATTERN.search(value))
 
 
+def is_public_provider_revision(key: str, value: Any) -> bool:
+    """Return whether *value* is the public git revision provenance field.
+
+    Full git object IDs are high-entropy hexadecimal strings, so the generic
+    token heuristic correctly rejects them everywhere else.  The explicitly
+    named ``provider_revision`` field is public, non-secret provenance and is
+    allowed only when it has the reviewed 7-40 hex git-revision shape.
+    """
+
+    return (
+        normalize_key_name(key) == "provider_revision"
+        and isinstance(value, str)
+        and re.fullmatch(r"[0-9A-Fa-f]{7,40}", value) is not None
+    )
+
+
 def scan_for_secrets(value: Any, path: str = "$") -> List[Tuple[str, str, str]]:
     """Recursively scan a JSON value for secret-like content.
 
@@ -132,7 +148,8 @@ def scan_for_secrets(value: Any, path: str = "$") -> List[Tuple[str, str, str]]:
                 findings.append(
                     (child_path, "sensitive_key", f"key '{key}' carries a secret-like value")
                 )
-            findings.extend(scan_for_secrets(raw, child_path))
+            if not is_public_provider_revision(str(key), raw):
+                findings.extend(scan_for_secrets(raw, child_path))
     elif isinstance(value, list):
         for idx, item in enumerate(value):
             findings.extend(scan_for_secrets(item, f"{path}[{idx}]"))

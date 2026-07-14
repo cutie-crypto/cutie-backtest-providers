@@ -284,6 +284,52 @@ def test_boolean_requires_user_secret_does_not_fail_check_4():
     assert check_by_id(report, 4).passed
 
 
+def test_full_provider_revision_is_public_provenance_not_a_secret():
+    revision = "ac7ec5262be395be0ff2cc49ea54f169a25c07dc"
+    report = run_validator(
+        make_provider(
+            health_body={
+                "ok": True,
+                "provider_id": "mock",
+                "engine_name": "MockEngine",
+                "engine_version": "1.0.0",
+                "provider_revision": revision,
+            },
+            success_overrides={
+                "provider_revision": revision,
+                "raw_report": {
+                    "market_data_provenance": {"provider_revision": revision}
+                },
+            },
+        )
+    )
+    assert check_by_id(report, 1).passed
+    assert check_by_id(report, 6).passed
+
+
+def test_full_git_sha_under_unrelated_key_is_still_rejected_as_secret():
+    revision = "ac7ec5262be395be0ff2cc49ea54f169a25c07dc"
+    report = run_validator(
+        make_provider(tool_overrides={"unrelated_value": revision})
+    )
+    assert not check_by_id(report, 4).passed
+
+
+def test_invalid_provider_revision_does_not_bypass_secret_scan():
+    report = run_validator(
+        make_provider(
+            health_body={
+                "ok": True,
+                "provider_id": "mock",
+                "engine_name": "MockEngine",
+                "engine_version": "1.0.0",
+                "provider_revision": "0123456789abcdef0123456789abcdef-secret",
+            }
+        )
+    )
+    assert not check_by_id(report, 1).passed
+
+
 # -- check 6: success response ------------------------------------------
 
 
