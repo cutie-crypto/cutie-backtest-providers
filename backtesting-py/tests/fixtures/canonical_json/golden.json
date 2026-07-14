@@ -1,0 +1,120 @@
+{
+  "schema": "canonical_json.v1",
+  "note": "Feature 62-1 跨语言 golden fixtures：Server(Python) 与 Connector(TypeScript)/Provider(Python，本文件) 的 canonical_json 实现必须对 input 产出逐字节相同的 canonical 与 sha256。",
+  "source_of_truth": "TokenBeep 主仓 cutie-server/tests/fixtures/canonical_json/golden.json — 本文件是逐字节复制，更新需同步两边（以及 cutie-connector 侧同名 fixture）。",
+  "cases": [
+    {
+      "name": "key_sort_nested",
+      "note": "对象 key 递归排序，数组保持顺序，null/bool/int 字面量",
+      "input": {
+        "b": 1,
+        "a": [
+          2,
+          {
+            "z": null,
+            "y": true
+          }
+        ],
+        "count": 0
+      },
+      "canonical": "{\"a\":[2,{\"y\":true,\"z\":null}],\"b\":1,\"count\":0}",
+      "sha256": "3e0a5c82d895d83332bb73c5aa6c95d563c6fa435d90d8d58d06b6663f6cb0a8"
+    },
+    {
+      "name": "utf16_code_unit_sort",
+      "note": "UTF-16 code unit 排序：U+10000(surrogate D800) 必须排在 U+FF01 之前；code point 排序实现会在此 case 失败",
+      "input": {
+        "！": 1,
+        "𐀀": 2,
+        "A": 3,
+        "é": 4
+      },
+      "canonical": "{\"A\":3,\"é\":4,\"𐀀\":2,\"！\":1}",
+      "sha256": "6a6ba1ee4ffa5b6563054915a5b7b1caa11a80c429e6fa254bcce3bacde56ceb"
+    },
+    {
+      "name": "string_escapes",
+      "note": "JCS 转义：短形式 \\n \\t \\\" \\\\，其余控制字符 \\u00xx 小写；非 ASCII 不转义",
+      "input": {
+        "a\nb": "\"\\",
+        "tab\t": "\u0001\u001f",
+        "中文": "emoji😀"
+      },
+      "canonical": "{\"a\\nb\":\"\\\"\\\\\",\"tab\\t\":\"\\u0001\\u001f\",\"中文\":\"emoji😀\"}",
+      "sha256": "dd48d274c0621c80b2a5db80385c0b190520fbe587992ed3a07bed783ce9477b"
+    },
+    {
+      "name": "decimal_strings_and_int_timestamps",
+      "note": "金额为无指数规范 Decimal 字符串（payload 构造期已归一），时间戳保持 integer",
+      "input": {
+        "amount": "10381.815",
+        "rate": "0.0381815",
+        "ts": 1720003600,
+        "count": 42,
+        "zero": "0"
+      },
+      "canonical": "{\"amount\":\"10381.815\",\"count\":42,\"rate\":\"0.0381815\",\"ts\":1720003600,\"zero\":\"0\"}",
+      "sha256": "df74c8ba8cf6c9a077cdc958b89d932d172bd6f542f38b510c14c0a6ee48e8e6"
+    },
+    {
+      "name": "empty_containers",
+      "note": "空对象/空数组/空字符串",
+      "input": {
+        "obj": {},
+        "arr": [],
+        "s": ""
+      },
+      "canonical": "{\"arr\":[],\"obj\":{},\"s\":\"\"}",
+      "sha256": "cb21fb26e9762b2ad84481ae53d34c4d8082d0a756ee9f7afcd22d0617430a31"
+    },
+    {
+      "name": "backtest_result_v2_sample",
+      "note": "SPEC §2 cutie.backtest_result.v2 完整示例（金额 Decimal 字符串/时间 Unix 秒）",
+      "input": {
+        "schema_version": "cutie.backtest_result.v2",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720000000,
+            "closed_at": 1720003600,
+            "side": "long",
+            "qty": "0.5",
+            "entry_price": "60123.45",
+            "exit_price": "60890.1",
+            "fee": "1.21",
+            "slippage": "0.3",
+            "pnl": "381.815"
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1717000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720003600,
+            "equity": "10381.815"
+          }
+        ],
+        "metrics": {
+          "total_return": "0.0381815",
+          "max_drawdown": "0",
+          "trade_count": 1
+        },
+        "data_manifest": {
+          "source": "binance_us",
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "1h",
+          "start_at": 1717000000,
+          "end_at": 1720003600,
+          "kline_count": 834,
+          "checksum_algo": "sha256",
+          "checksum": "5f2d9ab8c3e4d1a0b7f6e5c4d3b2a1908f7e6d5c4b3a29181706f5e4d3c2b1a0"
+        }
+      },
+      "canonical": "{\"data_manifest\":{\"checksum\":\"5f2d9ab8c3e4d1a0b7f6e5c4d3b2a1908f7e6d5c4b3a29181706f5e4d3c2b1a0\",\"checksum_algo\":\"sha256\",\"end_at\":1720003600,\"kline_count\":834,\"market\":\"spot\",\"source\":\"binance_us\",\"start_at\":1717000000,\"symbol\":\"BTCUSDT\",\"timeframe\":\"1h\"},\"equity_curve\":[{\"equity\":\"10000\",\"ts\":1717000000},{\"equity\":\"10381.815\",\"ts\":1720003600}],\"metrics\":{\"max_drawdown\":\"0\",\"total_return\":\"0.0381815\",\"trade_count\":1},\"schema_version\":\"cutie.backtest_result.v2\",\"trades\":[{\"closed_at\":1720003600,\"entry_price\":\"60123.45\",\"exit_price\":\"60890.1\",\"fee\":\"1.21\",\"opened_at\":1720000000,\"pnl\":\"381.815\",\"qty\":\"0.5\",\"seq\":1,\"side\":\"long\",\"slippage\":\"0.3\"}]}",
+      "sha256": "c1ecd1d62504328a8c6d4f6e1e6fa173e667b480d124031aca419dba32e77d5a"
+    }
+  ]
+}
