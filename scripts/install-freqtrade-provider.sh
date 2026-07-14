@@ -56,10 +56,9 @@ provider_prepare() {
   local freqtrade_bin="$VENV_DIR/bin/freqtrade"
 
   # Tell the running provider where its data lives + which binary to use.
-  PROVIDER_EXTRA_ENV="FREQTRADE_USERDIR=$userdir FREQTRADE_CMD=$freqtrade_bin CUTIE_FREQTRADE_DEFAULT_EXCHANGE=$EXCHANGE"
-  PROVIDER_SERVICE_ENV="Environment=FREQTRADE_USERDIR=$userdir
-Environment=FREQTRADE_CMD=$freqtrade_bin
-Environment=CUTIE_FREQTRADE_DEFAULT_EXCHANGE=$EXCHANGE"
+  export FREQTRADE_USERDIR="$userdir"
+  export FREQTRADE_CMD="$freqtrade_bin"
+  export CUTIE_FREQTRADE_DEFAULT_EXCHANGE="$EXCHANGE"
 
   echo "[1b/5] Preparing Freqtrade user_data + sample strategy"
   "$freqtrade_bin" create-userdir --userdir "$userdir" >>"$CUTIE_RUN_LOG" 2>&1 || _diag "freqtrade create-userdir failed (non-fatal if userdir already exists; see run log)."
@@ -89,6 +88,8 @@ Environment=CUTIE_FREQTRADE_DEFAULT_EXCHANGE=$EXCHANGE"
   fi
   return 0
 }
+
+PROVIDER_PERSISTED_ENV_NAMES="FREQTRADE_USERDIR FREQTRADE_CMD CUTIE_FREQTRADE_DEFAULT_EXCHANGE"
 
 provider_run_install
 exit $?

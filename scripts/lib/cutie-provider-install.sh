@@ -76,16 +76,8 @@ print_awaiting_connector() {
   echo "  'cutie-connector' is not installed on this machine, so the"
   echo "  tool has not been reported to Cutie yet."
   echo ""
-  echo "  ---- COPY THIS to OpenClaw / Hermes / ops ----"
-  echo "  Install/upgrade Cutie Connector on this machine, then run:"
-  echo ""
-  echo "    cutie-connector backtest-tool add \\"
-  echo "      --id $SOURCE_ID \\"
-  echo "      --base-url http://127.0.0.1:$PORT \\"
-  echo "      --api-key '$TOKEN' \\"
-  echo "      --default"
-  echo "    cutie-connector backtest-tool refresh"
-  echo "  ----------------------------------------------"
+  echo "  Ask platform ops to install/upgrade Connector and register source"
+  echo "  '$SOURCE_ID'. Provider credentials are intentionally not printed."
   echo "=================================================================="
 }
 
@@ -162,19 +154,118 @@ print_failed() {
 #
 # These env vars are honored (KOL-configurable, idempotent across re-runs):
 #   CUTIE_BACKTEST_PROVIDER_PORT   -> PORT          (default: provider DEFAULT_PORT)
-#   CUTIE_BACKTEST_PROVIDER_TOKEN  -> TOKEN         (default: local-dev-token)
+#   CUTIE_BACKTEST_PROVIDER_TOKEN  -> TOKEN (persisted; managed installs require a non-default value)
 #   CUTIE_BACKTEST_SOURCE_ID       -> SOURCE_ID
 #   CUTIE_BACKTEST_SERVICE_NAME    -> SERVICE_NAME
 #   CUTIE_BACKTEST_RESTART_PROVIDER
 #     1 = restart a healthy provider to apply latest code/config (default from entrypoints)
 #   PYTHON_BIN                     -> python interpreter (default python3)
 
+_persisted_env_python() {
+  local env_file="$1"
+  local wanted="$2"
+  "$PYTHON_BIN" - "$env_file" "$wanted" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+wanted = sys.argv[2]
+allowed = {
+    "CUTIE_BACKTEST_PROVIDER_TOKEN",
+    "CUTIE_BACKTEST_PORT",
+    "CUTIE_PROVIDER_REVISION",
+    "CUTIE_BACKTEST_SUPPORTED_SYMBOLS",
+    "CUTIE_CENTRAL_MARKET_DATA_URL",
+    "CUTIE_CENTRAL_MARKET_DATA_TOKEN",
+    "CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC",
+    "FREQTRADE_USERDIR",
+    "FREQTRADE_CMD",
+    "CUTIE_FREQTRADE_DEFAULT_EXCHANGE",
+}
+values = {}
+for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    if not line or "=" not in line:
+        raise SystemExit(f"invalid provider env line {number}")
+    name, raw = line.split("=", 1)
+    if name not in allowed or name in values:
+        raise SystemExit(f"invalid provider env key on line {number}")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        raise SystemExit(f"invalid provider env value on line {number}")
+    if not isinstance(value, str) or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise SystemExit(f"unsafe provider env value on line {number}")
+    values[name] = value
+if wanted != "__validate__":
+    if wanted not in values:
+        raise SystemExit(3)
+    sys.stdout.write(values[wanted])
+PY
+}
+
+_persisted_env_value() {
+  _persisted_env_python "$CUTIE_PROVIDER_ENV_FILE" "$1"
+}
+
+_write_env_assignment() {
+  local output_file="$1"
+  local name="$2"
+  local value="$3"
+  if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    _diag "Refused a control character in provider configuration key $name."
+    return 1
+  fi
+  printf '%s=' "$name" >> "$output_file" || return 1
+  printf '%s' "$value" | "$PYTHON_BIN" -c 'import json,sys; print(json.dumps(sys.stdin.read(), ensure_ascii=False))' \
+    >> "$output_file" || return 1
+}
+
+provider_write_persistent_config() {
+  local config_dir tmp_file name value
+  config_dir="$(dirname "$CUTIE_PROVIDER_ENV_FILE")"
+  mkdir -p "$config_dir" || return 1
+  chmod 700 "$config_dir" || return 1
+  tmp_file="$(mktemp "$config_dir/.provider-env.XXXXXX")" || return 1
+  chmod 600 "$tmp_file" || { rm -f "$tmp_file"; return 1; }
+
+  for name in CUTIE_BACKTEST_PROVIDER_TOKEN CUTIE_BACKTEST_PORT CUTIE_PROVIDER_REVISION ${PROVIDER_PERSISTED_ENV_NAMES:-}; do
+    case "$name" in
+      CUTIE_BACKTEST_PROVIDER_TOKEN) value="$TOKEN" ;;
+      CUTIE_BACKTEST_PORT) value="$PORT" ;;
+      CUTIE_PROVIDER_REVISION) value="$PROVIDER_REVISION" ;;
+      * )
+        if ! printf '%s' "$name" | grep -Eq '^[A-Z][A-Z0-9_]*$'; then
+          rm -f "$tmp_file"
+          return 1
+        fi
+        eval "value=\${$name-}"
+        ;;
+    esac
+    if ! _write_env_assignment "$tmp_file" "$name" "$value"; then
+      rm -f "$tmp_file"
+      return 1
+    fi
+  done
+  mv -f "$tmp_file" "$CUTIE_PROVIDER_ENV_FILE" || { rm -f "$tmp_file"; return 1; }
+  chmod 600 "$CUTIE_PROVIDER_ENV_FILE"
+}
+
 provider_init_config() {
-  PORT="${CUTIE_BACKTEST_PROVIDER_PORT:-$DEFAULT_PORT}"
-  TOKEN="${CUTIE_BACKTEST_PROVIDER_TOKEN:-local-dev-token}"
+  local input_token input_central_url input_central_token input_central_timeout input_symbols
+  local saved_token saved_port saved_central_url saved_central_token saved_central_timeout saved_symbols
+  input_token="${CUTIE_BACKTEST_PROVIDER_TOKEN-}"
+  input_central_url="${CUTIE_CENTRAL_MARKET_DATA_URL-}"
+  input_central_token="${CUTIE_CENTRAL_MARKET_DATA_TOKEN-}"
+  input_central_timeout="${CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC-}"
+  input_symbols="${CUTIE_BACKTEST_SUPPORTED_SYMBOLS-}"
   SOURCE_ID="${CUTIE_BACKTEST_SOURCE_ID:-$DEFAULT_SOURCE_ID}"
   SERVICE_NAME="${CUTIE_BACKTEST_SERVICE_NAME:-$DEFAULT_SERVICE_NAME}"
   PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+  if ! printf '%s' "$SERVICE_NAME" | grep -Eq '^[A-Za-z0-9_.@-]+[.]service$'; then
+    return 1
+  fi
 
   VENV_DIR="$PROVIDER_DIR/.venv"
   VENV_PY="$VENV_DIR/bin/python"
@@ -182,9 +273,108 @@ provider_init_config() {
   PID_FILE="$RUNTIME_DIR/provider.pid"
   CUTIE_RUN_LOG="$RUNTIME_DIR/install.log"
   CUTIE_SERVICE_MODE="nohup"
+  CUTIE_PROVIDER_CONFIG_DIR="${CUTIE_BACKTEST_CONFIG_DIR:-$HOME/.config/cutie-backtest-providers}"
+  CUTIE_PROVIDER_ENV_FILE="$CUTIE_PROVIDER_CONFIG_DIR/${SERVICE_NAME%.service}.env"
 
   mkdir -p "$RUNTIME_DIR"
   : > "$CUTIE_RUN_LOG"
+
+  saved_token=""
+  saved_port=""
+  saved_central_url=""
+  saved_central_token=""
+  saved_central_timeout=""
+  saved_symbols=""
+  if [ -e "$CUTIE_PROVIDER_ENV_FILE" ]; then
+    if [ -L "$CUTIE_PROVIDER_ENV_FILE" ] || [ ! -f "$CUTIE_PROVIDER_ENV_FILE" ]; then
+      _diag "Persistent provider config is not a regular file."
+      print_failed "BAD_CONFIG" "Provider persistent configuration is unsafe."
+      return 1
+    fi
+    chmod 600 "$CUTIE_PROVIDER_ENV_FILE" || return 1
+    if ! _persisted_env_python "$CUTIE_PROVIDER_ENV_FILE" "__validate__" >/dev/null 2>>"$CUTIE_RUN_LOG"; then
+      _diag "Persistent provider config failed strict validation."
+      print_failed "BAD_CONFIG" "Provider persistent configuration is invalid."
+      return 1
+    fi
+    saved_token="$(_persisted_env_value CUTIE_BACKTEST_PROVIDER_TOKEN 2>/dev/null)" || true
+    saved_port="$(_persisted_env_value CUTIE_BACKTEST_PORT 2>/dev/null)" || true
+    saved_central_url="$(_persisted_env_value CUTIE_CENTRAL_MARKET_DATA_URL 2>/dev/null)" || true
+    saved_central_token="$(_persisted_env_value CUTIE_CENTRAL_MARKET_DATA_TOKEN 2>/dev/null)" || true
+    saved_central_timeout="$(_persisted_env_value CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC 2>/dev/null)" || true
+    saved_symbols="$(_persisted_env_value CUTIE_BACKTEST_SUPPORTED_SYMBOLS 2>/dev/null)" || true
+  fi
+
+  PORT="${CUTIE_BACKTEST_PROVIDER_PORT:-${saved_port:-$DEFAULT_PORT}}"
+  if [ -n "$input_token" ]; then TOKEN="$input_token"; else TOKEN="$saved_token"; fi
+  if [ -z "$TOKEN" ]; then
+    if [ "${CUTIE_BACKTEST_MANAGED_INSTALL:-0}" = "1" ]; then
+      _diag "Managed install requires a persisted or explicitly supplied provider token."
+      print_failed "BAD_CONFIG" "Managed provider token is missing."
+      return 1
+    fi
+    TOKEN="local-dev-token"
+  fi
+  if [ "${CUTIE_BACKTEST_MANAGED_INSTALL:-0}" = "1" ] && [ "$TOKEN" = "local-dev-token" ]; then
+    _diag "Managed install refused the development provider token."
+    print_failed "BAD_CONFIG" "Managed provider token is not production-safe."
+    return 1
+  fi
+
+  CUTIE_CENTRAL_MARKET_DATA_URL="${input_central_url:-$saved_central_url}"
+  CUTIE_CENTRAL_MARKET_DATA_TOKEN="${input_central_token:-$saved_central_token}"
+  CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC="${input_central_timeout:-${saved_central_timeout:-5}}"
+  CUTIE_BACKTEST_SUPPORTED_SYMBOLS="${input_symbols:-${saved_symbols:-${DEFAULT_SUPPORTED_SYMBOLS:-}}}"
+
+  if { [ -n "$CUTIE_CENTRAL_MARKET_DATA_URL" ] && [ -z "$CUTIE_CENTRAL_MARKET_DATA_TOKEN" ]; } || \
+     { [ -z "$CUTIE_CENTRAL_MARKET_DATA_URL" ] && [ -n "$CUTIE_CENTRAL_MARKET_DATA_TOKEN" ]; }; then
+    _diag "Central market-data URL and token must be configured together."
+    print_failed "BAD_CONFIG" "Central market-data configuration is incomplete."
+    return 1
+  fi
+  if [ "${CUTIE_BACKTEST_MANAGED_INSTALL:-0}" = "1" ] && [ -n "$CUTIE_CENTRAL_MARKET_DATA_URL" ]; then
+    if ! "$PYTHON_BIN" - "$CUTIE_CENTRAL_MARKET_DATA_URL" <<'PY' >/dev/null 2>&1
+import sys
+from urllib.parse import urlsplit
+
+parsed = urlsplit(sys.argv[1])
+valid = (
+    parsed.scheme == "https"
+    and bool(parsed.hostname)
+    and parsed.username is None
+    and parsed.password is None
+    and not parsed.query
+    and not parsed.fragment
+)
+raise SystemExit(0 if valid else 1)
+PY
+    then
+      _diag "Managed central market-data URL must be a credential-free HTTPS origin/path."
+      print_failed "BAD_CONFIG" "Central market-data URL is not safe for a managed Bearer token."
+      return 1
+    fi
+  fi
+  if ! "$PYTHON_BIN" - "$CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC" <<'PY' >/dev/null 2>&1
+import math, sys
+try:
+    value = float(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if math.isfinite(value) and 0 < value <= 60 else 1)
+PY
+  then
+    _diag "Central market-data timeout must be between 0 and 60 seconds."
+    print_failed "BAD_CONFIG" "Central market-data timeout is invalid."
+    return 1
+  fi
+
+  PROVIDER_REVISION="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)" || PROVIDER_REVISION="unknown"
+  printf '%s' "$PROVIDER_REVISION" | grep -Eq '^[0-9a-fA-F]{7,40}$' || PROVIDER_REVISION="unknown"
+  export CUTIE_BACKTEST_PROVIDER_TOKEN="$TOKEN"
+  export CUTIE_BACKTEST_PORT="$PORT"
+  export CUTIE_PROVIDER_REVISION="$PROVIDER_REVISION"
+  export CUTIE_CENTRAL_MARKET_DATA_URL CUTIE_CENTRAL_MARKET_DATA_TOKEN CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC
+  export CUTIE_BACKTEST_SUPPORTED_SYMBOLS
 
   if ! printf '%s' "$PORT" | grep -Eq '^[0-9]+$'; then
     _diag "Invalid port '$PORT' (must be numeric)."
@@ -480,7 +670,14 @@ _start_via_nohup() {
     cd "$PROVIDER_DIR" || exit 1
     CUTIE_BACKTEST_PROVIDER_TOKEN="$TOKEN" \
     CUTIE_BACKTEST_PORT="$PORT" \
-    ${PROVIDER_EXTRA_ENV:-} \
+    CUTIE_PROVIDER_REVISION="$PROVIDER_REVISION" \
+    CUTIE_BACKTEST_SUPPORTED_SYMBOLS="${CUTIE_BACKTEST_SUPPORTED_SYMBOLS:-}" \
+    CUTIE_CENTRAL_MARKET_DATA_URL="${CUTIE_CENTRAL_MARKET_DATA_URL:-}" \
+    CUTIE_CENTRAL_MARKET_DATA_TOKEN="${CUTIE_CENTRAL_MARKET_DATA_TOKEN:-}" \
+    CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC="${CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC:-5}" \
+    FREQTRADE_USERDIR="${FREQTRADE_USERDIR:-}" \
+    FREQTRADE_CMD="${FREQTRADE_CMD:-}" \
+    CUTIE_FREQTRADE_DEFAULT_EXCHANGE="${CUTIE_FREQTRADE_DEFAULT_EXCHANGE:-}" \
     nohup "$VENV_DIR/bin/uvicorn" "$PROVIDER_MODULE" \
       --host 127.0.0.1 --port "$PORT" >>"$CUTIE_RUN_LOG" 2>&1 &
     echo $! > "$PID_FILE"
@@ -498,12 +695,7 @@ _start_via_systemd() {
     echo "[Service]"
     echo "Type=simple"
     echo "WorkingDirectory=$PROVIDER_DIR"
-    echo "Environment=CUTIE_BACKTEST_PROVIDER_TOKEN=$TOKEN"
-    echo "Environment=CUTIE_BACKTEST_PORT=$PORT"
-    # PROVIDER_SERVICE_ENV (multi-line "Environment=..." entries) from caller.
-    if [ -n "${PROVIDER_SERVICE_ENV:-}" ]; then
-      printf '%s\n' "$PROVIDER_SERVICE_ENV"
-    fi
+    echo "EnvironmentFile=$CUTIE_PROVIDER_ENV_FILE"
     echo "ExecStart=$VENV_DIR/bin/uvicorn $PROVIDER_MODULE --host 127.0.0.1 --port $PORT"
     echo "Restart=always"
     echo "RestartSec=3"
@@ -813,6 +1005,12 @@ provider_run_install() {
     if ! provider_prepare; then
       return 1
     fi
+  fi
+
+  if ! provider_write_persistent_config; then
+    _diag "Could not atomically write the mode-0600 provider environment file."
+    print_failed "BAD_CONFIG" "Could not persist provider configuration securely."
+    return 1
   fi
 
   provider_start || return 1

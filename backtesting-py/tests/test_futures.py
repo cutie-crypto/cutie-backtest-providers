@@ -122,6 +122,10 @@ def test_backtest_rejects_unknown_market(client):
     body = resp.json()
     assert body["result_status"] == "failed"
     assert body["error_type"] == "MARKET_UNSUPPORTED"
+    assert body["provider_revision"] == provider.PROVIDER_REVISION
+    assert body["central_market_data_used"] is None
+    assert body["central_market_data_auth_mode"] == provider._central_market_data_auth_mode()
+    assert body["raw_report"]["market_data_provenance"]["provider_revision"] == provider.PROVIDER_REVISION
 
 
 def test_backtest_defaults_market_to_spot_when_missing(client, monkeypatch):
@@ -231,6 +235,18 @@ def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
     assert resp.status_code == 200
     body = resp.json()
     assert body["result_status"] == "success", body
+    assert body["provider_revision"] == provider.PROVIDER_REVISION
+    assert body["data_source"] == provider.DATA_SOURCE
+    assert body["central_market_data_used"] is False
+    assert body["central_market_data_auth_mode"] == provider._central_market_data_auth_mode()
+    assert body["market_data_cache_hit"] is False
+    assert body["raw_report"]["market_data_provenance"] == {
+        "provider_revision": provider.PROVIDER_REVISION,
+        "source": provider.DATA_SOURCE,
+        "central_market_data_used": False,
+        "auth_mode": provider._central_market_data_auth_mode(),
+        "cache_hit": False,
+    }
 
     # ccxt was asked for the unified linear-perpetual-swap market, not spot.
     assert len(constructed) == 1
