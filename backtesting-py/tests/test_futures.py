@@ -257,10 +257,14 @@ def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
     assert body["limitations"]["funding_rate_included"] is False
     assert "funding rate" in body["raw_report"]["provider_summary"]
 
+    # result.v2（62-1 SPEC §2）：equity_curve[].ts/equity + metrics 恰好三键;
+    # 旧展示性百分比指标迁到 raw_report.legacy_metrics。
     for point in body["equity_curve"]:
+        assert isinstance(point["ts"], int)
         assert isinstance(point["equity"], str)
+    assert set(body["metrics"].keys()) == {"total_return", "max_drawdown", "trade_count"}
     for metric_key in ("total_return_pct", "win_rate_pct", "max_drawdown_pct"):
-        assert math.isfinite(body["metrics"][metric_key])
+        assert math.isfinite(body["raw_report"]["legacy_metrics"][metric_key])
 
 
 def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, tmp_path):

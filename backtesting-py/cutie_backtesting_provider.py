@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -29,6 +30,8 @@ from typing import Any, Optional
 import pandas as pd
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+
+from canonical_json import canonical_decimal_str, canonical_json_sha256
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -74,6 +77,18 @@ CENTRAL_SUPPORTED_EXCHANGE = "binance"
 CENTRAL_SUPPORTED_MARKET = "spot"
 # 数据缺口容差：中心 API 返回条数 < 预期条数 * 该比例即视为缺口，回退 ccxt（不是硬失败）。
 CENTRAL_GAP_TOLERANCE_RATIO = 0.9
+
+# 62-1 result.v2（SPEC_验证复核契约.md §2）：schema 常量 + data_manifest.source 命名。
+# 后者必须与 TokenBeep 主仓 cutie-server/services/strategy_backtest_service.py 的
+# _CENTRAL_MARKET_SOURCES 完全一致——server 的逐 run 完整性门按此常量做身份核对，
+# 命名不一致会 fail-closed 拒绝升级 platform_managed（与数据内容是否正确无关，纯字符串
+# 核对）。futures 目前 _fetch_from_central 尚未支持（CENTRAL_SUPPORTED_MARKET 固定
+# "spot"），映射保留是为将来接入 Binance 永续中心行情时不必再改这里。
+RESULT_V2_SCHEMA = "cutie.backtest_result.v2"
+_CENTRAL_MARKET_SOURCES = {"spot": "binance_us", "futures": "binance_futures"}
+
+# 进程启动时刻（Unix 秒），/health.process_fingerprint 用；同一进程生命周期内不变。
+_PROCESS_START_TIME = int(time.time())
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -282,6 +297,14 @@ def _central_health_snapshot() -> dict[str, int]:
 
 def _central_market_data_auth_mode() -> str:
     return "market_data_bearer" if CENTRAL_MARKET_DATA_URL and CENTRAL_MARKET_DATA_TOKEN else "disabled"
+
+
+def _process_fingerprint() -> str:
+    """/health.process_fingerprint（SPEC §2 wire 字段 provider_process_fingerprint 的
+    provider 侧来源）：格式 "{hostname}:{pid}:{进程启动 Unix 秒}"，随进程重启天然更新，
+    同一进程生命周期内保持不变（区别于 PROVIDER_REVISION——那是代码版本，这是运行实例）。
+    """
+    return f"{socket.gethostname()}:{os.getpid()}:{_PROCESS_START_TIME}"
 
 
 # F7 修（Kimi review）：server 侧 handlers/internal/market_data.py 的 MAX_KLINE_RANGE_SECONDS
@@ -1319,6 +1342,206 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
 
 
 # ---------------------------------------------------------------------------
+# result.v2（SPEC 62-1 §2 冻结结构）：trades / equity_curve / metrics / data_manifest
+# ---------------------------------------------------------------------------
+
+def _data_manifest_source(market: str, exchange_id: str, df: pd.DataFrame) -> str:
+    """result.v2 data_manifest.source：本次请求的真实数据出处（不是路由判据猜测）。
+
+    _fetch_ohlcv 已把真实来源记在 df.attrs["cutie_central_market_data_used"]（central
+    命中 / ccxt 回退 / 磁盘缓存复用时同样带着原始出处，_read_cache 的 provenance dict
+    格式），这里只做 SPEC 命名映射：中心命中 → cutie-server 同款 binance_us/
+    binance_futures；否则老实标 ccxt:<exchange_id>，不冒充中心数据（server 的身份核对
+    还会用真实 checksum 内容兜底一次，标错也只是让本可升级的 run 误判
+    evidence_mismatch，不会产生假阳性升级）。
+    """
+    if df.attrs.get("cutie_central_market_data_used") is True:
+        return _CENTRAL_MARKET_SOURCES.get(market, f"ccxt:{exchange_id}")
+    return f"ccxt:{exchange_id}"
+
+
+def _kline_rows_to_canonical(df: pd.DataFrame, start_at: int, end_at: int) -> list[dict[str, Any]]:
+    """K 线 checksum 输入（SPEC §2）：open_time 升序，每根仅含
+    {open_time,open,high,low,close,volume}，OHLCV 为规范 Decimal 字符串（float 最短
+    往返表示转 Decimal，与 cutie-server _kline_rows_to_canonical 同规则，跨语言可比）。
+
+    开区间防御：只收 open_time ∈ [start_at, end_at] 双闭区间内的行——上游 ccxt/中心 API
+    理论上已只返回该窗口，这里再显式收紧一次，保证与 SPEC §2 "K 线区间语义" 严格一致，
+    不依赖上游实现细节。df.index 是 pandas DatetimeIndex（ms 精度整数对齐），用
+    Timestamp.value（int64 纳秒）整除取秒，避免 .timestamp() 的浮点往返误差。
+    """
+    rows: list[dict[str, Any]] = []
+    for idx, row in df.iterrows():
+        open_time = int(idx.value // 10**9)
+        if open_time < start_at or open_time > end_at:
+            continue
+        rows.append({
+            "open_time": open_time,
+            "open": canonical_decimal_str(str(float(row["Open"]))),
+            "high": canonical_decimal_str(str(float(row["High"]))),
+            "low": canonical_decimal_str(str(float(row["Low"]))),
+            "close": canonical_decimal_str(str(float(row["Close"]))),
+            "volume": canonical_decimal_str(str(float(row["Volume"]))),
+        })
+    return rows
+
+
+def _build_result_v2_trades(
+    stats_trades: Any,
+    equity_scale_dec: Decimal,
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+) -> list[dict[str, Any]]:
+    """result.v2 trades（SPEC §2 冻结 10 键）：费用/滑点/pnl 按 SPEC 公式重算，不采用
+    backtesting.py 自身的 commission 记账（它只记了 fee，没有 slippage 概念，且以
+    Trade._commissions 形式单独存放）。
+
+    entry_price/exit_price 取 backtesting.py 记录的原始成交价（Trade.entry_price/
+    exit_price 本身不含 commission 调整——commission 单独记在 Trade._commissions,
+    见 backtesting.py Trade.pl 实现），即 SPEC 要求的"扣滑点前、用于 K 线区间校验的
+    参考成交价"。qty 是内部放大 cash 后的 Trade.size（整数份额）按 equity_scale_dec 折回
+    用户真实资金规模的份额，见 run_backtest 里 internal_cash 放大的注释。
+
+    fee_bps/slippage_bps 除以 10000 是幂等精确除法（10000=2^4*5^4，Decimal 不产生
+    有效数字损失）；全程 Decimal、不做中间舍入，只在最终 canonical_decimal_str 时格式化。
+    """
+    if stats_trades is None or len(stats_trades) == 0:
+        return []
+
+    raw: list[dict[str, Any]] = []
+    for _, trade in stats_trades.iterrows():
+        entry_time = trade.get("EntryTime")
+        exit_time = trade.get("ExitTime")
+        if not hasattr(entry_time, "value") or not hasattr(exit_time, "value"):
+            continue  # finalize_trades=True 下不应出现未平仓行，防御性跳过
+        opened_at = int(entry_time.value // 10**9)
+        closed_at = int(exit_time.value // 10**9)
+        size = trade.get("Size", 0) or 0
+        side = "long" if size > 0 else "short"
+        entry_price_dec = Decimal(str(float(trade.get("EntryPrice"))))
+        exit_price_dec = Decimal(str(float(trade.get("ExitPrice"))))
+        qty_dec = Decimal(abs(int(size))) * equity_scale_dec
+        fee_dec = (entry_price_dec + exit_price_dec) * qty_dec * fee_bps / Decimal(10000)
+        slippage_dec = (entry_price_dec + exit_price_dec) * qty_dec * slippage_bps / Decimal(10000)
+        if side == "long":
+            gross_dec = (exit_price_dec - entry_price_dec) * qty_dec
+        else:
+            gross_dec = (entry_price_dec - exit_price_dec) * qty_dec
+        pnl_dec = gross_dec - fee_dec - slippage_dec
+        raw.append({
+            "opened_at": opened_at,
+            "closed_at": closed_at,
+            "side": side,
+            "qty": qty_dec,
+            "entry_price": entry_price_dec,
+            "exit_price": exit_price_dec,
+            "fee": fee_dec,
+            "slippage": slippage_dec,
+            "pnl": pnl_dec,
+        })
+
+    # seq 从 1 连续递增，trades 按 seq 排序（SPEC §2）：先按 closed_at/opened_at 排定序。
+    raw.sort(key=lambda t: (t["closed_at"], t["opened_at"]))
+    trades: list[dict[str, Any]] = []
+    for idx, t in enumerate(raw, start=1):
+        trades.append({
+            "seq": idx,
+            "opened_at": t["opened_at"],
+            "closed_at": t["closed_at"],
+            "side": t["side"],
+            "qty": canonical_decimal_str(t["qty"]),
+            "entry_price": canonical_decimal_str(t["entry_price"]),
+            "exit_price": canonical_decimal_str(t["exit_price"]),
+            "fee": canonical_decimal_str(t["fee"]),
+            "slippage": canonical_decimal_str(t["slippage"]),
+            "pnl": canonical_decimal_str(t["pnl"]),
+        })
+    return trades
+
+
+def _build_result_v2_equity_curve(
+    trades_v2: list[dict[str, Any]],
+    initial_capital: Decimal,
+    start_at: int,
+) -> list[dict[str, Any]]:
+    """result.v2 equity_curve（SPEC §2）：以 start_at/initial_capital 起点开头，每笔
+    trade 的 closed_at 追加计入该笔净 pnl 后的点；无交易时仍保留初始点。
+    """
+    curve = [{"ts": start_at, "equity": canonical_decimal_str(initial_capital)}]
+    running = initial_capital
+    for t in trades_v2:
+        running = running + Decimal(t["pnl"])
+        curve.append({"ts": t["closed_at"], "equity": canonical_decimal_str(running)})
+    return curve
+
+
+def _result_v2_max_drawdown(equity_curve: list[dict[str, Any]]) -> Decimal:
+    """峰谷比例回撤：跟踪运行峰值，逐点取 (peak-equity)/peak 的最大值（SPEC §2）。"""
+    peak: Optional[Decimal] = None
+    max_dd = Decimal(0)
+    for point in equity_curve:
+        equity = Decimal(point["equity"])
+        if peak is None or equity > peak:
+            peak = equity
+        if peak:
+            dd = (peak - equity) / peak
+            if dd > max_dd:
+                max_dd = dd
+    return max_dd
+
+
+def _build_result_v2(
+    *,
+    stats_trades: Any,
+    equity_scale_dec: Decimal,
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+    initial_capital: Decimal,
+    start_at: int,
+    end_at: int,
+    symbol: str,
+    market: str,
+    timeframe: str,
+    exchange_id: str,
+    df: pd.DataFrame,
+) -> dict[str, Any]:
+    """组装 SPEC §2 冻结的 result.v2 五键：schema_version/trades/equity_curve/metrics/
+    data_manifest。metrics 恰好三键（total_return/max_drawdown/trade_count）——server
+    端 _validate_result_v2 对多余键判 evidence_mismatch，不得在此加展示性字段。
+    """
+    trades_v2 = _build_result_v2_trades(stats_trades, equity_scale_dec, fee_bps, slippage_bps)
+    equity_curve_v2 = _build_result_v2_equity_curve(trades_v2, initial_capital, start_at)
+    final_equity = Decimal(equity_curve_v2[-1]["equity"])
+    total_return = (final_equity - initial_capital) / initial_capital
+    max_drawdown = _result_v2_max_drawdown(equity_curve_v2)
+
+    kline_rows = _kline_rows_to_canonical(df, start_at, end_at)
+    checksum = canonical_json_sha256(kline_rows)
+
+    return {
+        "schema_version": RESULT_V2_SCHEMA,
+        "trades": trades_v2,
+        "equity_curve": equity_curve_v2,
+        "metrics": {
+            "total_return": canonical_decimal_str(total_return),
+            "max_drawdown": canonical_decimal_str(max_drawdown),
+            "trade_count": len(trades_v2),
+        },
+        "data_manifest": {
+            "source": _data_manifest_source(market, exchange_id, df),
+            "symbol": symbol,
+            "market": market,
+            "timeframe": timeframe,
+            "start_at": start_at,
+            "end_at": end_at,
+            "kline_count": len(kline_rows),
+            "checksum_algo": "sha256",
+            "checksum": checksum,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -1375,6 +1598,7 @@ async def health():
             "ok": True,
             "provider_id": PROVIDER_ID,
             "provider_revision": PROVIDER_REVISION,
+            "process_fingerprint": _process_fingerprint(),
             "engine_name": ENGINE_NAME,
             "engine_version": _engine_version(),
             "data_ready": data_ready,
@@ -1566,7 +1790,8 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         # equity/PnL back to the user's capital. Percentage metrics are cash-invariant.
         user_capital = float(initial_capital)
         internal_cash = max(user_capital, float(df["Close"].max()) * 100_000.0)
-        equity_scale = user_capital / internal_cash
+        # result.v2（SPEC §2）的 qty/pnl 公式全程 Decimal，折回用户真实资金规模的比例。
+        equity_scale_dec = initial_capital / Decimal(str(internal_cash))
         bt = Backtest(
             df,
             StrategyClass,
@@ -1592,57 +1817,24 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
 
     # --- Build result (W3.10: entire post-processing wrapped in try-except) ---
     try:
-        equity_curve: list[dict] = []
-        if hasattr(stats, "_equity_curve") and stats._equity_curve is not None:
-            eq = stats._equity_curve
-            for idx, row in eq.iterrows():
-                ts = int(idx.timestamp()) if hasattr(idx, "timestamp") else 0
-                raw_equity = row.get("Equity", None)
-                if raw_equity is None:
-                    raw_equity = row.iloc[0] if len(row) > 0 else internal_cash
-                equity_curve.append({
-                    "t": ts,
-                    "equity": _decimal_str(float(raw_equity) * equity_scale, places=2),
-                })
-        else:
-            start_ts = int(df.index[0].timestamp()) if hasattr(df.index[0], "timestamp") else start_at
-            end_ts = int(df.index[-1].timestamp()) if hasattr(df.index[-1], "timestamp") else end_at
-            final_equity = _safe_float(stats, "Equity Final [$]", internal_cash)
-            equity_curve = [
-                {"t": start_ts, "equity": _decimal_str(initial_capital, places=2)},
-                {"t": end_ts, "equity": _decimal_str(final_equity * equity_scale, places=2)},
-            ]
-
-        if len(equity_curve) > 500:
-            step = len(equity_curve) // 500
-            equity_curve = equity_curve[::step]
-            last_eq = stats._equity_curve
-            if last_eq is not None and len(last_eq) > 0:
-                last_idx = last_eq.index[-1]
-                last_ts = int(last_idx.timestamp()) if hasattr(last_idx, "timestamp") else end_at
-                raw_last = last_eq.iloc[-1].get("Equity", None)
-                if raw_last is None:
-                    raw_last = last_eq.iloc[-1].iloc[0] if len(last_eq.iloc[-1]) > 0 else internal_cash
-                equity_curve.append({
-                    "t": last_ts,
-                    "equity": _decimal_str(float(raw_last) * equity_scale, places=2),
-                })
-
-        trades_list: list[dict] = []
-        if hasattr(stats, "_trades") and stats._trades is not None:
-            for _, trade in stats._trades.iterrows():
-                entry_time = trade.get("EntryTime")
-                exit_time = trade.get("ExitTime")
-                entry_ts = int(entry_time.timestamp()) if hasattr(entry_time, "timestamp") else 0
-                exit_ts = int(exit_time.timestamp()) if hasattr(exit_time, "timestamp") else 0
-                size = trade.get("Size", 0) or 0
-                side = "long" if size > 0 else "short"
-                trades_list.append({
-                    "side": side,
-                    "entry_at": entry_ts,
-                    "exit_at": exit_ts,
-                    "pnl": _decimal_str(float(trade.get("PnL", 0) or 0) * equity_scale, places=2),
-                })
+        # 62-1 result.v2（SPEC §2 冻结结构）：trades/equity_curve/metrics/data_manifest
+        # 的权威形状，取代旧版自由格式 trades/equity_curve。旧展示性百分比指标全部移入
+        # raw_report.legacy_metrics，不再留在顶层 metrics（server 端 _validate_result_v2
+        # 对 metrics 做"恰好三键"严格校验，多一个键就判 evidence_mismatch）。
+        result_v2 = _build_result_v2(
+            stats_trades=getattr(stats, "_trades", None),
+            equity_scale_dec=equity_scale_dec,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+            initial_capital=initial_capital,
+            start_at=start_at,
+            end_at=end_at,
+            symbol=symbol,
+            market=market,
+            timeframe=timeframe,
+            exchange_id=exchange_id,
+            df=df,
+        )
 
         total_return_pct = _safe_float(stats, "Return [%]", 0.0)
         win_rate_pct = _safe_float(stats, "Win Rate [%]", 0.0)
@@ -1651,7 +1843,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         # X3: backtesting.py 内置的"买入持有"对照基准，回答"策略到底有没有跑赢直接拿着"。
         buy_hold_return_pct = _safe_float(stats, "Buy & Hold Return [%]", 0.0)
 
-        metrics = {
+        legacy_metrics = {
             "total_return_pct": round(total_return_pct, 2),
             "win_rate_pct": round(win_rate_pct, 2),
             "max_drawdown_pct": round(max_drawdown_pct, 2),
@@ -1659,8 +1851,8 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             "buy_hold_return_pct": round(buy_hold_return_pct, 2),
         }
 
-        metrics_json = json.dumps(metrics, sort_keys=True)
-        result_hash = f"sha256:{hashlib.sha256(metrics_json.encode()).hexdigest()}"
+        legacy_metrics_json = json.dumps(legacy_metrics, sort_keys=True)
+        result_hash = f"sha256:{hashlib.sha256(legacy_metrics_json.encode()).hexdigest()}"
 
         candle_count = len(df)
         if candle_count < 100:
@@ -1699,10 +1891,12 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             "result_hash": result_hash,
             "report_url": report_url,
             "report_url_scope": "local_machine_only",
-            "metrics": metrics,
+            "schema_version": result_v2["schema_version"],
+            "metrics": result_v2["metrics"],
             "initial_capital": _decimal_str(initial_capital, places=2),
-            "equity_curve": equity_curve,
-            "trades": trades_list,
+            "equity_curve": result_v2["equity_curve"],
+            "trades": result_v2["trades"],
+            "data_manifest": result_v2["data_manifest"],
             "assumptions": {
                 "fee_bps": _decimal_str(fee_bps, places=4),
                 "slippage_bps": _decimal_str(slippage_bps, places=4),
@@ -1736,6 +1930,9 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             "raw_report": {
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,
+                # 旧版展示性百分比指标（result.v2 迁移前的 metrics 形状），保留兼容旧
+                # 消费方；顶层 metrics 现在是 SPEC §2 冻结的三键结构，见上方 result_v2。
+                "legacy_metrics": legacy_metrics,
                 "market_data_provenance": {
                     "provider_revision": PROVIDER_REVISION,
                     "source": df.attrs.get("cutie_data_source", DATA_SOURCE),
