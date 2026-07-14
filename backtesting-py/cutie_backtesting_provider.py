@@ -67,6 +67,7 @@ MAX_CACHE_FILES = 500  # LRU 上限：超出按 mtime 删最旧文件（WS-7 Ste
 CENTRAL_MARKET_DATA_URL = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_URL", "").rstrip("/")
 CENTRAL_MARKET_DATA_TOKEN = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TOKEN", "")
 CENTRAL_MARKET_DATA_TIMEOUT_SEC = float(os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC", "5"))
+CENTRAL_MARKET_DATA_USER_AGENT = f"cutie-backtest-provider/{PROVIDER_VERSION}"
 _raw_provider_revision = os.environ.get("CUTIE_PROVIDER_REVISION", "").strip()
 PROVIDER_REVISION = _raw_provider_revision if re.fullmatch(r"[0-9a-fA-F]{7,40}", _raw_provider_revision) else "unknown"
 CENTRAL_SUPPORTED_EXCHANGE = "binance"
@@ -354,7 +355,15 @@ def _fetch_central_chunk(
     url = f"{CENTRAL_MARKET_DATA_URL}/klines?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(
         url,
-        headers={"Authorization": f"Bearer {CENTRAL_MARKET_DATA_TOKEN}", "Accept": "application/json"},
+        headers={
+            "Authorization": f"Bearer {CENTRAL_MARKET_DATA_TOKEN}",
+            "Accept": "application/json",
+            # Cloudflare blocks urllib's default Python-urllib signature on the
+            # real /klines route (error 1010).  Send a stable product identity
+            # so managed Providers can reach the same endpoint that passed
+            # direct Fan runtime acceptance with an explicit User-Agent.
+            "User-Agent": CENTRAL_MARKET_DATA_USER_AGENT,
+        },
     )
     try:
         with _CENTRAL_HTTP_OPENER.open(req, timeout=CENTRAL_MARKET_DATA_TIMEOUT_SEC) as resp:
