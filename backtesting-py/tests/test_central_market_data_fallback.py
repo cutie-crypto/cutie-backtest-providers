@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -29,17 +31,33 @@ import cutie_backtesting_provider as provider  # noqa: E402
 @pytest.fixture(autouse=True)
 def _isolate_cache_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(provider, "CACHE_DIR", tmp_path / "cache" / "ohlcv")
+    monkeypatch.setattr(provider, "_CENTRAL_FETCH_SUCCESS_COUNT", 0)
+    monkeypatch.setattr(provider, "_CENTRAL_LAST_SUCCESS_AT", 0)
     return tmp_path
 
 
 @pytest.fixture
 def central_configured(monkeypatch):
     monkeypatch.setattr(provider, "CENTRAL_MARKET_DATA_URL", "https://server.example.com/v1/internal/market-data")
-    monkeypatch.setattr(provider, "CENTRAL_MARKET_DATA_KEY", "test-internal-key")
+    monkeypatch.setattr(provider, "CENTRAL_MARKET_DATA_TOKEN", "test-market-data-token")
+
+
+def test_central_redirect_handler_refuses_redirect():
+    handler = provider._NoRedirectHandler()
+    request = urllib.request.Request("https://server.example.com/v1/internal/market-data/klines")
+    redirected = handler.redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://redirect.example.net/capture",
+    )
+    assert redirected is None
 
 
 def test_central_not_configured_skips_request_returns_none():
-    """未配置 URL/KEY：_fetch_from_central 直接返回 None，不发任何请求。"""
+    """未配置 URL/token：_fetch_from_central 直接返回 None，不发任何请求。"""
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 3600_000)
     assert result is None
 
@@ -52,7 +70,7 @@ def test_unsupported_exchange_skips_central_request(central_configured, monkeypa
         called["count"] += 1
         raise AssertionError("should not call central API for non-binance exchange")
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("okx", "spot", "BTCUSDT", "1h", 0, 3600_000)
     assert result is None
     assert called["count"] == 0
@@ -62,7 +80,7 @@ def test_unsupported_market_skips_central_request(central_configured, monkeypatc
     def fake_urlopen(*_a, **_kw):
         raise AssertionError("should not call central API for futures market")
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "futures", "BTCUSDT", "1h", 0, 3600_000)
     assert result is None
 
@@ -77,7 +95,7 @@ def test_non_usdt_quote_skips_central_request(central_configured, monkeypatch):
         called["count"] += 1
         raise AssertionError("should not call central API for non-USDT quote symbol")
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "spot", "ETHBTC", "1h", 0, 3600_000)
     assert result is None
     assert called["count"] == 0
@@ -89,7 +107,7 @@ def test_non_usdt_quote_with_slash_skips_central_request(central_configured, mon
     def fake_urlopen(*_a, **_kw):
         raise AssertionError("should not call central API for BTC/USDC")
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "spot", "BTC/USDC", "1h", 0, 3600_000)
     assert result is None
 
@@ -101,7 +119,7 @@ def test_usdt_quote_symbol_does_call_central(central_configured, monkeypatch):
     def fake_urlopen(*_a, **_kw):
         return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": items}})
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "spot", "ETHUSDT", "1h", 0, 3600_000)
     assert result is not None
     assert len(result) == 1
@@ -111,7 +129,7 @@ def test_central_timeout_returns_none(central_configured, monkeypatch):
     def fake_urlopen(*_a, **_kw):
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 3600_000)
     assert result is None
 
@@ -120,7 +138,7 @@ def test_central_5xx_returns_none(central_configured, monkeypatch):
     def fake_urlopen(*_a, **_kw):
         raise urllib.error.HTTPError("url", 503, "Service Unavailable", {}, None)
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 3600_000)
     assert result is None
 
@@ -154,25 +172,50 @@ def test_central_data_gap_returns_none(central_configured, monkeypatch):
             }
         )
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     # 100 小时区间，理应有 ~100 根 1h K 线
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 100 * 3600 * 1000)
     assert result is None
 
 
-def test_central_success_returns_rows(central_configured, monkeypatch):
+def test_central_success_uses_bearer_and_records_canary_evidence(central_configured, monkeypatch):
     items = [
         {"open_time": i * 3600, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0} for i in range(3)
     ]
 
-    def fake_urlopen(*_a, **_kw):
+    seen_headers = {}
+
+    def fake_urlopen(request, **_kw):
+        seen_headers.update(dict(request.header_items()))
         return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 3, "items": items}})
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 3 * 3600 * 1000)
     assert result is not None
     assert len(result) == 3
     assert result[0] == [0, 1.0, 2.0, 0.5, 1.5, 100.0]
+    assert seen_headers["Authorization"] == "Bearer test-market-data-token"
+    assert "x-internal-key" not in {name.lower() for name in seen_headers}
+    assert provider._central_health_snapshot()["central_fetch_success_count"] == 1
+    assert provider._central_health_snapshot()["central_last_success_at"] > 0
+
+
+def test_health_exposes_only_non_sensitive_central_evidence(central_configured, monkeypatch):
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", "0123456789abcdef")
+    monkeypatch.setattr(provider, "_CENTRAL_FETCH_SUCCESS_COUNT", 2)
+    monkeypatch.setattr(provider, "_CENTRAL_LAST_SUCCESS_AT", 1_700_000_000)
+
+    response = asyncio.run(provider.health())
+    body = json.loads(response.body)
+
+    assert body["provider_revision"] == "0123456789abcdef"
+    assert body["central_market_data_configured"] is True
+    assert body["central_market_data_auth_mode"] == "market_data_bearer"
+    assert body["central_fetch_success_count"] == 2
+    assert body["central_last_success_at"] == 1_700_000_000
+    serialized = response.body.decode("utf-8")
+    assert provider.CENTRAL_MARKET_DATA_URL not in serialized
+    assert provider.CENTRAL_MARKET_DATA_TOKEN not in serialized
 
 
 def test_long_range_chunks_and_concatenates(central_configured, monkeypatch):
@@ -193,7 +236,7 @@ def test_long_range_chunks_and_concatenates(central_configured, monkeypatch):
         item = {"open_time": start_ts, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}
         return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": [item]}})
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
 
     total_ms = 200 * 24 * 3600 * 1000  # 200 天，超过 90 天上限
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1d", 0, total_ms)
@@ -219,7 +262,7 @@ def test_chunk_failure_aborts_whole_request_falls_back_to_ccxt(central_configure
         item = {"open_time": 0, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}
         return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": [item]}})
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
 
     total_ms = 200 * 24 * 3600 * 1000
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1d", 0, total_ms)
@@ -234,7 +277,7 @@ def test_central_available_false_returns_none(central_configured, monkeypatch):
     def fake_urlopen(*_a, **_kw):
         return _FakeResponse({"err_code": 100, "data": {"available": False, "count": 0, "items": []}})
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 3600_000)
     assert result is None
 
@@ -245,7 +288,7 @@ def test_fetch_ohlcv_falls_back_to_ccxt_when_central_fails(central_configured, m
     def fake_urlopen(*_a, **_kw):
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
 
     fake_ccxt = MagicMock()
     fake_exchange_instance = MagicMock()
@@ -273,6 +316,9 @@ def test_fetch_ohlcv_falls_back_to_ccxt_when_central_fails(central_configured, m
     df = provider._fetch_ohlcv("binance", "spot", "BTCUSDT", "1h", 0, 7200)
     assert len(df) == 2
     assert df["Close"].iloc[0] == 1.5
+    assert df.attrs["cutie_data_source"] == provider.DATA_SOURCE
+    assert df.attrs["cutie_central_market_data_used"] is False
+    assert df.attrs["cutie_market_data_cache_hit"] is False
 
 
 def test_fetch_ohlcv_uses_central_and_skips_ccxt(central_configured, monkeypatch):
@@ -282,7 +328,7 @@ def test_fetch_ohlcv_uses_central_and_skips_ccxt(central_configured, monkeypatch
     def fake_urlopen(*_a, **_kw):
         return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": items}})
 
-    monkeypatch.setattr(provider.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
 
     fake_ccxt = MagicMock()
 
@@ -294,6 +340,15 @@ def test_fetch_ohlcv_uses_central_and_skips_ccxt(central_configured, monkeypatch
 
     df = provider._fetch_ohlcv("binance", "spot", "BTCUSDT", "1h", 0, 3600)
     assert len(df) == 1
+    assert df.attrs["cutie_data_source"] == "cutie_central_market_data"
+    assert df.attrs["cutie_central_market_data_used"] is True
+    assert df.attrs["cutie_market_data_cache_hit"] is False
+
+    cached_df = provider._fetch_ohlcv("binance", "spot", "BTCUSDT", "1h", 0, 3600)
+    assert cached_df.attrs["cutie_data_source"] == "cutie_central_market_data"
+    assert cached_df.attrs["cutie_central_market_data_used"] is True
+    assert cached_df.attrs["cutie_market_data_cache_hit"] is True
+    assert provider._central_health_snapshot()["central_fetch_success_count"] == 1
 
 
 def test_cache_lru_enforced(monkeypatch, tmp_path):

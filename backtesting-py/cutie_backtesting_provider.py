@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -60,16 +61,31 @@ CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 MAX_CACHE_FILES = 500  # LRU 上限：超出按 mtime 删最旧文件（WS-7 Step 7.3）
 
 # WS-7 Step 7.3：中心行情数据服务（cutie-server /v1/internal/market-data/klines）。
-# 未配置 URL/KEY 时本 provider 完全走原有 ccxt 路径（向后兼容，不强制依赖中心服务）。
+# 未配置 URL/token 时本 provider 完全走原有 ccxt 路径（向后兼容，不强制依赖中心服务）。
 # 中心缓存目前只覆盖 binance spot（见 cutie-server market_kline_cache_service.py 范围声明），
 # 其它 exchange/market 组合直接跳过中心 API，不发请求。
 CENTRAL_MARKET_DATA_URL = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_URL", "").rstrip("/")
-CENTRAL_MARKET_DATA_KEY = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_KEY", "")
+CENTRAL_MARKET_DATA_TOKEN = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TOKEN", "")
 CENTRAL_MARKET_DATA_TIMEOUT_SEC = float(os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC", "5"))
+_raw_provider_revision = os.environ.get("CUTIE_PROVIDER_REVISION", "").strip()
+PROVIDER_REVISION = _raw_provider_revision if re.fullmatch(r"[0-9a-fA-F]{7,40}", _raw_provider_revision) else "unknown"
 CENTRAL_SUPPORTED_EXCHANGE = "binance"
 CENTRAL_SUPPORTED_MARKET = "spot"
 # 数据缺口容差：中心 API 返回条数 < 预期条数 * 该比例即视为缺口，回退 ccxt（不是硬失败）。
 CENTRAL_GAP_TOLERANCE_RATIO = 0.9
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never forward the central-market Bearer token through an HTTP redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ARG002
+        return None
+
+
+_CENTRAL_HTTP_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+_CENTRAL_STATS_LOCK = threading.Lock()
+_CENTRAL_FETCH_SUCCESS_COUNT = 0
+_CENTRAL_LAST_SUCCESS_AT = 0
 
 logger = logging.getLogger("cutie_backtesting_provider")
 
@@ -169,7 +185,7 @@ def _timeframe_milliseconds(timeframe: str) -> int:
     return value * multipliers[unit]
 
 
-def _read_cache(key: str) -> Optional[list]:
+def _read_cache(key: str) -> Optional[dict[str, Any]]:
     path = CACHE_DIR / key
     if not path.exists():
         return None
@@ -179,18 +195,41 @@ def _read_cache(key: str) -> Optional[list]:
         return None
     try:
         with open(path, "r") as f:
-            return json.load(f)
+            cached = json.load(f)
+        if isinstance(cached, list):
+            # Backward-compatible read of pre-provenance cache files.
+            return {"ohlcv": cached, "source": "legacy_ohlcv_cache", "central_market_data_used": None}
+        if isinstance(cached, dict) and isinstance(cached.get("ohlcv"), list):
+            return {
+                "ohlcv": cached["ohlcv"],
+                "source": str(cached.get("source") or "unknown_ohlcv_cache"),
+                "central_market_data_used": cached.get("central_market_data_used"),
+            }
+        return None
     except Exception as e:
         logger.warning("Cache read failed for %s: %s", key, e)
         return None
 
 
-def _write_cache(key: str, data: list) -> None:
+def _write_cache(
+    key: str,
+    data: list,
+    *,
+    source: str = DATA_SOURCE,
+    central_market_data_used: Optional[bool] = False,
+) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / key
     try:
         with open(path, "w") as f:
-            json.dump(data, f)
+            json.dump(
+                {
+                    "ohlcv": data,
+                    "source": source,
+                    "central_market_data_used": central_market_data_used,
+                },
+                f,
+            )
     except Exception as e:
         logger.warning("Cache write failed for %s: %s", key, e)
         return
@@ -225,6 +264,25 @@ def _expected_bar_count(timeframe: str, start_ms: int, end_ms: int) -> int:
     return max(0, (min(end_ms, int(time.time() * 1000)) - start_ms) // step_ms)
 
 
+def _record_central_fetch_success() -> None:
+    global _CENTRAL_FETCH_SUCCESS_COUNT, _CENTRAL_LAST_SUCCESS_AT
+    with _CENTRAL_STATS_LOCK:
+        _CENTRAL_FETCH_SUCCESS_COUNT += 1
+        _CENTRAL_LAST_SUCCESS_AT = int(time.time())
+
+
+def _central_health_snapshot() -> dict[str, int]:
+    with _CENTRAL_STATS_LOCK:
+        return {
+            "central_fetch_success_count": _CENTRAL_FETCH_SUCCESS_COUNT,
+            "central_last_success_at": _CENTRAL_LAST_SUCCESS_AT,
+        }
+
+
+def _central_market_data_auth_mode() -> str:
+    return "market_data_bearer" if CENTRAL_MARKET_DATA_URL and CENTRAL_MARKET_DATA_TOKEN else "disabled"
+
+
 # F7 修（Kimi review）：server 侧 handlers/internal/market_data.py 的 MAX_KLINE_RANGE_SECONDS
 # 单次请求跨度上限是 90 天，但 provider 的回测区间最长可达 365 天（EXECUTION_MAX_RANGE_DAYS）。
 # 此前 _fetch_from_central 整段区间打一次请求，长区间回测一律被 server 参数校验拒绝
@@ -253,7 +311,7 @@ def _fetch_from_central(
     拼接。任一分片失败/缺口即整体返回 None（回退 ccxt），维持"要么完整命中中心缓存要么
     整段走 ccxt"的语义——不会出现"前半段中心数据 + 后半段 ccxt 数据"拼出来的混合序列。
     """
-    if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_KEY:
+    if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_TOKEN:
         return None
     if exchange_id != CENTRAL_SUPPORTED_EXCHANGE or market != CENTRAL_SUPPORTED_MARKET:
         return None
@@ -277,6 +335,7 @@ def _fetch_from_central(
         all_rows.extend(chunk_rows)
         chunk_start = chunk_end
 
+    _record_central_fetch_success()
     return all_rows
 
 
@@ -294,10 +353,11 @@ def _fetch_central_chunk(
     }
     url = f"{CENTRAL_MARKET_DATA_URL}/klines?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(
-        url, headers={"X-Internal-Key": CENTRAL_MARKET_DATA_KEY, "Accept": "application/json"}
+        url,
+        headers={"Authorization": f"Bearer {CENTRAL_MARKET_DATA_TOKEN}", "Accept": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=CENTRAL_MARKET_DATA_TIMEOUT_SEC) as resp:
+        with _CENTRAL_HTTP_OPENER.open(req, timeout=CENTRAL_MARKET_DATA_TIMEOUT_SEC) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         if 500 <= e.code < 600:
@@ -437,12 +497,26 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
     cache_key = _cache_key(exchange_id, market, symbol, timeframe, start_ms, end_ms)
     cached = _read_cache(cache_key)
     if cached is not None:
-        ohlcv = cached
+        ohlcv = cached["ohlcv"]
+        actual_data_source = cached["source"]
+        central_market_data_used: Optional[bool] = cached["central_market_data_used"]
+        market_data_cache_hit = True
     elif (central_ohlcv := _fetch_from_central(exchange_id, market, symbol, timeframe, start_ms, end_ms)) is not None:
         # WS-7 Step 7.3：中心 API 命中，跳过 ccxt，直接写缓存。
         ohlcv = central_ohlcv
-        _write_cache(cache_key, ohlcv)
+        actual_data_source = "cutie_central_market_data"
+        central_market_data_used = True
+        market_data_cache_hit = False
+        _write_cache(
+            cache_key,
+            ohlcv,
+            source=actual_data_source,
+            central_market_data_used=central_market_data_used,
+        )
     else:
+        actual_data_source = DATA_SOURCE
+        central_market_data_used = False
+        market_data_cache_hit = False
         exchange_class = getattr(ccxt, exchange_id, None)
         if exchange_class is None:
             raise ValueError(f"Unsupported exchange: {exchange_id}")
@@ -494,7 +568,12 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
                 since = last_ts + timeframe_ms
 
         if ohlcv:
-            _write_cache(cache_key, ohlcv)
+            _write_cache(
+                cache_key,
+                ohlcv,
+                source=actual_data_source,
+                central_market_data_used=central_market_data_used,
+            )
 
     if not ohlcv:
         raise ValueError("NO_DATA")
@@ -508,6 +587,12 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
     # Ensure float dtype
     for col in ("Open", "High", "Low", "Close", "Volume"):
         df[col] = df[col].astype(float)
+
+    # Request-local provenance travels with the DataFrame, avoiding shared
+    # globals when concurrent backtests use different market-data sources.
+    df.attrs["cutie_data_source"] = actual_data_source
+    df.attrs["cutie_central_market_data_used"] = central_market_data_used
+    df.attrs["cutie_market_data_cache_hit"] = market_data_cache_hit
 
     return df
 
@@ -562,8 +647,21 @@ def _validation_failure(error_type: str, error_message: str, status_code: int = 
         "schema": RESPONSE_SCHEMA,
         "result_status": "failed",
         "provider_name": PROVIDER_NAME,
+        "provider_revision": PROVIDER_REVISION,
+        "central_market_data_used": None,
+        "central_market_data_auth_mode": _central_market_data_auth_mode(),
+        "market_data_cache_hit": False,
         "error_type": error_type,
         "error_message": error_message,
+        "raw_report": {
+            "market_data_provenance": {
+                "provider_revision": PROVIDER_REVISION,
+                "source": None,
+                "central_market_data_used": None,
+                "auth_mode": _central_market_data_auth_mode(),
+                "cache_hit": False,
+            }
+        },
     })
 
 
@@ -581,15 +679,27 @@ def _business_failure(
         "schema": RESPONSE_SCHEMA,
         "result_status": "failed",
         "provider_name": PROVIDER_NAME,
+        "provider_revision": PROVIDER_REVISION,
         "provider_run_id": f"bt_{run_id}",
         "engine_name": ENGINE_NAME,
         "engine_version": _engine_version(),
         "data_source": DATA_SOURCE,
+        "central_market_data_used": None,
+        "central_market_data_auth_mode": _central_market_data_auth_mode(),
+        "market_data_cache_hit": False,
         "error_type": error_type,
         "error_message": error_message,
         "assumptions": {},
         "limitations": limitations,
-        "raw_report": {},
+        "raw_report": {
+            "market_data_provenance": {
+                "provider_revision": PROVIDER_REVISION,
+                "source": None,
+                "central_market_data_used": None,
+                "auth_mode": _central_market_data_auth_mode(),
+                "cache_hit": False,
+            }
+        },
     })
 
 
@@ -1251,12 +1361,17 @@ async def health():
     data_ready = checks.get("ccxt", False) and checks.get("backtesting", False)
 
     if ok:
+        central_health = _central_health_snapshot()
         return JSONResponse({
             "ok": True,
             "provider_id": PROVIDER_ID,
+            "provider_revision": PROVIDER_REVISION,
             "engine_name": ENGINE_NAME,
             "engine_version": _engine_version(),
             "data_ready": data_ready,
+            "central_market_data_configured": bool(CENTRAL_MARKET_DATA_URL and CENTRAL_MARKET_DATA_TOKEN),
+            "central_market_data_auth_mode": _central_market_data_auth_mode(),
+            **central_health,
             "checked_at": int(time.time()),
         })
     else:
@@ -1550,7 +1665,7 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
 
         provider_summary = (
             f"{executed_name} on {symbol} {timeframe} ({market}), "
-            f"{exchange_id} public OHLCV, {candle_count} candles, "
+            f"{df.attrs.get('cutie_data_source', DATA_SOURCE)}, {candle_count} candles, "
             f"{trade_count} trades, return {total_return_pct:.2f}%"
         )
         if market == "futures":
@@ -1564,10 +1679,14 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
             "provider_name": PROVIDER_NAME,
+            "provider_revision": PROVIDER_REVISION,
             "provider_run_id": f"bt_{run_id}",
             "engine_name": ENGINE_NAME,
             "engine_version": _engine_version(),
-            "data_source": DATA_SOURCE,
+            "data_source": df.attrs.get("cutie_data_source", DATA_SOURCE),
+            "central_market_data_used": df.attrs.get("cutie_central_market_data_used"),
+            "central_market_data_auth_mode": _central_market_data_auth_mode(),
+            "market_data_cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
             "result_hash": result_hash,
             "report_url": report_url,
             "report_url_scope": "local_machine_only",
@@ -1608,6 +1727,13 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
             "raw_report": {
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,
+                "market_data_provenance": {
+                    "provider_revision": PROVIDER_REVISION,
+                    "source": df.attrs.get("cutie_data_source", DATA_SOURCE),
+                    "central_market_data_used": df.attrs.get("cutie_central_market_data_used"),
+                    "auth_mode": _central_market_data_auth_mode(),
+                    "cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
+                },
             },
         }))
 

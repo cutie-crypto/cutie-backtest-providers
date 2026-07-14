@@ -55,10 +55,16 @@ Configurable via environment (all optional):
 | `CUTIE_BACKTEST_PROVIDER_TOKEN` | `local-dev-token` | Bearer token |
 | `CUTIE_BACKTEST_SOURCE_ID` | `local-backtesting-py` / `local-freqtrade` | Connector source id |
 | `CUTIE_BACKTEST_SERVICE_NAME` | `cutie-*-provider.service` | systemd unit name |
+| `CUTIE_BACKTEST_MANAGED_INSTALL` | `0` | `1` requires a non-default persisted provider token |
 | `PYTHON_BIN` | `python3` | Python interpreter |
 
 backtesting.py-only: `CUTIE_BACKTEST_SUPPORTED_SYMBOLS`
 (`BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT`).
+Managed backtesting.py installs may also set `CUTIE_CENTRAL_MARKET_DATA_URL`,
+the independent read-only Bearer credential `CUTIE_CENTRAL_MARKET_DATA_TOKEN`,
+and `CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC` (default `5`, maximum `60`).
+The installer persists runtime credentials in a mode-`0600` environment file;
+re-running without credential variables preserves the existing values.
 
 Freqtrade-only: `CUTIE_FREQTRADE_EXCHANGE` (`okx`), `CUTIE_FREQTRADE_PAIRS`
 (`BTC/USDT`), `CUTIE_FREQTRADE_TIMEFRAMES` (`1h 4h`).
