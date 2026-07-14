@@ -65,8 +65,10 @@ MAX_CACHE_FILES = 500  # LRU 上限：超出按 mtime 删最旧文件（WS-7 Ste
 
 # WS-7 Step 7.3：中心行情数据服务（cutie-server /v1/internal/market-data/klines）。
 # 未配置 URL/token 时本 provider 完全走原有 ccxt 路径（向后兼容，不强制依赖中心服务）。
-# 中心缓存目前只覆盖 binance spot（见 cutie-server market_kline_cache_service.py 范围声明），
-# 其它 exchange/market 组合直接跳过中心 API，不发请求。
+# 62-1 F1：中心缓存覆盖 binance spot + futures（Binance USDT 永续，分源存储，见
+# cutie-server market_kline_cache_service.py 范围声明；server 侧 /klines 接受
+# market=spot|futures|swap，swap 归一为 futures），其它 exchange/market 组合直接
+# 跳过中心 API，不发请求。
 CENTRAL_MARKET_DATA_URL = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_URL", "").rstrip("/")
 CENTRAL_MARKET_DATA_TOKEN = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TOKEN", "")
 CENTRAL_MARKET_DATA_TIMEOUT_SEC = float(os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC", "5"))
@@ -74,7 +76,7 @@ CENTRAL_MARKET_DATA_USER_AGENT = f"cutie-backtest-provider/{PROVIDER_VERSION}"
 _raw_provider_revision = os.environ.get("CUTIE_PROVIDER_REVISION", "").strip()
 PROVIDER_REVISION = _raw_provider_revision if re.fullmatch(r"[0-9a-fA-F]{7,40}", _raw_provider_revision) else "unknown"
 CENTRAL_SUPPORTED_EXCHANGE = "binance"
-CENTRAL_SUPPORTED_MARKET = "spot"
+CENTRAL_SUPPORTED_MARKETS = frozenset({"spot", "futures"})
 # 数据缺口容差：中心 API 返回条数 < 预期条数 * 该比例即视为缺口，回退 ccxt（不是硬失败）。
 CENTRAL_GAP_TOLERANCE_RATIO = 0.9
 
@@ -82,8 +84,7 @@ CENTRAL_GAP_TOLERANCE_RATIO = 0.9
 # 后者必须与 TokenBeep 主仓 cutie-server/services/strategy_backtest_service.py 的
 # _CENTRAL_MARKET_SOURCES 完全一致——server 的逐 run 完整性门按此常量做身份核对，
 # 命名不一致会 fail-closed 拒绝升级 platform_managed（与数据内容是否正确无关，纯字符串
-# 核对）。futures 目前 _fetch_from_central 尚未支持（CENTRAL_SUPPORTED_MARKET 固定
-# "spot"），映射保留是为将来接入 Binance 永续中心行情时不必再改这里。
+# 核对）。futures 中心命中现已启用（见 CENTRAL_SUPPORTED_MARKETS），映射直接生效。
 RESULT_V2_SCHEMA = "cutie.backtest_result.v2"
 _CENTRAL_MARKET_SOURCES = {"spot": "binance_us", "futures": "binance_futures"}
 
@@ -321,7 +322,8 @@ def _fetch_from_central(
     """尝试从 cutie-server 中心行情 API 拉 K 线；任何失败/缺口都返回 None 触发 ccxt 回退。
 
     回退条件（附录 C.4）：超时 / 5xx / 数据缺口。未配置中心 API 或
-    exchange/market 不在中心缓存覆盖范围内（当前仅 binance spot）时直接跳过，不发请求。
+    exchange/market 不在中心缓存覆盖范围内（binance spot + futures，见
+    CENTRAL_SUPPORTED_MARKETS）时直接跳过，不发请求。
 
     HIGH-3 修（2a review）：中心 API（cutie-server market_kline_cache_service）内部把裸
     symbol 一律映射成 Binance **USDT** 交易对（COIN_TO_PAIR）。此前本函数把归一化后的
@@ -334,16 +336,23 @@ def _fetch_from_central(
     F7 修（Kimi review）：>90 天的区间按 `CENTRAL_MAX_CHUNK_MS` 分片串行调用中心 API 再
     拼接。任一分片失败/缺口即整体返回 None（回退 ccxt），维持"要么完整命中中心缓存要么
     整段走 ccxt"的语义——不会出现"前半段中心数据 + 后半段 ccxt 数据"拼出来的混合序列。
+
+    62-1 F1（futures 扩展）：quote 提取要先剥掉 `_normalize_ohlcv_symbol` 给 futures
+    加的 `:SETTLE` 后缀——futures 归一结果形如 `BTC/USDT:USDT`，若直接
+    partition("/") 取 quote 会得到 `USDT:USDT`，永远 != "USDT"，导致 futures 100%
+    误判非 USDT 计价对而被拒；本 provider 的 futures 归一约定 settle 恒等于 quote
+    （USDT 本位永续），所以 `:` 前半段才是真正要核对的计价币种。
     """
     if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_TOKEN:
         return None
-    if exchange_id != CENTRAL_SUPPORTED_EXCHANGE or market != CENTRAL_SUPPORTED_MARKET:
+    if exchange_id != CENTRAL_SUPPORTED_EXCHANGE or market not in CENTRAL_SUPPORTED_MARKETS:
         return None
 
     full_normalized = _normalize_ohlcv_symbol(symbol, market)
     if "/" not in full_normalized:
         return None
-    base, _, quote = full_normalized.partition("/")
+    base, _, quote_with_settle = full_normalized.partition("/")
+    quote = quote_with_settle.split(":", 1)[0]
     if quote != "USDT":
         # 中心 API 只服务 USDT 计价对；非 USDT quote 直接回退 ccxt，避免张冠李戴。
         return None
@@ -412,7 +421,7 @@ def _fetch_central_chunk(
         return None
     data = body.get("data") or {}
     if not data.get("available"):
-        # 组合不支持（如 market=swap）：非错误，静默回退 ccxt。
+        # exchange/symbol 组合中心缓存不覆盖：非错误，静默回退 ccxt。
         return None
     items = data.get("items") or []
     if not items:
