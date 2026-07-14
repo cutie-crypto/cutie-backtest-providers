@@ -195,6 +195,7 @@ def test_central_success_uses_bearer_and_records_canary_evidence(central_configu
     assert len(result) == 3
     assert result[0] == [0, 1.0, 2.0, 0.5, 1.5, 100.0]
     assert seen_headers["Authorization"] == "Bearer test-market-data-token"
+    assert seen_headers["User-agent"] == provider.CENTRAL_MARKET_DATA_USER_AGENT
     assert "x-internal-key" not in {name.lower() for name in seen_headers}
     assert provider._central_health_snapshot()["central_fetch_success_count"] == 1
     assert provider._central_health_snapshot()["central_last_success_at"] > 0
