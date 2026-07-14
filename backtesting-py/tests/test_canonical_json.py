@@ -64,6 +64,26 @@ def test_bool_serialized_as_json_literal_not_int():
     assert canonical_json({"t": True, "f": False}) == '{"f":false,"t":true}'
 
 
+def test_int_at_js_safe_integer_boundary_allowed():
+    """review C-L7：|v| <= 2^53-1 仍原样输出 JSON integer（未超出 JS 安全整数范围）。"""
+    assert canonical_json({"v": 2**53 - 1}) == '{"v":9007199254740991}'
+    assert canonical_json({"v": -(2**53 - 1)}) == '{"v":-9007199254740991}'
+
+
+def test_int_beyond_js_safe_integer_rejected():
+    """review C-L7 跨语言一致性：超出 JS 安全整数范围的 int fail-closed 拒绝，
+    不允许原样输出 integer——TS 实现会拒绝同样的值（JS number 表示不了），Python
+    若放行会产生跨语言不一致的 canonical 串/hash。调用方需先经
+    normalize_numbers_for_hash 转十进制字符串。
+    """
+    with pytest.raises(CanonicalJsonError):
+        canonical_json({"v": 2**53})
+    with pytest.raises(CanonicalJsonError):
+        canonical_json({"v": -(2**53)})
+    with pytest.raises(CanonicalJsonError):
+        canonical_json({"v": 2**63})
+
+
 @pytest.mark.parametrize(
     "raw,expected",
     [

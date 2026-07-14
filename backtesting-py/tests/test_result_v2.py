@@ -148,6 +148,57 @@ def test_trade_all_ten_keys_exactly():
 
 
 # ---------------------------------------------------------------------------
+# _internal_cash_dec：qty/pnl 折算比例分母全程 Decimal（review K1-M1/C-L8）
+# ---------------------------------------------------------------------------
+
+
+def test_internal_cash_dec_diverges_from_float_intermediate_path():
+    """close_max=55006.58864451 时，float 乘法（旧 bug 路径）产出 5500658864.450999，
+    Decimal 精确乘法（修复后）是 5500658864.451——最后三位分道扬镳，证明修复前后
+    真的是两个不同的值，不是同义重构。
+    """
+    close_max = 55006.58864451
+    initial_capital = Decimal("10000")
+
+    buggy_float_path = Decimal(str(max(float(initial_capital), close_max * 100_000.0)))
+    fixed_decimal_path = provider._internal_cash_dec(initial_capital, close_max)
+
+    assert buggy_float_path == Decimal("5500658864.450999")
+    assert fixed_decimal_path == Decimal("5500658864.451")
+    assert buggy_float_path != fixed_decimal_path  # 修复前后必须是不同的值
+
+
+def test_internal_cash_dec_uses_initial_capital_when_larger():
+    """close_max 很小、initial_capital 更大时，取 max 分支应为 initial_capital 本身
+    （精确 Decimal，不经过任何 float 往返）。"""
+    result = provider._internal_cash_dec(Decimal("999999"), close_max=1.0)
+    assert result == Decimal("999999")
+
+
+def test_internal_cash_dec_feeds_self_consistent_qty_pnl():
+    """即便分母（1/600000 之类）在 Decimal 除法里本身是非终止小数、要按 28 位有效数字
+    截断，_build_result_v2_trades 算出的 fee/slippage/pnl 仍必须严格满足 SPEC 公式
+    （用同一个 equity_scale_dec 反算自洽，不要求"零误差"，只要求内部一致）。
+    """
+    close_max = 60000.0  # 分母 6,000,000,000 含质因子 3，1/分母 是非终止小数
+    initial_capital = Decimal("10000")
+    internal_cash_dec = provider._internal_cash_dec(initial_capital, close_max)
+    equity_scale_dec = initial_capital / internal_cash_dec
+
+    trades_df = pd.DataFrame([_fake_trade_row(100.0, 110.0, 1000, START_AT, CLOSE_TS)])
+    trades = provider._build_result_v2_trades(
+        trades_df, equity_scale_dec, fee_bps=Decimal("10"), slippage_bps=Decimal("5")
+    )
+    t = trades[0]
+    entry, exit_, qty = Decimal(t["entry_price"]), Decimal(t["exit_price"]), Decimal(t["qty"])
+    expected_fee = (entry + exit_) * qty * Decimal("10") / Decimal(10000)
+    expected_slippage = (entry + exit_) * qty * Decimal("5") / Decimal(10000)
+    assert Decimal(t["fee"]) == expected_fee
+    assert Decimal(t["slippage"]) == expected_slippage
+    assert Decimal(t["pnl"]) == (exit_ - entry) * qty - expected_fee - expected_slippage
+
+
+# ---------------------------------------------------------------------------
 # equity_curve / max_drawdown
 # ---------------------------------------------------------------------------
 

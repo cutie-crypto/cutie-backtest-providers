@@ -1354,6 +1354,24 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
 # result.v2（SPEC 62-1 §2 冻结结构）：trades / equity_curve / metrics / data_manifest
 # ---------------------------------------------------------------------------
 
+def _internal_cash_dec(initial_capital: Decimal, close_max: float) -> Decimal:
+    """internal_cash 的 Decimal 版本（result.v2 qty/pnl 折算比例的分母）。
+
+    review K1-M1/C-L8：不能从 run_backtest 里那个 float internal_cash 反向
+    `Decimal(str(internal_cash))`——`close_max * 100_000.0` 这一步已经在 float 精度下
+    算完，Decimal 化只是把舍入后的浮点结果字符串化，不是"全程 Decimal"（示例：
+    close_max=55006.58864451 时 float 乘法产出 5500658864.450999，Decimal 精确乘法是
+    5500658864.451——最后三位分道扬镳，qty/pnl 折算比例会带着这份不属于 SPEC 契约
+    的误差）。
+
+    分子分母各自独立走 Decimal：`initial_capital` 是用户输入原值，本身已是精确
+    Decimal（不经过 float 往返）；`close_max` 本质是 float（行情数据自带），仍按项目
+    一贯做法用 str(float) 最短往返表示转 Decimal，但 *100000 这一步换成 Decimal
+    精确乘法（100000 是 10 的整数次幂，Decimal 乘法不产生任何舍入）。
+    """
+    return max(initial_capital, Decimal(str(close_max)) * Decimal("100000"))
+
+
 def _data_manifest_source(market: str, exchange_id: str, df: pd.DataFrame) -> str:
     """result.v2 data_manifest.source：本次请求的真实数据出处（不是路由判据猜测）。
 
@@ -1799,8 +1817,11 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(d
         # equity/PnL back to the user's capital. Percentage metrics are cash-invariant.
         user_capital = float(initial_capital)
         internal_cash = max(user_capital, float(df["Close"].max()) * 100_000.0)
-        # result.v2（SPEC §2）的 qty/pnl 公式全程 Decimal，折回用户真实资金规模的比例。
-        equity_scale_dec = initial_capital / Decimal(str(internal_cash))
+        # result.v2（SPEC §2）的 qty/pnl 公式全程 Decimal，折回用户真实资金规模的比例；
+        # 传给 Backtest() 引擎的 internal_cash 仍是上面那个 float（引擎内部本来就是
+        # float，不受此契约约束），两条路径分道扬镳，互不干扰。
+        internal_cash_dec = _internal_cash_dec(initial_capital, float(df["Close"].max()))
+        equity_scale_dec = initial_capital / internal_cash_dec
         bt = Backtest(
             df,
             StrategyClass,

@@ -74,6 +74,15 @@ def _serialize(value: Any, out: list[str]) -> None:
         out.append(_escape_string(value))
     elif isinstance(value, int):
         # bool 已在上方分支排除（Python bool 是 int 子类）
+        # review C-L7：超出 JS 安全整数范围的 int 在 TS 实现被拒绝（JS number 无法
+        # 精确表示），Python 原样输出 integer 会产生跨语言不一致的 hash——同样
+        # fail-closed，要求先经 normalize_numbers_for_hash 转十进制字符串。与
+        # cutie-server/utils/canonical_json.py 同步修（跨仓 canonical_json.v1 唯一权威）。
+        if abs(value) > _JS_MAX_SAFE_INTEGER:
+            raise CanonicalJsonError(
+                "canonical_json.v1 forbids integers outside the JS safe range (|v| > 2^53-1); "
+                "convert to a canonical decimal string first (normalize_numbers_for_hash)"
+            )
         out.append(str(value))
     elif isinstance(value, (float, Decimal)):
         raise CanonicalJsonError(
