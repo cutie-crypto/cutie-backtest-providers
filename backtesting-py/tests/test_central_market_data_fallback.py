@@ -5,8 +5,8 @@
 2. 中心 API 超时/网络错误：回退 ccxt
 3. 中心 API 5xx：回退 ccxt
 4. 中心 API 返回数据缺口：回退 ccxt
-5. 中心 API 命中：跳过 ccxt，直接用中心数据
-6. exchange/market 不在中心缓存覆盖范围（非 binance spot）：跳过中心请求，直接 ccxt
+5. 中心 API 命中：跳过 ccxt，直接用中心数据（spot + futures，62-1 F1）
+6. exchange/market 不在中心缓存覆盖范围（非 binance spot/futures）：跳过中心请求，直接 ccxt
 7. 缓存 LRU 上限：超过 MAX_CACHE_FILES 时删最旧文件
 """
 
@@ -76,12 +76,48 @@ def test_unsupported_exchange_skips_central_request(central_configured, monkeypa
     assert called["count"] == 0
 
 
-def test_unsupported_market_skips_central_request(central_configured, monkeypatch):
+def test_market_outside_central_coverage_skips_request(central_configured, monkeypatch):
+    """spot/futures 之外的 market 值（provider 侧不该出现，但 _fetch_from_central 自身
+    的覆盖范围判定要独立兜住）：跳过请求，不是失败。"""
+
     def fake_urlopen(*_a, **_kw):
-        raise AssertionError("should not call central API for futures market")
+        raise AssertionError("should not call central API for a market outside coverage")
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+    result = provider._fetch_from_central("binance", "margin", "BTCUSDT", "1h", 0, 3600_000)
+    assert result is None
+
+
+def test_futures_market_calls_central_when_configured(central_configured, monkeypatch):
+    """62-1 F1：futures（Binance USDT 永续）现已纳入中心缓存覆盖范围，
+    quote 提取要正确剥掉 _normalize_ohlcv_symbol 给 futures 加的 ":SETTLE" 后缀
+    （BTC/USDT:USDT -> quote=USDT，不是 USDT:USDT），否则会被误判非 USDT 计价对。
+    """
+    items = [{"open_time": 0, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}]
+    seen_params = {}
+
+    def fake_urlopen(request, **_kw):
+        seen_params.update(urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query))
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": items}})
 
     monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "futures", "BTCUSDT", "1h", 0, 3600_000)
+    assert result is not None
+    assert len(result) == 1
+    # 中心 API 只认裸 symbol（不含 /:SETTLE），market 原样透传为 "futures"。
+    assert seen_params["symbol"] == ["BTC"]
+    assert seen_params["market"] == ["futures"]
+
+
+def test_futures_non_usdt_quote_still_skips_central_request(central_configured, monkeypatch):
+    """futures 扩展不应连带放松 USDT-only 校验：非 USDT 计价对（如 ETH/BTC 永续）
+    仍应回退 ccxt，不冒充 USDT 永续查中心缓存。"""
+
+    def fake_urlopen(*_a, **_kw):
+        raise AssertionError("should not call central API for non-USDT futures quote")
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+    result = provider._fetch_from_central("binance", "futures", "ETHBTC", "1h", 0, 3600_000)
     assert result is None
 
 
@@ -350,6 +386,51 @@ def test_fetch_ohlcv_uses_central_and_skips_ccxt(central_configured, monkeypatch
     assert cached_df.attrs["cutie_central_market_data_used"] is True
     assert cached_df.attrs["cutie_market_data_cache_hit"] is True
     assert provider._central_health_snapshot()["central_fetch_success_count"] == 1
+
+
+def test_fetch_ohlcv_futures_central_hit_and_cache_isolated_from_spot(central_configured, monkeypatch):
+    """62-1 F1 端到端：futures 中心命中（跳过 ccxt）+ 同 symbol/timeframe/窗口的
+    spot/futures 磁盘缓存互不串扰——cache_key 含 market 维度，缓存文件必须分开，
+    重复读取各自读回自己的数据，不会把 futures 价格喂成 spot 的（或反之）。
+    """
+    def fake_urlopen(request, **_kw):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
+        market = qs["market"][0]
+        close = 111.0 if market == "futures" else 100.0
+        item = {"open_time": 0, "open": close, "high": close, "low": close, "close": close, "volume": 1.0}
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": [item]}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    fake_ccxt = MagicMock()
+
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("ccxt should not be called when central hits (spot or futures)")
+
+    fake_ccxt.binance = _fail_if_called
+    monkeypatch.setitem(sys.modules, "ccxt", fake_ccxt)
+
+    spot_df = provider._fetch_ohlcv("binance", "spot", "BTCUSDT", "1h", 0, 3600)
+    futures_df = provider._fetch_ohlcv("binance", "futures", "BTCUSDT", "1h", 0, 3600)
+
+    assert spot_df.attrs["cutie_central_market_data_used"] is True
+    assert futures_df.attrs["cutie_central_market_data_used"] is True
+    assert spot_df["Close"].iloc[0] == 100.0
+    assert futures_df["Close"].iloc[0] == 111.0
+
+    spot_key = provider._cache_key("binance", "spot", "BTCUSDT", "1h", 0, 3600_000)
+    futures_key = provider._cache_key("binance", "futures", "BTCUSDT", "1h", 0, 3600_000)
+    assert spot_key != futures_key
+    assert (provider.CACHE_DIR / spot_key).exists()
+    assert (provider.CACHE_DIR / futures_key).exists()
+
+    # 二次读取（走缓存）：各自读回自己的价格，缓存没有串市场。
+    spot_cached = provider._fetch_ohlcv("binance", "spot", "BTCUSDT", "1h", 0, 3600)
+    futures_cached = provider._fetch_ohlcv("binance", "futures", "BTCUSDT", "1h", 0, 3600)
+    assert spot_cached["Close"].iloc[0] == 100.0
+    assert spot_cached.attrs["cutie_market_data_cache_hit"] is True
+    assert futures_cached["Close"].iloc[0] == 111.0
+    assert futures_cached.attrs["cutie_market_data_cache_hit"] is True
 
 
 def test_cache_lru_enforced(monkeypatch, tmp_path):

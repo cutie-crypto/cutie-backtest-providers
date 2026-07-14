@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import urllib.parse
 from decimal import Decimal
 from pathlib import Path
 
@@ -29,6 +30,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cutie_backtesting_provider as provider  # noqa: E402
 from canonical_json import canonical_decimal_str, canonical_json_sha256  # noqa: E402
+
+
+class _FakeCentralResponse:
+    """最小 urlopen response 模拟：中心行情 klines 接口 JSON body。"""
+
+    def __init__(self, body: dict):
+        self._body = json.dumps(body).encode("utf-8")
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
 
 # ---------------------------------------------------------------------------
 # trades 公式：与 cutie-server test_strategy_backtest_validation.py 的金额数据集交叉验证
@@ -244,7 +261,7 @@ def test_data_manifest_source_central_hit_spot():
     assert provider._data_manifest_source("spot", "binance", df) == "binance_us"
 
 
-def test_data_manifest_source_central_hit_futures_mapping_reserved():
+def test_data_manifest_source_central_hit_futures():
     df = pd.DataFrame()
     df.attrs["cutie_central_market_data_used"] = True
     assert provider._data_manifest_source("futures", "binance", df) == "binance_futures"
@@ -426,6 +443,65 @@ def test_backtest_result_v2_no_trades_still_has_initial_equity_point(client, mon
     assert body["equity_curve"] == [{"ts": START_AT, "equity": "5000"}]
     assert body["metrics"] == {"total_return": "0", "max_drawdown": "0", "trade_count": 0}
     assert body["data_manifest"]["source"] == "ccxt:okx"
+
+
+def test_backtest_futures_central_hit_end_to_end_data_manifest_source(client, monkeypatch, tmp_path):
+    """62-1 F1 端到端：market=futures 走真实 central 命中路径（不走 _fetch_ohlcv 捷径），
+    验证 _normalize_ohlcv_symbol 的 ":SETTLE" 后缀剥离修复 +
+    data_manifest.source == "binance_futures"；ccxt 挂假失败探针确认真的没被调用。
+    """
+    monkeypatch.setattr(provider, "CENTRAL_MARKET_DATA_URL", "https://server.example.com/v1/internal/market-data")
+    monkeypatch.setattr(provider, "CENTRAL_MARKET_DATA_TOKEN", "test-token")
+    monkeypatch.setattr(provider, "CACHE_DIR", tmp_path / "cache" / "ohlcv")
+    monkeypatch.setattr(provider, "REPORTS_DIR", tmp_path / "reports")
+    from backtesting import Backtest
+    monkeypatch.setattr(Backtest, "plot", lambda self, **kwargs: None)
+
+    closes = [100.0, 103.0, 98.0, 106.0, 95.0, 108.0]
+
+    def fake_urlopen(request, **_kw):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
+        assert qs["market"][0] == "futures"
+        assert qs["symbol"][0] == "BTC"  # 裸 symbol，不含 /:SETTLE
+        items = [
+            {
+                "open_time": START_AT + i * 3600,
+                "open": c, "high": c + 2, "low": c - 2, "close": c, "volume": 10.0,
+            }
+            for i, c in enumerate(closes)
+        ]
+        return _FakeCentralResponse({"err_code": 100, "data": {"available": True, "count": len(items), "items": items}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("ccxt should not be called when futures central hits")
+
+    fake_ccxt_module = type(sys)("ccxt")
+    fake_ccxt_module.binance = _fail_if_called
+    monkeypatch.setitem(sys.modules, "ccxt", fake_ccxt_module)
+
+    end_at = START_AT + (len(closes) - 1) * 3600
+    resp = client.post("/cutie/backtest", json={
+        "backtest": {
+            "run_id": "v2_futures_central_1",
+            "provider_tool_id": "local.backtesting_py.ema_cross",
+            "provider_params": {"ema_fast": 2, "ema_slow": 3, "exchange": "binance"},
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "1h",
+            "start_at": START_AT,
+            "end_at": end_at,
+            "initial_capital": "10000",
+        },
+    })
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["result_status"] == "success", body
+    assert body["data_manifest"]["source"] == "binance_futures"
+    assert body["data_manifest"]["market"] == "futures"
+    assert body["data_manifest"]["kline_count"] == len(closes)
 
 
 # ---------------------------------------------------------------------------
