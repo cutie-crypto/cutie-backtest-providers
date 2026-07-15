@@ -23,6 +23,23 @@ POST /cutie/backtest      # Bearer auth. JSON body. Returns backtest result.
 
 See the Cutie Feature 37 W3.8 Provider Bridge IMPL in `cutie-docs` for the full schema specification. The provider source in this repository is a reference implementation of that contract.
 
+### StrategySpec v2 artifact execution
+
+The backtesting.py service also advertises
+`local.strategy_spec_v2.compiler` when `CUTIE_PROVIDER_REVISION` is a locked
+7–64 character lowercase Git revision. Unlike the seven legacy fixed-strategy
+tools, this tool consumes the complete
+`cutie.strategy_execution_request.v1` envelope and executes only the immutable
+`cutie.strategy_spec.v2` artifact it contains.
+
+The artifact path is fail-closed: hashes, capability revision, static types,
+operators, declared data sources, instrument rules, and result schemas must all
+match before data access or execution. It reads only declared central platform
+streams and never falls back to ccxt, a fixed strategy, or a default tool. The
+same deterministic `StrategyKernel.evaluate` method advances historical replay
+and future paper frames; the HTTP API currently accepts historical replay only.
+Legacy request bodies and their fixed tools remain unchanged.
+
 ## One-command install + self-check (recommended)
 
 Each provider ships a copy-and-run installer (`scripts/install-*-provider.sh`).

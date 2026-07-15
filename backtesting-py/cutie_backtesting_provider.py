@@ -32,6 +32,25 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from canonical_json import canonical_decimal_str, canonical_json_sha256
+from strategy_execution import (
+    CoverageInput,
+    build_artifact_response,
+    build_coverage_manifest,
+    is_strategy_execution_intent,
+    validate_execution_request,
+)
+from strategy_kernel import (
+    COMPILER_TOOL_ID,
+    ERR_CAPABILITY_MISMATCH,
+    ERR_COVERAGE_INCOMPLETE,
+    KernelExecutionError,
+    StrategyContractError,
+    build_frames,
+    capability_hash,
+    capability_payload,
+    initial_state,
+    simulate,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -74,7 +93,11 @@ CENTRAL_MARKET_DATA_TOKEN = os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TOKEN", ""
 CENTRAL_MARKET_DATA_TIMEOUT_SEC = float(os.environ.get("CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC", "5"))
 CENTRAL_MARKET_DATA_USER_AGENT = f"cutie-backtest-provider/{PROVIDER_VERSION}"
 _raw_provider_revision = os.environ.get("CUTIE_PROVIDER_REVISION", "").strip()
-PROVIDER_REVISION = _raw_provider_revision if re.fullmatch(r"[0-9a-fA-F]{7,40}", _raw_provider_revision) else "unknown"
+PROVIDER_REVISION = (
+    _raw_provider_revision
+    if re.fullmatch(r"[0-9a-f]{7,64}", _raw_provider_revision)
+    else "unknown"
+)
 CENTRAL_SUPPORTED_EXCHANGE = "binance"
 CENTRAL_SUPPORTED_MARKETS = frozenset({"spot", "futures"})
 # 数据缺口容差：中心 API 返回条数 < 预期条数 * 该比例即视为缺口，回退 ccxt（不是硬失败）。
@@ -742,6 +765,425 @@ def _business_failure(
             }
         },
     })
+
+
+def _artifact_capability_pair() -> Optional[tuple[dict[str, Any], str]]:
+    """Build the public capability only when the deployed revision is immutable."""
+    if not re.fullmatch(r"[0-9a-f]{7,64}", PROVIDER_REVISION):
+        return None
+    payload = capability_payload(PROVIDER_REVISION)
+    return payload, capability_hash(payload)
+
+
+def _artifact_failure(error: StrategyContractError) -> JSONResponse:
+    """Artifact errors expose only frozen symbols and redaction-safe structure."""
+    return JSONResponse(
+        content={
+            "result_status": "failed",
+            "provider_name": PROVIDER_NAME,
+            "provider_revision": PROVIDER_REVISION,
+            "engine_name": "strategy-kernel",
+            "engine_version": "1",
+            "error_type": error.code,
+            "error_message": f"{error.path}: {error.message}",
+            "error_detail": error.detail(),
+        }
+    )
+
+
+def _artifact_catalog_tool(
+    supported_symbols: list[str],
+    capability_pair: Optional[tuple[dict[str, Any], str]],
+) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "tool_id": COMPILER_TOOL_ID,
+        "kind": "external_http",
+        "name": "StrategySpec v2 Compiler",
+        "description": "Strict declarative StrategySpec v2 compiler and deterministic kernel.",
+        "wrapper_type": "python_inprocess",
+        "provider_name": PROVIDER_NAME,
+        "engine_name": "strategy-kernel",
+        "engine_version": "1",
+        "data_source": {
+            "type": "provider_reported",
+            "name": "cutie_central_market_data",
+            "description": "Declared-only platform K-lines and feature streams.",
+            "coverage_hint": "Exact artifact data requirements; no exchange fallback.",
+            "external_unverified": False,
+        },
+        "supported_symbols": supported_symbols,
+        "markets": ["spot", "futures"],
+        "timeframes": ["1h", "1d"],
+        "is_default": False,
+        "execution": {
+            "mode": "sync",
+            "timeout_ms": EXECUTION_TIMEOUT_MS,
+            "max_range_days": EXECUTION_MAX_RANGE_DAYS,
+            "max_parallel_runs": 1,
+            "async_supported": False,
+        },
+        "adapter": {
+            "requires_manual_export": False,
+            "working_dir_policy": "ephemeral_or_provider_managed",
+            "result_file_patterns": [],
+            "upstream_auth_local_only": True,
+        },
+        "param_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        },
+        "output_schema": {
+            "metrics": ["total_return", "max_drawdown", "trade_count"],
+            "artifacts": [],
+            "series": ["equity_curve"],
+            "tables": ["trades"],
+        },
+        "report_capabilities": {
+            "report_url": False,
+            "scope": "none",
+            "formats": [],
+            "retention_hint": "immutable callback evidence",
+        },
+        "failure_codes": [
+            "MARKET_UNSUPPORTED",
+            "ERR_STRATEGY_SPEC_INVALID",
+            "ERR_STRATEGY_SPEC_UNSUPPORTED",
+            "ERR_STRATEGY_CAPABILITY_MISMATCH",
+            "ERR_STRATEGY_COVERAGE_INCOMPLETE",
+            "ERR_STRATEGY_EXECUTION_BINDING_MISMATCH",
+        ],
+        "security": {
+            "network_scope": "openclaw_hermes_local_or_private",
+            "requires_user_secret": False,
+            "secrets_stay_local": True,
+            "live_trading": False,
+            "filesystem_paths_exposed": False,
+        },
+    }
+    if capability_pair is not None:
+        tool["strategy_execution_capability"] = capability_pair[0]
+        tool["strategy_execution_capability_hash"] = capability_pair[1]
+    return tool
+
+
+def _canonical_kline_rows(
+    ohlcv: list[Any], start_at: int, end_at: int
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for candle in ohlcv:
+        if not isinstance(candle, (list, tuple)) or len(candle) < 6:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                "$.data_streams.kline",
+                "central K-line row is malformed",
+            )
+        open_time = int(candle[0]) // 1000
+        if not start_at <= open_time < end_at:
+            continue
+        rows.append(
+            {
+                "open_time": open_time,
+                "open": canonical_decimal_str(str(candle[1])),
+                "high": canonical_decimal_str(str(candle[2])),
+                "low": canonical_decimal_str(str(candle[3])),
+                "close": canonical_decimal_str(str(candle[4])),
+                "volume": canonical_decimal_str(str(candle[5])),
+            }
+        )
+    rows.sort(key=lambda item: item["open_time"])
+    if not rows or len({item["open_time"] for item in rows}) != len(rows):
+        raise StrategyContractError(
+            ERR_COVERAGE_INCOMPLETE,
+            "$.data_streams.kline",
+            "central K-line stream is empty or contains duplicate timestamps",
+        )
+    return rows
+
+
+def _assert_contiguous(
+    rows: list[dict[str, Any]], timestamp_key: str, interval: str, path: str
+) -> None:
+    step = _timeframe_milliseconds(interval) // 1000
+    for previous, current in zip(rows, rows[1:]):
+        if current[timestamp_key] - previous[timestamp_key] != step:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                path,
+                "declared stream contains a gap",
+                required=previous[timestamp_key] + step,
+                actual=current[timestamp_key],
+            )
+
+
+def _fetch_artifact_klines(
+    requirement: dict[str, Any],
+    symbol: str,
+    start_at: int,
+    end_at: int,
+) -> list[dict[str, Any]]:
+    ohlcv = _fetch_from_central(
+        requirement["exchange"],
+        requirement["market"],
+        symbol,
+        requirement["interval"],
+        start_at * 1000,
+        end_at * 1000,
+    )
+    if ohlcv is None:
+        raise StrategyContractError(
+            ERR_COVERAGE_INCOMPLETE,
+            f"$.artifact_manifest.data_requirements.{requirement['stream_id']}",
+            "declared central K-line source is unavailable; fallback is forbidden",
+        )
+    rows = _canonical_kline_rows(ohlcv, start_at, end_at)
+    _assert_contiguous(
+        rows, "open_time", requirement["interval"], "$.data_streams.kline"
+    )
+    return rows
+
+
+def _fetch_artifact_metric_chunk(
+    *,
+    symbol: str,
+    metric: str,
+    interval: str,
+    exchange: str,
+    start_at: int,
+    end_at: int,
+) -> list[dict[str, Any]]:
+    if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_TOKEN:
+        return []
+    params = {
+        "symbol": re.sub(r"(?:USDT|USDC|BUSD)$", "", symbol.upper()),
+        "metric": metric,
+        "interval": interval,
+        "exchange": exchange,
+        "start_ts": start_at,
+        "end_ts": end_at,
+        "limit": 5000,
+    }
+    url = f"{CENTRAL_MARKET_DATA_URL}/metrics?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {CENTRAL_MARKET_DATA_TOKEN}",
+            "Accept": "application/json",
+            "User-Agent": CENTRAL_MARKET_DATA_USER_AGENT,
+        },
+    )
+    try:
+        with _CENTRAL_HTTP_OPENER.open(
+            request, timeout=CENTRAL_MARKET_DATA_TIMEOUT_SEC
+        ) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ):
+        return []
+    if body.get("err_code") != 100:
+        return []
+    return list((body.get("data") or {}).get("items") or [])
+
+
+def _fetch_artifact_features(
+    requirement: dict[str, Any],
+    strategy_spec: dict[str, Any],
+    symbol: str,
+    start_at: int,
+    end_at: int,
+) -> list[dict[str, Any]]:
+    feature = next(
+        (
+            item
+            for item in strategy_spec["features"]
+            if requirement["stream_id"].startswith(item["source_stream"] + ".")
+        ),
+        None,
+    )
+    if feature is None:
+        raise StrategyContractError(
+            ERR_COVERAGE_INCOMPLETE,
+            f"$.artifact_manifest.data_requirements.{requirement['stream_id']}",
+            "feature requirement does not bind a StrategySpec feature",
+        )
+    metric = feature["source_stream"].split(".", 1)[1]
+    exchange = (
+        "AGGREGATED"
+        if requirement["exchange"] == "all"
+        else requirement["exchange"].title()
+    )
+    raw_rows: list[dict[str, Any]] = []
+    chunk_seconds = 90 * 24 * 60 * 60
+    cursor = start_at
+    while cursor < end_at:
+        chunk_end = min(end_at, cursor + chunk_seconds)
+        raw_rows.extend(
+            _fetch_artifact_metric_chunk(
+                symbol=symbol,
+                metric=metric,
+                interval=requirement["interval"],
+                exchange=exchange,
+                start_at=cursor,
+                end_at=chunk_end,
+            )
+        )
+        cursor = chunk_end
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        try:
+            timestamp = int(raw["ts"])
+            value = canonical_decimal_str(str(raw["value"]))
+        except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                "$.data_streams.feature",
+                "central feature row is malformed",
+            ) from exc
+        if start_at <= timestamp < end_at:
+            rows.append({"ts": timestamp, "value": value})
+    rows.sort(key=lambda item: item["ts"])
+    if not rows or len({item["ts"] for item in rows}) != len(rows):
+        raise StrategyContractError(
+            ERR_COVERAGE_INCOMPLETE,
+            "$.data_streams.feature",
+            "declared feature stream is empty or contains duplicate timestamps",
+        )
+    _assert_contiguous(rows, "ts", requirement["interval"], "$.data_streams.feature")
+    revision = canonical_json_sha256(rows)
+    step = _timeframe_milliseconds(requirement["interval"]) // 1000
+    return [
+        {
+            "ts": item["ts"],
+            "value": item["value"],
+            "available_at": item["ts"] + step,
+            "revision": revision,
+        }
+        for item in rows
+    ]
+
+
+def _run_artifact_backtest(
+    body: dict[str, Any],
+    capability_pair: tuple[dict[str, Any], str],
+    connector_version: Optional[str],
+) -> JSONResponse:
+    try:
+        if not connector_version or len(connector_version) > 100:
+            raise StrategyContractError(
+                ERR_CAPABILITY_MISMATCH,
+                "$.headers.X-Cutie-Connector-Version",
+                "artifact execution requires a bounded Connector version",
+            )
+        validated = validate_execution_request(
+            body, capability_pair[0], capability_pair[1]
+        )
+        request = validated.request
+        params = request["execution_params"]
+        symbol = params["symbol"]
+        data_streams: dict[str, list[dict[str, Any]]] = {}
+        coverage_inputs: list[CoverageInput] = []
+        primary_rows: Optional[list[dict[str, Any]]] = None
+        primary_requirement: Optional[dict[str, Any]] = None
+        for requirement in request["artifact_manifest"]["data_requirements"]:
+            warmup_start = max(
+                0,
+                params["start_at"]
+                - requirement["warmup_bars"]
+                * (_timeframe_milliseconds(requirement["interval"]) // 1000),
+            )
+            if requirement["kind"] == "kline":
+                rows = _fetch_artifact_klines(
+                    requirement,
+                    symbol,
+                    (
+                        params["start_at"]
+                        if requirement["execution_role"] == "primary_execution_kline"
+                        else warmup_start
+                    ),
+                    params["end_at"],
+                )
+                if requirement["execution_role"] == "primary_execution_kline":
+                    primary_rows = rows
+                    primary_requirement = requirement
+            else:
+                rows = _fetch_artifact_features(
+                    requirement,
+                    request["strategy_spec"],
+                    symbol,
+                    warmup_start,
+                    params["end_at"],
+                )
+            data_streams[requirement["stream_id"]] = rows
+            checksum = canonical_json_sha256(rows)
+            timestamp_key = "open_time" if requirement["kind"] == "kline" else "ts"
+            coverage_inputs.append(
+                CoverageInput(
+                    requirement=requirement,
+                    checksum=checksum,
+                    revision=checksum,
+                    point_count=len(rows),
+                    actual_start_at=rows[0][timestamp_key],
+                    actual_end_at=rows[-1][timestamp_key],
+                    available_through=rows[-1][timestamp_key]
+                    + _timeframe_milliseconds(requirement["interval"]) // 1000,
+                )
+            )
+        if primary_rows is None or primary_requirement is None:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE, "$.data_streams", "primary K-line is missing"
+            )
+        expected_source = _CENTRAL_MARKET_SOURCES.get(primary_requirement["market"])
+        if primary_requirement["result_source"] != expected_source:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                "$.artifact_manifest.data_requirements.primary.result_source",
+                "declared result source differs from the actual central adapter",
+                required=expected_source,
+                actual=primary_requirement["result_source"],
+            )
+        primary_checksum = canonical_json_sha256(primary_rows)
+        data_manifest = {
+            "source": primary_requirement["result_source"],
+            "symbol": symbol,
+            "market": params["market"],
+            "timeframe": params["timeframe"],
+            "start_at": params["start_at"],
+            "end_at": params["end_at"],
+            "kline_count": len(primary_rows),
+            "checksum_algo": "sha256",
+            "checksum": primary_checksum,
+        }
+        coverage = build_coverage_manifest(request, coverage_inputs, data_manifest)
+        frames = build_frames(data_streams, coverage, validated.plan)
+        state = initial_state(validated.plan, params)
+        simulation = simulate(validated.plan, frames, state)
+        response = build_artifact_response(
+            request=request,
+            simulation=simulation,
+            data_manifest=data_manifest,
+            coverage_manifest=coverage,
+            capability=capability_pair[0],
+            provider_process_fingerprint=_process_fingerprint(),
+            connector_version=connector_version,
+            provider_name=PROVIDER_NAME,
+        )
+        return JSONResponse(content=response)
+    except (StrategyContractError, KernelExecutionError) as exc:
+        return _artifact_failure(exc)
+    except Exception:
+        logger.exception("Artifact strategy execution failed")
+        return _artifact_failure(
+            StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                "$.execution",
+                "artifact execution failed closed",
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1619,27 +2061,35 @@ async def health():
 
     data_ready = checks.get("ccxt", False) and checks.get("backtesting", False)
 
+    capability_pair = _artifact_capability_pair()
     if ok:
         central_health = _central_health_snapshot()
-        return JSONResponse({
-            "ok": True,
-            "provider_id": PROVIDER_ID,
-            "provider_revision": PROVIDER_REVISION,
-            "process_fingerprint": _process_fingerprint(),
-            "engine_name": ENGINE_NAME,
-            "engine_version": _engine_version(),
-            "data_ready": data_ready,
-            "central_market_data_configured": bool(CENTRAL_MARKET_DATA_URL and CENTRAL_MARKET_DATA_TOKEN),
-            "central_market_data_auth_mode": _central_market_data_auth_mode(),
-            **central_health,
-            "checked_at": int(time.time()),
-        })
+        return JSONResponse(
+            {
+                "ok": True,
+                "provider_id": PROVIDER_ID,
+                "provider_revision": PROVIDER_REVISION,
+                "process_fingerprint": _process_fingerprint(),
+                "engine_name": ENGINE_NAME,
+                "engine_version": _engine_version(),
+                "data_ready": data_ready,
+                "central_market_data_configured": bool(
+                    CENTRAL_MARKET_DATA_URL and CENTRAL_MARKET_DATA_TOKEN
+                ),
+                "central_market_data_auth_mode": _central_market_data_auth_mode(),
+                "strategy_execution_capability_available": capability_pair is not None,
+                **central_health,
+                "checked_at": int(time.time()),
+            }
+        )
     else:
-        return JSONResponse({
-            "ok": False,
-            "error_type": "DEPENDENCY_CHECK_FAILED",
-            "error_message": f"Failed checks: {checks}",
-        })
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_type": "DEPENDENCY_CHECK_FAILED",
+                "error_message": f"Failed checks: {checks}",
+            }
+        )
 
 
 @app.get("/catalog")
@@ -1648,31 +2098,57 @@ async def catalog(authorization: Optional[str] = Header(default=None)):
     _verify_bearer(authorization)
     supported_symbols = _supported_symbols()
 
-    return JSONResponse({
-        "schema": "cutie.backtest_provider_catalog.v1",
-        "provider": {
-            "provider_id": PROVIDER_ID,
-            "provider_name": PROVIDER_NAME,
-            "provider_version": PROVIDER_VERSION,
-            "homepage_url": PROVIDER_HOMEPAGE_URL,
-            "maintainer": PROVIDER_MAINTAINER,
-        },
-        "tools": [
-            _catalog_tool(tool_id, spec, supported_symbols)
-            for tool_id, spec in TOOL_SPECS.items()
-        ],
-    })
+    capability_pair = _artifact_capability_pair()
+    return JSONResponse(
+        {
+            "schema": "cutie.backtest_provider_catalog.v1",
+            "provider": {
+                "provider_id": PROVIDER_ID,
+                "provider_name": PROVIDER_NAME,
+                "provider_version": PROVIDER_VERSION,
+                "homepage_url": PROVIDER_HOMEPAGE_URL,
+                "maintainer": PROVIDER_MAINTAINER,
+            },
+            "tools": [
+                _catalog_tool(tool_id, spec, supported_symbols)
+                for tool_id, spec in TOOL_SPECS.items()
+            ]
+            + (
+                [_artifact_catalog_tool(supported_symbols, capability_pair)]
+                if capability_pair is not None
+                else []
+            ),
+        }
+    )
 
 
 @app.post("/cutie/backtest")
-async def run_backtest(request: Request, authorization: Optional[str] = Header(default=None)):
+async def run_backtest(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    x_cutie_connector_version: Optional[str] = Header(default=None),
+):
     """Execute backtest (IMPL §5.4 / §5.5)."""
     _verify_bearer(authorization)
 
     try:
         body = await request.json()
     except Exception:
-        return _validation_failure("INVALID_REQUEST", "Request body must be valid JSON", status_code=400)
+        return _validation_failure(
+            "INVALID_REQUEST", "Request body must be valid JSON", status_code=400
+        )
+
+    if is_strategy_execution_intent(body):
+        pair = _artifact_capability_pair()
+        if pair is None:
+            return _artifact_failure(
+                StrategyContractError(
+                    ERR_CAPABILITY_MISMATCH,
+                    "$.provider_revision",
+                    "artifact capability is unavailable until an immutable revision is configured",
+                )
+            )
+        return _run_artifact_backtest(body, pair, x_cutie_connector_version)
 
     bt_req = body.get("backtest", {})
     provider_info = body.get("provider", {})

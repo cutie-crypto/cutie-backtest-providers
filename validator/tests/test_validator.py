@@ -197,7 +197,7 @@ def run_validator(app: FastAPI, token: Optional[str] = TOKEN, tool_id: Optional[
     return validator.run()
 
 
-def _asgi_transport(app: FastAPI) -> ValidatorTransport:
+def _asgi_transport(app: FastAPI) -> "ValidatorTransport":  # noqa: F821
     # Build an ASGI transport directly from the in-memory app object.
     from cutie_backtest_provider_validator.transport import _AsgiTransport
 
@@ -305,6 +305,34 @@ def test_full_provider_revision_is_public_provenance_not_a_secret():
     )
     assert check_by_id(report, 1).passed
     assert check_by_id(report, 6).passed
+
+
+def test_64_character_provider_revision_and_capability_hash_are_public_provenance():
+    revision = "a" * 64
+    capability_hash = "b" * 64
+    report = run_validator(
+        make_provider(
+            tool_overrides={
+                "strategy_execution_capability_hash": capability_hash,
+            },
+            health_body={
+                "ok": True,
+                "provider_id": "mock",
+                "engine_name": "MockEngine",
+                "engine_version": "1.0.0",
+                "provider_revision": revision,
+            },
+            success_overrides={"provider_revision": revision},
+        )
+    )
+    assert check_by_id(report, 1).passed
+    assert check_by_id(report, 4).passed
+    assert check_by_id(report, 6).passed
+
+
+def test_capability_hash_under_unrelated_key_is_still_rejected_as_secret():
+    report = run_validator(make_provider(tool_overrides={"unrelated_hash": "b" * 64}))
+    assert not check_by_id(report, 4).passed
 
 
 def test_full_git_sha_under_unrelated_key_is_still_rejected_as_secret():
