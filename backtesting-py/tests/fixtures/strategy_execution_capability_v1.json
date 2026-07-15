@@ -1,6 +1,6 @@
 {
   "schema": "cutie.strategy_execution_capability_fixture.v1",
-  "source_of_truth": "TokenBeep/docs/features/62_KOL策略市场/fixtures/strategy_execution_capability_v1.json",
+  "source_of_truth": "Provider-local 62-2a Owner decision; TokenBeep shared fixture requires serial sync",
   "capability": {
     "schema": "cutie.strategy_execution_capabilities.v1",
     "provider_revision": "0123456789abcdef0123456789abcdef01234567",
@@ -62,11 +62,11 @@
       }
     ],
     "cost_models": ["cutie.execution_cost.v1"],
-    "data_transforms": ["combine_first.v1", "ffill_after_close.v1", "flow_dilution_shifted.v1"],
+    "data_transforms": [],
     "result_schemas": ["cutie.backtest_result.v2"],
     "coverage_schemas": ["cutie.strategy_coverage_manifest.v1"],
     "trace_schemas": ["cutie.strategy_execution_trace.v1"],
     "evidence_schemas": ["cutie.strategy_execution_evidence.v1"]
   },
-  "sha256": "1f6ad3b031a1854667781577dd74b5ffa8dfca6e204632ef4e5e6316b9ada05e"
+  "sha256": "ab659c29d5feb6f0691a1ef1a1a7a0b9db71619279ac4a397bd9b6c2a0e5f00a"
 }

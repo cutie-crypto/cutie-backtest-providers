@@ -381,16 +381,17 @@ def build_request(spec: dict) -> dict:
     }
 
 
-def test_shared_capability_fixture_exact_payload_and_hash():
+def test_provider_capability_fixture_exact_payload_and_hash():
     fixture = json.loads(CAPABILITY_FIXTURE.read_text(encoding="utf-8"))
     assert (
         capability_payload(fixture["capability"]["provider_revision"])
         == fixture["capability"]
     )
     assert capability_hash(fixture["capability"]) == fixture["sha256"]
+    assert fixture["capability"]["data_transforms"] == []
     assert (
         fixture["sha256"]
-        == "1f6ad3b031a1854667781577dd74b5ffa8dfca6e204632ef4e5e6316b9ada05e"
+        == "ab659c29d5feb6f0691a1ef1a1a7a0b9db71619279ac4a397bd9b6c2a0e5f00a"
     )
 
 
@@ -941,23 +942,29 @@ def test_artifact_endpoint_executes_compiled_plan_and_returns_hashed_evidence(
     )
 
 
-def test_blocker_advertised_transform_compiles_but_gap_execution_cannot_apply_it(
+@pytest.mark.parametrize(
+    "transform",
+    [
+        "combine_first.v1",
+        "ffill_after_close.v1",
+        "flow_dilution_shifted.v1",
+    ],
+)
+def test_unimplemented_transform_fails_at_capability_before_data_access(
+    transform,
     monkeypatch,
 ):
-    """Reproduce the owner-gated capability overclaim; this is not desired behavior."""
+    """62-2a advertises exact complete streams only; transforms belong to 62-2b."""
     monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
-    monkeypatch.setattr(
-        provider,
-        "_fetch_from_central",
-        lambda exchange, market, symbol, timeframe, start_ms, end_ms: [
-            [0, 100, 101, 99, 100, 1],
-            [7_200_000, 101, 102, 100, 101, 1],
-        ],
-    )
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("capability rejection must happen before data access")
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
     request = build_request(make_spec())
     manifest = request["artifact_manifest"]
-    manifest["data_requirements"][0]["allowed_transforms"] = ["combine_first.v1"]
-    manifest["capability_requirements"]["data_transforms"] = ["combine_first.v1"]
+    manifest["data_requirements"][0]["allowed_transforms"] = [transform]
+    manifest["capability_requirements"]["data_transforms"] = [transform]
     request["artifact"]["manifest_hash"] = canonical_json_sha256(manifest)
     request["artifact"]["artifact_hash"] = canonical_json_sha256(
         {
@@ -967,16 +974,29 @@ def test_blocker_advertised_transform_compiles_but_gap_execution_cannot_apply_it
         }
     )
 
-    compiled = compile_strategy(
-        request["strategy_spec"], manifest, capability_payload(REVISION)
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(
+            request["strategy_spec"], manifest, capability_payload(REVISION)
+        )
+
+    assert caught.value.code == ERR_SPEC_UNSUPPORTED
+    assert (
+        caught.value.path
+        == "$.artifact_manifest.capability_requirements.data_transforms"
     )
+    assert caught.value.required == transform
+    assert caught.value.actual == []
+
     response = TestClient(provider.app).post(
         "/cutie/backtest",
         json=request,
         headers={"X-Cutie-Connector-Version": "1.2.3"},
     )
 
-    assert compiled.artifact_hash == request["artifact"]["artifact_hash"]
     assert response.status_code == 200
-    assert response.json()["error_type"] == ERR_COVERAGE_INCOMPLETE
-    assert "coverage_manifest" not in response.json()
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_UNSUPPORTED
+    assert body["error_detail"]["path"] == caught.value.path
+    assert body["error_detail"]["required"] == transform
+    assert body["error_detail"]["actual"] == []
+    assert "coverage_manifest" not in body
