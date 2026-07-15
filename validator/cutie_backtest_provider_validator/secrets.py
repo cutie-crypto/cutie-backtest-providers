@@ -118,13 +118,28 @@ def is_public_provider_revision(key: str, value: Any) -> bool:
     Full git object IDs are high-entropy hexadecimal strings, so the generic
     token heuristic correctly rejects them everywhere else.  The explicitly
     named ``provider_revision`` field is public, non-secret provenance and is
-    allowed only when it has the reviewed 7-40 hex git-revision shape.
+    allowed only when it has the reviewed 7-64 lowercase-hex revision shape.
     """
 
     return (
         normalize_key_name(key) == "provider_revision"
         and isinstance(value, str)
-        and re.fullmatch(r"[0-9A-Fa-f]{7,40}", value) is not None
+        and re.fullmatch(r"[0-9a-f]{7,64}", value) is not None
+    )
+
+
+def is_public_contract_hash(key: str, value: Any) -> bool:
+    """Allow the explicitly named public capability digest only.
+
+    Contract hashes are provenance, not credentials.  Keep this exception
+    narrower than the generic SHA-256 shape so unrelated high-entropy values
+    remain findings.
+    """
+
+    return (
+        normalize_key_name(key) == "strategy_execution_capability_hash"
+        and isinstance(value, str)
+        and re.fullmatch(r"[0-9a-f]{64}", value) is not None
     )
 
 
@@ -146,9 +161,16 @@ def scan_for_secrets(value: Any, path: str = "$") -> List[Tuple[str, str, str]]:
             # buildSnapshotSecurity).
             if is_sensitive_key(str(key)) and isinstance(raw, str) and raw.strip():
                 findings.append(
-                    (child_path, "sensitive_key", f"key '{key}' carries a secret-like value")
+                    (
+                        child_path,
+                        "sensitive_key",
+                        f"key '{key}' carries a secret-like value",
+                    )
                 )
-            if not is_public_provider_revision(str(key), raw):
+            if not (
+                is_public_provider_revision(str(key), raw)
+                or is_public_contract_hash(str(key), raw)
+            ):
                 findings.extend(scan_for_secrets(raw, child_path))
     elif isinstance(value, list):
         for idx, item in enumerate(value):
