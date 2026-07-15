@@ -8,7 +8,7 @@
 
 本分支已实现 62-2a 的 Provider 本地基础：完整 StrategySpec v2/manifest 静态编译、Provider-local capability/hash、artifact execution wire 校验、历史 replay 与 future paper 共用的单一 `StrategyKernel.evaluate`、result.v2/trace/evidence 构造，以及 legacy 七个固定策略的兼容路由。
 
-当前结论为 **Provider-local Source + Local tests Pass，等待同一独立 reviewer 复验，不自行宣布验收通过**。candidate `d8f6878101f6322ac129e3f91c4b01cfd9193fa2` 经 reviewer task `019f6622-1f0f-7d32-b13b-f1517d54c45c` 判定 NOT ACCEPT；确认的两个 P1、一个 P2 已在原分支最小修复并加入回归。Owner 决定的 transform 收窄仍保持不变。本分支没有部署 Provider、没有接触 Pre、Fan、RN 或真实中心数据，因此这些证据仍为 **Blocked / Cannot assess**，不能由本地通过替代；TokenBeep 共享 fixture、Connector 和 Server 也尚未同步，不能把本记录解释为跨仓合同已经对齐。
+当前结论为 **Provider-local Source + Local tests Pass，等待同一独立 reviewer 复验，不自行宣布验收通过**。candidate `d8f6878101f6322ac129e3f91c4b01cfd9193fa2` 经 reviewer task `019f6622-1f0f-7d32-b13b-f1517d54c45c` 首次判定 NOT ACCEPT；两个 P1、一个 P2 的直接修复在复验中均通过，但修复 candidate `560b499085733c6bd6ff7c61448707a936019646` 又因 warmup 可绕过 365 天数据访问预算被同一 reviewer 判定 NOT ACCEPT。本次按 Owner 授权采用保守、fail-closed、最小且可回滚的收口并加入回归。Owner 决定的 transform 收窄仍保持不变。本分支没有部署 Provider、没有接触 Pre、Fan、RN 或真实中心数据，因此这些证据仍为 **Blocked / Cannot assess**，不能由本地通过替代；TokenBeep 共享 fixture、Connector 和 Server 也尚未同步，不能把本记录解释为跨仓合同已经对齐。
 
 ## 冻结合同与实现边界
 
@@ -30,7 +30,9 @@
 - P1，feature 90 天分块：中心 `/metrics` 使用 `start<=ts<=end` 闭区间；Provider 现在把本地 `[cursor, chunk_end)` 精确映射为远端 `[cursor, chunk_end-1]`，相邻分块不再重复边界点。90 天、90 天加一个日点、365 天分别验证 90/91/365 个精确点；真实重复或冲突 timestamp 仍返回 `ERR_STRATEGY_COVERAGE_INCOMPLETE`，没有用 dedupe 掩盖脏数据。
 - P1，artifact 最大区间：`EXECUTION_MAX_RANGE_DAYS=365` 移到 execution validator，并由 catalog 同源导入。恰好 365 天允许进入数据路径；365 天加 1 秒和 366 天均在任何 fetch 前返回 `ERR_STRATEGY_SPEC_INVALID`。没有再保留“只广告、不执行”的第二套常量。
 - P2，trusted execution params：`initial_state(validated.plan, params)` 前移到数据循环之前，后续 simulation 复用同一个 state。空 instrument rules、rules symbol mismatch、fee mismatch、slippage mismatch 均在任何中心抓数前失败关闭。
-- 同类搜索：Provider 内只有 `_fetch_artifact_features` 使用 `/metrics` 分块；K-line 使用另一 endpoint/adapter，未复用该闭区间路径。冻结 SPEC 明确允许 warmup bars，但没有授权把 warmup 纳入 365 天执行窗口或另设上限，因此本次未猜测扩大产品约束。
+- P1，warmup 数据访问预算：复验确认 execution 仅 1 天但 feature warmup 400 天时，旧 validator 会通过并开始中心分块调用。按 Owner 的保守决定，本次不另发明产品级 warmup 数字，而是复用 `EXECUTION_MAX_RANGE_DAYS=365` 作为每个 requirement 的实际 adapter data window 上限；编译和 artifact hash 绑定完成后，统一计算 `max(0, start_at - warmup_bars * interval)` 到 `end_at` 的窗口，超限时在任何 K-line/feature adapter 前返回 `ERR_STRATEGY_SPEC_INVALID`，path 稳定锚定 `$.artifact_manifest.data_requirements[i].warmup_bars`。
+- warmup 边界：总实际窗口恰好 365 天允许进入抓数，365 天加最小一个 interval step 在抓数前失败；365 天 execution 加任意正 warmup 保守失败，零 warmup 保持通过；冻结 SPEC 的 720h warmup 示例在合法短 execution 下仍可进入抓数。这是 62-2a 的保守预算收口，不代表未来合同不能显式扩展。
+- 同类搜索：Provider 内只有 `_fetch_artifact_features` 使用 `/metrics` 分块；K-line 使用另一 endpoint/adapter，未复用该闭区间路径。所有 artifact adapter 都由同一个 execution validator 前置，逐 requirement 的预算检查会在任一数据循环开始前完成。
 
 ## 本地实现检查
 
@@ -47,11 +49,11 @@
 
 | 层级 | 结果 | 命令 / 证据 |
 |---|---|---|
-| Focused compiler/kernel/API | Pass | `python3 -m pytest -q backtesting-py/tests/test_strategy_kernel.py` → `48 passed`；新增 11 个 case 覆盖 feature 90/91/365 天精确分块、冲突 duplicate、365 天边界、两个超限区间和四种 pre-fetch execution param 拒绝；既有 transform fail-closed、exact replay、paper tick、Decimal、exit/sizing、result.v2、trace/evidence 与 replay-frame conformance 同套通过 |
-| Provider + validator + installer tests | Pass | `PYTHONPATH=validator python3 -m pytest -q backtesting-py/tests validator/tests scripts/tests --import-mode=importlib` → `169 passed` |
+| Focused compiler/kernel/API | Pass | `python3 -m pytest -q backtesting-py/tests/test_strategy_kernel.py` → `53 passed`；在原 48 个 case 上新增 5 个 case，覆盖 1 天 execution + 400 天 feature warmup 的双 adapter 零调用、总实际窗口恰好 365 天与多一个 step、365 天 execution 的正 warmup 拒绝，以及 720h warmup + 合法短 execution；既有分块、参数前置拒绝、transform fail-closed、exact replay、paper tick、Decimal、exit/sizing、result.v2、trace/evidence 与 replay-frame conformance 同套通过 |
+| Provider + validator + installer tests | Pass | `PYTHONPATH=validator python3 -m pytest -q backtesting-py/tests validator/tests scripts/tests --import-mode=importlib` → `174 passed` |
 | Format | Pass | Black 对 `cutie_backtesting_provider.py` 的改动行 ranges 检查，对 `strategy_execution.py`、focused tests 全文件检查；isort `--check-only --profile black` 对三个改动 Python 文件通过 |
 | Lint | Pass | flake8 对三个改动 Python 文件通过；Provider 仅忽略仓库既有 `E501,E741,F841`，新模块/tests 仅按 Black 口径忽略 `E501` |
-| Diff hygiene | Pass | `git diff --check`、`git diff --cached --check`；提交后复跑 `8cfe18e..HEAD` 与 `d8f6878..HEAD` |
+| Diff hygiene | Pass | `git diff --check`、`git diff --cached --check`；提交后复跑 `8cfe18e..HEAD`、`d8f6878..HEAD` 与 `560b499..HEAD` |
 | Pre / deployed Provider | Blocked | 未部署、未读取节点 revision、未调用真实 catalog/backtest |
 | 中心数据 / transform | Cannot assess | 未调用真实 Binance Vision/中心 K 线/CoinGlass；无 Provider runtime evidence |
 | Fan / RN | Cannot assess | 不在本分支执行范围，未接触设备 |
