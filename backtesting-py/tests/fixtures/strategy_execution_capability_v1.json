@@ -1,0 +1,72 @@
+{
+  "schema": "cutie.strategy_execution_capability_fixture.v1",
+  "source_of_truth": "TokenBeep/docs/features/62_KOL策略市场/fixtures/strategy_execution_capability_v1.json",
+  "capability": {
+    "schema": "cutie.strategy_execution_capabilities.v1",
+    "provider_revision": "0123456789abcdef0123456789abcdef01234567",
+    "spec_schemas": ["cutie.strategy_spec.v2"],
+    "kernel_api_versions": ["1"],
+    "execution_modes": ["historical_replay", "paper_tick"],
+    "operators": [
+      {
+        "node": "arithmetic",
+        "op": "add",
+        "version": "1",
+        "signatures": [
+          {"arg_types": ["decimal", "decimal"], "return_type": "decimal"},
+          {"arg_types": ["integer", "integer"], "return_type": "integer"}
+        ]
+      },
+      {
+        "node": "compare",
+        "op": "gt",
+        "version": "1",
+        "signatures": [
+          {"arg_types": ["decimal", "decimal"], "return_type": "boolean"},
+          {"arg_types": ["integer", "integer"], "return_type": "boolean"}
+        ]
+      },
+      {
+        "node": "cross",
+        "op": "crosses_above",
+        "version": "1",
+        "signatures": [
+          {"arg_types": ["decimal", "decimal"], "return_type": "boolean"}
+        ]
+      }
+    ],
+    "feature_primitives": [
+      {
+        "primitive": "rolling_sum",
+        "version": "1",
+        "source_streams": ["coinglass.futures_cvd"],
+        "intervals": ["1d", "1h"],
+        "value_kinds": ["flow"],
+        "output_type": "decimal"
+      }
+    ],
+    "data_sources": [
+      {
+        "provider": "binance",
+        "storage_source": "central_klines",
+        "kinds": ["kline"],
+        "markets": ["futures"],
+        "result_sources": ["binance_futures"]
+      },
+      {
+        "provider": "coinglass",
+        "storage_source": "market_metrics_history",
+        "kinds": ["feature"],
+        "markets": ["futures"],
+        "result_sources": []
+      }
+    ],
+    "cost_models": ["cutie.execution_cost.v1"],
+    "data_transforms": ["combine_first.v1", "ffill_after_close.v1", "flow_dilution_shifted.v1"],
+    "result_schemas": ["cutie.backtest_result.v2"],
+    "coverage_schemas": ["cutie.strategy_coverage_manifest.v1"],
+    "trace_schemas": ["cutie.strategy_execution_trace.v1"],
+    "evidence_schemas": ["cutie.strategy_execution_evidence.v1"]
+  },
+  "sha256": "1f6ad3b031a1854667781577dd74b5ffa8dfca6e204632ef4e5e6316b9ada05e"
+}
