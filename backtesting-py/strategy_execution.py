@@ -22,6 +22,7 @@ from strategy_kernel import (
 )
 
 EXECUTION_REQUEST_SCHEMA = "cutie.strategy_execution_request.v1"
+EXECUTION_MAX_RANGE_DAYS = 365
 _REQUEST_KEYS = {
     "schema",
     "execution_mode",
@@ -281,6 +282,16 @@ def validate_execution_request(
             ERR_SPEC_INVALID,
             "$.execution_params",
             "end_at must be greater than start_at",
+        )
+    range_seconds = params["end_at"] - params["start_at"]
+    max_range_seconds = EXECUTION_MAX_RANGE_DAYS * 24 * 60 * 60
+    if range_seconds > max_range_seconds:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.execution_params",
+            "range exceeds the advertised Provider maximum",
+            required={"max_range_days": EXECUTION_MAX_RANGE_DAYS},
+            actual={"range_seconds": range_seconds},
         )
     _canonical_decimal(
         params["initial_capital"], "$.execution_params.initial_capital", positive=True
@@ -588,6 +599,7 @@ def _interval_seconds(interval: str) -> int:
 
 __all__ = [
     "CoverageInput",
+    "EXECUTION_MAX_RANGE_DAYS",
     "EXECUTION_REQUEST_SCHEMA",
     "ValidatedExecution",
     "build_artifact_response",

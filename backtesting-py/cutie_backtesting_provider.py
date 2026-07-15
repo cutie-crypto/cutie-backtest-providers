@@ -28,11 +28,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+from canonical_json import canonical_decimal_str, canonical_json_sha256
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-
-from canonical_json import canonical_decimal_str, canonical_json_sha256
 from strategy_execution import (
+    EXECUTION_MAX_RANGE_DAYS,
     CoverageInput,
     build_artifact_response,
     build_coverage_manifest,
@@ -73,7 +73,6 @@ DEFAULT_SUPPORTED_SYMBOLS = (
     "ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT"
 )
 EXECUTION_TIMEOUT_MS = 120000
-EXECUTION_MAX_RANGE_DAYS = 365
 
 BASE_DIR = Path(__file__).resolve().parent
 REPORTS_DIR = BASE_DIR / "reports"
@@ -1022,6 +1021,8 @@ def _fetch_artifact_features(
     cursor = start_at
     while cursor < end_at:
         chunk_end = min(end_at, cursor + chunk_seconds)
+        # The central /metrics API uses inclusive bounds. Map the Provider's local
+        # [cursor, chunk_end) slice to an inclusive request without boundary overlap.
         raw_rows.extend(
             _fetch_artifact_metric_chunk(
                 symbol=symbol,
@@ -1029,7 +1030,7 @@ def _fetch_artifact_features(
                 interval=requirement["interval"],
                 exchange=exchange,
                 start_at=cursor,
-                end_at=chunk_end,
+                end_at=chunk_end - 1,
             )
         )
         cursor = chunk_end
@@ -1084,6 +1085,7 @@ def _run_artifact_backtest(
         )
         request = validated.request
         params = request["execution_params"]
+        state = initial_state(validated.plan, params)
         symbol = params["symbol"]
         data_streams: dict[str, list[dict[str, Any]]] = {}
         coverage_inputs: list[CoverageInput] = []
@@ -1160,7 +1162,6 @@ def _run_artifact_backtest(
         }
         coverage = build_coverage_manifest(request, coverage_inputs, data_manifest)
         frames = build_frames(data_streams, coverage, validated.plan)
-        state = initial_state(validated.plan, params)
         simulation = simulate(validated.plan, frames, state)
         response = build_artifact_response(
             request=request,
