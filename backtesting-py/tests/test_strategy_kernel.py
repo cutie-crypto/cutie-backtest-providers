@@ -834,6 +834,82 @@ def test_initial_state_requires_trusted_instrument_rules():
     assert caught.value.code == ERR_SPEC_INVALID
 
 
+@pytest.mark.parametrize(
+    ("duration_days", "expected_chunks"),
+    [(90, 1), (91, 2), (365, 5)],
+)
+def test_feature_fetch_maps_closed_api_chunks_to_exact_half_open_stream(
+    duration_days,
+    expected_chunks,
+    monkeypatch,
+):
+    day_seconds = 24 * 60 * 60
+    requested_ranges: list[tuple[int, int]] = []
+
+    def fetch_chunk(**kwargs):
+        start_at = kwargs["start_at"]
+        end_at = kwargs["end_at"]
+        requested_ranges.append((start_at, end_at))
+        first_point = ((start_at + day_seconds - 1) // day_seconds) * day_seconds
+        return [
+            {"ts": timestamp, "value": str(timestamp // day_seconds)}
+            for timestamp in range(first_point, end_at + 1, day_seconds)
+        ]
+
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_chunk)
+    rows = provider._fetch_artifact_features(
+        {
+            "stream_id": "coinglass.futures_cvd.1d",
+            "exchange": "binance",
+            "interval": "1d",
+        },
+        {"features": [{"source_stream": "coinglass.futures_cvd"}]},
+        "BTCUSDT",
+        0,
+        duration_days * day_seconds,
+    )
+
+    assert len(rows) == duration_days
+    assert [row["ts"] for row in rows] == [
+        index * day_seconds for index in range(duration_days)
+    ]
+    assert len(requested_ranges) == expected_chunks
+    assert all(
+        end_at - start_at + 1 <= 90 * day_seconds
+        for start_at, end_at in requested_ranges
+    )
+    assert all(
+        previous_end + 1 == current_start
+        for (_, previous_end), (current_start, _) in zip(
+            requested_ranges, requested_ranges[1:]
+        )
+    )
+
+
+def test_feature_fetch_does_not_mask_conflicting_duplicate_points(monkeypatch):
+    monkeypatch.setattr(
+        provider,
+        "_fetch_artifact_metric_chunk",
+        lambda **kwargs: [{"ts": 0, "value": "1"}, {"ts": 0, "value": "2"}],
+    )
+
+    with pytest.raises(StrategyContractError) as caught:
+        provider._fetch_artifact_features(
+            {
+                "stream_id": "coinglass.futures_cvd.1d",
+                "exchange": "binance",
+                "interval": "1d",
+            },
+            {"features": [{"source_stream": "coinglass.futures_cvd"}]},
+            "BTCUSDT",
+            0,
+            24 * 60 * 60,
+        )
+
+    assert caught.value.code == ERR_COVERAGE_INCOMPLETE
+    assert caught.value.path == "$.data_streams.feature"
+
+
 def test_catalog_only_compiler_tool_advertises_artifact_capability(monkeypatch):
     monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
     response = TestClient(provider.app).get("/catalog")
@@ -899,6 +975,104 @@ def test_execution_identity_bounds_fail_closed(monkeypatch, field_path, value):
 
     assert response.status_code == 200
     assert response.json()["error_type"] == ERR_SPEC_INVALID
+
+
+def test_artifact_range_limit_allows_exactly_365_days(monkeypatch):
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    calls: list[tuple[int, int]] = []
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        calls.append((start_ms, end_ms))
+        return [[0, 100, 101, 99, 100, 1]]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    request = build_request(make_spec())
+    request["execution_params"]["end_at"] = 365 * 24 * 60 * 60
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert calls == [(0, request["execution_params"]["end_at"] * 1000)]
+    assert response.status_code == 200
+    assert response.json()["error_type"] == ERR_COVERAGE_INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    "range_seconds",
+    [365 * 24 * 60 * 60 + 1, 366 * 24 * 60 * 60],
+)
+def test_artifact_range_over_365_days_fails_before_data_access(
+    range_seconds,
+    monkeypatch,
+):
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("range validation must happen before data access")
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    request = build_request(make_spec())
+    request["execution_params"]["end_at"] = range_seconds
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert body["error_detail"]["path"] == "$.execution_params"
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_path"),
+    [
+        ("empty_rules", "$.execution_params.provider_params.instrument_rules"),
+        (
+            "rule_symbol_mismatch",
+            "$.execution_params.provider_params.instrument_rules.symbol",
+        ),
+        ("fee_mismatch", "$.execution_params"),
+        ("slippage_mismatch", "$.execution_params"),
+    ],
+)
+def test_artifact_execution_params_fail_before_data_access(
+    case,
+    expected_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("execution params must be validated before data access")
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    request = build_request(make_spec())
+    params = request["execution_params"]
+    if case == "empty_rules":
+        params["provider_params"]["instrument_rules"] = {}
+    elif case == "rule_symbol_mismatch":
+        params["provider_params"]["instrument_rules"]["symbol"] = "ETHUSDT"
+    elif case == "fee_mismatch":
+        params["fee_bps"] = "11"
+    else:
+        params["slippage_bps"] = "6"
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert body["error_detail"]["path"] == expected_path
 
 
 def test_artifact_endpoint_executes_compiled_plan_and_returns_hashed_evidence(
