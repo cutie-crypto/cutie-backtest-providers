@@ -1086,7 +1086,7 @@ def _validate_manifest(
 
 
 def capability_payload(provider_revision: str) -> dict[str, Any]:
-    """Return the shared initial capability fixture exact-set.
+    """Return the Provider-local 62-2a capability exact-set.
 
     ``binance_futures`` is the 62-1 result source even when the central adapter
     obtains the files from Binance Vision.
@@ -1155,11 +1155,7 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
             },
         ],
         "cost_models": ["cutie.execution_cost.v1"],
-        "data_transforms": [
-            "combine_first.v1",
-            "ffill_after_close.v1",
-            "flow_dilution_shifted.v1",
-        ],
+        "data_transforms": [],
         "result_schemas": [RESULT_SCHEMA],
         "coverage_schemas": ["cutie.strategy_coverage_manifest.v1"],
         "trace_schemas": ["cutie.strategy_execution_trace.v1"],

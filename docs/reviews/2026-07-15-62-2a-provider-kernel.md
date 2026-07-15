@@ -6,24 +6,24 @@
 
 ## 结论
 
-本分支已实现 62-2a 的 Provider 本地基础：完整 StrategySpec v2/manifest 静态编译、共享 capability/hash、artifact execution wire 校验、历史 replay 与 future paper 共用的单一 `StrategyKernel.evaluate`、result.v2/trace/evidence 构造，以及 legacy 七个固定策略的兼容路由。
+本分支已实现 62-2a 的 Provider 本地基础：完整 StrategySpec v2/manifest 静态编译、Provider-local capability/hash、artifact execution wire 校验、历史 replay 与 future paper 共用的单一 `StrategyKernel.evaluate`、result.v2/trace/evidence 构造，以及 legacy 七个固定策略的兼容路由。
 
-当前结论为 **Source + Local tests Pass，交付 Owner-gated / Blocked**。共享 capability fixture 广告了三种 synthetic transform，但本分支没有实现它们；这会造成 capability overclaim，不能在未解决合同冲突前合并、部署或宣称 62-2a 可用。当前 commit 仅保存 blocked candidate。本分支也没有部署 Provider、没有接触 Pre、Fan、RN 或真实中心数据，因此这些证据均为 **Blocked / Cannot assess**，不能由本地通过替代。
+当前结论为 **Provider-local Source + Local tests Pass，等待独立只读复验与串行合入**。Owner 已决定 62-2a 暂不声明三种 synthetic transform，只支持 exact complete streams；Provider producer、fixture/hash 和 compile/API fail-closed 测试已按该决定收窄。本分支没有部署 Provider、没有接触 Pre、Fan、RN 或真实中心数据，因此这些证据仍为 **Blocked / Cannot assess**，不能由本地通过替代；TokenBeep 共享 fixture、Connector 和 Server 也尚未同步，不能把本记录解释为跨仓合同已经对齐。
 
 ## 冻结合同与实现边界
 
-- 只读对照 TokenBeep 的 `SPEC_策略工件与统一执行契约.md`、`IMPL_策略接入与不可变版本.md` 和共享 capability fixture。
-- Provider 本地 fixture 与当前共享 fixture 一致：`binance_futures`，SHA-256 `1f6ad3b031a1854667781577dd74b5ffa8dfca6e204632ef4e5e6316b9ada05e`。该通用 capability 的 Owner 签字当前未找到，不能把 fixture 存在解释为 Owner 已批准。
+- 只读对照 TokenBeep 的 `SPEC_策略工件与统一执行契约.md`、`IMPL_策略接入与不可变版本.md` 和共享 capability fixture；冻结 SPEC 未修改。
+- Provider 本地 fixture 保留 `binance_futures` 等 62-2a exact-set，但 `data_transforms=[]`，新 SHA-256 为 `ab659c29d5feb6f0691a1ef1a1a7a0b9db71619279ac4a397bd9b6c2a0e5f00a`。该 hash 仅代表 Provider-local payload；TokenBeep 共享 fixture 仍需后续串行生成并同步其消费者。
 - 只有 `local.strategy_spec_v2.compiler` 在 immutable lowercase revision 下出现并声明 capability；七个 legacy tool 不声明 artifact capability。revision 未锁定时 compiler tool 不进入 catalog。
 - artifact-shaped 或 partial artifact 请求一律 fail-closed，不回退 fixed tool、ccxt 或默认策略。
-- 当前共享 capability 仍是 exact subset（binary `add`、`gt`、`crosses_above`）。编译器和 kernel 已实现 `add/mul/min/max` 变参 `>=2`、`sub/div/compare/cross` 固定二元、`abs` 固定一元；只有 capability 精确出现实际 `arg_types` 长度的签名时才可执行，不从二元签名推断三元签名。
+- 当前 Provider capability 是 exact subset（binary `add`、`gt`、`crosses_above`）。编译器和 kernel 已实现 `add/mul/min/max` 变参 `>=2`、`sub/div/compare/cross` 固定二元、`abs` 固定一元；只有 capability 精确出现实际 `arg_types` 长度的签名时才可执行，不从二元签名推断三元签名。
 
-## Owner-gated 合同冲突
+## Owner 决策与本次增量
 
-- `data_requirements[*].allowed_transforms` 会被原样投影到 `capability_requirements.data_transforms`，compile 只检查它是否是当前 capability 的成员。
-- 当前 capability payload 无条件列出 `combine_first.v1`、`ffill_after_close.v1` 和 `flow_dilution_shifted.v1`，所以带这些 allowed transform 的 artifact 会 compile 通过。
-- execution 没有 transform dispatcher 或 synthetic frame builder；exact rows 完整时可以不使用 transform 而成功，出现需要 synthetic 补齐的缺口时直接返回 `ERR_STRATEGY_COVERAGE_INCOMPLETE`，coverage 的 `transforms` 永远为空。
-- 因 capability 在 SPEC 中表示实际支持，这不是可接受的“安全降级”，而是 compile 可用性判断的假阳性。最小兼容方案是由 Owner 决定：要么在 62-2b 实现和零前视 fixture 完成前从共享 capability/fixture 移除三项并生成新 hash；要么把三种 transform 及其签字参数来源纳入当前交付。当前不能猜测修改。
+- Owner 决定：62-2a 暂不声明 `combine_first.v1`、`ffill_after_close.v1`、`flow_dilution_shifted.v1`；62-2b 真正实现并验证零前视语义后，才能升级 fixture/hash 恢复声明。
+- `capability_payload()` 与 Provider fixture 都明确输出 `data_transforms=[]`；catalog producer、execution validator 和 evidence 继续复用同一 payload/hash，没有另一个隐式广告源。
+- `data_requirements[*].allowed_transforms` 仍按冻结 manifest 结构投影到 `capability_requirements.data_transforms`。三项 canonical transform 名称可被 manifest parser 识别，但因不在 Provider capability 中，会在 `compile_strategy()` 的 capability membership 检查稳定返回 `ERR_STRATEGY_SPEC_UNSUPPORTED`；HTTP 路径同样在任何中心数据访问前失败关闭。
+- empty transforms 的 exact-complete-stream artifact 继续通过；本次没有加入 transform dispatcher、synthetic frame builder、coverage transform 记录或任何 62-2b/62-2c 生产逻辑。
 
 ## 本地实现检查
 
@@ -34,15 +34,16 @@
 - execution request 的 11-key exact-set、Snowflake string、artifact/spec/manifest/capability/revision/result-contract 绑定；Server 注入的 trusted `instrument_rules` exact object。
 - result.v2 五键、trade 十键、coverage/trace/evidence 和各 canonical hash；中心数据声明不匹配、空流、gap、未覆盖完整对齐区间均失败关闭。
 - validator 仅对白名单字段放行 7..64 lowercase `provider_revision` 与 64 lowercase `strategy_execution_capability_hash`；同形状值放在无关字段仍被 secret scan 拒绝。
+- 已搜索 Provider repo 内 `capability_payload`、`capability_hash`、catalog `strategy_execution_capability*`、execution `expected_capability_hash`、fixture、focused tests 与 review 的全部使用点；producer 与 Provider-local fixture/hash 同步收窄，未发现第二套 transform capability producer。
 
 ## 验证证据
 
 | 层级 | 结果 | 命令 / 证据 |
 |---|---|---|
-| Focused compiler/kernel/API | Pass | `python3 -m pytest -q backtesting-py/tests/test_strategy_kernel.py` → `35 passed`；其中一条 blocker reproduction 明确证明 allowed transform compile pass、gap execution coverage fail |
-| Provider + validator + installer tests | Pass | `PYTHONPATH=validator python3 -m pytest -q backtesting-py/tests validator/tests scripts/tests --import-mode=importlib` → `156 passed` |
-| Format | Pass | Black check：新 Strategy 模块、focused tests、validator secret scanner；isort `--profile black` 同范围 |
-| Lint | Pass | flake8：新模块/tests/validator；既有 Provider 文件沿用仓库现状并忽略既有 `E741,F841`，其余通过 |
+| Focused compiler/kernel/API | Pass | `python3 -m pytest -q backtesting-py/tests/test_strategy_kernel.py` → `37 passed`；三项未实现 transform 分别验证 compile 与 HTTP capability 阶段拒绝，数据抓取探针未触发；既有 exact-complete-stream replay、paper tick、Decimal、exit/sizing、result.v2、trace/evidence 与 replay-frame conformance 同套通过 |
+| Provider + validator + installer tests | Pass | `PYTHONPATH=validator python3 -m pytest -q backtesting-py/tests validator/tests scripts/tests --import-mode=importlib` → `158 passed` |
+| Format | Pass | `python3 -m black --check backtesting-py/strategy_kernel.py backtesting-py/tests/test_strategy_kernel.py`；isort `--check-only --profile black` 同范围 |
+| Lint | Pass | `python3 -m flake8 --extend-ignore=E501 backtesting-py/strategy_kernel.py backtesting-py/tests/test_strategy_kernel.py`；保留 Black 88 列口径 |
 | Diff hygiene | Pass | `git diff --check`；提交前另跑 `git diff --cached --check` |
 | Pre / deployed Provider | Blocked | 未部署、未读取节点 revision、未调用真实 catalog/backtest |
 | 中心数据 / transform | Cannot assess | 未调用真实 Binance Vision/中心 K 线/CoinGlass；无 Provider runtime evidence |
@@ -52,8 +53,8 @@
 
 ## 残余风险与后续边界
 
-1. 62-2b 的 coverage 目录、真实 freshness/gap incident、`combine_first.v1`、`ffill_after_close.v1`、`flow_dilution_shifted.v1` 及零前视 fixtures 尚未实现。本分支只允许 exact complete streams；需要 synthetic transform 时会 fail-closed，不能视为 62-2b 完成。
-2. 当前共享 capability/fixture 与实现存在上述 overclaim，且通用 capability Owner 签字未找到；这是合并/验收 blocker，不是可留到部署阶段的普通残余风险。blocked candidate commit 不代表批准或可合并。
+1. 62-2b 的 coverage 目录、真实 freshness/gap incident、`combine_first.v1`、`ffill_after_close.v1`、`flow_dilution_shifted.v1` 及零前视 fixtures 尚未实现。本分支只允许 exact complete streams；任何上述 transform 请求都在 capability 阶段 fail-closed，不能视为 62-2b 完成。
+2. TokenBeep 共享 capability fixture、Connector 与 Server 仍需由编排器后续串行同步并分别验证；在此之前可能存在旧 hash/旧 transform 列表的跨仓不一致。本 Provider-local commit 不代表共享 fixture 已更新，也不代表跨仓验收完成。
 3. `funding=included` 因 result.v2 无 funding ledger，按冻结合同返回 unsupported。
 4. paper runner 未部署；本地 `paper_tick` 只证明与 replay 共用同一 `evaluate` 及 ledger，不证明 62-3 runtime。
 5. 上线前仍需 immutable revision 下的真实 `/health`、`/catalog`、artifact request、Connector callback/readback 和 Pre 证据。
