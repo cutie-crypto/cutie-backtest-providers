@@ -381,6 +381,43 @@ def build_request(spec: dict) -> dict:
     }
 
 
+def build_feature_request() -> dict:
+    feature = {
+        "key": "cvd_1h",
+        "primitive": "rolling_sum",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": 1},
+        "required": True,
+    }
+    condition = {
+        "node": "cross",
+        "op": "crosses_above",
+        "left": {"node": "feature", "key": "cvd_1h", "lag_bars": 0},
+        "right": _literal("1.5"),
+    }
+    return build_request(make_spec(condition=condition, features=[feature]))
+
+
+def set_request_warmup(request: dict, stream_id: str, warmup_bars: int) -> None:
+    manifest = request["artifact_manifest"]
+    requirement = next(
+        item for item in manifest["data_requirements"] if item["stream_id"] == stream_id
+    )
+    requirement["warmup_bars"] = warmup_bars
+    request["artifact"]["manifest_hash"] = canonical_json_sha256(manifest)
+    request["artifact"]["artifact_hash"] = canonical_json_sha256(
+        {
+            "schema": "cutie.strategy_artifact_digest.v1",
+            "spec_hash": request["artifact"]["spec_hash"],
+            "manifest_hash": request["artifact"]["manifest_hash"],
+        }
+    )
+
+
 def test_provider_capability_fixture_exact_payload_and_hash():
     fixture = json.loads(CAPABILITY_FIXTURE.read_text(encoding="utf-8"))
     assert (
@@ -1027,6 +1064,154 @@ def test_artifact_range_over_365_days_fails_before_data_access(
     body = response.json()
     assert body["error_type"] == ERR_SPEC_INVALID
     assert body["error_detail"]["path"] == "$.execution_params"
+
+
+def test_feature_warmup_400_days_fails_before_any_adapter(monkeypatch):
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    calls = {"kline": 0, "feature": 0}
+
+    def fail_kline(*args, **kwargs):
+        calls["kline"] += 1
+        raise AssertionError("warmup budget must be checked before K-line access")
+
+    def fail_feature(**kwargs):
+        calls["feature"] += 1
+        raise AssertionError("warmup budget must be checked before feature access")
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_kline)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fail_feature)
+    request = build_feature_request()
+    day_seconds = 24 * 60 * 60
+    request["execution_params"]["start_at"] = 400 * day_seconds
+    request["execution_params"]["end_at"] = 401 * day_seconds
+    set_request_warmup(
+        request,
+        "coinglass.futures_cvd.1h",
+        400 * 24,
+    )
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert calls == {"kline": 0, "feature": 0}
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert (
+        body["error_detail"]["path"]
+        == "$.artifact_manifest.data_requirements[1].warmup_bars"
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_warmup_steps", "expected_fetches", "expected_error"),
+    [(0, 1, ERR_COVERAGE_INCOMPLETE), (1, 0, ERR_SPEC_INVALID)],
+)
+def test_requirement_adapter_window_enforces_365_day_budget(
+    extra_warmup_steps,
+    expected_fetches,
+    expected_error,
+    monkeypatch,
+):
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    fetches = 0
+
+    def unavailable_kline(*args, **kwargs):
+        nonlocal fetches
+        fetches += 1
+        return None
+
+    monkeypatch.setattr(provider, "_fetch_from_central", unavailable_kline)
+    request = build_feature_request()
+    hour_seconds = 60 * 60
+    warmup_bars = 364 * 24 + extra_warmup_steps
+    request["execution_params"]["start_at"] = warmup_bars * hour_seconds
+    request["execution_params"]["end_at"] = (
+        request["execution_params"]["start_at"] + 24 * hour_seconds
+    )
+    set_request_warmup(
+        request,
+        "coinglass.futures_cvd.1h",
+        warmup_bars,
+    )
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert fetches == expected_fetches
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == expected_error
+    if extra_warmup_steps:
+        assert (
+            body["error_detail"]["path"]
+            == "$.artifact_manifest.data_requirements[1].warmup_bars"
+        )
+
+
+def test_365_day_execution_with_positive_warmup_fails_before_fetch(monkeypatch):
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    fetches = 0
+
+    def unavailable_kline(*args, **kwargs):
+        nonlocal fetches
+        fetches += 1
+        return None
+
+    monkeypatch.setattr(provider, "_fetch_from_central", unavailable_kline)
+    request = build_request(make_spec())
+    hour_seconds = 60 * 60
+    request["execution_params"]["start_at"] = hour_seconds
+    request["execution_params"]["end_at"] = hour_seconds + 365 * 24 * hour_seconds
+    set_request_warmup(request, "binance.futures.kline.1h", 1)
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert fetches == 0
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert (
+        body["error_detail"]["path"]
+        == "$.artifact_manifest.data_requirements[0].warmup_bars"
+    )
+
+
+def test_spec_example_720_hour_warmup_with_short_execution_enters_fetch(monkeypatch):
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    fetches = 0
+
+    def unavailable_kline(*args, **kwargs):
+        nonlocal fetches
+        fetches += 1
+        return None
+
+    monkeypatch.setattr(provider, "_fetch_from_central", unavailable_kline)
+    request = build_feature_request()
+    hour_seconds = 60 * 60
+    request["execution_params"]["start_at"] = 720 * hour_seconds
+    request["execution_params"]["end_at"] = 744 * hour_seconds
+    set_request_warmup(request, "coinglass.futures_cvd.1h", 720)
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert fetches == 1
+    assert response.status_code == 200
+    assert response.json()["error_type"] == ERR_COVERAGE_INCOMPLETE
 
 
 @pytest.mark.parametrize(

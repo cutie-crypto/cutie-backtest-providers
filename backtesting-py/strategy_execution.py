@@ -384,6 +384,25 @@ def validate_execution_request(
             "$.artifact",
             "compiled hashes differ from execution binding",
         )
+    for index, requirement in enumerate(plan.artifact_manifest["data_requirements"]):
+        step_seconds = _interval_seconds(requirement["interval"])
+        effective_start = max(
+            0,
+            params["start_at"] - requirement["warmup_bars"] * step_seconds,
+        )
+        data_window_seconds = params["end_at"] - effective_start
+        if data_window_seconds > max_range_seconds:
+            _error(
+                ERR_SPEC_INVALID,
+                f"$.artifact_manifest.data_requirements[{index}].warmup_bars",
+                "warmup expands adapter data window beyond the Provider maximum",
+                required={"max_range_days": EXECUTION_MAX_RANGE_DAYS},
+                actual={
+                    "effective_start": effective_start,
+                    "end_at": params["end_at"],
+                    "range_seconds": data_window_seconds,
+                },
+            )
     return ValidatedExecution(copy.deepcopy(request), plan)
 
 
