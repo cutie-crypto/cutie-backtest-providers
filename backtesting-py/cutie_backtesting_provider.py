@@ -1102,11 +1102,7 @@ def _run_artifact_backtest(
                 rows = _fetch_artifact_klines(
                     requirement,
                     symbol,
-                    (
-                        params["start_at"]
-                        if requirement["execution_role"] == "primary_execution_kline"
-                        else warmup_start
-                    ),
+                    warmup_start,
                     params["end_at"],
                 )
                 if requirement["execution_role"] == "primary_execution_kline":
@@ -1148,7 +1144,16 @@ def _run_artifact_backtest(
                 required=expected_source,
                 actual=primary_requirement["result_source"],
             )
-        primary_checksum = canonical_json_sha256(primary_rows)
+        # SPEC §7.5: result.v2 data_manifest proves the evaluation window only;
+        # warmup_bars widens the fetch (above) so the kernel has lookback
+        # history, but must not widen the nine-key evidence the Connector
+        # cross-checks against coverage.actual_range for the primary stream.
+        primary_evaluation_rows = [
+            row
+            for row in primary_rows
+            if params["start_at"] <= row["open_time"] < params["end_at"]
+        ]
+        primary_checksum = canonical_json_sha256(primary_evaluation_rows)
         data_manifest = {
             "source": primary_requirement["result_source"],
             "symbol": symbol,
@@ -1156,7 +1161,7 @@ def _run_artifact_backtest(
             "timeframe": params["timeframe"],
             "start_at": params["start_at"],
             "end_at": params["end_at"],
-            "kline_count": len(primary_rows),
+            "kline_count": len(primary_evaluation_rows),
             "checksum_algo": "sha256",
             "checksum": primary_checksum,
         }

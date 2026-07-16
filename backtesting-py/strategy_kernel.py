@@ -2334,11 +2334,15 @@ class StrategyKernel:
         state.last_exit_index = index
 
     def evaluate(self, state: KernelState, frame: FeatureFrame) -> dict[str, Any]:
-        """Advance one closed frame; the same method is used by replay and paper."""
-        if (
-            frame.bar_open_at < state.execution_start_at
-            or frame.bar_close_at > state.execution_end_at
-        ):
+        """Advance one closed frame; the same method is used by replay and paper.
+
+        Frames with ``bar_open_at`` before ``execution_start_at`` are warmup
+        frames: they are validated and appended to ``state.frames`` so lagged
+        feature/cross lookups have history by the first evaluation frame, but
+        they are returned before any entry/exit decision logic runs and can
+        never open, hold, or close a position.
+        """
+        if frame.bar_close_at > state.execution_end_at:
             raise KernelExecutionError(
                 ERR_COVERAGE_INCOMPLETE,
                 "$.frame",
@@ -2391,6 +2395,12 @@ class StrategyKernel:
         state.frames.append(frame)
         index = len(state.frames) - 1
         before = len(state.decisions)
+        if frame.bar_open_at < state.execution_start_at:
+            return {
+                "next_state": state,
+                "decisions": copy.deepcopy(state.decisions[before:]),
+                "diagnostics": copy.deepcopy(state.diagnostics),
+            }
         held_from_previous_frame = state.position is not None
         self._open_pending(state, frame, index)
         if held_from_previous_frame and state.position is not None:
