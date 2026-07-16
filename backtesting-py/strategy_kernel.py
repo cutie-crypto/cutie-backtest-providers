@@ -59,6 +59,14 @@ _DECIMAL_CONTEXT.traps[Overflow] = True
 _DECIMAL_CONTEXT.traps[Underflow] = True
 _JS_SAFE_INT = 2**53 - 1
 
+# SPEC §5.5 (2026-07-17 增补, 62-2b Phase 1): kline-sourced feature namespace.
+_KLINE_PRIMARY_PREFIX = "kline.primary."
+_KLINE_PRIMARY_FIELDS = {"open", "high", "low", "close"}
+_KLINE_PRIMARY_COARSE_INTERVALS = {"4h", "1d"}
+_KLINE_PRIMARY_COARSE_BASE_TIMEFRAME = "1h"
+# The four feature primitives §5.5 registers; param shapes are frozen cross-provider.
+_KNOWN_PRIMITIVES = {"rolling_sum", "rolling_quantile", "rsi_wilder", "rolling_extreme"}
+
 _SPEC_KEYS = {
     "schema",
     "strategy_family",
@@ -470,7 +478,8 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
     if not isinstance(obj["params"], dict):
         _raise(f"{path}.params", "must be an object")
     _canonical_scalar_tree(obj["params"], f"{path}.params")
-    if obj["primitive"] == "rolling_sum":
+    primitive = obj["primitive"]
+    if primitive == "rolling_sum":
         params = _exact(obj["params"], {"window_bars"}, f"{path}.params")
         _safe_int(
             params["window_bars"],
@@ -478,6 +487,57 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
             minimum=1,
             maximum=10000,
         )
+    elif primitive == "rolling_quantile":
+        params = _exact(
+            obj["params"], {"window_bars", "quantile", "min_periods"}, f"{path}.params"
+        )
+        window_bars = _safe_int(
+            params["window_bars"],
+            f"{path}.params.window_bars",
+            minimum=2,
+            maximum=10000,
+        )
+        quantile = _canonical_decimal(params["quantile"], f"{path}.params.quantile")
+        if not (Decimal(0) < quantile < Decimal(1)):
+            _raise(
+                f"{path}.params.quantile",
+                "must be strictly between 0 and 1",
+                actual=params["quantile"],
+            )
+        _safe_int(
+            params["min_periods"],
+            f"{path}.params.min_periods",
+            minimum=1,
+            maximum=window_bars,
+        )
+    elif primitive == "rsi_wilder":
+        params = _exact(obj["params"], {"period"}, f"{path}.params")
+        _safe_int(params["period"], f"{path}.params.period", minimum=2, maximum=1000)
+    elif primitive == "rolling_extreme":
+        params = _exact(obj["params"], {"window_bars", "mode"}, f"{path}.params")
+        _safe_int(
+            params["window_bars"],
+            f"{path}.params.window_bars",
+            minimum=1,
+            maximum=10000,
+        )
+        if params["mode"] not in {"min", "max"}:
+            _raise(f"{path}.params.mode", "must be min or max", actual=params["mode"])
+    source_stream = obj["source_stream"]
+    if source_stream.startswith(_KLINE_PRIMARY_PREFIX):
+        field = source_stream[len(_KLINE_PRIMARY_PREFIX) :]
+        if field not in _KLINE_PRIMARY_FIELDS:
+            _raise(
+                f"{path}.source_stream",
+                "kline.primary field must be open/high/low/close",
+                actual=source_stream,
+            )
+        if obj["value_kind"] != "price":
+            _raise(
+                f"{path}.value_kind",
+                "kline.primary source requires price value_kind",
+                actual=obj["value_kind"],
+            )
     return key, obj["output_type"]
 
 
@@ -660,6 +720,31 @@ def _validate_spec(
         {item[0] for item in feature_pairs}, key=lambda x: x.encode("utf-16-be")
     ):
         _raise("$.strategy_spec.features", "must be sorted and duplicate-free by key")
+    for index, feature in enumerate(obj["features"]):
+        source_stream = feature["source_stream"]
+        if not source_stream.startswith(_KLINE_PRIMARY_PREFIX):
+            continue
+        if feature["interval"] == market["timeframe"]:
+            continue
+        # §5.5 as-of rule: coarse kline.primary features are Phase-1 gated to a
+        # 1h primary decision timeframe resampled to 4h/1d targets only.
+        if (
+            market["timeframe"] != _KLINE_PRIMARY_COARSE_BASE_TIMEFRAME
+            or feature["interval"] not in _KLINE_PRIMARY_COARSE_INTERVALS
+        ):
+            _raise(
+                f"$.strategy_spec.features[{index}].interval",
+                "kline.primary coarse feature requires a 1h primary timeframe "
+                "and a 4h/1d target interval",
+                required={
+                    "primary_timeframe": _KLINE_PRIMARY_COARSE_BASE_TIMEFRAME,
+                    "target_intervals": sorted(_KLINE_PRIMARY_COARSE_INTERVALS),
+                },
+                actual={
+                    "primary_timeframe": market["timeframe"],
+                    "feature_interval": feature["interval"],
+                },
+            )
     parameters = dict(parameter_pairs)
     features = dict(feature_pairs)
     operators: list[dict[str, Any]] = []
@@ -965,6 +1050,7 @@ def _validate_data_requirements(
                 "combine_first.v1",
                 "ffill_after_close.v1",
                 "flow_dilution_shifted.v1",
+                "ohlcv_resample.v1",
             }
             for item in transforms
         ):
@@ -1002,6 +1088,117 @@ def _validate_data_requirements(
             "requires exactly one primary K-line",
         )
     return requirements
+
+
+def _matched_requirement(
+    spec: dict[str, Any],
+    requirements: list[dict[str, Any]],
+    feature: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """The physical data_requirement backing `feature`'s source_stream/
+    interval: the primary K-line itself for a kline.primary passthrough
+    feature (interval == primary timeframe, §5.5 "不产生新 stream"), or the
+    matching feature-kind requirement otherwise (same convention build_frames
+    uses: stream_id prefixed by source_stream + ".", exact interval match)."""
+    if (
+        feature["source_stream"].startswith(_KLINE_PRIMARY_PREFIX)
+        and feature["interval"] == spec["market"]["timeframe"]
+    ):
+        return next(
+            (
+                item
+                for item in requirements
+                if item["execution_role"] == "primary_execution_kline"
+            ),
+            None,
+        )
+    return next(
+        (
+            item
+            for item in requirements
+            if item["stream_id"].startswith(feature["source_stream"] + ".")
+            and item["interval"] == feature["interval"]
+        ),
+        None,
+    )
+
+
+def _validate_rsi_warmup(
+    spec: dict[str, Any], requirements: list[dict[str, Any]]
+) -> None:
+    """SPEC §5.5 rsi_wilder: "warmup 必须 ≥10×period 个源 bar（种子效应收敛要求，
+    compile 期校验）" — the seed-convergence requirement is on the *source*
+    bars feeding the primitive, i.e. the physical requirement's own
+    warmup_bars (in that requirement's own interval units), not a separate
+    per-feature field.
+    """
+    for index, feature in enumerate(spec["features"]):
+        if feature["primitive"] != "rsi_wilder":
+            continue
+        requirement = _matched_requirement(spec, requirements, feature)
+        if requirement is None:
+            continue
+        period = feature["params"]["period"]
+        if requirement["warmup_bars"] < 10 * period:
+            _raise(
+                f"$.strategy_spec.features[{index}].params.period",
+                "rsi_wilder requires warmup_bars >= 10x period for seed "
+                "convergence",
+                required=10 * period,
+                actual=requirement["warmup_bars"],
+            )
+
+
+def _validate_kline_primary_requirements(
+    spec: dict[str, Any], requirements: list[dict[str, Any]]
+) -> None:
+    """SPEC §5.5 binds two exact requirement shapes for kline.primary
+    features that must be rejected at compile, not left for the Provider's
+    runtime predicate to misclassify:
+
+    - a passthrough feature (interval == primary timeframe) must never have
+      a data_requirement of its own ("不产生新 stream，不需要 transform"); the
+      Provider's fetch-time predicate (matching by source_stream prefix and
+      interval, same convention as here) cannot distinguish an illegally
+      declared one from a legitimate coarse requirement once it exists, so an
+      illegal one must never reach execution.
+    - a coarse feature (interval != primary timeframe)'s matched requirement
+      must declare ``ohlcv_resample.v1`` in its own ``allowed_transforms``:
+      §4.2 binds transform selection into the artifact hash via spec_hash,
+      so a requirement missing the declaration must fail closed rather than
+      have the Provider resample it anyway at runtime.
+    """
+    market_timeframe = spec["market"]["timeframe"]
+    for feature in spec["features"]:
+        source_stream = feature["source_stream"]
+        if not source_stream.startswith(_KLINE_PRIMARY_PREFIX):
+            continue
+        matching = [
+            item
+            for item in requirements
+            if item["kind"] == "feature"
+            and item["stream_id"].startswith(source_stream + ".")
+            and item["interval"] == feature["interval"]
+        ]
+        if feature["interval"] == market_timeframe:
+            if matching:
+                _raise(
+                    f"$.artifact_manifest.data_requirements[{matching[0]['stream_id']}]",
+                    "kline.primary passthrough feature must not declare a "
+                    "separate data requirement",
+                    actual=matching[0]["stream_id"],
+                )
+            continue
+        for requirement in matching:
+            if "ohlcv_resample.v1" not in requirement["allowed_transforms"]:
+                _raise(
+                    f"$.artifact_manifest.data_requirements[{requirement['stream_id']}]"
+                    ".allowed_transforms",
+                    "coarse kline.primary requirement must declare "
+                    "ohlcv_resample.v1",
+                    required="ohlcv_resample.v1",
+                    actual=requirement["allowed_transforms"],
+                )
 
 
 def _derived_requirements(
@@ -1074,6 +1271,8 @@ def _validate_manifest(
         _raise("$.artifact_manifest.provenance_policy", "must equal exact_set")
     _validate_sources(obj["source_materials"])
     requirements = _validate_data_requirements(spec, obj["data_requirements"])
+    _validate_rsi_warmup(spec, requirements)
+    _validate_kline_primary_requirements(spec, requirements)
     _exact(
         obj["capability_requirements"],
         _CAPABILITY_REQUIREMENT_KEYS,
@@ -1143,19 +1342,61 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
         "operators": operators,
         "feature_primitives": [
             {
+                "primitive": "rolling_extreme",
+                "version": "1",
+                "source_streams": [
+                    "coinglass.futures_cvd",
+                    "kline.primary.close",
+                    "kline.primary.high",
+                    "kline.primary.low",
+                    "kline.primary.open",
+                ],
+                "intervals": ["1d", "1h", "4h"],
+                "value_kinds": ["flow", "price"],
+                "output_type": "decimal",
+            },
+            {
+                "primitive": "rolling_quantile",
+                "version": "1",
+                "source_streams": [
+                    "coinglass.futures_cvd",
+                    "kline.primary.close",
+                    "kline.primary.high",
+                    "kline.primary.low",
+                    "kline.primary.open",
+                ],
+                "intervals": ["1d", "1h", "4h"],
+                "value_kinds": ["flow", "price"],
+                "output_type": "decimal",
+            },
+            {
                 "primitive": "rolling_sum",
                 "version": "1",
                 "source_streams": ["coinglass.futures_cvd"],
                 "intervals": ["1d", "1h"],
                 "value_kinds": ["flow"],
                 "output_type": "decimal",
-            }
+            },
+            {
+                "primitive": "rsi_wilder",
+                "version": "1",
+                "source_streams": [
+                    "coinglass.futures_cvd",
+                    "kline.primary.close",
+                    "kline.primary.high",
+                    "kline.primary.low",
+                    "kline.primary.open",
+                ],
+                "intervals": ["1d", "1h", "4h"],
+                "value_kinds": ["flow", "price"],
+                "output_type": "decimal",
+            },
         ],
         "data_sources": [
             {
                 "provider": "binance",
                 "storage_source": "central_klines",
-                "kinds": ["kline"],
+                "kinds": ["feature", "kline"],
                 "markets": ["futures"],
                 "result_sources": ["binance_futures"],
             },
@@ -1168,7 +1409,7 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
             },
         ],
         "cost_models": ["cutie.execution_cost.v1"],
-        "data_transforms": [],
+        "data_transforms": ["ohlcv_resample.v1"],
         "result_schemas": [RESULT_SCHEMA],
         "coverage_schemas": ["cutie.strategy_coverage_manifest.v1"],
         "trace_schemas": ["cutie.strategy_execution_trace.v1"],
@@ -1660,6 +1901,317 @@ def _decimal(value: Any, path: str) -> Decimal:
         )
 
 
+def kline_primary_bucket_required_start(
+    start_at: int, warmup_bars: int, target_step: int
+) -> int:
+    """The bucket-aligned ``required_start`` a coarse ``kline.primary.*``
+    requirement must declare (and a Provider fetch must honor), shared by
+    the Provider's fetch range and the coverage completeness check so both
+    always agree.
+
+    A naive ``start_at - warmup_bars * target_step`` (correct for a
+    same-interval requirement, whose own rows are exactly what a decision
+    frame reads) is wrong here: the as-of anchor for the *first* decision
+    frame is always the bucket that closed at-or-before the bucket
+    *containing* ``start_at`` — that bucket has already elapsed even when
+    ``start_at`` itself falls partway through it — never the bucket that
+    merely starts at-or-after ``start_at``. Flooring to the bucket
+    containing ``start_at`` first, then stepping back ``warmup_bars``
+    buckets, is what actually has to be fetched/declared; offsetting by
+    ``warmup_bars`` directly from an unaligned ``start_at`` can land inside
+    a bucket that a decision frame needs in full, silently truncating it.
+    """
+    bucket_grid_start = (start_at // target_step) * target_step
+    return max(0, bucket_grid_start - warmup_bars * target_step)
+
+
+def kline_primary_bucket_required_end(end_at: int, target_step: int) -> int:
+    """The bucket-aligned ``required_end`` a coarse ``kline.primary.*``
+    requirement's completeness check must use, symmetric to
+    ``kline_primary_bucket_required_start``. ``execution_params.end_at``
+    (the raw decision-window boundary, at primary granularity) need not fall
+    on a coarse bucket boundary; the last bucket a decision frame closing
+    at-or-before ``end_at`` could ever as-of read is the one that closed
+    at-or-before ``end_at``, i.e. floored to the bucket grid — comparing the
+    completeness count against the unaligned ``end_at`` directly would
+    demand a fractional/impossible bucket count whenever ``end_at`` falls
+    mid-bucket, even though the coarse stream is genuinely complete for
+    every decision frame that actually needs it.
+    """
+    return (end_at // target_step) * target_step
+
+
+def ohlcv_resample(
+    primary_rows: list[dict[str, Any]], primary_step: int, target_interval: str
+) -> list[dict[str, Any]]:
+    """SPEC §7.3 ``ohlcv_resample.v1``: deterministic, lossless fine-to-coarse
+    OHLC aggregation. UTC-aligned half-open buckets (epoch 0 is a valid 00:00
+    UTC boundary, so integer bucket-floor division is correct with no extra
+    offset); a bucket is only emitted when every one of its constituent
+    ``primary_step``-spaced bars is present in ``primary_rows`` — a bucket
+    missing any input bar is silently dropped (never partially aggregated),
+    which downstream becomes a feature-missing gap per §5.5, never a fabricated
+    value. Output rows carry ``open_time`` = bucket open, matching the primary
+    K-line row shape (``open/high/low/close``, no ``volume``: only price
+    fields are ever consumed downstream via ``kline.primary.<field>``).
+    """
+    target_step = _interval_seconds(target_interval)
+    if target_step <= 0 or target_step % primary_step != 0:
+        _raise(
+            "$.transform.ohlcv_resample.target_interval",
+            "target interval must be a positive multiple of the primary interval",
+            code=ERR_SPEC_UNSUPPORTED,
+            required=target_interval,
+        )
+    bars_per_bucket = target_step // primary_step
+    by_open_time = {row["open_time"]: row for row in primary_rows}
+    bucket_members: dict[int, list[int]] = {}
+    for open_time in by_open_time:
+        bucket_open = (open_time // target_step) * target_step
+        bucket_members.setdefault(bucket_open, []).append(open_time)
+    output: list[dict[str, Any]] = []
+    for bucket_open in sorted(bucket_members):
+        expected = [bucket_open + index * primary_step for index in range(bars_per_bucket)]
+        if any(ts not in by_open_time for ts in expected):
+            continue
+        bars = [by_open_time[ts] for ts in expected]
+        with localcontext(_DECIMAL_CONTEXT) as ctx:
+            open_value = _decimal(bars[0]["open"], "$.transform.ohlcv_resample.open")
+            high_value = max(
+                _decimal(bar["high"], "$.transform.ohlcv_resample.high") for bar in bars
+            )
+            low_value = min(
+                _decimal(bar["low"], "$.transform.ohlcv_resample.low") for bar in bars
+            )
+            close_value = _decimal(bars[-1]["close"], "$.transform.ohlcv_resample.close")
+            open_value, high_value, low_value, close_value = (
+                +open_value,
+                +high_value,
+                +low_value,
+                +close_value,
+            )
+        output.append(
+            {
+                "open_time": bucket_open,
+                "open": canonical_decimal_str(open_value),
+                "high": canonical_decimal_str(high_value),
+                "low": canonical_decimal_str(low_value),
+                "close": canonical_decimal_str(close_value),
+            }
+        )
+    return output
+
+
+def _quantile_r7(sorted_values: list[Decimal], quantile: Decimal) -> Decimal:
+    """R type-7 linear-interpolation quantile, per SPEC §5.5 ``rolling_quantile``.
+
+    ``sorted_values`` must already be ascending; ``quantile`` strictly in
+    (0, 1) guarantees ``floor(h)`` and ``floor(h)+1`` are always valid indices
+    once ``len(sorted_values) >= 2``. A single-sample window (reachable at
+    the stream-start boundary with ``min_periods=1``) has no second order
+    statistic to interpolate against, and any quantile of one observation is
+    that observation, so it is returned directly without indexing ``x[1]``.
+    """
+    n = len(sorted_values)
+    if n == 1:
+        with localcontext(_DECIMAL_CONTEXT):
+            return +sorted_values[0]
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        h = ctx.multiply(Decimal(n - 1), quantile)
+        floor_h = int(h.to_integral_value(rounding=ROUND_FLOOR))
+        fraction = ctx.subtract(h, Decimal(floor_h))
+        lower = sorted_values[floor_h]
+        upper = sorted_values[floor_h + 1]
+        return +ctx.add(lower, ctx.multiply(fraction, ctx.subtract(upper, lower)))
+
+
+def _stream_lookback(
+    ordered_timestamps: list[int],
+    rows_by_ts: dict[int, tuple[Any, int, str]],
+    anchor_ts: int,
+    step: int,
+    window_bars: int,
+    error_path: str,
+) -> Optional[tuple[list[Decimal], int]]:
+    """Gather up to ``window_bars`` raw values ending at ``anchor_ts`` (frame
+    counted, inclusive of the anchor), stepping back by ``step``.
+
+    Returns ``None`` when a timestamp inside the stream's fetched range
+    ``[ordered_timestamps[0], ordered_timestamps[-1]]`` has a missing/invalid
+    value — a genuine gap per §5.5, never skipped. Timestamps *before* the
+    stream's fetched range are treated as insufficient warmup history (not a
+    gap) and simply omitted from the returned list, so callers that require an
+    exact ``window_bars`` count can detect the boundary case via
+    ``len(values) < window_bars`` while ``rolling_quantile``'s ``min_periods``
+    leniency can accept the shorter, most-recent-first list as-is.
+    Returns ``(values, availability_ceiling)`` where ``availability_ceiling``
+    is the maximum ``available_at`` among the raw points actually used.
+    """
+    if not ordered_timestamps:
+        return [], 0
+    stream_start = ordered_timestamps[0]
+    stream_end = ordered_timestamps[-1]
+    values: list[Decimal] = []
+    ceiling = 0
+    for offset in range(window_bars - 1, -1, -1):
+        ts = anchor_ts - offset * step
+        if ts < stream_start or ts > stream_end:
+            continue
+        point = rows_by_ts.get(ts)
+        if point is None:
+            return None
+        raw_value, available_at, _revision = point
+        try:
+            values.append(_decimal(raw_value, error_path))
+        except KernelExecutionError:
+            return None
+        ceiling = max(ceiling, available_at)
+    return values, ceiling
+
+
+def _evaluate_windowed_primitive(
+    feature: dict[str, Any],
+    rows_by_ts: dict[int, tuple[Any, int, str]],
+    ordered_timestamps: list[int],
+    anchor_ts: int,
+    step: int,
+    error_path: str,
+) -> Optional[tuple[Decimal, int]]:
+    """Dispatch ``rolling_sum``/``rolling_extreme``/``rolling_quantile`` per
+    their frozen §5.5 semantics. ``rsi_wilder`` is precomputed separately (its
+    recursive seed needs the stream's full fetched history, not a fixed
+    window) — see ``_rsi_wilder_series``.
+    """
+    primitive = feature["primitive"]
+    params = feature["params"]
+    if primitive == "rolling_sum":
+        window_bars = params["window_bars"]
+        result = _stream_lookback(
+            ordered_timestamps, rows_by_ts, anchor_ts, step, window_bars, error_path
+        )
+        if result is None:
+            return None
+        values, ceiling = result
+        if len(values) != window_bars:
+            return None
+        with localcontext(_DECIMAL_CONTEXT):
+            total = +sum(values, Decimal(0))
+        return total, ceiling
+    if primitive == "rolling_extreme":
+        window_bars = params["window_bars"]
+        result = _stream_lookback(
+            ordered_timestamps, rows_by_ts, anchor_ts, step, window_bars, error_path
+        )
+        if result is None:
+            return None
+        values, ceiling = result
+        if len(values) != window_bars:
+            return None
+        # min()/max() only compare and return one of the existing Decimal
+        # objects — no arithmetic happens, so unlike sum() nothing rounds it
+        # to decimal128 automatically. A raw source value with more than 34
+        # significant digits would otherwise pass through unrounded.
+        with localcontext(_DECIMAL_CONTEXT):
+            extreme = +(min(values) if params["mode"] == "min" else max(values))
+        return extreme, ceiling
+    if primitive == "rolling_quantile":
+        window_bars = params["window_bars"]
+        min_periods = params["min_periods"]
+        result = _stream_lookback(
+            ordered_timestamps, rows_by_ts, anchor_ts, step, window_bars, error_path
+        )
+        if result is None:
+            return None
+        values, ceiling = result
+        if len(values) < min_periods:
+            return None
+        quantile = Decimal(params["quantile"])
+        return _quantile_r7(sorted(values), quantile), ceiling
+    return None
+
+
+def _rsi_wilder_series(
+    rows_by_ts: dict[int, tuple[Any, int, str]],
+    ordered_timestamps: list[int],
+    period: int,
+    error_path: str,
+) -> dict[int, tuple[Optional[Decimal], int]]:
+    """SPEC §5.5 ``rsi_wilder``: seed = simple average of the first ``period``
+    deltas measured from the stream's own fetched-window start (the recursion
+    anchor is the fetch window, never the stream's full unbounded history);
+    Wilder recursion afterward; ``avg_loss == 0`` -> RSI 100. A missing/invalid
+    raw value breaks the recursive chain irrecoverably: every timestamp from
+    that point forward is also missing, since Wilder's average is a running
+    function of every prior sample.
+
+    Computed once per feature over the whole fetched range (not once per
+    decision frame) since the recursion is inherently sequential; returns a
+    ``{ts: (value_or_None, availability_ceiling)}`` map for O(1) frame lookup.
+    """
+    series: dict[int, tuple[Optional[Decimal], int]] = {}
+    n = len(ordered_timestamps)
+    if n < period + 1:
+        for ts in ordered_timestamps:
+            series[ts] = (None, 0)
+        return series
+    parsed: list[Optional[Decimal]] = []
+    ceilings: list[int] = []
+    broken_from: Optional[int] = None
+    running_ceiling = 0
+    for index, ts in enumerate(ordered_timestamps):
+        raw_value, available_at, _revision = rows_by_ts[ts]
+        running_ceiling = max(running_ceiling, available_at)
+        ceilings.append(running_ceiling)
+        try:
+            parsed.append(_decimal(raw_value, error_path))
+        except KernelExecutionError:
+            parsed.append(None)
+            if broken_from is None:
+                broken_from = index
+    for ts in ordered_timestamps[:period]:
+        series[ts] = (None, 0)
+    avg_gain: Optional[Decimal] = None
+    avg_loss: Optional[Decimal] = None
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        for index in range(period, n):
+            ts = ordered_timestamps[index]
+            if broken_from is not None and index >= broken_from:
+                series[ts] = (None, 0)
+                avg_gain = None
+                avg_loss = None
+                continue
+            if index == period:
+                gains: list[Decimal] = []
+                losses: list[Decimal] = []
+                for k in range(1, period + 1):
+                    delta = ctx.subtract(parsed[k], parsed[k - 1])
+                    gains.append(delta if delta > 0 else Decimal(0))
+                    losses.append(-delta if delta < 0 else Decimal(0))
+                avg_gain = ctx.divide(sum(gains, Decimal(0)), Decimal(period))
+                avg_loss = ctx.divide(sum(losses, Decimal(0)), Decimal(period))
+            else:
+                delta = ctx.subtract(parsed[index], parsed[index - 1])
+                gain = delta if delta > 0 else Decimal(0)
+                loss = -delta if delta < 0 else Decimal(0)
+                avg_gain = ctx.divide(
+                    ctx.add(ctx.multiply(avg_gain, Decimal(period - 1)), gain),
+                    Decimal(period),
+                )
+                avg_loss = ctx.divide(
+                    ctx.add(ctx.multiply(avg_loss, Decimal(period - 1)), loss),
+                    Decimal(period),
+                )
+            if avg_loss == 0:
+                rsi = Decimal(100)
+            else:
+                rs = ctx.divide(avg_gain, avg_loss)
+                rsi = ctx.subtract(
+                    Decimal(100), ctx.divide(Decimal(100), ctx.add(Decimal(1), rs))
+                )
+            series[ts] = (+rsi, ceilings[index])
+    return series
+
+
 def build_frames(
     data_streams: dict[str, list[dict[str, Any]]],
     coverage_manifest: dict[str, Any],
@@ -1699,7 +2251,15 @@ def build_frames(
             "primary K-line stream is empty",
             code=ERR_COVERAGE_INCOMPLETE,
         )
-    feature_values: dict[str, dict[int, tuple[Any, int, str]]] = {}
+    market_timeframe = plan.strategy_spec["market"]["timeframe"]
+
+    def _is_kline_primary_passthrough(feature: dict[str, Any]) -> bool:
+        return (
+            feature["source_stream"].startswith(_KLINE_PRIMARY_PREFIX)
+            and feature["interval"] == market_timeframe
+        )
+
+    feature_streams: dict[str, tuple[dict[int, tuple[Any, int, str]], list[int]]] = {}
     for requirement in requirements:
         if requirement["kind"] != "feature":
             continue
@@ -1748,6 +2308,7 @@ def build_frames(
                 )
             rows_by_ts[ts] = (row["value"], available_at, str(row["revision"]))
             ordered_timestamps.append(ts)
+        ordered_timestamps.sort()
         feature_step = _interval_seconds(requirement["interval"])
         if any(
             current - previous != feature_step
@@ -1759,17 +2320,22 @@ def build_frames(
                 code=ERR_COVERAGE_INCOMPLETE,
             )
         for feature in matched_features:
-            if feature["key"] in feature_values:
+            if feature["key"] in feature_streams:
                 _raise(
                     f"$.artifact_manifest.data_requirements[{requirement['stream_id']}]",
                     "multiple requirements bind the same StrategySpec feature",
                     code=ERR_COVERAGE_INCOMPLETE,
                 )
-            feature_values[feature["key"]] = rows_by_ts
+            feature_streams[feature["key"]] = (rows_by_ts, ordered_timestamps)
 
+    # kline.primary passthrough features (interval == primary timeframe) read
+    # directly from the primary K-line series and never bind a data
+    # requirement of their own (§5.5: "不产生新 stream，不需要 transform").
     missing_feature_keys = {
-        feature["key"] for feature in plan.strategy_spec["features"]
-    } - set(feature_values)
+        feature["key"]
+        for feature in plan.strategy_spec["features"]
+        if not _is_kline_primary_passthrough(feature)
+    } - set(feature_streams)
     if missing_feature_keys:
         _raise(
             "$.artifact_manifest.data_requirements",
@@ -1792,8 +2358,57 @@ def build_frames(
             "outside StrategySpec symbol domain",
             code=ERR_COVERAGE_INCOMPLETE,
         )
+    # kline.primary passthrough fields are read straight off the primary
+    # series; build a synthetic (rows_by_ts, ordered_timestamps) pair per
+    # field lazily so it flows through the same primitive dispatch below.
+    timeframe_seconds = _interval_seconds(market_timeframe)
+    primary_ordered_ts = sorted(row["open_time"] for row in primary_rows)
+    _primary_field_cache: dict[str, dict[int, tuple[Any, int, str]]] = {}
+
+    def _primary_field_series(field: str) -> dict[int, tuple[Any, int, str]]:
+        if field not in _primary_field_cache:
+            _primary_field_cache[field] = {
+                row["open_time"]: (
+                    row[field],
+                    row["open_time"] + timeframe_seconds,
+                    "",
+                )
+                for row in primary_rows
+            }
+        return _primary_field_cache[field]
+
+    # rsi_wilder's Wilder recursion needs the stream's full fetched history;
+    # precompute once per feature (not once per decision frame). A passthrough
+    # kline.primary feature has no feature_streams entry of its own (it reads
+    # the primary series directly) but still needs its RSI series precomputed
+    # from that same synthetic per-field series, or the per-frame lookup below
+    # would KeyError on a cache that was never populated for it.
+    rsi_series_cache: dict[str, dict[int, tuple[Optional[Decimal], int]]] = {}
+    feature_revision: dict[str, str] = {}
+    for feature in plan.strategy_spec["features"]:
+        if _is_kline_primary_passthrough(feature):
+            if feature["primitive"] == "rsi_wilder":
+                field = feature["source_stream"][len(_KLINE_PRIMARY_PREFIX) :]
+                rsi_series_cache[feature["key"]] = _rsi_wilder_series(
+                    _primary_field_series(field),
+                    primary_ordered_ts,
+                    feature["params"]["period"],
+                    f"$.data_streams.{feature['source_stream']}",
+                )
+            continue
+        rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
+        feature_revision[feature["key"]] = next(
+            iter(rows_by_ts.values()), (None, None, "")
+        )[2]
+        if feature["primitive"] == "rsi_wilder":
+            rsi_series_cache[feature["key"]] = _rsi_wilder_series(
+                rows_by_ts,
+                ordered_timestamps,
+                feature["params"]["period"],
+                f"$.data_streams.{feature['source_stream']}",
+            )
+
     frames: list[FeatureFrame] = []
-    timeframe_seconds = _interval_seconds(plan.strategy_spec["market"]["timeframe"])
     for row_index, row in enumerate(primary_rows):
         if set(row) != {"open_time", "open", "high", "low", "close", "volume"}:
             _raise(
@@ -1824,36 +2439,74 @@ def build_frames(
         }
         revisions: dict[str, str] = {}
         for feature in plan.strategy_spec["features"]:
-            source_rows = feature_values[feature["key"]]
-            raw_values: list[Decimal] = []
-            revision = ""
-            window = feature["params"]["window_bars"]
-            for offset in range(window):
-                source_ts = open_at - offset * _interval_seconds(feature["interval"])
-                point = source_rows.get(source_ts)
-                if point is None or point[1] > close_at:
-                    _raise(
-                        f"$.data_streams.{feature['source_stream']}",
-                        "required feature window is missing or not yet available",
-                        code=ERR_COVERAGE_INCOMPLETE,
-                        required=source_ts,
-                    )
-                raw_values.append(
-                    _decimal(
-                        point[0], f"$.data_streams.{feature['source_stream']}.value"
-                    )
-                )
-                revision = point[2]
-            if feature["primitive"] != "rolling_sum":
+            if feature["primitive"] not in _KNOWN_PRIMITIVES:
                 _raise(
                     f"$.strategy_spec.features[{feature['key']}].primitive",
                     "primitive is not implemented",
                     code=ERR_SPEC_UNSUPPORTED,
                 )
+            error_path = f"$.data_streams.{feature['source_stream']}"
+            passthrough = _is_kline_primary_passthrough(feature)
+            coarse_kline = (
+                not passthrough
+                and feature["source_stream"].startswith(_KLINE_PRIMARY_PREFIX)
+            )
+            if passthrough:
+                field = feature["source_stream"][len(_KLINE_PRIMARY_PREFIX) :]
+                rows_by_ts = _primary_field_series(field)
+                ordered_timestamps = primary_ordered_ts
+                anchor_ts = open_at
+            elif coarse_kline:
+                # §5.5 as-of alignment: the most recent complete bucket whose
+                # close (== available_at) is <= this decision frame's close.
+                rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
+                feature_step = _interval_seconds(feature["interval"])
+                bucket_close = (close_at // feature_step) * feature_step
+                anchor_ts = bucket_close - feature_step
+            else:
+                rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
+                anchor_ts = open_at
+
+            if feature["primitive"] == "rsi_wilder":
+                point = rsi_series_cache[feature["key"]].get(anchor_ts)
+                if point is None or point[0] is None:
+                    _raise(
+                        error_path,
+                        "required feature window is missing or not yet available",
+                        code=ERR_COVERAGE_INCOMPLETE,
+                        required=anchor_ts,
+                    )
+                value, ceiling = point
+            else:
+                step = _interval_seconds(feature["interval"])
+                outcome = _evaluate_windowed_primitive(
+                    feature, rows_by_ts, ordered_timestamps, anchor_ts, step, error_path
+                )
+                if outcome is None:
+                    _raise(
+                        error_path,
+                        "required feature window is missing or not yet available",
+                        code=ERR_COVERAGE_INCOMPLETE,
+                        required=anchor_ts,
+                    )
+                value, ceiling = outcome
+            if ceiling > close_at:
+                _raise(
+                    error_path,
+                    "required feature window is missing or not yet available",
+                    code=ERR_COVERAGE_INCOMPLETE,
+                    required=anchor_ts,
+                )
+            # canonical_decimal_str()'s normalize() rounds to whatever context
+            # is ambient at the call site (Python's default is prec=28, not
+            # decimal128's 34) — every primitive above already rounds `value`
+            # to 34 significant digits internally, but that rounding is only
+            # observable in the final string if serialization also happens
+            # while decimal128 is still the active context.
             with localcontext(_DECIMAL_CONTEXT):
-                total = sum(raw_values, Decimal(0))
-            values[feature["key"]] = canonical_decimal_str(total)
-            revisions[feature["source_stream"]] = revision
+                values[feature["key"]] = canonical_decimal_str(value)
+            if not passthrough:
+                revisions[feature["source_stream"]] = feature_revision[feature["key"]]
         frames.append(
             FeatureFrame(
                 open_at, close_at, close_at, selected_symbol, values, revisions
@@ -2574,6 +3227,9 @@ __all__ = [
     "capability_payload",
     "compile_strategy",
     "initial_state",
+    "kline_primary_bucket_required_end",
+    "kline_primary_bucket_required_start",
+    "ohlcv_resample",
     "paper_tick",
     "simulate",
 ]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from canonical_json import canonical_decimal_str, canonical_json_sha256
 from strategy_kernel import (
@@ -19,6 +19,8 @@ from strategy_kernel import (
     StrategyContractError,
     capability_hash,
     compile_strategy,
+    kline_primary_bucket_required_end,
+    kline_primary_bucket_required_start,
 )
 
 EXECUTION_REQUEST_SCHEMA = "cutie.strategy_execution_request.v1"
@@ -406,12 +408,46 @@ def validate_execution_request(
     return ValidatedExecution(copy.deepcopy(request), plan)
 
 
+_KLINE_PRIMARY_PREFIX = "kline.primary."
+
+
+def _matching_feature(
+    strategy_spec: dict[str, Any], requirement: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    return next(
+        (
+            feature
+            for feature in strategy_spec["features"]
+            if requirement["stream_id"].startswith(feature["source_stream"] + ".")
+            and feature["interval"] == requirement["interval"]
+        ),
+        None,
+    )
+
+
+def _is_kline_primary_derived(
+    strategy_spec: dict[str, Any], requirement: dict[str, Any]
+) -> bool:
+    """A ``kind=feature`` requirement backing a §5.5 coarse ``kline.primary.*``
+    stream (resampled from the primary K-line via ``ohlcv_resample.v1``, never
+    fetched from an external source, never reconciled against result.v2)."""
+    if requirement["kind"] != "feature" or not requirement["stream_id"].startswith(
+        _KLINE_PRIMARY_PREFIX
+    ):
+        return False
+    feature = _matching_feature(strategy_spec, requirement)
+    return feature is not None and feature["source_stream"].startswith(
+        _KLINE_PRIMARY_PREFIX
+    )
+
+
 def build_coverage_manifest(
     request: dict[str, Any],
     inputs: list[CoverageInput],
     data_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     requirements = request["artifact_manifest"]["data_requirements"]
+    strategy_spec = request["strategy_spec"]
     by_stream = {item.requirement["stream_id"]: item for item in inputs}
     if set(by_stream) != {item["stream_id"] for item in requirements}:
         _error(
@@ -420,7 +456,12 @@ def build_coverage_manifest(
             "stream evidence does not equal requirement exact-set",
         )
     symbol = request["execution_params"]["symbol"]
+    primary_requirement = next(
+        item for item in requirements if item["execution_role"] == "primary_execution_kline"
+    )
+    primary_item = by_stream[primary_requirement["stream_id"]]
     streams: list[dict[str, Any]] = []
+    transforms: list[dict[str, Any]] = []
     for requirement in requirements:
         item = by_stream[requirement["stream_id"]]
         if item.point_count <= 0:
@@ -431,11 +472,40 @@ def build_coverage_manifest(
             )
         primary = requirement["execution_role"] == "primary_execution_kline"
         step = _interval_seconds(requirement["interval"])
-        required_start = max(
-            0,
-            request["execution_params"]["start_at"] - requirement["warmup_bars"] * step,
-        )
-        required_end = request["execution_params"]["end_at"]
+        derived = not primary and _is_kline_primary_derived(strategy_spec, requirement)
+        if derived:
+            # A coarse kline.primary requirement's required_start must be
+            # bucket-aligned, not a naive offset from an unaligned start_at:
+            # the as-of anchor for the first decision frame is the bucket
+            # that already closed at-or-before the bucket *containing*
+            # start_at, which can be more than warmup_bars*step earlier than
+            # start_at itself when start_at falls partway through a bucket.
+            # This must match the Provider's own fetch range exactly (see
+            # kline_primary_bucket_required_start), or a correctly-fetched
+            # stream fails this exact-count check.
+            required_start = kline_primary_bucket_required_start(
+                request["execution_params"]["start_at"], requirement["warmup_bars"], step
+            )
+        else:
+            required_start = max(
+                0,
+                request["execution_params"]["start_at"]
+                - requirement["warmup_bars"] * step,
+            )
+        if derived:
+            # Symmetric to required_start: execution_params.end_at is a
+            # primary-granularity boundary that need not land on a coarse
+            # bucket edge, and the last bucket any decision frame closing
+            # at-or-before end_at could ever as-of read is the one that
+            # closed at-or-before it (floored to the bucket grid) — comparing
+            # against the raw end_at would demand a fractional/impossible
+            # bucket count even when the stream is genuinely complete for
+            # every frame that actually needs it.
+            required_end = kline_primary_bucket_required_end(
+                request["execution_params"]["end_at"], step
+            )
+        else:
+            required_end = request["execution_params"]["end_at"]
         if (
             (required_end - required_start) % step != 0
             or item.actual_start_at > required_start
@@ -451,9 +521,21 @@ def build_coverage_manifest(
         actual_end = data_manifest["end_at"] if primary else item.available_through
         point_count = data_manifest["kline_count"] if primary else item.point_count
         checksum = data_manifest["checksum"] if primary else item.checksum
+
+        if derived:
+            feature = _matching_feature(strategy_spec, requirement)
+            # §5.5: derived stream_id is `kline.primary.<field>@<interval>`
+            # (never the generic `.{symbol}` suffix); revision is inherited
+            # verbatim from the primary stream it was resampled from.
+            stream_id = f"{feature['source_stream']}@{requirement['interval']}"
+            revision_value = primary_item.revision
+        else:
+            stream_id = f"{requirement['stream_id']}.{symbol}"
+            revision_value = item.revision
+
         streams.append(
             {
-                "stream_id": f"{requirement['stream_id']}.{symbol}",
+                "stream_id": stream_id,
                 "kind": requirement["kind"],
                 "execution_role": requirement["execution_role"],
                 "provider": requirement["provider"],
@@ -466,12 +548,7 @@ def build_coverage_manifest(
                 "required_range": {
                     "start_at": request["execution_params"]["start_at"],
                     "end_at": request["execution_params"]["end_at"],
-                    "warmup_start_at": max(
-                        0,
-                        request["execution_params"]["start_at"]
-                        - requirement["warmup_bars"]
-                        * _interval_seconds(requirement["interval"]),
-                    ),
+                    "warmup_start_at": required_start,
                 },
                 "actual_range": {
                     "start_at": actual_start,
@@ -486,17 +563,51 @@ def build_coverage_manifest(
                     "max_age_seconds": requirement["max_freshness_seconds"],
                 },
                 "gaps": [],
-                "revision": {"schema": "source_revision.v1", "value": item.revision},
+                "revision": {"schema": "source_revision.v1", "value": revision_value},
                 "checksum": {"algo": "sha256", "value": checksum},
-                "permitted_uses": {
-                    "backtest": True,
-                    "golden_replay": False,
-                    "paper": False,
-                },
+                "permitted_uses": {"backtest": True, "golden_replay": False, "paper": False},
                 "status": "complete",
             }
         )
+        if derived:
+            transforms.append(
+                {
+                    "output_stream_id": stream_id,
+                    "input_stream_ids": [f"{primary_requirement['stream_id']}.{symbol}"],
+                    "transform": "ohlcv_resample.v1",
+                    "transform_version": "1",
+                    "params": {"target_interval": requirement["interval"]},
+                    "synthetic_ranges": [],
+                    "checksum": {"algo": "sha256", "value": checksum},
+                }
+            )
     streams.sort(key=lambda stream: stream["stream_id"])
+    transforms.sort(key=lambda transform: transform["output_stream_id"])
+
+    # §7.4: deterministic reduction, not Provider-free-filled. All streams
+    # this Provider ever returns are already held to exact-complete coverage
+    # (any incompleteness raised above); ohlcv_resample.v1 is the only
+    # transform implemented and its output is never synthetic (§7.3), so the
+    # reduction only needs to stay honest as future degraded transforms land.
+    # The fourth §7.4 golden-strict element — "revision/checksum 固定" — is
+    # checked explicitly rather than assumed: a stream with a blank revision
+    # or checksum has nothing deterministic to pin a golden fixture to, even
+    # if its coverage happens to be exact-complete.
+    golden_replay = (
+        all(stream["status"] == "complete" for stream in streams)
+        and all(not transform["synthetic_ranges"] for transform in transforms)
+        and all(
+            stream["revision"]["value"] and stream["checksum"]["value"]
+            for stream in streams
+        )
+    )
+    permitted_uses = {
+        "backtest": True,
+        "golden_replay": golden_replay,
+        "paper": False,
+    }
+    for stream in streams:
+        stream["permitted_uses"] = dict(permitted_uses)
     return {
         "schema": "cutie.strategy_coverage_manifest.v1",
         "request_identity": {
@@ -507,17 +618,13 @@ def build_coverage_manifest(
             "execution_mode": request["execution_mode"],
         },
         "streams": streams,
-        "transforms": [],
+        "transforms": transforms,
         "summary": {
             "status": "complete",
             "strict_eligible": True,
             "degraded": False,
             "degraded_reasons": [],
-            "permitted_uses": {
-                "backtest": True,
-                "golden_replay": False,
-                "paper": False,
-            },
+            "permitted_uses": permitted_uses,
         },
     }
 
