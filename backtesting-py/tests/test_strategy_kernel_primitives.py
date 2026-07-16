@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 
 import pytest
@@ -26,6 +26,7 @@ from strategy_kernel import (  # noqa: E402
     ERR_COVERAGE_INCOMPLETE,
     ERR_SPEC_INVALID,
     StrategyContractError,
+    _DECIMAL_CONTEXT,
     _evaluate_windowed_primitive,
     _rsi_wilder_series,
     build_frames,
@@ -34,6 +35,16 @@ from strategy_kernel import (  # noqa: E402
     compile_strategy,
     ohlcv_resample,
 )
+
+
+def _canonical(value: Decimal) -> str:
+    """canonical_decimal_str()'s normalize() rounds to whatever Decimal
+    context is ambient at the call site (Python's default is prec=28, not
+    decimal128's 34); tests that inspect a primitive's raw Decimal return
+    value must serialize it under the same _DECIMAL_CONTEXT production code
+    uses, or a correctly 34-digit-rounded value reads back truncated to 28."""
+    with localcontext(_DECIMAL_CONTEXT):
+        return canonical_decimal_str(value)
 
 REVISION = tsk.REVISION
 CONFORMANCE_FIXTURE = (
@@ -61,8 +72,12 @@ def _rows_by_ts(case: dict) -> tuple[dict[int, tuple], list[int]]:
     [
         "rolling_quantile_min_periods_boundary_and_interpolation",
         "rolling_quantile_gap_is_never_skipped",
+        "rolling_quantile_single_sample_at_stream_start",
         "rolling_extreme_max_and_min_no_leniency",
         "rolling_extreme_min_with_gap",
+        "rolling_extreme_decimal128_rounding_tie_even_stays",
+        "rolling_extreme_decimal128_rounding_tie_odd_rounds_up",
+        "rolling_extreme_decimal128_rounding_more_than_half",
     ],
 )
 def test_windowed_primitive_conformance(name: str) -> None:
@@ -83,7 +98,7 @@ def test_windowed_primitive_conformance(name: str) -> None:
         outcome = _evaluate_windowed_primitive(
             feature, rows_by_ts, ordered_timestamps, row["ts"], 3600, "$.under_test"
         )
-        actual.append(canonical_decimal_str(outcome[0]) if outcome is not None else None)
+        actual.append(_canonical(outcome[0]) if outcome is not None else None)
     expected = [row["value"] for row in case["expected"]]
     assert actual == expected, f"{name}: {actual} != {expected}"
 
@@ -91,6 +106,7 @@ def test_windowed_primitive_conformance(name: str) -> None:
 @pytest.mark.parametrize(
     "name",
     [
+        "rsi_wilder_seed_avg_loss_zero",
         "rsi_wilder_seed_at_fetch_window_start",
         "rsi_wilder_broken_chain_never_recovers",
     ],
@@ -102,7 +118,7 @@ def test_rsi_wilder_conformance(name: str) -> None:
         rows_by_ts, ordered_timestamps, case["params"]["period"], "$.under_test"
     )
     actual = [
-        canonical_decimal_str(series[row["ts"]][0])
+        _canonical(series[row["ts"]][0])
         if series[row["ts"]][0] is not None
         else None
         for row in case["input"]
@@ -111,8 +127,15 @@ def test_rsi_wilder_conformance(name: str) -> None:
     assert actual == expected, f"{name}: {actual} != {expected}"
 
 
-def test_ohlcv_resample_conformance() -> None:
-    case = _CASES_BY_NAME["ohlcv_resample_4h_drops_incomplete_trailing_bucket"]
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ohlcv_resample_4h_drops_incomplete_trailing_bucket",
+        "ohlcv_resample_1d_full_day_bucket",
+    ],
+)
+def test_ohlcv_resample_conformance(name: str) -> None:
+    case = _CASES_BY_NAME[name]
     primary_step = 3600
     output = ohlcv_resample(
         copy.deepcopy(case["input"]), primary_step, case["params"]["target_interval"]
@@ -422,6 +445,86 @@ def test_coarse_kline_primary_end_to_end_over_http(monkeypatch) -> None:
     assert body["trades"], "bucket2's value (107 > 105) must have signalled entry"
 
 
+def test_coarse_kline_primary_unaligned_start_at_keeps_the_bucket_before_it(
+    monkeypatch,
+) -> None:
+    """Regression for the exact Codex probe: a 1h decision window
+    [05:00,09:00) with a 4h coarse feature and warmup_bars=1 must not lose
+    the [00:00,04:00) bucket. Naively offsetting from the unaligned
+    start_at=18000 by warmup_bars*target_step=14400 lands at 3600 (still
+    inside [00:00,04:00)), which used to make the fetch/coverage exclude
+    that bucket's own open_time=0 row entirely — even though it is exactly
+    the bucket every frame in [05:00,06:00) as-of reads (bucket_close=14400
+    is the most recent completed bucket for those frames). The bucket-aligned
+    kline_primary_bucket_required_start/_end fix must recover it and let the
+    run succeed end to end.
+    """
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    fetch_calls: list[tuple[int, int]] = []
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        fetch_calls.append((start_ms, end_ms))
+        # 9 hourly bars from ts=0 (00:00): bucket1 [00:00,04:00) closes 103,
+        # bucket2 [04:00,08:00) closes 107; bar 8 alone starts bucket3 but
+        # never completes within this fetch.
+        return [[i * 3_600_000, 100, 200, 50, 100 + i, 1] for i in range(9)]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+
+    feature = {
+        "key": "close_4h_high",
+        "primitive": "rolling_extreme",
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "4h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"window_bars": 1, "mode": "max"},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "close_4h_high", "lag_bars": 0},
+        "right": {"node": "literal", "value_type": "decimal", "value": "105"},
+    }
+    spec = tsk.make_spec(condition=condition, features=[feature])
+    manifest = _kline_primary_manifest(spec, requirement_interval="4h", warmup_bars=1)
+    # 05:00 -> 09:00: neither boundary is 4h-aligned relative to bucket
+    # edges except by coincidence of warmup_bars=1's own bucket-floor step;
+    # the point under test is that start_at=18000 itself falls inside
+    # [04:00,08:00), not on a bucket edge.
+    request = _kline_primary_request(spec, manifest, start_at=18000, end_at=32400)
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "success", body
+
+    # primary decision frames [18000,32400); coarse resample-source fetch
+    # independently widened back to bucket-aligned ts=0, recovering bucket1.
+    assert sorted(fetch_calls) == [(0, 32_400_000), (18_000_000, 32_400_000)]
+
+    coverage = body["coverage_manifest"]
+    derived_stream = next(
+        s for s in coverage["streams"] if s["stream_id"] == "kline.primary.close@4h"
+    )
+    assert derived_stream["point_count"] == 2
+    assert derived_stream["required_range"]["warmup_start_at"] == 0
+    assert derived_stream["actual_range"]["start_at"] == 0
+
+    # bucket1 [00:00,04:00) close=103 is read by the two frames closing
+    # 06:00/07:00 (21600/25200) but 103 <= 105 so entry never signals there;
+    # bucket2 [04:00,08:00) close=107 becomes visible at the frame closing
+    # exactly at its own completion (28800), satisfying close_4h_high > 105.
+    assert body["trades"], "bucket1 must have been recovered for the run to signal at all"
+
+
 def test_kline_primary_passthrough_reads_primary_field_directly() -> None:
     feature = {
         "key": "close_now",
@@ -458,6 +561,72 @@ def test_kline_primary_passthrough_reads_primary_field_directly() -> None:
     assert "kline.primary.close" not in frames[-1].stream_revisions
 
 
+def test_kline_primary_passthrough_rsi_wilder_does_not_keyerror() -> None:
+    """Regression: rsi_wilder's precomputed series cache was only populated
+    for non-passthrough features (build_frames skipped passthrough features
+    entirely in that precompute loop), so a passthrough kline.primary
+    rsi_wilder feature's per-frame lookup KeyError'd on a cache key that was
+    never inserted — an unhandled Python exception, not a structured
+    fail-closed error.
+
+    frame 0 (the array's very first row, whatever primary_requirement's
+    warmup_bars happens to fetch) can never itself have `period` prior rows
+    within that same array — inherent to a passthrough feature, which has no
+    independent fetch of its own to extend further back than primary (unlike
+    a regular feature stream, see
+    test_multiple_features_share_one_declared_source_without_overwrite).
+    build_frames requires every given row, including frame 0, to resolve, so
+    this correctly still fails closed — the fix is that it now fails with
+    the expected StrategyContractError(COVERAGE_INCOMPLETE), not a bare
+    KeyError.
+    """
+    feature = {
+        "key": "rsi_close",
+        "primitive": "rsi_wilder",
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "1h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"period": 3},
+        "required": True,
+    }
+    spec = tsk.make_spec(features=[feature])
+    manifest = _kline_primary_manifest(spec, requirement_interval="1h")
+    primary_requirement = next(
+        item
+        for item in manifest["data_requirements"]
+        if item["execution_role"] == "primary_execution_kline"
+    )
+    primary_requirement["warmup_bars"] = 30  # >= 10 * period=3
+    manifest["spec_hash"] = canonical_json_sha256(spec)
+    plan = compile_strategy(spec, manifest, capability_payload(REVISION))
+    primary_rows = [
+        {
+            "open_time": i * 3600,
+            "open": "100",
+            "high": "1000",
+            "low": "1",
+            "close": str(100 + i),
+            "volume": "1",
+        }
+        for i in range(6)
+    ]
+    coverage = {
+        "summary": {"strict_eligible": True},
+        "request_identity": {"symbol": "BTCUSDT"},
+    }
+    with pytest.raises(StrategyContractError) as caught:
+        build_frames({"binance.futures.kline.1h": primary_rows}, coverage, plan)
+    assert caught.value.code == ERR_COVERAGE_INCOMPLETE
+
+    # The underlying series computation itself (decoupled from build_frames'
+    # per-row frame 0 requirement) is exercised end to end by the
+    # rsi_wilder_seed_avg_loss_zero/rsi_wilder_seed_at_fetch_window_start
+    # conformance cases above — this test's job is only to prove the cache
+    # wiring for a passthrough feature no longer KeyErrors.
+
+
 def test_kline_primary_coarse_requires_1h_primary_and_4h_1d_target() -> None:
     feature = {
         "key": "close_4h",
@@ -477,6 +646,99 @@ def test_kline_primary_coarse_requires_1h_primary_and_4h_1d_target() -> None:
             spec, _kline_primary_manifest(spec, requirement_interval="4h"), capability_payload(REVISION)
         )
     assert caught.value.code == ERR_SPEC_INVALID
+
+
+def test_coarse_kline_primary_requirement_must_declare_ohlcv_resample_transform() -> None:
+    """§4.2: transform selection is bound into the artifact hash via
+    spec_hash; a coarse kline.primary requirement whose allowed_transforms
+    omits ohlcv_resample.v1 must fail at compile, not be silently resampled
+    anyway at runtime (the Provider would otherwise resample regardless of
+    what the manifest actually declared)."""
+    feature = {
+        "key": "close_4h",
+        "primitive": "rolling_extreme",
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "4h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"window_bars": 1, "mode": "max"},
+        "required": True,
+    }
+    spec = tsk.make_spec(features=[feature])
+    manifest = _kline_primary_manifest(spec, requirement_interval="4h", warmup_bars=1)
+    requirement = next(
+        item
+        for item in manifest["data_requirements"]
+        if item["stream_id"].startswith("kline.primary.")
+    )
+    assert requirement["allowed_transforms"] == ["ohlcv_resample.v1"]
+    requirement["allowed_transforms"] = []
+    manifest["capability_requirements"]["data_transforms"] = []
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert caught.value.required == "ohlcv_resample.v1"
+    assert caught.value.actual == []
+
+
+def test_passthrough_kline_primary_feature_must_not_have_its_own_requirement() -> None:
+    """§5.5: a passthrough feature (interval == primary timeframe) must never
+    have a data_requirement of its own ("不产生新 stream"). Before this check,
+    the Provider's runtime predicate (matching by source_stream prefix and
+    interval) could not distinguish an illegally-declared one from a
+    legitimate coarse requirement, silently fetching/wasting it instead of
+    rejecting the manifest."""
+    feature = {
+        "key": "close_now",
+        "primitive": "rolling_extreme",
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "1h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"window_bars": 1, "mode": "max"},
+        "required": True,
+    }
+    spec = tsk.make_spec(features=[feature])
+    manifest = _kline_primary_manifest(spec, requirement_interval="1h")
+    illegal_requirement = {
+        "stream_id": "kline.primary.close.1h",
+        "kind": "feature",
+        "execution_role": "feature_input",
+        "provider": "binance",
+        "storage_source": "central_klines",
+        "result_source": None,
+        "exchange": "binance",
+        "market": "futures",
+        "symbols": ["BTCUSDT"],
+        "interval": "1h",
+        "warmup_bars": 0,
+        "max_freshness_seconds": 108000,
+        "gap_policy": "none",
+        "allowed_transforms": [],
+    }
+    manifest["data_requirements"] = sorted(
+        manifest["data_requirements"] + [illegal_requirement],
+        key=lambda item: item["stream_id"],
+    )
+    manifest["capability_requirements"]["data_sources"] = sorted(
+        manifest["capability_requirements"]["data_sources"]
+        + [
+            {
+                "provider": "binance",
+                "storage_source": "central_klines",
+                "kind": "feature",
+                "market": "futures",
+                "result_source": None,
+            }
+        ],
+        key=lambda item: (item["provider"], item["storage_source"]),
+    )
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert caught.value.actual == "kline.primary.close.1h"
 
 
 @pytest.mark.parametrize(
@@ -646,6 +908,75 @@ def test_permitted_uses_golden_replay_reduces_true_when_all_streams_complete() -
     }
     for stream in coverage["streams"]:
         assert stream["permitted_uses"]["golden_replay"] is True
+
+
+@pytest.mark.parametrize("blank_field", ["revision", "checksum"])
+def test_permitted_uses_golden_replay_false_when_a_stream_revision_or_checksum_is_blank(
+    blank_field: str,
+) -> None:
+    """§7.4's golden-strict element "revision/checksum 固定" means a stream
+    with nothing deterministic to pin a golden fixture to must not qualify,
+    even when its own coverage range is otherwise exact-complete."""
+    request = tsk.build_feature_request()
+    primary_requirement = next(
+        item
+        for item in request["artifact_manifest"]["data_requirements"]
+        if item["execution_role"] == "primary_execution_kline"
+    )
+    feature_requirement = next(
+        item
+        for item in request["artifact_manifest"]["data_requirements"]
+        if item["execution_role"] == "feature_input"
+    )
+    field_values = {"revision": "a" * 64, "checksum": "a" * 64}
+    field_values[blank_field] = ""
+    inputs = [
+        CoverageInput(
+            requirement=primary_requirement,
+            checksum=field_values["checksum"],
+            revision=field_values["revision"],
+            point_count=3,
+            actual_start_at=0,
+            actual_end_at=7200,
+            available_through=10800,
+        ),
+        CoverageInput(
+            requirement=feature_requirement,
+            checksum="b" * 64,
+            revision="b" * 64,
+            point_count=3,
+            actual_start_at=0,
+            actual_end_at=7200,
+            available_through=10800,
+        ),
+    ]
+    data_manifest = {
+        "source": "binance_futures",
+        "symbol": "BTCUSDT",
+        "market": "futures",
+        "timeframe": "1h",
+        "start_at": 0,
+        "end_at": 10800,
+        "kline_count": 3,
+        "checksum_algo": "sha256",
+        # the primary stream's own checksum field is overridden from
+        # data_manifest, not the CoverageInput, for primary specifically —
+        # blank it here too so the "checksum" parametrization actually
+        # exercises the primary stream's displayed checksum value.
+        "checksum": field_values["checksum"] if blank_field == "checksum" else "c" * 64,
+    }
+    coverage = build_coverage_manifest(request, inputs, data_manifest)
+    assert coverage["summary"]["permitted_uses"]["golden_replay"] is False
+    assert coverage["summary"]["permitted_uses"] == {
+        "backtest": True,
+        "golden_replay": False,
+        "paper": False,
+    }
+    primary_stream = next(
+        s for s in coverage["streams"] if s["execution_role"] == "primary_execution_kline"
+    )
+    assert not primary_stream[blank_field]["value"]
+    assert primary_stream["permitted_uses"]["golden_replay"] is False
 
 
 def test_coarse_kline_primary_coverage_stream_id_uses_at_separator_and_inherits_primary_revision() -> None:
