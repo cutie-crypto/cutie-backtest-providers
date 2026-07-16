@@ -49,6 +49,7 @@ from strategy_kernel import (
     capability_hash,
     capability_payload,
     initial_state,
+    ohlcv_resample,
     simulate,
 )
 
@@ -1068,6 +1069,96 @@ def _fetch_artifact_features(
     ]
 
 
+_KLINE_PRIMARY_PREFIX = "kline.primary."
+
+
+def _kline_primary_field_for_requirement(
+    requirement: dict[str, Any], strategy_spec: dict[str, Any]
+) -> Optional[str]:
+    """None unless ``requirement`` backs a SPEC §5.5 coarse
+    ``kline.primary.<field>`` derived feature stream — resampled locally from
+    the already-fetched primary K-line, never fetched from an external
+    source."""
+    if requirement["kind"] != "feature":
+        return None
+    feature = next(
+        (
+            item
+            for item in strategy_spec["features"]
+            if requirement["stream_id"].startswith(item["source_stream"] + ".")
+            and item["interval"] == requirement["interval"]
+        ),
+        None,
+    )
+    if feature is None or not feature["source_stream"].startswith(
+        _KLINE_PRIMARY_PREFIX
+    ):
+        return None
+    return feature["source_stream"][len(_KLINE_PRIMARY_PREFIX) :]
+
+
+def _derive_kline_primary_feature_rows(
+    primary_requirement: dict[str, Any],
+    requirement: dict[str, Any],
+    field: str,
+    symbol: str,
+    start_at: int,
+    end_at: int,
+) -> list[dict[str, Any]]:
+    """SPEC §7.3 ``ohlcv_resample.v1``: resample the primary K-line's own
+    declared central source (never a different provider/storage_source) into
+    the requirement's coarse interval, then project the single requested OHLC
+    field into the feature-row shape ``build_frames`` consumes.
+
+    Unlike a directly-fetched feature stream — whose own independent fetch can
+    extend further back than the primary decision-frame range so the
+    earliest primary row still finds a full window, see
+    ``test_multiple_features_share_one_declared_source_without_overwrite`` —
+    a derived bucket has no independent history of its own: it is
+    reconstructed from primary bars. ``build_frames`` requires *every* given
+    row (warmup included) to resolve every required feature — the frozen
+    ``rolling_sum`` contract, unchanged here — so the manifest's declared
+    ``requirement.warmup_bars`` (in this requirement's own coarse-bar units)
+    must be set to at least the primitive's ``window_bars`` for the very
+    first decision frame to have a completed bucket to as-of anchor on: an
+    as-of anchor always needs one whole *prior* bucket (the current bucket
+    cannot be complete yet), one more than a same-interval feature needs.
+    Given a correctly-sized ``warmup_bars``, this still independently
+    (re-)fetches the primary source starting one extra target interval
+    earlier than the requirement's own declared ``start_at``, purely for
+    bucket construction — the extra bars it reads are never exposed to
+    ``build_frames`` as primary decision frames — as a defensive margin for
+    a ``start_at`` that a caller did not bucket-align.
+    """
+    target_step = _timeframe_milliseconds(requirement["interval"]) // 1000
+    resample_source_start = max(0, start_at - target_step)
+    resample_primary_rows = _fetch_artifact_klines(
+        primary_requirement, symbol, resample_source_start, end_at
+    )
+    primary_step = _timeframe_milliseconds(primary_requirement["interval"]) // 1000
+    buckets = ohlcv_resample(resample_primary_rows, primary_step, requirement["interval"])
+    filtered = [
+        bucket for bucket in buckets if start_at <= bucket["open_time"] < end_at
+    ]
+    if not filtered:
+        raise StrategyContractError(
+            ERR_COVERAGE_INCOMPLETE,
+            f"$.artifact_manifest.data_requirements.{requirement['stream_id']}",
+            "derived kline.primary feature stream is empty; the primary "
+            "source does not cover the resampled requirement's declared range",
+        )
+    revision = canonical_json_sha256(filtered)
+    return [
+        {
+            "ts": bucket["open_time"],
+            "value": bucket[field],
+            "available_at": bucket["open_time"] + target_step,
+            "revision": revision,
+        }
+        for bucket in filtered
+    ]
+
+
 def _run_artifact_backtest(
     body: dict[str, Any],
     capability_pair: tuple[dict[str, Any], str],
@@ -1089,25 +1180,73 @@ def _run_artifact_backtest(
         symbol = params["symbol"]
         data_streams: dict[str, list[dict[str, Any]]] = {}
         coverage_inputs: list[CoverageInput] = []
-        primary_rows: Optional[list[dict[str, Any]]] = None
-        primary_requirement: Optional[dict[str, Any]] = None
-        for requirement in request["artifact_manifest"]["data_requirements"]:
+        requirements = request["artifact_manifest"]["data_requirements"]
+        primary_requirement = next(
+            (
+                item
+                for item in requirements
+                if item["execution_role"] == "primary_execution_kline"
+            ),
+            None,
+        )
+        if primary_requirement is None:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE, "$.data_streams", "primary K-line is missing"
+            )
+        # Primary is always fetched first (regardless of data_requirements
+        # order): §5.5 coarse kline.primary.<field> feature requirements below
+        # are derived from it locally via ohlcv_resample, never fetched.
+        primary_step_seconds = (
+            _timeframe_milliseconds(primary_requirement["interval"]) // 1000
+        )
+        primary_warmup_start = max(
+            0,
+            params["start_at"] - primary_requirement["warmup_bars"] * primary_step_seconds,
+        )
+        primary_rows = _fetch_artifact_klines(
+            primary_requirement, symbol, primary_warmup_start, params["end_at"]
+        )
+        data_streams[primary_requirement["stream_id"]] = primary_rows
+        primary_fetch_checksum = canonical_json_sha256(primary_rows)
+        coverage_inputs.append(
+            CoverageInput(
+                requirement=primary_requirement,
+                checksum=primary_fetch_checksum,
+                revision=primary_fetch_checksum,
+                point_count=len(primary_rows),
+                actual_start_at=primary_rows[0]["open_time"],
+                actual_end_at=primary_rows[-1]["open_time"],
+                available_through=primary_rows[-1]["open_time"] + primary_step_seconds,
+            )
+        )
+        for requirement in requirements:
+            if requirement is primary_requirement:
+                continue
             warmup_start = max(
                 0,
                 params["start_at"]
                 - requirement["warmup_bars"]
                 * (_timeframe_milliseconds(requirement["interval"]) // 1000),
             )
-            if requirement["kind"] == "kline":
+            kline_primary_field = _kline_primary_field_for_requirement(
+                requirement, request["strategy_spec"]
+            )
+            if kline_primary_field is not None:
+                rows = _derive_kline_primary_feature_rows(
+                    primary_requirement,
+                    requirement,
+                    kline_primary_field,
+                    symbol,
+                    warmup_start,
+                    params["end_at"],
+                )
+            elif requirement["kind"] == "kline":
                 rows = _fetch_artifact_klines(
                     requirement,
                     symbol,
                     warmup_start,
                     params["end_at"],
                 )
-                if requirement["execution_role"] == "primary_execution_kline":
-                    primary_rows = rows
-                    primary_requirement = requirement
             else:
                 rows = _fetch_artifact_features(
                     requirement,
@@ -1130,10 +1269,6 @@ def _run_artifact_backtest(
                     available_through=rows[-1][timestamp_key]
                     + _timeframe_milliseconds(requirement["interval"]) // 1000,
                 )
-            )
-        if primary_rows is None or primary_requirement is None:
-            raise StrategyContractError(
-                ERR_COVERAGE_INCOMPLETE, "$.data_streams", "primary K-line is missing"
             )
         expected_source = _CENTRAL_MARKET_SOURCES.get(primary_requirement["market"])
         if primary_requirement["result_source"] != expected_source:

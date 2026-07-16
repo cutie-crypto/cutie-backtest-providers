@@ -425,10 +425,10 @@ def test_provider_capability_fixture_exact_payload_and_hash():
         == fixture["capability"]
     )
     assert capability_hash(fixture["capability"]) == fixture["sha256"]
-    assert fixture["capability"]["data_transforms"] == []
+    assert fixture["capability"]["data_transforms"] == ["ohlcv_resample.v1"]
     assert (
         fixture["sha256"]
-        == "ab659c29d5feb6f0691a1ef1a1a7a0b9db71619279ac4a397bd9b6c2a0e5f00a"
+        == "4e1760a3d6fa9ee5325d680acc830eb860f185d5c9dc05b6dbe5fd0d646bbad1"
     )
 
 
@@ -1466,7 +1466,8 @@ def test_unimplemented_transform_fails_at_capability_before_data_access(
     transform,
     monkeypatch,
 ):
-    """62-2a advertises exact complete streams only; transforms belong to 62-2b."""
+    """These three coarse-fill transforms remain unimplemented in 62-2b Phase 1;
+    only ohlcv_resample.v1 is advertised (see test_ohlcv_resample_* below)."""
     monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
 
     def fail_if_fetched(*args, **kwargs):
@@ -1497,7 +1498,7 @@ def test_unimplemented_transform_fails_at_capability_before_data_access(
         == "$.artifact_manifest.capability_requirements.data_transforms"
     )
     assert caught.value.required == transform
-    assert caught.value.actual == []
+    assert caught.value.actual == ["ohlcv_resample.v1"]
 
     response = TestClient(provider.app).post(
         "/cutie/backtest",
@@ -1510,5 +1511,5 @@ def test_unimplemented_transform_fails_at_capability_before_data_access(
     assert body["error_type"] == ERR_SPEC_UNSUPPORTED
     assert body["error_detail"]["path"] == caught.value.path
     assert body["error_detail"]["required"] == transform
-    assert body["error_detail"]["actual"] == []
+    assert body["error_detail"]["actual"] == ["ohlcv_resample.v1"]
     assert "coverage_manifest" not in body
