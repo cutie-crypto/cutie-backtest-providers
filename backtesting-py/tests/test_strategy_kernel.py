@@ -884,6 +884,15 @@ def test_warmup_frame_extends_lookback_but_can_never_trade():
     assert not any(item["frame_index"] == 0 for item in result["decisions"])
     assert result["trades"][0]["opened_at"] == 7200
 
+    # Positive lock on the frame_index offset documented on KernelState:
+    # frame_index is the physical index into state.frames (warmup frames
+    # counted), so the finalize() end-of-data close on the last of the 4
+    # frames (F3) must carry frame_index == len(frames) - 1 == 3, not an
+    # evaluation-window-relative index.
+    assert len(frames) == 4
+    assert result["decisions"][-1]["frame_index"] == len(frames) - 1 == 3
+    assert result["fill_ledger"][-1]["frame_index"] == len(frames) - 1 == 3
+
 
 def test_replay_loop_and_paper_tick_use_identical_evaluate():
     plan = compile_spec(make_spec(time_exit_bars=2))
