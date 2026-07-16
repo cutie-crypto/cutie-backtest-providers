@@ -845,6 +845,46 @@ def test_multiple_features_share_one_declared_source_without_overwrite():
     assert frames[0].values["cvd_slow"] == "3"
 
 
+def test_warmup_frame_extends_lookback_but_can_never_trade():
+    """A frame before execution_start_at must be appended to state.frames
+    (so lagged feature/cross lookups have history) but must never reach
+    entry/exit decision logic. Before the kernel had warmup semantics,
+    evaluate() rejected any bar_open_at < execution_start_at outright, so
+    simulate() below would raise KernelExecutionError on the first frame.
+    """
+    plan = compile_spec(make_spec())
+    primary = [
+        {
+            "open_time": index * 3600,
+            "open": "100",
+            "high": "101",
+            "low": "99",
+            "close": "100",
+            "volume": "1",
+        }
+        for index in range(4)
+    ]
+    coverage = {
+        "summary": {"strict_eligible": True},
+        "request_identity": {"symbol": "BTCUSDT"},
+    }
+    frames = build_frames({"binance.futures.kline.1h": primary}, coverage, plan)
+    assert len(frames) == 4
+
+    params = execution_params()
+    params["start_at"] = 3600
+    params["end_at"] = 3600 + 3 * 3600
+    result = simulate(plan, frames, initial_state(plan, params))
+
+    # The always-true entry condition is satisfied on the warmup frame
+    # (index 0, ts=0) too; if warmup could reach decision logic, entry would
+    # be signalled there and filled on the first evaluation frame's open
+    # (ts=3600). Warmup semantics forbid this: the earliest eligible signal
+    # is the first evaluation frame (index 1), filled on the next one.
+    assert not any(item["frame_index"] == 0 for item in result["decisions"])
+    assert result["trades"][0]["opened_at"] == 7200
+
+
 def test_replay_loop_and_paper_tick_use_identical_evaluate():
     plan = compile_spec(make_spec(time_exit_bars=2))
     frames = [frame(0), frame(1), frame(2)]
@@ -1299,6 +1339,110 @@ def test_artifact_endpoint_executes_compiled_plan_and_returns_hashed_evidence(
     assert body["execution_evidence"]["executed_params_hash"] == canonical_json_sha256(
         request["execution_params"]
     )
+
+
+def test_primary_warmup_fetch_covers_warmup_and_data_manifest_stays_evaluation_only(
+    monkeypatch,
+):
+    """Regression for the Pre incident (run 336079400808218624):
+    primary_execution_kline declared warmup_bars>0 while the fetch only ever
+    requested [start_at, end_at), so the coverage check that requires the
+    fetch to reach warmup_start_at always failed
+    (ERR_STRATEGY_COVERAGE_INCOMPLETE). The fetch must widen to warmup_start
+    like every other role, while result.v2 data_manifest (SPEC §7.5) keeps
+    reporting the evaluation window only.
+    """
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    fetch_calls: list[tuple[int, int]] = []
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        fetch_calls.append((start_ms, end_ms))
+        return [
+            [0, 100, 101, 99, 100, 1],
+            [3_600_000, 100, 106, 94, 101, 1],
+            [7_200_000, 101, 102, 100, 101, 1],
+            [10_800_000, 101, 102, 100, 101, 1],
+        ]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    request = build_request(make_spec())
+    request["execution_params"]["start_at"] = 3600
+    request["execution_params"]["end_at"] = 3600 + 3 * 3600
+    set_request_warmup(request, "binance.futures.kline.1h", 1)
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "success"
+    # The fetch must reach warmup_start_at (ts=0), not just the evaluation
+    # start (ts=3600).
+    assert fetch_calls == [(0, 14_400_000)]
+
+    data_manifest = body["data_manifest"]
+    assert data_manifest["start_at"] == 3600
+    assert data_manifest["end_at"] == 14400
+    assert data_manifest["kline_count"] == 3
+
+    primary_stream = next(
+        item
+        for item in body["coverage_manifest"]["streams"]
+        if item["execution_role"] == "primary_execution_kline"
+    )
+    assert primary_stream["required_range"] == {
+        "start_at": 3600,
+        "end_at": 14400,
+        "warmup_start_at": 0,
+    }
+    # SPEC §7.5: primary actual_range/point_count/checksum must mirror
+    # data_manifest exactly; warmup is proven only via required_range, never
+    # by widening actual_range.
+    assert primary_stream["actual_range"]["start_at"] == data_manifest["start_at"]
+    assert primary_stream["actual_range"]["end_at"] == data_manifest["end_at"]
+    assert primary_stream["point_count"] == data_manifest["kline_count"] == 3
+    assert primary_stream["checksum"]["value"] == data_manifest["checksum"]
+
+    # The always-true entry condition also matches on the warmup bar
+    # (ts=0); if the kernel let warmup bars reach decision logic, the first
+    # trade would open at ts=3600 (signalled on the warmup bar, filled on
+    # the first evaluation bar). It must instead open at ts=7200 (signalled
+    # on the first evaluation bar, filled on the second).
+    assert body["trades"][0]["opened_at"] == 7200
+
+
+def test_primary_warmup_insufficient_history_fails_closed(monkeypatch):
+    """The central adapter is missing the declared warmup bar (ts=0); only
+    the evaluation-window bars exist. Coverage must fail closed instead of
+    silently running the strategy without its declared warmup."""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [3_600_000, 100, 106, 94, 101, 1],
+            [7_200_000, 101, 102, 100, 101, 1],
+            [10_800_000, 101, 102, 100, 101, 1],
+        ]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    request = build_request(make_spec())
+    request["execution_params"]["start_at"] = 3600
+    request["execution_params"]["end_at"] = 3600 + 3 * 3600
+    set_request_warmup(request, "binance.futures.kline.1h", 1)
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_COVERAGE_INCOMPLETE
+    assert body["error_detail"]["path"] == "$.coverage.binance.futures.kline.1h"
 
 
 @pytest.mark.parametrize(
