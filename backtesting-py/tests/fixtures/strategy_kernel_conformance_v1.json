@@ -1,0 +1,756 @@
+{
+  "schema": "cutie.strategy_kernel_conformance.v1",
+  "source_of_truth": "SPEC §5.5/§7.3 (2026-07-17 增补, 62-2b Phase 1); Server/Connector/Provider share this fixture verbatim",
+  "note": "All series use a fixed 1h (3600s) step starting at ts=0 unless a case overrides `interval`/`primary_interval`. `value: null` in `input` marks a genuine mid-stream gap (a timestamp the fetch reports but with no value) — distinct from a timestamp simply absent before the series' first entry, which is the stream-start boundary case. `expected: null` marks a frame the primitive must report missing (never a fabricated value).",
+  "cases": [
+    {
+      "name": "rolling_quantile_min_periods_boundary_and_interpolation",
+      "primitive": "rolling_quantile",
+      "params": {
+        "window_bars": 4,
+        "quantile": "0.5",
+        "min_periods": 3
+      },
+      "description": "f=1,2 < min_periods=3 -> missing; f=3 at the stream-start boundary (window_bars=4 not yet reached) uses R-7 with n=3; f=4 once the window is full uses n=4 with a fractional interpolation.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "20"
+        },
+        {
+          "ts": 7200,
+          "value": "30"
+        },
+        {
+          "ts": 10800,
+          "value": "40"
+        },
+        {
+          "ts": 14400,
+          "value": "50"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "20"
+        },
+        {
+          "ts": 10800,
+          "value": "25"
+        },
+        {
+          "ts": 14400,
+          "value": "35"
+        }
+      ]
+    },
+    {
+      "name": "rolling_quantile_gap_is_never_skipped",
+      "primitive": "rolling_quantile",
+      "params": {
+        "window_bars": 3,
+        "quantile": "0.5",
+        "min_periods": 2
+      },
+      "description": "ts=3600's value is a genuine gap (present timestamp, null value). Every frame whose window still includes ts=3600 stays missing regardless of min_periods, until the window slides past it.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "30"
+        },
+        {
+          "ts": 10800,
+          "value": "40"
+        },
+        {
+          "ts": 14400,
+          "value": "50"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": "40"
+        }
+      ]
+    },
+    {
+      "name": "rolling_extreme_max_and_min_no_leniency",
+      "primitive": "rolling_extreme",
+      "params": {
+        "window_bars": 3,
+        "mode": "max"
+      },
+      "description": "rolling_extreme never has min_periods leniency: f<window_bars is always missing, exactly like the frozen rolling_sum semantics.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "5"
+        },
+        {
+          "ts": 3600,
+          "value": "9"
+        },
+        {
+          "ts": 7200,
+          "value": "3"
+        },
+        {
+          "ts": 10800,
+          "value": "3"
+        },
+        {
+          "ts": 14400,
+          "value": "3"
+        },
+        {
+          "ts": 18000,
+          "value": "8"
+        },
+        {
+          "ts": 21600,
+          "value": "1"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "9"
+        },
+        {
+          "ts": 10800,
+          "value": "9"
+        },
+        {
+          "ts": 14400,
+          "value": "3"
+        },
+        {
+          "ts": 18000,
+          "value": "8"
+        },
+        {
+          "ts": 21600,
+          "value": "8"
+        }
+      ]
+    },
+    {
+      "name": "rolling_extreme_min_with_gap",
+      "primitive": "rolling_extreme",
+      "params": {
+        "window_bars": 2,
+        "mode": "min"
+      },
+      "description": "ts=3600 is a genuine gap; both the frame at the gap itself and the following frame whose window still includes it are missing.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "30"
+        },
+        {
+          "ts": 10800,
+          "value": "40"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": "30"
+        }
+      ]
+    },
+    {
+      "name": "rolling_quantile_single_sample_at_stream_start",
+      "primitive": "rolling_quantile",
+      "params": {
+        "window_bars": 3,
+        "quantile": "0.5",
+        "min_periods": 1
+      },
+      "description": "f=1 at the very first timestamp of the stream (min_periods=1 accepts it): a single-sample window has no second order statistic to interpolate against, so R-7 returns that one sample directly rather than indexing x[1]. f=2 at the next frame exercises the ordinary n=2 interpolation.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "42"
+        },
+        {
+          "ts": 3600,
+          "value": "50"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": "42"
+        },
+        {
+          "ts": 3600,
+          "value": "46"
+        }
+      ]
+    },
+    {
+      "name": "rolling_extreme_decimal128_rounding_tie_even_stays",
+      "primitive": "rolling_extreme",
+      "params": {
+        "window_bars": 1,
+        "mode": "max"
+      },
+      "description": "decimal128 ROUND_HALF_EVEN boundary: a single-element window's 'extreme' is the raw source value unchanged by min()/max() comparison, so it must still be rounded to 34 significant digits on output. Input has 35 significant digits with an exact tie at digit 35 ('...25'); digit 34 ('2') is already even, so banker's rounding keeps it (rounds toward even, i.e. down here).",
+      "input": [
+        {
+          "ts": 0,
+          "value": "1.2222222222222222222222222222222225"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": "1.222222222222222222222222222222222"
+        }
+      ]
+    },
+    {
+      "name": "rolling_extreme_decimal128_rounding_tie_odd_rounds_up",
+      "primitive": "rolling_extreme",
+      "params": {
+        "window_bars": 1,
+        "mode": "max"
+      },
+      "description": "Same exact-tie boundary as the sibling case, but digit 34 ('3') is odd, so ROUND_HALF_EVEN rounds up to the nearest even digit ('4') instead of down.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "1.2222222222222222222222222222222235"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": "1.222222222222222222222222222222224"
+        }
+      ]
+    },
+    {
+      "name": "rolling_extreme_decimal128_rounding_more_than_half",
+      "primitive": "rolling_extreme",
+      "params": {
+        "window_bars": 1,
+        "mode": "max"
+      },
+      "description": "38 significant digits, not a tie (digits beyond position 35 are nonzero) -> rounds up regardless of digit 34's parity.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "1.2345678901234567890123456789012345678"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": "1.234567890123456789012345678901235"
+        }
+      ]
+    },
+    {
+      "name": "rsi_wilder_seed_avg_loss_zero",
+      "primitive": "rsi_wilder",
+      "params": {
+        "period": 2
+      },
+      "description": "Monotonically increasing prices: both seed deltas are gains, so avg_loss=0 at the seed and RSI=100 by the avg_loss==0 rule, independent of the alternating-delta case below.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "100"
+        },
+        {
+          "ts": 3600,
+          "value": "102"
+        },
+        {
+          "ts": 7200,
+          "value": "104"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "100"
+        }
+      ]
+    },
+    {
+      "name": "rsi_wilder_seed_at_fetch_window_start",
+      "primitive": "rsi_wilder",
+      "params": {
+        "period": 2
+      },
+      "description": "Seed = simple average of the first 2 deltas measured from this series' own first entry (ts=0), never any hypothetical longer history — the seed here has avg_gain=avg_loss=1 (RS=1, RSI=50), distinct from the avg_loss=0 case above. Alternating +2/-2 deltas afterward keep every recursive step an exact decimal.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "100"
+        },
+        {
+          "ts": 3600,
+          "value": "102"
+        },
+        {
+          "ts": 7200,
+          "value": "100"
+        },
+        {
+          "ts": 10800,
+          "value": "102"
+        },
+        {
+          "ts": 14400,
+          "value": "100"
+        },
+        {
+          "ts": 18000,
+          "value": "102"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "50"
+        },
+        {
+          "ts": 10800,
+          "value": "75"
+        },
+        {
+          "ts": 14400,
+          "value": "37.5"
+        },
+        {
+          "ts": 18000,
+          "value": "68.75"
+        }
+      ]
+    },
+    {
+      "name": "rsi_wilder_broken_chain_never_recovers",
+      "primitive": "rsi_wilder",
+      "params": {
+        "period": 2
+      },
+      "description": "The seed (ts=7200) only needs the first 2 deltas and is unaffected by a later gap. ts=10800's value is itself missing, which breaks the Wilder recursion irrecoverably: every later frame stays missing even though ts=14400/18000 carry valid raw values, because avg[t] is a strict function of avg[t-1].",
+      "input": [
+        {
+          "ts": 0,
+          "value": "100"
+        },
+        {
+          "ts": 3600,
+          "value": "102"
+        },
+        {
+          "ts": 7200,
+          "value": "100"
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": "102"
+        },
+        {
+          "ts": 18000,
+          "value": "100"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "50"
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": null
+        },
+        {
+          "ts": 18000,
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "ohlcv_resample_4h_drops_incomplete_trailing_bucket",
+      "primitive": "ohlcv_resample",
+      "params": {
+        "primary_interval": "1h",
+        "target_interval": "4h"
+      },
+      "description": "9 hourly bars: two complete UTC-aligned 4h buckets ([0,14400) and [14400,28800)) are emitted; the 9th bar alone in [28800,43200) is an incomplete bucket and must never be emitted (no partial aggregation, never fabricated).",
+      "input": [
+        {
+          "open_time": 0,
+          "open": "100",
+          "high": "105",
+          "low": "95",
+          "close": "102"
+        },
+        {
+          "open_time": 3600,
+          "open": "101",
+          "high": "106",
+          "low": "96",
+          "close": "103"
+        },
+        {
+          "open_time": 7200,
+          "open": "102",
+          "high": "107",
+          "low": "97",
+          "close": "104"
+        },
+        {
+          "open_time": 10800,
+          "open": "103",
+          "high": "108",
+          "low": "98",
+          "close": "105"
+        },
+        {
+          "open_time": 14400,
+          "open": "104",
+          "high": "109",
+          "low": "99",
+          "close": "106"
+        },
+        {
+          "open_time": 18000,
+          "open": "105",
+          "high": "110",
+          "low": "100",
+          "close": "107"
+        },
+        {
+          "open_time": 21600,
+          "open": "106",
+          "high": "111",
+          "low": "101",
+          "close": "108"
+        },
+        {
+          "open_time": 25200,
+          "open": "107",
+          "high": "112",
+          "low": "102",
+          "close": "109"
+        },
+        {
+          "open_time": 28800,
+          "open": "108",
+          "high": "113",
+          "low": "103",
+          "close": "110"
+        }
+      ],
+      "expected": [
+        {
+          "open_time": 0,
+          "open": "100",
+          "high": "108",
+          "low": "95",
+          "close": "105"
+        },
+        {
+          "open_time": 14400,
+          "open": "104",
+          "high": "112",
+          "low": "99",
+          "close": "109"
+        }
+      ]
+    },
+    {
+      "name": "ohlcv_resample_1d_full_day_bucket",
+      "primitive": "ohlcv_resample",
+      "params": {
+        "primary_interval": "1h",
+        "target_interval": "1d"
+      },
+      "description": "24 hourly bars form exactly one complete UTC-aligned 1d bucket [00:00,24:00): open=first bar open, high/low constant across all 24 bars, close=last (24th) bar close. Exercises bars_per_bucket=24, not just the 4h case's bars_per_bucket=4.",
+      "input": [
+        {
+          "open_time": 0,
+          "open": "100",
+          "high": "1000",
+          "low": "1",
+          "close": "200"
+        },
+        {
+          "open_time": 3600,
+          "open": "101",
+          "high": "1000",
+          "low": "1",
+          "close": "201"
+        },
+        {
+          "open_time": 7200,
+          "open": "102",
+          "high": "1000",
+          "low": "1",
+          "close": "202"
+        },
+        {
+          "open_time": 10800,
+          "open": "103",
+          "high": "1000",
+          "low": "1",
+          "close": "203"
+        },
+        {
+          "open_time": 14400,
+          "open": "104",
+          "high": "1000",
+          "low": "1",
+          "close": "204"
+        },
+        {
+          "open_time": 18000,
+          "open": "105",
+          "high": "1000",
+          "low": "1",
+          "close": "205"
+        },
+        {
+          "open_time": 21600,
+          "open": "106",
+          "high": "1000",
+          "low": "1",
+          "close": "206"
+        },
+        {
+          "open_time": 25200,
+          "open": "107",
+          "high": "1000",
+          "low": "1",
+          "close": "207"
+        },
+        {
+          "open_time": 28800,
+          "open": "108",
+          "high": "1000",
+          "low": "1",
+          "close": "208"
+        },
+        {
+          "open_time": 32400,
+          "open": "109",
+          "high": "1000",
+          "low": "1",
+          "close": "209"
+        },
+        {
+          "open_time": 36000,
+          "open": "110",
+          "high": "1000",
+          "low": "1",
+          "close": "210"
+        },
+        {
+          "open_time": 39600,
+          "open": "111",
+          "high": "1000",
+          "low": "1",
+          "close": "211"
+        },
+        {
+          "open_time": 43200,
+          "open": "112",
+          "high": "1000",
+          "low": "1",
+          "close": "212"
+        },
+        {
+          "open_time": 46800,
+          "open": "113",
+          "high": "1000",
+          "low": "1",
+          "close": "213"
+        },
+        {
+          "open_time": 50400,
+          "open": "114",
+          "high": "1000",
+          "low": "1",
+          "close": "214"
+        },
+        {
+          "open_time": 54000,
+          "open": "115",
+          "high": "1000",
+          "low": "1",
+          "close": "215"
+        },
+        {
+          "open_time": 57600,
+          "open": "116",
+          "high": "1000",
+          "low": "1",
+          "close": "216"
+        },
+        {
+          "open_time": 61200,
+          "open": "117",
+          "high": "1000",
+          "low": "1",
+          "close": "217"
+        },
+        {
+          "open_time": 64800,
+          "open": "118",
+          "high": "1000",
+          "low": "1",
+          "close": "218"
+        },
+        {
+          "open_time": 68400,
+          "open": "119",
+          "high": "1000",
+          "low": "1",
+          "close": "219"
+        },
+        {
+          "open_time": 72000,
+          "open": "120",
+          "high": "1000",
+          "low": "1",
+          "close": "220"
+        },
+        {
+          "open_time": 75600,
+          "open": "121",
+          "high": "1000",
+          "low": "1",
+          "close": "221"
+        },
+        {
+          "open_time": 79200,
+          "open": "122",
+          "high": "1000",
+          "low": "1",
+          "close": "222"
+        },
+        {
+          "open_time": 82800,
+          "open": "123",
+          "high": "1000",
+          "low": "1",
+          "close": "223"
+        }
+      ],
+      "expected": [
+        {
+          "open_time": 0,
+          "open": "100",
+          "high": "1000",
+          "low": "1",
+          "close": "223"
+        }
+      ]
+    }
+  ]
+}
