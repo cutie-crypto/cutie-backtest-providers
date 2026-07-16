@@ -49,6 +49,7 @@ from strategy_kernel import (
     capability_hash,
     capability_payload,
     initial_state,
+    kline_primary_bucket_required_start,
     ohlcv_resample,
     simulate,
 )
@@ -1222,15 +1223,21 @@ def _run_artifact_backtest(
         for requirement in requirements:
             if requirement is primary_requirement:
                 continue
-            warmup_start = max(
-                0,
-                params["start_at"]
-                - requirement["warmup_bars"]
-                * (_timeframe_milliseconds(requirement["interval"]) // 1000),
-            )
+            requirement_step = _timeframe_milliseconds(requirement["interval"]) // 1000
             kline_primary_field = _kline_primary_field_for_requirement(
                 requirement, request["strategy_spec"]
             )
+            if kline_primary_field is not None:
+                # Bucket-aligned: see kline_primary_bucket_required_start.
+                # An unaligned start_at - warmup_bars*step can land inside a
+                # bucket a decision frame needs in full, truncating it.
+                warmup_start = kline_primary_bucket_required_start(
+                    params["start_at"], requirement["warmup_bars"], requirement_step
+                )
+            else:
+                warmup_start = max(
+                    0, params["start_at"] - requirement["warmup_bars"] * requirement_step
+                )
             if kline_primary_field is not None:
                 rows = _derive_kline_primary_feature_rows(
                     primary_requirement,

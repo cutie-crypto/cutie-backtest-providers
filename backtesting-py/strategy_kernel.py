@@ -1149,6 +1149,58 @@ def _validate_rsi_warmup(
             )
 
 
+def _validate_kline_primary_requirements(
+    spec: dict[str, Any], requirements: list[dict[str, Any]]
+) -> None:
+    """SPEC §5.5 binds two exact requirement shapes for kline.primary
+    features that must be rejected at compile, not left for the Provider's
+    runtime predicate to misclassify:
+
+    - a passthrough feature (interval == primary timeframe) must never have
+      a data_requirement of its own ("不产生新 stream，不需要 transform"); the
+      Provider's fetch-time predicate (matching by source_stream prefix and
+      interval, same convention as here) cannot distinguish an illegally
+      declared one from a legitimate coarse requirement once it exists, so an
+      illegal one must never reach execution.
+    - a coarse feature (interval != primary timeframe)'s matched requirement
+      must declare ``ohlcv_resample.v1`` in its own ``allowed_transforms``:
+      §4.2 binds transform selection into the artifact hash via spec_hash,
+      so a requirement missing the declaration must fail closed rather than
+      have the Provider resample it anyway at runtime.
+    """
+    market_timeframe = spec["market"]["timeframe"]
+    for feature in spec["features"]:
+        source_stream = feature["source_stream"]
+        if not source_stream.startswith(_KLINE_PRIMARY_PREFIX):
+            continue
+        matching = [
+            item
+            for item in requirements
+            if item["kind"] == "feature"
+            and item["stream_id"].startswith(source_stream + ".")
+            and item["interval"] == feature["interval"]
+        ]
+        if feature["interval"] == market_timeframe:
+            if matching:
+                _raise(
+                    f"$.artifact_manifest.data_requirements[{matching[0]['stream_id']}]",
+                    "kline.primary passthrough feature must not declare a "
+                    "separate data requirement",
+                    actual=matching[0]["stream_id"],
+                )
+            continue
+        for requirement in matching:
+            if "ohlcv_resample.v1" not in requirement["allowed_transforms"]:
+                _raise(
+                    f"$.artifact_manifest.data_requirements[{requirement['stream_id']}]"
+                    ".allowed_transforms",
+                    "coarse kline.primary requirement must declare "
+                    "ohlcv_resample.v1",
+                    required="ohlcv_resample.v1",
+                    actual=requirement["allowed_transforms"],
+                )
+
+
 def _derived_requirements(
     spec: dict[str, Any],
     static: dict[str, list[dict[str, Any]]],
@@ -1220,6 +1272,7 @@ def _validate_manifest(
     _validate_sources(obj["source_materials"])
     requirements = _validate_data_requirements(spec, obj["data_requirements"])
     _validate_rsi_warmup(spec, requirements)
+    _validate_kline_primary_requirements(spec, requirements)
     _exact(
         obj["capability_requirements"],
         _CAPABILITY_REQUIREMENT_KEYS,
@@ -1848,6 +1901,46 @@ def _decimal(value: Any, path: str) -> Decimal:
         )
 
 
+def kline_primary_bucket_required_start(
+    start_at: int, warmup_bars: int, target_step: int
+) -> int:
+    """The bucket-aligned ``required_start`` a coarse ``kline.primary.*``
+    requirement must declare (and a Provider fetch must honor), shared by
+    the Provider's fetch range and the coverage completeness check so both
+    always agree.
+
+    A naive ``start_at - warmup_bars * target_step`` (correct for a
+    same-interval requirement, whose own rows are exactly what a decision
+    frame reads) is wrong here: the as-of anchor for the *first* decision
+    frame is always the bucket that closed at-or-before the bucket
+    *containing* ``start_at`` — that bucket has already elapsed even when
+    ``start_at`` itself falls partway through it — never the bucket that
+    merely starts at-or-after ``start_at``. Flooring to the bucket
+    containing ``start_at`` first, then stepping back ``warmup_bars``
+    buckets, is what actually has to be fetched/declared; offsetting by
+    ``warmup_bars`` directly from an unaligned ``start_at`` can land inside
+    a bucket that a decision frame needs in full, silently truncating it.
+    """
+    bucket_grid_start = (start_at // target_step) * target_step
+    return max(0, bucket_grid_start - warmup_bars * target_step)
+
+
+def kline_primary_bucket_required_end(end_at: int, target_step: int) -> int:
+    """The bucket-aligned ``required_end`` a coarse ``kline.primary.*``
+    requirement's completeness check must use, symmetric to
+    ``kline_primary_bucket_required_start``. ``execution_params.end_at``
+    (the raw decision-window boundary, at primary granularity) need not fall
+    on a coarse bucket boundary; the last bucket a decision frame closing
+    at-or-before ``end_at`` could ever as-of read is the one that closed
+    at-or-before ``end_at``, i.e. floored to the bucket grid — comparing the
+    completeness count against the unaligned ``end_at`` directly would
+    demand a fractional/impossible bucket count whenever ``end_at`` falls
+    mid-bucket, even though the coarse stream is genuinely complete for
+    every decision frame that actually needs it.
+    """
+    return (end_at // target_step) * target_step
+
+
 def ohlcv_resample(
     primary_rows: list[dict[str, Any]], primary_step: int, target_interval: str
 ) -> list[dict[str, Any]]:
@@ -1914,9 +2007,15 @@ def _quantile_r7(sorted_values: list[Decimal], quantile: Decimal) -> Decimal:
 
     ``sorted_values`` must already be ascending; ``quantile`` strictly in
     (0, 1) guarantees ``floor(h)`` and ``floor(h)+1`` are always valid indices
-    into a window of size ``len(sorted_values) >= 2``.
+    once ``len(sorted_values) >= 2``. A single-sample window (reachable at
+    the stream-start boundary with ``min_periods=1``) has no second order
+    statistic to interpolate against, and any quantile of one observation is
+    that observation, so it is returned directly without indexing ``x[1]``.
     """
     n = len(sorted_values)
+    if n == 1:
+        with localcontext(_DECIMAL_CONTEXT):
+            return +sorted_values[0]
     with localcontext(_DECIMAL_CONTEXT) as ctx:
         h = ctx.multiply(Decimal(n - 1), quantile)
         floor_h = int(h.to_integral_value(rounding=ROUND_FLOOR))
@@ -2008,7 +2107,12 @@ def _evaluate_windowed_primitive(
         values, ceiling = result
         if len(values) != window_bars:
             return None
-        extreme = min(values) if params["mode"] == "min" else max(values)
+        # min()/max() only compare and return one of the existing Decimal
+        # objects — no arithmetic happens, so unlike sum() nothing rounds it
+        # to decimal128 automatically. A raw source value with more than 34
+        # significant digits would otherwise pass through unrounded.
+        with localcontext(_DECIMAL_CONTEXT):
+            extreme = +(min(values) if params["mode"] == "min" else max(values))
         return extreme, ceiling
     if primitive == "rolling_quantile":
         window_bars = params["window_bars"]
@@ -2274,11 +2378,23 @@ def build_frames(
         return _primary_field_cache[field]
 
     # rsi_wilder's Wilder recursion needs the stream's full fetched history;
-    # precompute once per feature (not once per decision frame).
+    # precompute once per feature (not once per decision frame). A passthrough
+    # kline.primary feature has no feature_streams entry of its own (it reads
+    # the primary series directly) but still needs its RSI series precomputed
+    # from that same synthetic per-field series, or the per-frame lookup below
+    # would KeyError on a cache that was never populated for it.
     rsi_series_cache: dict[str, dict[int, tuple[Optional[Decimal], int]]] = {}
     feature_revision: dict[str, str] = {}
     for feature in plan.strategy_spec["features"]:
         if _is_kline_primary_passthrough(feature):
+            if feature["primitive"] == "rsi_wilder":
+                field = feature["source_stream"][len(_KLINE_PRIMARY_PREFIX) :]
+                rsi_series_cache[feature["key"]] = _rsi_wilder_series(
+                    _primary_field_series(field),
+                    primary_ordered_ts,
+                    feature["params"]["period"],
+                    f"$.data_streams.{feature['source_stream']}",
+                )
             continue
         rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
         feature_revision[feature["key"]] = next(
@@ -2381,7 +2497,14 @@ def build_frames(
                     code=ERR_COVERAGE_INCOMPLETE,
                     required=anchor_ts,
                 )
-            values[feature["key"]] = canonical_decimal_str(value)
+            # canonical_decimal_str()'s normalize() rounds to whatever context
+            # is ambient at the call site (Python's default is prec=28, not
+            # decimal128's 34) — every primitive above already rounds `value`
+            # to 34 significant digits internally, but that rounding is only
+            # observable in the final string if serialization also happens
+            # while decimal128 is still the active context.
+            with localcontext(_DECIMAL_CONTEXT):
+                values[feature["key"]] = canonical_decimal_str(value)
             if not passthrough:
                 revisions[feature["source_stream"]] = feature_revision[feature["key"]]
         frames.append(
@@ -3104,6 +3227,8 @@ __all__ = [
     "capability_payload",
     "compile_strategy",
     "initial_state",
+    "kline_primary_bucket_required_end",
+    "kline_primary_bucket_required_start",
     "ohlcv_resample",
     "paper_tick",
     "simulate",
