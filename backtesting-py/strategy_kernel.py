@@ -235,6 +235,19 @@ class Position:
 
 @dataclass
 class KernelState:
+    """Mutable replay/paper state advanced one frame at a time by evaluate().
+
+    ``frames`` holds every frame StrategyKernel.evaluate() has accepted,
+    including warmup frames (``bar_open_at < execution_start_at``) appended
+    for lagged feature/cross lookback. Any ``frame_index`` recorded in
+    decisions/diagnostics/fill_ledger/cost_ledger is the physical index into
+    this list, not an index into the evaluation-only window: the first
+    evaluation-window frame has ``frame_index == warmup_bars`` (the number of
+    warmup frames ahead of it), not 0. Warmup frames themselves can never
+    appear in a frame_index there, since evaluate() returns before any
+    decision logic runs for them.
+    """
+
     equity: Decimal
     initial_capital: Decimal
     instrument_rules: dict[str, str]
@@ -2340,7 +2353,9 @@ class StrategyKernel:
         frames: they are validated and appended to ``state.frames`` so lagged
         feature/cross lookups have history by the first evaluation frame, but
         they are returned before any entry/exit decision logic runs and can
-        never open, hold, or close a position.
+        never open, hold, or close a position. See ``KernelState.frames`` for
+        the resulting ``frame_index`` offset: it counts warmup frames too, so
+        the first evaluation-window frame is ``frame_index == warmup_bars``.
         """
         if frame.bar_close_at > state.execution_end_at:
             raise KernelExecutionError(
