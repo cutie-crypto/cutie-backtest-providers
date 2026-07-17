@@ -387,6 +387,49 @@ def validate_execution_request(
             "compiled hashes differ from execution binding",
         )
     lag_frames = max_primary_lag_frames(request["strategy_spec"])
+    # Final review (Codex HIGH-1 temporary guard + HIGH-3/MED-4): every
+    # feature's declared warmup must cover how far back it is referenced --
+    # the kernel serves lags from stream as-of values captured on warmup
+    # frames, so a shallower warmup is a deterministic runtime death the
+    # golden past-edge precheck cannot see. Coarse features referenced at
+    # lag>0 are rejected outright until the frames-index vs
+    # own-interval-bucket lag semantics divergence (SPEC:721, confirmed by
+    # probe) is resolved -- silently computing a wrong signal is worse than
+    # refusing to compile. The primary K-line is deliberately NOT held to
+    # this floor: its lag history is widened at fetch time (S20's shipped
+    # artifact has primary warmup_bars=0 with cvd lag 6 and must keep
+    # executing bit-for-bit).
+    feature_needs = per_feature_lag_needs(request["strategy_spec"])
+    primary_timeframe = request["strategy_spec"]["market"]["timeframe"]
+    for feature in request["strategy_spec"]["features"]:
+        need = feature_needs.get(feature["key"], 0)
+        if need <= 0:
+            continue
+        if feature["interval"] != primary_timeframe:
+            _error(
+                ERR_SPEC_INVALID,
+                f"$.strategy_spec.features[{feature['key']}].lag_bars",
+                "coarse-interval feature references with lag_bars>0 are not "
+                "supported yet (frames-index vs bucket lag semantics is "
+                "unresolved); rework the spec or wait for the lag-semantics "
+                "revision",
+            )
+        for requirement in plan.artifact_manifest["data_requirements"]:
+            if requirement["execution_role"] != "feature_input":
+                continue
+            if not requirement["stream_id"].startswith(feature["source_stream"] + "."):
+                continue
+            if requirement["interval"] != feature["interval"]:
+                continue
+            if requirement["warmup_bars"] < need:
+                _error(
+                    ERR_SPEC_INVALID,
+                    f"$.artifact_manifest.data_requirements[{requirement['stream_id']}].warmup_bars",
+                    "feature warmup_bars must cover the deepest lag reference "
+                    "(lag_bars, +1 inside cross) -- SPEC 另计 lag_bars",
+                    required=need,
+                    actual=requirement["warmup_bars"],
+                )
     for index, requirement in enumerate(plan.artifact_manifest["data_requirements"]):
         step_seconds = _interval_seconds(requirement["interval"])
         # Phase 1 review (Codex HIGH-1): the provider widens the primary
@@ -418,6 +461,37 @@ def validate_execution_request(
 
 
 _KLINE_PRIMARY_PREFIX = "kline.primary."
+
+
+def per_feature_lag_needs(strategy_spec: Any) -> dict[str, int]:
+    """Per-feature-key max history need (lag_bars, +1 inside cross) across
+    every reference in the spec. Companion to ``max_primary_lag_frames``:
+    that one sizes the primary frames history, this one drives the
+    preflight floor "a feature's declared warmup must cover how far back it
+    is ever referenced" (final review Codex HIGH-3/MED-4 -- without it a
+    shallow-warmup feature referenced at deeper lag compiles green and dies
+    deterministically at runtime, taking the whole run's evidence with it)."""
+
+    needs: dict[str, int] = {}
+
+    def walk(node: Any, inside_cross: bool) -> None:
+        if isinstance(node, dict):
+            if node.get("node") == "feature":
+                lag = node.get("lag_bars")
+                key = node.get("key")
+                if isinstance(lag, int) and not isinstance(lag, bool) and isinstance(key, str):
+                    need = lag + (1 if inside_cross else 0)
+                    if need > needs.get(key, -1):
+                        needs[key] = need
+            child_inside = inside_cross or node.get("node") == "cross"
+            for value in node.values():
+                walk(value, child_inside)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, inside_cross)
+
+    walk(strategy_spec, False)
+    return needs
 
 
 def max_primary_lag_frames(strategy_spec: Any) -> int:

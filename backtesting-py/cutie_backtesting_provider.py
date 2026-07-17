@@ -1355,17 +1355,18 @@ def _run_artifact_backtest(
             # "另计 lag_bars") is the contract-level fix.
             fetch_start = warmup_start
             if requirement["kind"] != "kline" and kline_primary_field is None:
-                bound_feature = next(
-                    (
-                        item
-                        for item in request["strategy_spec"]["features"]
-                        if requirement["stream_id"].startswith(item["source_stream"] + ".")
-                        and item["interval"] == requirement["interval"]
-                    ),
-                    None,
-                )
-                recursively_anchored = (
-                    bound_feature is not None and bound_feature["primitive"] == "rsi_wilder"
+                # any() semantics (final review Kimi medium-2): one
+                # requirement can back several spec features (same
+                # source_stream+interval, different primitives) -- if ANY of
+                # them is recursively anchored, widening the shared fetch
+                # would shift that one's seed even though a sibling
+                # rolling_* feature would have been fine. rsi_wilder is the
+                # only recursively-seeded primitive in the catalog today.
+                recursively_anchored = any(
+                    item["primitive"] == "rsi_wilder"
+                    for item in request["strategy_spec"]["features"]
+                    if requirement["stream_id"].startswith(item["source_stream"] + ".")
+                    and item["interval"] == requirement["interval"]
                 )
                 if not recursively_anchored:
                     fetch_start = min(warmup_start, lag_history_start)
