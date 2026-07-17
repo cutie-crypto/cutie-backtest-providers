@@ -25,6 +25,8 @@ from strategy_kernel import (  # noqa: E402
     COMPILER_TOOL_ID,
     ERR_COVERAGE_INCOMPLETE,
     ERR_SPEC_INVALID,
+    ERR_SPEC_UNSUPPORTED,
+    CompiledPlan,
     StrategyContractError,
     _DECIMAL_CONTEXT,
     _evaluate_windowed_primitive,
@@ -178,7 +180,7 @@ def test_ohlcv_resample_bucket_open_zero_lookahead_boundary() -> None:
     }
     spec = tsk.make_spec(features=[feature])
     spec["market"]["timeframe"] = "1h"
-    manifest = _kline_primary_manifest(spec, requirement_interval="4h")
+    manifest = _kline_primary_manifest(spec, requirement_interval="4h", warmup_bars=1)
     plan = compile_strategy(spec, manifest, capability_payload(REVISION))
     coverage = {
         "summary": {"strict_eligible": True},
@@ -350,10 +352,11 @@ def _kline_primary_request(
 
 
 def test_coarse_kline_primary_end_to_end_over_http(monkeypatch) -> None:
-    """Full pipeline: Connector wire -> compile -> primary fetch -> the
-    requirement's own independently-widened central fetch for
-    ohlcv_resample derivation -> build_frames as-of read -> coverage
-    .transforms entry -> golden_replay reduction.
+    """Full pipeline: Connector wire -> compile -> one union-range primary
+    fetch (widened up front to also cover the coarse requirement's own
+    resample-source need) -> ohlcv_resample derivation from those same rows
+    -> build_frames as-of read -> coverage .transforms entry -> golden_replay
+    reduction.
 
     execution_start_at=14400 (bucket-aligned, one bucket in) with the coarse
     requirement's warmup_bars=1 (=window_bars, per the as-of lag documented
@@ -405,19 +408,26 @@ def test_coarse_kline_primary_end_to_end_over_http(monkeypatch) -> None:
     body = response.json()
     assert body["result_status"] == "success", body
 
-    # Two central fetches happened: primary's own [14400,43200) for decision
-    # frames, and the coarse requirement's independently-widened [0,43200)
-    # for bucket construction — both against the same declared central
-    # source, never a different provider/storage_source.
-    assert sorted(fetch_calls) == [(0, 43_200_000), (14_400_000, 43_200_000)]
+    # Exactly one central fetch happened, widened to [0,43200) up front to
+    # cover both the primary's own decision-frame need ([14400,43200)) and
+    # the coarse requirement's bucket-construction need (back to ts=0) —
+    # decision frames and derivation now read the identical fetched rows.
+    assert fetch_calls == [(0, 43_200_000)]
 
     coverage = body["coverage_manifest"]
+    primary_stream = next(
+        s for s in coverage["streams"] if s["execution_role"] == "primary_execution_kline"
+    )
     derived_stream = next(
         s for s in coverage["streams"] if s["stream_id"] == "kline.primary.close@4h"
     )
     assert derived_stream["execution_role"] == "feature_input"
     assert derived_stream["result_source"] is None
     assert derived_stream["point_count"] == 3
+    # The derived stream's inherited revision is genuinely the checksum of
+    # the same rows it was resampled from (the single union fetch), not a
+    # separately (re-)fetched dataset — see _derive_kline_primary_feature_rows.
+    assert derived_stream["revision"]["value"] == primary_stream["revision"]["value"]
     assert coverage["transforms"] == [
         {
             "output_stream_id": "kline.primary.close@4h",
@@ -506,9 +516,10 @@ def test_coarse_kline_primary_unaligned_start_at_keeps_the_bucket_before_it(
     body = response.json()
     assert body["result_status"] == "success", body
 
-    # primary decision frames [18000,32400); coarse resample-source fetch
-    # independently widened back to bucket-aligned ts=0, recovering bucket1.
-    assert sorted(fetch_calls) == [(0, 32_400_000), (18_000_000, 32_400_000)]
+    # One union fetch, widened back to bucket-aligned ts=0 up front to also
+    # cover the coarse requirement's resample-source need, recovering
+    # bucket1 without a second, separate central call.
+    assert fetch_calls == [(0, 32_400_000)]
 
     coverage = body["coverage_manifest"]
     derived_stream = next(
@@ -523,6 +534,39 @@ def test_coarse_kline_primary_unaligned_start_at_keeps_the_bucket_before_it(
     # bucket2 [04:00,08:00) close=107 becomes visible at the frame closing
     # exactly at its own completion (28800), satisfying close_4h_high > 105.
     assert body["trades"], "bucket1 must have been recovered for the run to signal at all"
+
+
+def test_derive_kline_primary_feature_rows_never_fetches_and_shares_revision() -> None:
+    """§2 fix: _derive_kline_primary_feature_rows no longer independently
+    (re-)fetches the primary K-line — a second, separate fetch could resample
+    from data the decision frames never actually saw, pinning a coverage
+    revision (inherited verbatim onto the derived stream, see
+    build_coverage_manifest's ``primary_item.revision``) that would not be
+    true. It is now a pure resample over whatever rows the caller (the single
+    union-range fetch in _run_artifact_backtest) already fetched once, and
+    every returned row's own revision is that same caller-supplied checksum
+    verbatim — proving the two structurally share one source, not merely
+    matching by coincidence."""
+    primary_rows = [
+        {
+            "open_time": i * 3600,
+            "open": "100",
+            "high": "200",
+            "low": "50",
+            "close": str(100 + i),
+            "volume": "1",
+        }
+        for i in range(8)
+    ]
+    requirement = {
+        "stream_id": "kline.primary.close.4h",
+        "interval": "4h",
+    }
+    rows = provider._derive_kline_primary_feature_rows(
+        primary_rows, 3600, "shared-primary-revision", requirement, "close", 0, 28800
+    )
+    assert [row["value"] for row in rows] == ["103", "107"]
+    assert all(row["revision"] == "shared-primary-revision" for row in rows)
 
 
 def test_kline_primary_passthrough_reads_primary_field_directly() -> None:
@@ -567,7 +611,13 @@ def test_kline_primary_passthrough_rsi_wilder_does_not_keyerror() -> None:
     entirely in that precompute loop), so a passthrough kline.primary
     rsi_wilder feature's per-frame lookup KeyError'd on a cache key that was
     never inserted — an unhandled Python exception, not a structured
-    fail-closed error.
+    fail-closed error. ``compile_strategy`` now rejects a passthrough
+    rsi_wilder feature outright (see
+    test_rsi_wilder_warmup_check_uses_primary_warmup_for_a_passthrough_feature),
+    since frame 0 is guaranteed to fail closed every run regardless of
+    warmup_bars — so this hand-builds a CompiledPlan bypassing that gate to
+    keep defense-in-depth coverage on build_frames itself never crashing
+    with a bare KeyError if some future path ever reaches it.
 
     frame 0 (the array's very first row, whatever primary_requirement's
     warmup_bars happens to fetch) can never itself have `period` prior rows
@@ -593,14 +643,15 @@ def test_kline_primary_passthrough_rsi_wilder_does_not_keyerror() -> None:
     }
     spec = tsk.make_spec(features=[feature])
     manifest = _kline_primary_manifest(spec, requirement_interval="1h")
-    primary_requirement = next(
-        item
-        for item in manifest["data_requirements"]
-        if item["execution_role"] == "primary_execution_kline"
+    plan = CompiledPlan(
+        strategy_spec=spec,
+        artifact_manifest=manifest,
+        spec_hash="",
+        manifest_hash="",
+        artifact_hash="",
+        parameter_types={},
+        feature_types={"rsi_close": "decimal"},
     )
-    primary_requirement["warmup_bars"] = 30  # >= 10 * period=3
-    manifest["spec_hash"] = canonical_json_sha256(spec)
-    plan = compile_strategy(spec, manifest, capability_payload(REVISION))
     primary_rows = [
         {
             "open_time": i * 3600,
@@ -812,6 +863,17 @@ def test_rsi_wilder_requires_warmup_bars_at_least_10x_period() -> None:
 
 
 def test_rsi_wilder_warmup_check_uses_primary_warmup_for_a_passthrough_feature() -> None:
+    """The 10x-period warmup gate (_validate_rsi_warmup) still binds a
+    passthrough rsi_wilder feature to the *primary* requirement's own
+    warmup_bars (there is no requirement of its own to check). But even once
+    that gate is satisfied, the feature itself can never execute: a
+    passthrough feature has no lookback beyond whatever the primary
+    requirement fetched, so its first frame is unconditionally unresolved
+    (see _rsi_wilder_series' seed) no matter how large warmup_bars is —
+    compile must reject the primitive itself, not just under-size warmup
+    (this is the exact gap the old version of this test proved: satisfying
+    the warmup_bars check used to make compile_strategy succeed even though
+    every run was guaranteed to fail closed on frame 0)."""
     feature = {
         "key": "rsi_close",
         "primitive": "rsi_wilder",
@@ -836,8 +898,169 @@ def test_rsi_wilder_warmup_check_uses_primary_warmup_for_a_passthrough_feature()
     assert caught.value.code == ERR_SPEC_INVALID
     assert caught.value.required == 30
 
+    # Satisfying the warmup gate no longer makes this compile: the
+    # passthrough + rsi_wilder combination itself is now rejected.
     primary_requirement["warmup_bars"] = 30
     manifest["spec_hash"] = canonical_json_sha256(spec)
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert caught.value.code == ERR_SPEC_UNSUPPORTED
+    assert caught.value.path == "$.strategy_spec.features[0].primitive"
+
+
+@pytest.mark.parametrize("primitive", ["rolling_sum", "rolling_extreme"])
+def test_kline_primary_passthrough_window_primitive_requires_window_bars_one(
+    primitive: str,
+) -> None:
+    """A passthrough feature has no lookback beyond the primary requirement's
+    own fetch, so window_bars=1 (the anchor bar itself) is the only value
+    whose first frame can ever resolve — anything wider is guaranteed to
+    fail closed every run, so compile must reject it outright."""
+    params = (
+        {"window_bars": 2}
+        if primitive == "rolling_sum"
+        else {"window_bars": 2, "mode": "max"}
+    )
+    feature = {
+        "key": "under_test",
+        "primitive": primitive,
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "1h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": params,
+        "required": True,
+    }
+    spec = tsk.make_spec(features=[feature])
+    manifest = _kline_primary_manifest(spec, requirement_interval="1h")
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert caught.value.code == ERR_SPEC_UNSUPPORTED
+    assert caught.value.path == "$.strategy_spec.features[0].params.window_bars"
+    assert caught.value.required == 1
+    assert caught.value.actual == 2
+
+
+def test_kline_primary_passthrough_rolling_quantile_requires_min_periods_one() -> None:
+    feature = {
+        "key": "under_test",
+        "primitive": "rolling_quantile",
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "1h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"window_bars": 4, "quantile": "0.5", "min_periods": 2},
+        "required": True,
+    }
+    spec = tsk.make_spec(features=[feature])
+    manifest = _kline_primary_manifest(spec, requirement_interval="1h")
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert caught.value.code == ERR_SPEC_UNSUPPORTED
+    assert caught.value.path == "$.strategy_spec.features[0].params.min_periods"
+    assert caught.value.required == 1
+    assert caught.value.actual == 2
+
+    # min_periods=1 is allowed even with a wide window_bars: a single-sample
+    # window at frame 0 is still a valid quantile of one observation.
+    feature["params"]["min_periods"] = 1
+    spec = tsk.make_spec(features=[feature])
+    manifest = _kline_primary_manifest(spec, requirement_interval="1h")
+    compile_strategy(spec, manifest, capability_payload(REVISION))
+
+
+@pytest.mark.parametrize(
+    "field_name", ["provider", "storage_source", "exchange", "market"]
+)
+def test_coarse_kline_primary_requirement_must_match_primary_data_source_identity(
+    field_name: str,
+) -> None:
+    """A coarse kline.primary requirement is never independently fetched —
+    ohlcv_resample.v1 always resamples the primary requirement's own central
+    source — so a declared provider/storage_source/exchange/market that
+    differs from the primary's is a label the Provider's execution can never
+    actually honor and must fail closed at compile."""
+    feature = {
+        "key": "close_4h",
+        "primitive": "rolling_extreme",
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "4h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"window_bars": 1, "mode": "max"},
+        "required": True,
+    }
+    spec = tsk.make_spec(features=[feature])
+    manifest = _kline_primary_manifest(spec, requirement_interval="4h", warmup_bars=1)
+    requirement = next(
+        item
+        for item in manifest["data_requirements"]
+        if item["stream_id"].startswith("kline.primary.")
+    )
+    mismatched = {
+        "provider": "coinglass",
+        "storage_source": "market_metrics_history",
+        "exchange": "okx",
+        "market": "spot",
+    }
+    requirement[field_name] = mismatched[field_name]
+    manifest["spec_hash"] = canonical_json_sha256(spec)
+    # The kline.primary identity check (_validate_kline_primary_requirements)
+    # runs before the capability_requirements exact-set comparison, so this
+    # mismatch is caught without needing to keep data_sources in sync too.
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert caught.value.path == (
+        f"$.artifact_manifest.data_requirements[{requirement['stream_id']}].{field_name}"
+    )
+
+
+@pytest.mark.parametrize(
+    "primitive,params,required",
+    [
+        # rolling_sum's capability_payload source_streams do not include
+        # kline.primary.* (only coinglass.futures_cvd) — window/quantile
+        # primitives that are actually advertised for kline.primary sources.
+        ("rolling_extreme", {"window_bars": 3, "mode": "max"}, 3),
+        ("rolling_quantile", {"window_bars": 4, "quantile": "0.5", "min_periods": 3}, 3),
+    ],
+)
+def test_coarse_kline_primary_requirement_warmup_bars_must_cover_primitive_lookback(
+    primitive: str, params: dict, required: int
+) -> None:
+    """A coarse requirement's warmup_bars must reach the primitive's own
+    lookback (window_bars, or rolling_quantile's min_periods) or the first
+    decision frame in range compiles green but always fails closed for lack
+    of a completed prior bucket to as-of anchor on."""
+    feature = {
+        "key": "under_test",
+        "primitive": primitive,
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "4h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": params,
+        "required": True,
+    }
+    spec = tsk.make_spec(features=[feature])
+    manifest = _kline_primary_manifest(
+        spec, requirement_interval="4h", warmup_bars=required - 1
+    )
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert caught.value.path.endswith(".warmup_bars")
+    assert caught.value.required == required
+    assert caught.value.actual == required - 1
+
+    manifest = _kline_primary_manifest(
+        spec, requirement_interval="4h", warmup_bars=required
+    )
     compile_strategy(spec, manifest, capability_payload(REVISION))
 
 
