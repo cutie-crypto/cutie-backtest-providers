@@ -1499,27 +1499,21 @@ def test_max_feature_lag_extends_primary_warmup_frames(monkeypatch):
     assert kline_calls[0][0] == 0
 
 
-def test_lag_exceeding_feature_warmup_widens_feature_fetch(monkeypatch):
-    """Phase 1 review (Codex HIGH-2): the lag-extension warmup frames still
-    need each feature's as-of value -- with feature warmup_bars=2 (test
-    manifest) and lag_bars=3, the feature fetch must reach back 3 bars, not
-    its declared 2, while coverage stays on the declared slice."""
+def test_lag_exceeding_feature_warmup_rejected_at_preflight(monkeypatch):
+    """Final review (Codex HIGH-3/MED-4, supersedes the fetch-widening
+    reading of Phase 1 HIGH-2): a feature referenced deeper than its own
+    declared warmup (manifest warmup_bars=2, lag_bars=3) is a deterministic
+    runtime death the golden past-edge precheck cannot see -- it must be
+    rejected at preflight before any data access, not limped over by a
+    widened fetch."""
 
     monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
-    metric_calls: list[tuple[int, int]] = []
 
-    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
-        return [
-            [ts * 1000, 100, 101, 99, 100, 1]
-            for ts in range(start_ms // 1000, end_ms // 1000, 3600)
-        ]
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("lag-vs-warmup floor must be checked before data access")
 
-    def fetch_metric_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
-        metric_calls.append((start_at, end_at))
-        return [{"ts": ts, "value": "1"} for ts in range(start_at, end_at + 1, 3600)]
-
-    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
-    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_metric_chunk)
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fail_if_fetched)
 
     feature = {
         "key": "cvd_1h",
@@ -1550,10 +1544,8 @@ def test_lag_exceeding_feature_warmup_widens_feature_fetch(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["result_status"] == "success", body.get("error_message")
-    # Declared feature warmup is 2 bars (start-7200); the lag needs 3 bars
-    # (start-10800). The fetch must use the wider of the two.
-    assert metric_calls[0][0] == 0
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert "warmup_bars" in body["error_detail"]["path"]
 
 
 def test_cross_operand_lag_needs_one_extra_warmup_frame(monkeypatch):
