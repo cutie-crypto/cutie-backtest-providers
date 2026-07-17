@@ -820,7 +820,14 @@ def _artifact_catalog_tool(
             "mode": "sync",
             "timeout_ms": EXECUTION_TIMEOUT_MS,
             "max_range_days": EXECUTION_MAX_RANGE_DAYS,
-            "max_parallel_runs": 1,
+            # golden replay fans out one bound run per fixture symbol and
+            # dispatches them together (S20: BTC+ETH) -- at 1 the second
+            # sibling always dies with RUNNER_FAILURE. The async handler
+            # serializes actual kernel execution, so 2 means the second
+            # request queues on the event loop (~2x wall time, still inside
+            # timeout_ms for artifact-sized runs); a real per-run worker
+            # pool / server-side serial dispatch is the structural fix.
+            "max_parallel_runs": 2,
             "async_supported": False,
         },
         "adapter": {
