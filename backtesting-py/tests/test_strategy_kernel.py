@@ -949,7 +949,11 @@ def test_feature_fetch_maps_closed_api_chunks_to_exact_half_open_stream(
             "exchange": "binance",
             "interval": "1d",
         },
-        {"features": [{"source_stream": "coinglass.futures_cvd"}]},
+        {
+            "features": [
+                {"source_stream": "coinglass.futures_cvd", "interval": "1d"}
+            ]
+        },
         "BTCUSDT",
         0,
         duration_days * day_seconds,
@@ -986,7 +990,11 @@ def test_feature_fetch_does_not_mask_conflicting_duplicate_points(monkeypatch):
                 "exchange": "binance",
                 "interval": "1d",
             },
-            {"features": [{"source_stream": "coinglass.futures_cvd"}]},
+            {
+                "features": [
+                    {"source_stream": "coinglass.futures_cvd", "interval": "1d"}
+                ]
+            },
             "BTCUSDT",
             0,
             24 * 60 * 60,
@@ -994,6 +1002,87 @@ def test_feature_fetch_does_not_mask_conflicting_duplicate_points(monkeypatch):
 
     assert caught.value.code == ERR_COVERAGE_INCOMPLETE
     assert caught.value.path == "$.data_streams.feature"
+
+
+def test_feature_fetch_matcher_requires_exact_interval_not_just_prefix(monkeypatch):
+    """The matcher must align with the kernel's own convention (prefix *and*
+    interval, see build_frames/_kline_primary_field_for_requirement): a
+    requirement matched by source_stream prefix alone could silently bind an
+    unrelated feature declared at a different interval. Regression for an
+    ordinary (non-kline.primary) requirement too, not only the kline.primary
+    fail-open case covered separately below."""
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        provider,
+        "_fetch_artifact_metric_chunk",
+        lambda **kwargs: calls.append(kwargs) or [],
+    )
+    with pytest.raises(StrategyContractError) as caught:
+        provider._fetch_artifact_features(
+            {
+                "stream_id": "coinglass.futures_cvd.4h",
+                "exchange": "binance",
+                "interval": "4h",
+            },
+            {
+                "features": [
+                    {"source_stream": "coinglass.futures_cvd", "interval": "1h"}
+                ]
+            },
+            "BTCUSDT",
+            0,
+            24 * 60 * 60,
+        )
+    assert caught.value.code == ERR_COVERAGE_INCOMPLETE
+    assert caught.value.path == (
+        "$.artifact_manifest.data_requirements.coinglass.futures_cvd.4h"
+    )
+    assert not calls, "a requirement matched by prefix only must never reach fetch"
+
+
+def test_orphan_kline_primary_feature_requirement_fails_closed_before_any_fetch(
+    monkeypatch,
+):
+    """§5.5: kline.primary.* streams are always resampled locally from the
+    primary K-line (_derive_kline_primary_feature_rows), never fetched from
+    the central /metrics API. Before the matcher checked interval, an orphan
+    kline.primary.* requirement (declared at an interval that binds no
+    StrategySpec feature — compile now also rejects this shape directly via
+    _validate_kline_primary_requirements, but the Provider's own runtime
+    predicate must independently fail closed too) matched by prefix alone,
+    fell through to _fetch_artifact_metric_chunk and issued a live external
+    call for a "primary.<field>" metric that structurally never exists."""
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        provider,
+        "_fetch_artifact_metric_chunk",
+        lambda **kwargs: calls.append(kwargs) or [],
+    )
+    with pytest.raises(StrategyContractError) as caught:
+        provider._fetch_artifact_features(
+            {
+                "stream_id": "kline.primary.close.4h",
+                "exchange": "binance",
+                "interval": "4h",
+            },
+            {
+                "features": [
+                    {
+                        "source_stream": "kline.primary.close",
+                        "interval": "1h",
+                    }
+                ]
+            },
+            "BTCUSDT",
+            0,
+            24 * 60 * 60,
+        )
+    assert caught.value.code == ERR_COVERAGE_INCOMPLETE
+    assert caught.value.path == (
+        "$.artifact_manifest.data_requirements.kline.primary.close.4h"
+    )
+    assert caught.value.message == "kline.primary requirement does not bind a feature"
+    assert not calls, "orphan kline.primary requirement must never reach central fetch"
 
 
 def test_catalog_only_compiler_tool_advertises_artifact_capability(monkeypatch):
