@@ -1161,15 +1161,37 @@ def _validate_kline_primary_requirements(
       Provider's fetch-time predicate (matching by source_stream prefix and
       interval, same convention as here) cannot distinguish an illegally
       declared one from a legitimate coarse requirement once it exists, so an
-      illegal one must never reach execution.
+      illegal one must never reach execution. Its primitive is also gated
+      here: a passthrough feature reads straight off the primary K-line
+      series (``build_frames``' ``_primary_field_series``), which has no
+      lookback beyond whatever the primary requirement itself fetched — the
+      array's very first row can never have prior rows *within that same
+      array* no matter how large ``warmup_bars`` is set. A window primitive
+      needing more than the anchor bar itself, or ``rsi_wilder`` (whose seed
+      is always ``None`` for its first ``period`` timestamps, see
+      ``_rsi_wilder_series``), therefore compiles green but is guaranteed to
+      fail closed on the very first frame every single run — a config that
+      must never reach execution.
     - a coarse feature (interval != primary timeframe)'s matched requirement
       must declare ``ohlcv_resample.v1`` in its own ``allowed_transforms``:
       §4.2 binds transform selection into the artifact hash via spec_hash,
       so a requirement missing the declaration must fail closed rather than
-      have the Provider resample it anyway at runtime.
+      have the Provider resample it anyway at runtime. Its data source
+      identity (provider/storage_source/exchange/market) must also match the
+      primary requirement's own — a coarse kline.primary requirement is never
+      independently fetched, so a mismatched identity would be a label the
+      Provider's resample-from-primary execution can never actually honor.
+      Its warmup_bars must cover the primitive's own lookback (one whole
+      bucket more than a same-interval feature needs: the as-of anchor is
+      always the bucket *before* the decision frame's own, which cannot be
+      complete yet), or the first decision frame in range compiles green but
+      always fails closed for the identical "no lookback" reason.
     """
     market_timeframe = spec["market"]["timeframe"]
-    for feature in spec["features"]:
+    primary_requirement = next(
+        item for item in requirements if item["execution_role"] == "primary_execution_kline"
+    )
+    for index, feature in enumerate(spec["features"]):
         source_stream = feature["source_stream"]
         if not source_stream.startswith(_KLINE_PRIMARY_PREFIX):
             continue
@@ -1188,6 +1210,43 @@ def _validate_kline_primary_requirements(
                     "separate data requirement",
                     actual=matching[0]["stream_id"],
                 )
+            primitive = feature["primitive"]
+            params = feature["params"]
+            if primitive == "rsi_wilder":
+                _raise(
+                    f"$.strategy_spec.features[{index}].primitive",
+                    "kline.primary passthrough feature cannot use rsi_wilder: "
+                    "its seed is always unresolved for the array's first "
+                    "fetched row, so every run fails closed regardless of "
+                    "warmup_bars",
+                    code=ERR_SPEC_UNSUPPORTED,
+                    actual=primitive,
+                )
+            if (
+                primitive in {"rolling_sum", "rolling_extreme"}
+                and params["window_bars"] != 1
+            ):
+                _raise(
+                    f"$.strategy_spec.features[{index}].params.window_bars",
+                    "kline.primary passthrough feature only supports "
+                    "window_bars=1: a wider window has no prior bar before "
+                    "the array's first fetched row and always fails closed "
+                    "at runtime",
+                    code=ERR_SPEC_UNSUPPORTED,
+                    required=1,
+                    actual=params["window_bars"],
+                )
+            if primitive == "rolling_quantile" and params["min_periods"] != 1:
+                _raise(
+                    f"$.strategy_spec.features[{index}].params.min_periods",
+                    "kline.primary passthrough feature's rolling_quantile "
+                    "only supports min_periods=1: a higher floor can never "
+                    "be satisfied by the array's first fetched row and "
+                    "always fails closed at runtime",
+                    code=ERR_SPEC_UNSUPPORTED,
+                    required=1,
+                    actual=params["min_periods"],
+                )
             continue
         for requirement in matching:
             if "ohlcv_resample.v1" not in requirement["allowed_transforms"]:
@@ -1199,6 +1258,41 @@ def _validate_kline_primary_requirements(
                     required="ohlcv_resample.v1",
                     actual=requirement["allowed_transforms"],
                 )
+            for field_name in ("provider", "storage_source", "exchange", "market"):
+                if requirement[field_name] != primary_requirement[field_name]:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements[{requirement['stream_id']}]"
+                        f".{field_name}",
+                        "coarse kline.primary requirement must match the "
+                        "primary K-line's own data source identity",
+                        required=primary_requirement[field_name],
+                        actual=requirement[field_name],
+                    )
+            primitive = feature["primitive"]
+            params = feature["params"]
+            if primitive in {"rolling_sum", "rolling_extreme"}:
+                window_bars = params["window_bars"]
+                if requirement["warmup_bars"] < window_bars:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements[{requirement['stream_id']}]"
+                        ".warmup_bars",
+                        "coarse kline.primary requirement's warmup_bars must "
+                        "be at least the primitive's window_bars",
+                        required=window_bars,
+                        actual=requirement["warmup_bars"],
+                    )
+            elif primitive == "rolling_quantile":
+                min_periods = params["min_periods"]
+                if requirement["warmup_bars"] < min_periods:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements[{requirement['stream_id']}]"
+                        ".warmup_bars",
+                        "coarse kline.primary requirement's warmup_bars must "
+                        "be at least the rolling_quantile primitive's "
+                        "min_periods",
+                        required=min_periods,
+                        actual=requirement["warmup_bars"],
+                    )
 
 
 def _derived_requirements(
