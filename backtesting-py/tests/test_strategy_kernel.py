@@ -1439,6 +1439,66 @@ def test_artifact_endpoint_executes_compiled_plan_and_returns_hashed_evidence(
     )
 
 
+def test_max_feature_lag_extends_primary_warmup_frames(monkeypatch):
+    """Regression for the S20 golden replay failure (2026-07-17): the kernel
+    resolves feature lags as frames-index offsets, so a condition referencing
+    cvd_1h at lag_bars=2 with primary warmup_bars=0 died on the first
+    evaluation frame ("required lagged feature is missing") whenever the
+    condition didn't short-circuit -- earlier runs passing was market luck.
+    The primary warmup must be widened to max(warmup_bars, max feature
+    lag_bars) so warmup frames supply the lag history."""
+
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    kline_calls: list[tuple[int, int]] = []
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        kline_calls.append((start_ms, end_ms))
+        return [
+            [ts * 1000, 100, 101, 99, 100, 1]
+            for ts in range(start_ms // 1000, end_ms // 1000, 3600)
+        ]
+
+    def fetch_metric_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+        return [{"ts": ts, "value": "1"} for ts in range(start_at, end_at + 1, 3600)]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_metric_chunk)
+
+    feature = {
+        "key": "cvd_1h",
+        "primitive": "rolling_sum",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": 1},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "cvd_1h", "lag_bars": 2},
+        "right": _literal("0.5"),
+    }
+    request = build_request(make_spec(condition=condition, features=[feature]))
+    request["execution_params"]["start_at"] = 2 * 3600
+    request["execution_params"]["end_at"] = 2 * 3600 + 2 * 3600
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "success", body.get("error_message")
+    # The primary fetch must reach back max-lag frames (ts=0), not start_at,
+    # even though the primary requirement itself declares warmup_bars=0.
+    assert kline_calls[0][0] == 0
+
+
 def test_primary_warmup_fetch_covers_warmup_and_data_manifest_stays_evaluation_only(
     monkeypatch,
 ):
