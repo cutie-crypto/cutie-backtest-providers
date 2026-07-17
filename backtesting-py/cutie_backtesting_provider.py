@@ -37,6 +37,7 @@ from strategy_execution import (
     build_artifact_response,
     build_coverage_manifest,
     is_strategy_execution_intent,
+    max_primary_lag_frames,
     validate_execution_request,
 )
 from strategy_kernel import (
@@ -924,33 +925,6 @@ def _assert_contiguous(
             )
 
 
-def _max_feature_lag_bars(strategy_spec: dict[str, Any]) -> int:
-    """Largest ``lag_bars`` any feature reference in the (already-validated)
-    spec uses -- entry/exit conditions, feature_expression stops and
-    arithmetic feature sources alike. The kernel serves lags from the primary
-    frames array, so this is the minimum primary warmup depth (in primary
-    bars) required for every lag reference to be resolvable from the very
-    first evaluation frame."""
-
-    best = 0
-
-    def walk(node: Any) -> None:
-        nonlocal best
-        if isinstance(node, dict):
-            if node.get("node") == "feature":
-                lag = node.get("lag_bars")
-                if isinstance(lag, int) and not isinstance(lag, bool) and lag > best:
-                    best = lag
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(strategy_spec)
-    return best
-
-
 def _fetch_artifact_klines(
     requirement: dict[str, Any],
     symbol: str,
@@ -1274,13 +1248,15 @@ def _run_artifact_backtest(
         # The kernel resolves every feature lag as a *frames index* offset
         # (StrategyKernel._value: frames[index - lag_bars]) and frames are
         # built from the primary rows -- so the primary warmup must supply at
-        # least max(lag_bars) frames of history or a lag reference inside the
-        # first lag_bars evaluation frames dies with "required lagged feature
-        # is missing" even though the lagged stream's own data was fetched
-        # (S20 golden replay 2026-07-17: primary warmup_bars=0 + cvd lag 6 --
-        # runs whose first frames happened to short-circuit the condition
-        # passed by market luck, earlier windows failed deterministically).
-        max_lag_bars = _max_feature_lag_bars(request["strategy_spec"])
+        # least max_primary_lag_frames of history (cross operands need one
+        # more, see strategy_execution.max_primary_lag_frames) or a lag
+        # reference inside the first frames dies with "required lagged
+        # feature is missing" even though the lagged stream's own data was
+        # fetched (S20 golden replay 2026-07-17: primary warmup_bars=0 + cvd
+        # lag 6 -- runs whose first frames happened to short-circuit the
+        # condition passed by market luck, earlier windows failed
+        # deterministically).
+        lag_frames = max_primary_lag_frames(request["strategy_spec"])
         declared_warmup_start = max(
             0,
             params["start_at"] - primary_requirement["warmup_bars"] * primary_step_seconds,
@@ -1288,8 +1264,14 @@ def _run_artifact_backtest(
         primary_warmup_start = max(
             0,
             params["start_at"]
-            - max(primary_requirement["warmup_bars"], max_lag_bars) * primary_step_seconds,
+            - max(primary_requirement["warmup_bars"], lag_frames) * primary_step_seconds,
         )
+        # Frames history floor for every non-primary stream too: the warmup
+        # frames the lag extension adds still need each feature's as-of value
+        # (Phase 1 review Codex HIGH-2 -- a feature whose own declared warmup
+        # is shorter than the spec's max lag left those frames without the
+        # key and the lag reference died anyway).
+        lag_history_start = max(0, params["start_at"] - lag_frames * primary_step_seconds)
         primary_fetch_start = primary_warmup_start
         for requirement in requirements:
             if requirement is primary_requirement:
@@ -1358,6 +1340,35 @@ def _run_artifact_backtest(
                 warmup_start = max(
                     0, params["start_at"] - requirement["warmup_bars"] * requirement_step
                 )
+            # Feature streams also serve the lag-extension warmup frames
+            # (Codex HIGH-2): fetch back to the lag history floor when the
+            # declared warmup is shorter, but keep the coverage report on the
+            # declared slice (same declared-vs-frames split as the primary).
+            # Two carve-outs stay on their declared window (Kimi Phase 1
+            # high-2b, anchor stability): kline.primary-derived streams and
+            # any stream bound to a recursively-anchored primitive
+            # (rsi_wilder seeds off its fetch-window start, SPEC §7.3 --
+            # widening the fetch would silently shift every RSI value and
+            # flip golden verdicts across deployments). A shallow-warmup
+            # stream referenced at deeper lag then still dies fail-closed at
+            # runtime; the compile-time warmup>=lag floor (BACKLOG, SPEC:722
+            # "另计 lag_bars") is the contract-level fix.
+            fetch_start = warmup_start
+            if requirement["kind"] != "kline" and kline_primary_field is None:
+                bound_feature = next(
+                    (
+                        item
+                        for item in request["strategy_spec"]["features"]
+                        if requirement["stream_id"].startswith(item["source_stream"] + ".")
+                        and item["interval"] == requirement["interval"]
+                    ),
+                    None,
+                )
+                recursively_anchored = (
+                    bound_feature is not None and bound_feature["primitive"] == "rsi_wilder"
+                )
+                if not recursively_anchored:
+                    fetch_start = min(warmup_start, lag_history_start)
             if kline_primary_field is not None:
                 rows = _derive_kline_primary_feature_rows(
                     primary_fetch_rows,
@@ -1365,14 +1376,14 @@ def _run_artifact_backtest(
                     primary_fetch_checksum,
                     requirement,
                     kline_primary_field,
-                    warmup_start,
+                    fetch_start,
                     params["end_at"],
                 )
             elif requirement["kind"] == "kline":
                 rows = _fetch_artifact_klines(
                     requirement,
                     symbol,
-                    warmup_start,
+                    fetch_start,
                     params["end_at"],
                 )
             else:
@@ -1380,19 +1391,26 @@ def _run_artifact_backtest(
                     requirement,
                     request["strategy_spec"],
                     symbol,
-                    warmup_start,
+                    fetch_start,
                     params["end_at"],
                 )
             data_streams[requirement["stream_id"]] = rows
             checksum = canonical_json_sha256(rows)
             timestamp_key = "open_time" if requirement["kind"] == "kline" else "ts"
+            declared_slice = [row for row in rows if row[timestamp_key] >= warmup_start]
+            if not declared_slice:
+                raise StrategyContractError(
+                    ERR_COVERAGE_INCOMPLETE,
+                    f"$.coverage.{requirement['stream_id']}",
+                    "stream returned no rows inside its declared warmup range",
+                )
             coverage_inputs.append(
                 CoverageInput(
                     requirement=requirement,
                     checksum=checksum,
                     revision=checksum,
-                    point_count=len(rows),
-                    actual_start_at=rows[0][timestamp_key],
+                    point_count=len(declared_slice),
+                    actual_start_at=declared_slice[0][timestamp_key],
                     actual_end_at=rows[-1][timestamp_key],
                     available_through=rows[-1][timestamp_key]
                     + _timeframe_milliseconds(requirement["interval"]) // 1000,

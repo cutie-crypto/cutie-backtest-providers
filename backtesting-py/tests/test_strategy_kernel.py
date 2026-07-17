@@ -1499,6 +1499,147 @@ def test_max_feature_lag_extends_primary_warmup_frames(monkeypatch):
     assert kline_calls[0][0] == 0
 
 
+def test_lag_exceeding_feature_warmup_widens_feature_fetch(monkeypatch):
+    """Phase 1 review (Codex HIGH-2): the lag-extension warmup frames still
+    need each feature's as-of value -- with feature warmup_bars=2 (test
+    manifest) and lag_bars=3, the feature fetch must reach back 3 bars, not
+    its declared 2, while coverage stays on the declared slice."""
+
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+    metric_calls: list[tuple[int, int]] = []
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [ts * 1000, 100, 101, 99, 100, 1]
+            for ts in range(start_ms // 1000, end_ms // 1000, 3600)
+        ]
+
+    def fetch_metric_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+        metric_calls.append((start_at, end_at))
+        return [{"ts": ts, "value": "1"} for ts in range(start_at, end_at + 1, 3600)]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_metric_chunk)
+
+    feature = {
+        "key": "cvd_1h",
+        "primitive": "rolling_sum",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": 1},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "cvd_1h", "lag_bars": 3},
+        "right": _literal("0.5"),
+    }
+    request = build_request(make_spec(condition=condition, features=[feature]))
+    request["execution_params"]["start_at"] = 3 * 3600
+    request["execution_params"]["end_at"] = 3 * 3600 + 2 * 3600
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "success", body.get("error_message")
+    # Declared feature warmup is 2 bars (start-7200); the lag needs 3 bars
+    # (start-10800). The fetch must use the wider of the two.
+    assert metric_calls[0][0] == 0
+
+
+def test_cross_operand_lag_needs_one_extra_warmup_frame(monkeypatch):
+    """Phase 1 review (Codex HIGH-3): cross evaluates each operand at t and
+    t-1, so an operand at lag L needs L+1 frames of history. A crosses_above
+    condition at lag 0 starting one bar into the data must succeed -- the
+    plain max(lag_bars) reading left the t-1 lookup dead on the first
+    evaluation frame."""
+
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [ts * 1000, 100, 101, 99, 100, 1]
+            for ts in range(start_ms // 1000, end_ms // 1000, 3600)
+        ]
+
+    def fetch_metric_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+        return [{"ts": ts, "value": str(ts // 3600 + 1)} for ts in range(start_at, end_at + 1, 3600)]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_metric_chunk)
+
+    request = build_feature_request()  # crosses_above with lag_bars=0
+    request["execution_params"]["start_at"] = 3600
+    request["execution_params"]["end_at"] = 3600 + 2 * 3600
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "success", body.get("error_message")
+
+
+def test_lag_widened_window_counts_against_max_range_budget(monkeypatch):
+    """Phase 1 review (Codex HIGH-1): the lag widening must be inside the
+    max_range_days budget -- a huge but schema-legal lag_bars cannot buy an
+    adapter fetch beyond the provider maximum, and must fail before any
+    data access."""
+
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("range validation must happen before data access")
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fail_if_fetched)
+
+    feature = {
+        "key": "cvd_1h",
+        "primitive": "rolling_sum",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": 1},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "cvd_1h", "lag_bars": 10000},
+        "right": _literal("0.5"),
+    }
+    request = build_request(make_spec(condition=condition, features=[feature]))
+    day_seconds = 24 * 60 * 60
+    # 364-day execution window passes on its own; +10000h of lag does not.
+    request["execution_params"]["start_at"] = 500 * day_seconds
+    request["execution_params"]["end_at"] = (500 + 364) * day_seconds
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+
+
 def test_primary_warmup_fetch_covers_warmup_and_data_manifest_stays_evaluation_only(
     monkeypatch,
 ):

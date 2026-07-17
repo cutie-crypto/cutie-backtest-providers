@@ -386,11 +386,20 @@ def validate_execution_request(
             "$.artifact",
             "compiled hashes differ from execution binding",
         )
+    lag_frames = max_primary_lag_frames(request["strategy_spec"])
     for index, requirement in enumerate(plan.artifact_manifest["data_requirements"]):
         step_seconds = _interval_seconds(requirement["interval"])
+        # Phase 1 review (Codex HIGH-1): the provider widens the primary
+        # fetch by the spec's max feature lag (frames history for the
+        # kernel's index-based lag resolution) -- the range budget must
+        # account for that same widening or a legal lag_bars value quietly
+        # buys a fetch far beyond max_range_days.
+        warmup_bars = requirement["warmup_bars"]
+        if requirement["execution_role"] == "primary_execution_kline":
+            warmup_bars = max(warmup_bars, lag_frames)
         effective_start = max(
             0,
-            params["start_at"] - requirement["warmup_bars"] * step_seconds,
+            params["start_at"] - warmup_bars * step_seconds,
         )
         data_window_seconds = params["end_at"] - effective_start
         if data_window_seconds > max_range_seconds:
@@ -409,6 +418,39 @@ def validate_execution_request(
 
 
 _KLINE_PRIMARY_PREFIX = "kline.primary."
+
+
+def max_primary_lag_frames(strategy_spec: Any) -> int:
+    """Largest number of *primary frames* of history any feature reference in
+    the (already-validated) spec needs. The kernel resolves feature lags as
+    frames-index offsets (StrategyKernel._value: frames[index - lag_bars]),
+    and ``cross`` additionally evaluates each operand at t-1, so an operand
+    inside a cross needs lag_bars + 1 frames (Phase 1 review Codex HIGH-3).
+    This is the minimum primary warmup depth for every lag reference to be
+    resolvable from the first evaluation frame -- shared by the preflight
+    range budget (a lag-widened fetch must not bypass max_range_days, Codex
+    HIGH-1) and the provider's actual fetch widening."""
+
+    best = 0
+
+    def walk(node: Any, inside_cross: bool) -> None:
+        nonlocal best
+        if isinstance(node, dict):
+            if node.get("node") == "feature":
+                lag = node.get("lag_bars")
+                if isinstance(lag, int) and not isinstance(lag, bool):
+                    need = lag + (1 if inside_cross else 0)
+                    if need > best:
+                        best = need
+            child_inside = inside_cross or node.get("node") == "cross"
+            for value in node.values():
+                walk(value, child_inside)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, inside_cross)
+
+    walk(strategy_spec, False)
+    return best
 
 
 def _matching_feature(
