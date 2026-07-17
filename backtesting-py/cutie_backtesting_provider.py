@@ -917,6 +917,33 @@ def _assert_contiguous(
             )
 
 
+def _max_feature_lag_bars(strategy_spec: dict[str, Any]) -> int:
+    """Largest ``lag_bars`` any feature reference in the (already-validated)
+    spec uses -- entry/exit conditions, feature_expression stops and
+    arithmetic feature sources alike. The kernel serves lags from the primary
+    frames array, so this is the minimum primary warmup depth (in primary
+    bars) required for every lag reference to be resolvable from the very
+    first evaluation frame."""
+
+    best = 0
+
+    def walk(node: Any) -> None:
+        nonlocal best
+        if isinstance(node, dict):
+            if node.get("node") == "feature":
+                lag = node.get("lag_bars")
+                if isinstance(lag, int) and not isinstance(lag, bool) and lag > best:
+                    best = lag
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(strategy_spec)
+    return best
+
+
 def _fetch_artifact_klines(
     requirement: dict[str, Any],
     symbol: str,
@@ -1237,9 +1264,24 @@ def _run_artifact_backtest(
         primary_step_seconds = (
             _timeframe_milliseconds(primary_requirement["interval"]) // 1000
         )
-        primary_warmup_start = max(
+        # The kernel resolves every feature lag as a *frames index* offset
+        # (StrategyKernel._value: frames[index - lag_bars]) and frames are
+        # built from the primary rows -- so the primary warmup must supply at
+        # least max(lag_bars) frames of history or a lag reference inside the
+        # first lag_bars evaluation frames dies with "required lagged feature
+        # is missing" even though the lagged stream's own data was fetched
+        # (S20 golden replay 2026-07-17: primary warmup_bars=0 + cvd lag 6 --
+        # runs whose first frames happened to short-circuit the condition
+        # passed by market luck, earlier windows failed deterministically).
+        max_lag_bars = _max_feature_lag_bars(request["strategy_spec"])
+        declared_warmup_start = max(
             0,
             params["start_at"] - primary_requirement["warmup_bars"] * primary_step_seconds,
+        )
+        primary_warmup_start = max(
+            0,
+            params["start_at"]
+            - max(primary_requirement["warmup_bars"], max_lag_bars) * primary_step_seconds,
         )
         primary_fetch_start = primary_warmup_start
         for requirement in requirements:
@@ -1260,10 +1302,18 @@ def _run_artifact_backtest(
         primary_fetch_rows = _fetch_artifact_klines(
             primary_requirement, symbol, primary_fetch_start, params["end_at"]
         )
+        # Frames get the lag-extended slice (primary_warmup_start); the
+        # coverage report keeps the manifest-declared warmup slice -- the
+        # coverage contract check demands point_count exactly equal to the
+        # declared aligned range, and the lag extension is a kernel-internal
+        # frames-history need, not a change to the declared data requirement.
         primary_rows = [
             row
             for row in primary_fetch_rows
             if primary_warmup_start <= row["open_time"] < params["end_at"]
+        ]
+        declared_rows = [
+            row for row in primary_rows if row["open_time"] >= declared_warmup_start
         ]
         data_streams[primary_requirement["stream_id"]] = primary_rows
         # The revision every kline.primary.* derived stream inherits must
@@ -1277,8 +1327,8 @@ def _run_artifact_backtest(
                 requirement=primary_requirement,
                 checksum=primary_fetch_checksum,
                 revision=primary_fetch_checksum,
-                point_count=len(primary_rows),
-                actual_start_at=primary_rows[0]["open_time"],
+                point_count=len(declared_rows),
+                actual_start_at=declared_rows[0]["open_time"],
                 actual_end_at=primary_rows[-1]["open_time"],
                 available_through=primary_rows[-1]["open_time"] + primary_step_seconds,
             )
