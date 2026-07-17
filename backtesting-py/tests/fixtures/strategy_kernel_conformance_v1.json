@@ -2,6 +2,7 @@
   "schema": "cutie.strategy_kernel_conformance.v1",
   "source_of_truth": "SPEC §5.5/§7.3 (2026-07-17 增补, 62-2b Phase 1); Server/Connector/Provider share this fixture verbatim",
   "note": "All series use a fixed 1h (3600s) step starting at ts=0 unless a case overrides `interval`/`primary_interval`. `value: null` in `input` marks a genuine mid-stream gap (a timestamp the fetch reports but with no value) — distinct from a timestamp simply absent before the series' first entry, which is the stream-start boundary case. `expected: null` marks a frame the primitive must report missing (never a fabricated value).",
+  "sha256": "ff8e6af1b38f1ccbfa05b4a987e9d41ed0813528267aa2cddf91a92193c07176",
   "cases": [
     {
       "name": "rolling_quantile_min_periods_boundary_and_interpolation",
@@ -420,7 +421,7 @@
       "params": {
         "period": 2
       },
-      "description": "The seed (ts=7200) only needs the first 2 deltas and is unaffected by a later gap. ts=10800's value is itself missing, which breaks the Wilder recursion irrecoverably: every later frame stays missing even though ts=14400/18000 carry valid raw values, because avg[t] is a strict function of avg[t-1].",
+      "description": "The seed (ts=7200) only needs the first 2 deltas and is unaffected by a later gap. ts=10800's value is itself missing, which breaks the Wilder recursion irrecoverably: every later frame stays missing forever after, because avg[t] is a strict function of avg[t-1] with no reseed path. The tail carries period+2=4 valid values past the gap (ts=21600..32400, on top of ts=14400/18000) so a buggy implementation that reseeds a fresh average once it accumulates `period` post-gap deltas would already have produced a non-null value by ts=21600 (verified: naive reseed yields RSI=50 there) — this vector catches that bug instead of coincidentally agreeing with it on a too-short tail.",
       "input": [
         {
           "ts": 0,
@@ -444,6 +445,22 @@
         },
         {
           "ts": 18000,
+          "value": "100"
+        },
+        {
+          "ts": 21600,
+          "value": "102"
+        },
+        {
+          "ts": 25200,
+          "value": "100"
+        },
+        {
+          "ts": 28800,
+          "value": "102"
+        },
+        {
+          "ts": 32400,
           "value": "100"
         }
       ],
@@ -471,14 +488,30 @@
         {
           "ts": 18000,
           "value": null
+        },
+        {
+          "ts": 21600,
+          "value": null
+        },
+        {
+          "ts": 25200,
+          "value": null
+        },
+        {
+          "ts": 28800,
+          "value": null
+        },
+        {
+          "ts": 32400,
+          "value": null
         }
       ]
     },
     {
       "name": "ohlcv_resample_4h_drops_incomplete_trailing_bucket",
       "primitive": "ohlcv_resample",
+      "primary_interval": "1h",
       "params": {
-        "primary_interval": "1h",
         "target_interval": "4h"
       },
       "description": "9 hourly bars: two complete UTC-aligned 4h buckets ([0,14400) and [14400,28800)) are emitted; the 9th bar alone in [28800,43200) is an incomplete bucket and must never be emitted (no partial aggregation, never fabricated).",
@@ -567,8 +600,8 @@
     {
       "name": "ohlcv_resample_1d_full_day_bucket",
       "primitive": "ohlcv_resample",
+      "primary_interval": "1h",
       "params": {
-        "primary_interval": "1h",
         "target_interval": "1d"
       },
       "description": "24 hourly bars form exactly one complete UTC-aligned 1d bucket [00:00,24:00): open=first bar open, high/low constant across all 24 bars, close=last (24th) bar close. Exercises bars_per_bucket=24, not just the 4h case's bars_per_bucket=4.",
