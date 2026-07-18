@@ -414,6 +414,16 @@ def validate_execution_request(
                 "unresolved); rework the spec or wait for the lag-semantics "
                 "revision",
             )
+        # SPEC §5.5 warmup 推导公式（2026-07-17 增补）: 每个 feature 的历史需求
+        # 按该 feature 自己的 interval 计数 -- primitive 自身下限（rsi_wilder=
+        # 10x period / rolling_sum,rolling_extreme=window_bars / rolling_quantile
+        # =min_periods）与 lag_bars 是加法关系，"另计" 不是二选一的独立地板。
+        # primitive_floor 的取值来源与 strategy_kernel.py 的 A 层 compile 校验
+        # 同源（_validate_rsi_warmup 的 10*period、_validate_kline_primary_
+        # requirements 的 window_bars/min_periods 两分支），避免两处对 SPEC 的
+        # 解读分叉。
+        primitive_floor = _primitive_warmup_floor(feature)
+        required_warmup = primitive_floor + need
         for requirement in plan.artifact_manifest["data_requirements"]:
             if requirement["execution_role"] != "feature_input":
                 continue
@@ -421,13 +431,19 @@ def validate_execution_request(
                 continue
             if requirement["interval"] != feature["interval"]:
                 continue
-            if requirement["warmup_bars"] < need:
+            if requirement["warmup_bars"] < required_warmup:
                 _error(
                     ERR_SPEC_INVALID,
                     f"$.artifact_manifest.data_requirements[{requirement['stream_id']}].warmup_bars",
-                    "feature warmup_bars must cover the deepest lag reference "
-                    "(lag_bars, +1 inside cross) -- SPEC 另计 lag_bars",
-                    required=need,
+                    "feature warmup_bars must cover the primitive's own "
+                    "warmup floor plus the deepest lag reference (lag_bars, "
+                    "+1 inside cross) -- SPEC 另计 lag_bars is additive, not "
+                    "an independent floor",
+                    required={
+                        "primitive_floor": primitive_floor,
+                        "lag_need": need,
+                        "total": required_warmup,
+                    },
                     actual=requirement["warmup_bars"],
                 )
     for index, requirement in enumerate(plan.artifact_manifest["data_requirements"]):
@@ -461,6 +477,29 @@ def validate_execution_request(
 
 
 _KLINE_PRIMARY_PREFIX = "kline.primary."
+
+
+def _primitive_warmup_floor(feature: dict[str, Any]) -> int:
+    """SPEC §5.5 per-primitive warmup floor, counted in the feature's own
+    interval's buckets -- the same three-way split as strategy_kernel.py's A
+    layer (``_validate_rsi_warmup``'s ``10 * period``,
+    ``_validate_kline_primary_requirements``'s ``window_bars``/
+    ``min_periods`` branches for coarse kline.primary requirements), read
+    here from the feature's own params so this preflight's additive lag
+    floor (below) shares one source of truth with the compile-time floor
+    instead of re-deriving it. ``cross``'s own ``+1`` and lag_bars are a
+    separate, already-computed additive term (``per_feature_lag_needs``);
+    this floor is the primitive's own lookback, orthogonal to lag.
+    """
+    primitive = feature["primitive"]
+    params = feature["params"]
+    if primitive in {"rolling_sum", "rolling_extreme"}:
+        return params["window_bars"]
+    if primitive == "rolling_quantile":
+        return params["min_periods"]
+    if primitive == "rsi_wilder":
+        return 10 * params["period"]
+    return 0
 
 
 def per_feature_lag_needs(strategy_spec: Any) -> dict[str, int]:

@@ -777,8 +777,22 @@ def _artifact_capability_pair() -> Optional[tuple[dict[str, Any], str]]:
     return payload, capability_hash(payload)
 
 
-def _artifact_failure(error: StrategyContractError) -> JSONResponse:
-    """Artifact errors expose only frozen symbols and redaction-safe structure."""
+def _artifact_failure(
+    error: StrategyContractError, *, run_id: Optional[str] = None
+) -> JSONResponse:
+    """Artifact errors expose only frozen symbols and redaction-safe structure.
+
+    The HTTP response is 200 (business failure, not transport failure), so
+    access logs alone never surface these -- log a warning line here with
+    just the frozen error_type/path/run_id, never the request payload, so a
+    provider-side failure spike is visible without grepping response bodies.
+    """
+    logger.warning(
+        "Artifact strategy execution failed closed error_type=%s path=%s run_id=%s",
+        error.code,
+        error.path,
+        run_id,
+    )
     return JSONResponse(
         content={
             "result_status": "failed",
@@ -1202,6 +1216,7 @@ def _run_artifact_backtest(
     capability_pair: tuple[dict[str, Any], str],
     connector_version: Optional[str],
 ) -> JSONResponse:
+    raw_run_id = body.get("run_id") if isinstance(body, dict) else None
     try:
         if not connector_version or len(connector_version) > 100:
             raise StrategyContractError(
@@ -1462,7 +1477,7 @@ def _run_artifact_backtest(
         )
         return JSONResponse(content=response)
     except (StrategyContractError, KernelExecutionError) as exc:
-        return _artifact_failure(exc)
+        return _artifact_failure(exc, run_id=raw_run_id)
     except Exception:
         logger.exception("Artifact strategy execution failed")
         return _artifact_failure(
@@ -1470,7 +1485,8 @@ def _run_artifact_backtest(
                 ERR_COVERAGE_INCOMPLETE,
                 "$.execution",
                 "artifact execution failed closed",
-            )
+            ),
+            run_id=raw_run_id,
         )
 
 
@@ -2434,7 +2450,8 @@ async def run_backtest(
                     ERR_CAPABILITY_MISMATCH,
                     "$.provider_revision",
                     "artifact capability is unavailable until an immutable revision is configured",
-                )
+                ),
+                run_id=body.get("run_id") if isinstance(body, dict) else None,
             )
         return _run_artifact_backtest(body, pair, x_cutie_connector_version)
 
