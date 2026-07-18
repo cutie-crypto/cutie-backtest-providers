@@ -862,6 +862,103 @@ def test_rsi_wilder_requires_warmup_bars_at_least_10x_period() -> None:
     assert plan.feature_types["rsi_2"] == "decimal"
 
 
+def test_rsi_wilder_additive_lag_floor_combines_compile_and_preflight_gates(
+    monkeypatch,
+) -> None:
+    """62-2b additive-floor fix (SPEC §5.5 warmup 推导公式): the compile-time
+    A layer (_validate_rsi_warmup) only ever checks the primitive's own
+    10x-period floor -- it has no visibility into condition trees' lag_bars,
+    so warmup_bars=20 (exactly 10x period=2) compiles green even when the
+    same feature is referenced at lag_bars=1 elsewhere in the spec. The
+    execution-time B layer (validate_execution_request) is where the
+    additive floor (primitive floor + lag, "另计 lag_bars") actually gates a
+    run: the identical warmup_bars=20 must be rejected at preflight, and
+    only warmup_bars=21 (20 + 1) lets the run execute."""
+    feature = {
+        "key": "rsi_2",
+        "primitive": "rsi_wilder",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"period": 2},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "rsi_2", "lag_bars": 1},
+        "right": tsk._literal("0.5"),
+    }
+    spec = tsk.make_spec(condition=condition, features=[feature])
+    manifest = tsk.make_manifest(spec)
+    requirement = next(
+        item
+        for item in manifest["data_requirements"]
+        if item["stream_id"] == "coinglass.futures_cvd.1h"
+    )
+    requirement["warmup_bars"] = 20  # exactly 10x period; A layer alone is satisfied
+    manifest["spec_hash"] = canonical_json_sha256(spec)
+
+    # A layer: compile-time floor is 10x period only, oblivious to lag_bars.
+    plan = compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert plan.feature_types["rsi_2"] == "decimal"
+
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [ts * 1000, 100, 101, 99, 100, 1]
+            for ts in range(start_ms // 1000, end_ms // 1000, 3600)
+        ]
+
+    def fetch_metric_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+        return [{"ts": ts, "value": "1"} for ts in range(start_at, end_at + 1, 3600)]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_metric_chunk)
+
+    request = tsk.build_request(spec)
+    request["artifact_manifest"] = manifest
+    request["artifact"]["manifest_hash"] = canonical_json_sha256(manifest)
+    request["artifact"]["artifact_hash"] = canonical_json_sha256(
+        {
+            "schema": "cutie.strategy_artifact_digest.v1",
+            "spec_hash": request["artifact"]["spec_hash"],
+            "manifest_hash": request["artifact"]["manifest_hash"],
+        }
+    )
+    request["execution_params"]["start_at"] = 21 * 3600
+    request["execution_params"]["end_at"] = 21 * 3600 + 2 * 3600
+
+    # B layer: preflight additive floor (10x period + lag_bars) rejects the
+    # same warmup_bars=20 because it ignores the lag term.
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert "warmup_bars" in body["error_detail"]["path"]
+    assert body["error_detail"]["required"] == {
+        "primitive_floor": 20,
+        "lag_need": 1,
+        "total": 21,
+    }
+
+    # warmup_bars=21 (floor + lag) satisfies both layers.
+    tsk.set_request_warmup(request, "coinglass.futures_cvd.1h", 21)
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+    body = response.json()
+    assert body["result_status"] == "success", body.get("error_message")
+
+
 def test_rsi_wilder_warmup_check_uses_primary_warmup_for_a_passthrough_feature() -> None:
     """The 10x-period warmup gate (_validate_rsi_warmup) still binds a
     passthrough rsi_wilder feature to the *primary* requirement's own
@@ -1062,6 +1159,62 @@ def test_coarse_kline_primary_requirement_warmup_bars_must_cover_primitive_lookb
         spec, requirement_interval="4h", warmup_bars=required
     )
     compile_strategy(spec, manifest, capability_payload(REVISION))
+
+
+def test_coarse_kline_primary_feature_lag_bars_rejected_at_preflight_before_additive_floor(
+    monkeypatch,
+) -> None:
+    """62-2b additive-floor fix: the additive lag floor (primitive floor +
+    lag_bars) added to validate_execution_request's preflight loop must
+    never even be reached for a coarse kline.primary feature -- the
+    frames-index vs bucket lag semantics divergence (SPEC:721, unresolved)
+    guard rejects any coarse-interval feature referenced at lag_bars>0
+    outright, regardless of whether its own primitive floor (window_bars,
+    satisfied here and proven at the compile layer above) would otherwise
+    pass. Guards against the additive-floor change accidentally loosening
+    this into a warmup-sizing problem instead of a hard block."""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("coarse lag_bars>0 guard must fire before data access")
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fail_if_fetched)
+
+    feature = {
+        "key": "close_4h",
+        "primitive": "rolling_extreme",
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "4h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"window_bars": 3, "mode": "max"},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "close_4h", "lag_bars": 1},
+        "right": tsk._literal("0.5"),
+    }
+    spec = tsk.make_spec(condition=condition, features=[feature])
+    # warmup_bars=3 satisfies the primitive's own compile-time floor
+    # (window_bars=3) -- the coarse+lag guard must still fire first.
+    manifest = _kline_primary_manifest(spec, requirement_interval="4h", warmup_bars=3)
+    compile_strategy(spec, manifest, capability_payload(REVISION))
+    request = _kline_primary_request(
+        spec, manifest, start_at=4 * 3600, end_at=4 * 3600 + 2 * 3600
+    )
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert body["error_detail"]["path"] == "$.strategy_spec.features[close_4h].lag_bars"
 
 
 def test_capability_advertises_the_three_new_primitives_and_ohlcv_resample() -> None:
