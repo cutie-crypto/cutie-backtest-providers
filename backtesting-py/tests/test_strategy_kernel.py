@@ -1482,6 +1482,11 @@ def test_max_feature_lag_extends_primary_warmup_frames(monkeypatch):
         "right": _literal("0.5"),
     }
     request = build_request(make_spec(condition=condition, features=[feature]))
+    # SPEC §5.5 additive floor: rolling_sum window_bars=1 (primitive's own
+    # lookback) + lag_bars=2 (not inside cross) = 3, not lag_bars alone --
+    # the fixture's stock warmup_bars=2 under-declares by the primitive
+    # floor and must be bumped or preflight now correctly rejects it.
+    set_request_warmup(request, "coinglass.futures_cvd.1h", 3)
     request["execution_params"]["start_at"] = 2 * 3600
     request["execution_params"]["end_at"] = 2 * 3600 + 2 * 3600
 
@@ -1548,6 +1553,114 @@ def test_lag_exceeding_feature_warmup_rejected_at_preflight(monkeypatch):
     assert "warmup_bars" in body["error_detail"]["path"]
 
 
+def test_additive_lag_floor_rejects_primitive_floor_without_lag_added(monkeypatch):
+    """62-2b additive-floor fix (SPEC §5.5 warmup 推导公式): a feature's
+    warmup must cover its own primitive floor PLUS the deepest lag reference
+    -- "另计 lag_bars" is additive, not an independent lag-only floor.
+    rolling_sum window_bars=3 (the primitive's own floor) referenced at
+    lag_bars=1 needs warmup_bars>=4; a manifest declaring exactly the
+    primitive floor (3) and ignoring the lag term must be rejected at
+    preflight before any data access."""
+
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("additive lag floor must be checked before data access")
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fail_if_fetched)
+
+    feature = {
+        "key": "cvd_1h",
+        "primitive": "rolling_sum",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": 3},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "cvd_1h", "lag_bars": 1},
+        "right": _literal("0.5"),
+    }
+    request = build_request(make_spec(condition=condition, features=[feature]))
+    set_request_warmup(request, "coinglass.futures_cvd.1h", 3)  # primitive floor only
+    request["execution_params"]["start_at"] = 3 * 3600
+    request["execution_params"]["end_at"] = 3 * 3600 + 2 * 3600
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert "warmup_bars" in body["error_detail"]["path"]
+    assert body["error_detail"]["required"] == {
+        "primitive_floor": 3,
+        "lag_need": 1,
+        "total": 4,
+    }
+
+
+def test_additive_lag_floor_accepts_primitive_floor_plus_lag_exact(monkeypatch):
+    """Companion acceptance case: warmup_bars==primitive_floor+lag (4) is the
+    exact boundary that must succeed -- one bar short (tested above) rejects,
+    exactly enough executes."""
+
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [ts * 1000, 100, 101, 99, 100, 1]
+            for ts in range(start_ms // 1000, end_ms // 1000, 3600)
+        ]
+
+    def fetch_metric_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+        return [{"ts": ts, "value": "1"} for ts in range(start_at, end_at + 1, 3600)]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_metric_chunk)
+
+    feature = {
+        "key": "cvd_1h",
+        "primitive": "rolling_sum",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": 3},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "cvd_1h", "lag_bars": 1},
+        "right": _literal("0.5"),
+    }
+    request = build_request(make_spec(condition=condition, features=[feature]))
+    set_request_warmup(request, "coinglass.futures_cvd.1h", 4)  # floor + lag
+    request["execution_params"]["start_at"] = 4 * 3600
+    request["execution_params"]["end_at"] = 4 * 3600 + 2 * 3600
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "success", body.get("error_message")
+
+
 def test_cross_operand_lag_needs_one_extra_warmup_frame(monkeypatch):
     """Phase 1 review (Codex HIGH-3): cross evaluates each operand at t and
     t-1, so an operand at lag L needs L+1 frames of history. A crosses_above
@@ -1580,6 +1693,82 @@ def test_cross_operand_lag_needs_one_extra_warmup_frame(monkeypatch):
     )
 
     assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "success", body.get("error_message")
+
+
+def test_cross_operand_additive_lag_floor_combines_primitive_floor_and_plus_one(
+    monkeypatch,
+):
+    """Additive floor interplay with cross's own +1 (companion to
+    test_cross_operand_lag_needs_one_extra_warmup_frame above and the plain
+    additive-floor cases): rolling_sum window_bars=2 (primitive floor)
+    referenced at lag_bars=1 *inside a cross* needs warmup_bars >= 2 (floor)
+    + 1 (lag_bars) + 1 (cross's own t-1 lookup) = 4 -- three independently
+    additive terms, none of which may be dropped. warmup_bars=3 (floor +
+    lag_bars, forgetting cross's +1) is still rejected; warmup_bars=4
+    succeeds."""
+
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [ts * 1000, 100, 101, 99, 100, 1]
+            for ts in range(start_ms // 1000, end_ms // 1000, 3600)
+        ]
+
+    def fetch_metric_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+        return [
+            {"ts": ts, "value": str(ts // 3600 + 1)}
+            for ts in range(start_at, end_at + 1, 3600)
+        ]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_metric_chunk)
+
+    feature = {
+        "key": "cvd_1h",
+        "primitive": "rolling_sum",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": 2},
+        "required": True,
+    }
+    condition = {
+        "node": "cross",
+        "op": "crosses_above",
+        "left": {"node": "feature", "key": "cvd_1h", "lag_bars": 1},
+        "right": _literal("1.5"),
+    }
+    request = build_request(make_spec(condition=condition, features=[feature]))
+    # floor(2) + lag_bars(1) = 3, forgetting cross's own +1.
+    set_request_warmup(request, "coinglass.futures_cvd.1h", 3)
+    request["execution_params"]["start_at"] = 3 * 3600
+    request["execution_params"]["end_at"] = 3 * 3600 + 2 * 3600
+
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert body["error_detail"]["required"] == {
+        "primitive_floor": 2,
+        "lag_need": 2,
+        "total": 4,
+    }
+
+    # floor(2) + lag_bars(1) + cross's +1 = 4 succeeds.
+    set_request_warmup(request, "coinglass.futures_cvd.1h", 4)
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
     body = response.json()
     assert body["result_status"] == "success", body.get("error_message")
 
