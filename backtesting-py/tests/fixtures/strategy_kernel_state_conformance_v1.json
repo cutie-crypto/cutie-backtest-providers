@@ -1,0 +1,85 @@
+{
+  "schema": "cutie.strategy_kernel_conformance.v1",
+  "target_schema": "cutie.strategy_kernel_state.v1",
+  "source_of_truth": "TokenBeep 主仓 docs/features/62_KOL策略市场/SPEC_策略工件与统一执行契约.md §17.2",
+  "note": "KernelState snapshot round-trip conformance vectors (Feature 62-3): each case's snapshot must satisfy to_snapshot(from_snapshot(snapshot)) == snapshot byte-for-byte (decimal128 context, §17.2 编解码往返必须逐位保真). Shared across Server/Connector/Provider re-implementations.",
+  "cases": [
+    {
+      "name": "all_null_minimal_state",
+      "description": "First-tick initial_state() shape: no position, no pending_entry, no prior exit, zero closed trades.",
+      "snapshot": {
+        "schema": "cutie.strategy_kernel_state.v1",
+        "equity": "10000",
+        "initial_capital": "10000",
+        "instrument_rules": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "pending_entry": null,
+        "position": null,
+        "last_exit_index": null,
+        "trade_seq": 0
+      }
+    },
+    {
+      "name": "non_null_position_and_pending_entry_with_nullable_subfields",
+      "description": "position present with stop_loss=null (open-ended stop) and take_profit set; pending_entry present with stop_value set and take_value=null; both position/pending_entry exercise their own exactly-N-key nullable subfields independently.",
+      "snapshot": {
+        "schema": "cutie.strategy_kernel_state.v1",
+        "equity": "10245.375",
+        "initial_capital": "10000",
+        "instrument_rules": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.0001",
+          "min_qty": "0.0001",
+          "min_notional": "5"
+        },
+        "pending_entry": {
+          "signal_index": 12,
+          "stop_value": "2450.5",
+          "take_value": null
+        },
+        "position": {
+          "side": "short",
+          "qty": "1.25",
+          "entry_price": "2500",
+          "opened_at": 43200,
+          "stop_loss": null,
+          "take_profit": "2400.75",
+          "bars_held": 4,
+          "pending_signal_exit": true
+        },
+        "last_exit_index": 5,
+        "trade_seq": 3
+      }
+    },
+    {
+      "name": "decimal128_boundary_value_round_trip",
+      "description": "Decimal fields at the decimal128 (prec=34) precision boundary -- 34 significant digits with no trailing-zero stripping opportunity (1/3 under _DECIMAL_CONTEXT), including a negated boundary value, must survive to_snapshot/from_snapshot/to_snapshot unchanged (§17.2 逐位保真 hard requirement).",
+      "snapshot": {
+        "schema": "cutie.strategy_kernel_state.v1",
+        "equity": "0.3333333333333333333333333333333333",
+        "initial_capital": "10000",
+        "instrument_rules": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "pending_entry": {
+          "signal_index": 0,
+          "stop_value": "-0.3333333333333333333333333333333333",
+          "take_value": "0.3333333333333333333333333333333333"
+        },
+        "position": null,
+        "last_exit_index": null,
+        "trade_seq": 0
+      }
+    }
+  ]
+}
