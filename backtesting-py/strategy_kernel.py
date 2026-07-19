@@ -265,6 +265,13 @@ class KernelState:
     pending_entry: Optional[PendingEntry] = None
     position: Optional[Position] = None
     last_exit_index: Optional[int] = None
+    # SPEC §17.2: cumulative count of closed trades this state has ever
+    # produced (across ticks, once restored from a paper_tick snapshot --
+    # unlike ``len(trades)``, which resets to 0 every paper tick since the
+    # trades accumulator is *not* part of the wire snapshot). Historical
+    # replay never resets state mid-run, so trade_seq stays numerically
+    # identical to len(trades) there -- see StrategyKernel._close.
+    trade_seq: int = 0
     trades: list[dict[str, Any]] = field(default_factory=list)
     trace_trades: list[dict[str, Any]] = field(default_factory=list)
     decisions: list[dict[str, Any]] = field(default_factory=list)
@@ -3037,7 +3044,8 @@ class StrategyKernel:
             raise KernelExecutionError(
                 ERR_SPEC_INVALID, "$.execution.cost", "decimal cost operation failed"
             ) from exc
-        seq = len(state.trades) + 1
+        state.trade_seq += 1
+        seq = state.trade_seq
         trade = {
             "seq": seq,
             "opened_at": position.opened_at,
@@ -3301,6 +3309,247 @@ def paper_tick(
     return kernel.evaluate(state, frame)
 
 
+# ---------------------------------------------------------------------------
+# SPEC §17.2 cutie.strategy_kernel_state.v1 -- KernelState snapshot codec.
+#
+# Frames and the output accumulation lists (trades/trace_trades/decisions/
+# diagnostics/fill_ledger/cost_ledger) are deliberately excluded: frames are
+# rebuilt every paper tick from the immutable window anchor (§17.1.1) and
+# threaded back in via ``from_snapshot``'s ``frames`` argument; the
+# accumulator lists are tick-local outputs, never carried cross-tick.
+# ---------------------------------------------------------------------------
+
+KERNEL_STATE_SNAPSHOT_SCHEMA = "cutie.strategy_kernel_state.v1"
+
+_KERNEL_STATE_SNAPSHOT_KEYS = {
+    "schema",
+    "equity",
+    "initial_capital",
+    "instrument_rules",
+    "pending_entry",
+    "position",
+    "last_exit_index",
+    "trade_seq",
+}
+_PENDING_ENTRY_SNAPSHOT_KEYS = {"signal_index", "stop_value", "take_value"}
+_POSITION_SNAPSHOT_KEYS = {
+    "side",
+    "qty",
+    "entry_price",
+    "opened_at",
+    "stop_loss",
+    "take_profit",
+    "bars_held",
+    "pending_signal_exit",
+}
+
+
+def _snapshot_decimal_str(value: Decimal) -> str:
+    # canonical_decimal_str()'s normalize() rounds to whatever Decimal
+    # context is ambient at the call site (Python default prec=28, not
+    # decimal128's 34) -- wrap explicitly so a 29..34 significant-digit
+    # equity/pnl value (routine after chained _DECIMAL_CONTEXT arithmetic)
+    # round-trips byte-exact instead of silently truncating (SPEC §17.2
+    # "编解码往返必须逐位保真", see
+    # tests/fixtures/strategy_kernel_state_conformance_v1.json's decimal128
+    # boundary case, exercised by tests/test_paper_tick.py).
+    with localcontext(_DECIMAL_CONTEXT):
+        return canonical_decimal_str(value)
+
+
+def _snapshot_decimal(
+    value: Any, path: str, *, positive: bool = False, nonnegative: bool = False
+) -> Decimal:
+    if not isinstance(value, str):
+        _raise(path, "must be a canonical Decimal string", actual=type(value).__name__)
+    try:
+        parsed = Decimal(value)
+    except (ArithmeticError, ValueError):
+        _raise(path, "invalid canonical Decimal string", actual=value)
+        raise AssertionError("unreachable")  # pragma: no cover
+    if _snapshot_decimal_str(parsed) != value:
+        _raise(
+            path,
+            "must be exponent-free without redundant zeros or negative zero",
+            actual=value,
+        )
+    if positive and parsed <= 0:
+        _raise(path, "must be positive", actual=value)
+    if nonnegative and parsed < 0:
+        _raise(path, "must be non-negative", actual=value)
+    return parsed
+
+
+def to_snapshot(state: KernelState) -> dict[str, Any]:
+    """Serialize ``state`` per SPEC §17.2 -- top-level exactly eight keys."""
+    pending_entry = state.pending_entry
+    position = state.position
+    return {
+        "schema": KERNEL_STATE_SNAPSHOT_SCHEMA,
+        "equity": _snapshot_decimal_str(state.equity),
+        "initial_capital": _snapshot_decimal_str(state.initial_capital),
+        "instrument_rules": copy.deepcopy(state.instrument_rules),
+        "pending_entry": (
+            None
+            if pending_entry is None
+            else {
+                "signal_index": pending_entry.signal_index,
+                "stop_value": (
+                    None
+                    if pending_entry.stop_value is None
+                    else _snapshot_decimal_str(pending_entry.stop_value)
+                ),
+                "take_value": (
+                    None
+                    if pending_entry.take_value is None
+                    else _snapshot_decimal_str(pending_entry.take_value)
+                ),
+            }
+        ),
+        "position": (
+            None
+            if position is None
+            else {
+                "side": position.side,
+                "qty": _snapshot_decimal_str(position.qty),
+                "entry_price": _snapshot_decimal_str(position.entry_price),
+                "opened_at": position.opened_at,
+                "stop_loss": (
+                    None
+                    if position.stop_loss is None
+                    else _snapshot_decimal_str(position.stop_loss)
+                ),
+                "take_profit": (
+                    None
+                    if position.take_profit is None
+                    else _snapshot_decimal_str(position.take_profit)
+                ),
+                "bars_held": position.bars_held,
+                "pending_signal_exit": position.pending_signal_exit,
+            }
+        ),
+        "last_exit_index": state.last_exit_index,
+        "trade_seq": state.trade_seq,
+    }
+
+
+def from_snapshot(
+    snapshot: dict[str, Any],
+    frames: list[FeatureFrame],
+    *,
+    execution_start_at: int,
+    execution_end_at: int,
+) -> KernelState:
+    """Reconstruct a ``KernelState`` from a §17.2 snapshot plus the frame
+    history strictly before the tick's own target frame.
+
+    ``frames`` is never part of the wire snapshot (§17.1.3): the Provider
+    rebuilds the full window every tick (declared_only fetch + build_frames)
+    and threads the frames preceding the tick's own target frame back in
+    here directly -- StrategyKernel.evaluate() is then called exactly once,
+    on the target frame only, so lagged feature/cross lookups still resolve
+    against real history without re-running decision logic for bars a prior
+    tick already evaluated (that tick's effects are already baked into the
+    restored position/pending_entry/equity/trade_seq fields).
+    """
+    data = _exact(snapshot, _KERNEL_STATE_SNAPSHOT_KEYS, "$.state")
+    if data["schema"] != KERNEL_STATE_SNAPSHOT_SCHEMA:
+        _raise(
+            "$.state.schema",
+            "unsupported kernel state snapshot schema",
+            actual=data["schema"],
+        )
+    equity = _snapshot_decimal(data["equity"], "$.state.equity")
+    initial_capital = _snapshot_decimal(
+        data["initial_capital"], "$.state.initial_capital", positive=True
+    )
+    instrument_rules = data["instrument_rules"]
+    if not isinstance(instrument_rules, dict):
+        _raise("$.state.instrument_rules", "must be an object")
+    try:
+        canonical_json(instrument_rules)
+    except CanonicalJsonError as exc:
+        _raise("$.state.instrument_rules", str(exc))
+
+    pending_entry_data = data["pending_entry"]
+    pending_entry: Optional[PendingEntry] = None
+    if pending_entry_data is not None:
+        pe = _exact(
+            pending_entry_data, _PENDING_ENTRY_SNAPSHOT_KEYS, "$.state.pending_entry"
+        )
+        signal_index = _safe_int(
+            pe["signal_index"], "$.state.pending_entry.signal_index"
+        )
+        stop_value = (
+            None
+            if pe["stop_value"] is None
+            else _snapshot_decimal(pe["stop_value"], "$.state.pending_entry.stop_value")
+        )
+        take_value = (
+            None
+            if pe["take_value"] is None
+            else _snapshot_decimal(pe["take_value"], "$.state.pending_entry.take_value")
+        )
+        pending_entry = PendingEntry(signal_index, stop_value, take_value)
+
+    position_data = data["position"]
+    position: Optional[Position] = None
+    if position_data is not None:
+        pos = _exact(position_data, _POSITION_SNAPSHOT_KEYS, "$.state.position")
+        if pos["side"] not in ("long", "short"):
+            _raise("$.state.position.side", "must be long or short", actual=pos["side"])
+        qty = _snapshot_decimal(pos["qty"], "$.state.position.qty", positive=True)
+        entry_price = _snapshot_decimal(
+            pos["entry_price"], "$.state.position.entry_price", positive=True
+        )
+        opened_at = _safe_int(pos["opened_at"], "$.state.position.opened_at")
+        stop_loss = (
+            None
+            if pos["stop_loss"] is None
+            else _snapshot_decimal(
+                pos["stop_loss"], "$.state.position.stop_loss", positive=True
+            )
+        )
+        take_profit = (
+            None
+            if pos["take_profit"] is None
+            else _snapshot_decimal(
+                pos["take_profit"], "$.state.position.take_profit", positive=True
+            )
+        )
+        bars_held = _safe_int(pos["bars_held"], "$.state.position.bars_held")
+        if not isinstance(pos["pending_signal_exit"], bool):
+            _raise("$.state.position.pending_signal_exit", "must be a boolean")
+        position = Position(
+            side=pos["side"],
+            qty=qty,
+            entry_price=entry_price,
+            opened_at=opened_at,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            bars_held=bars_held,
+            pending_signal_exit=pos["pending_signal_exit"],
+        )
+
+    last_exit_index = data["last_exit_index"]
+    if last_exit_index is not None:
+        last_exit_index = _safe_int(last_exit_index, "$.state.last_exit_index")
+    trade_seq = _safe_int(data["trade_seq"], "$.state.trade_seq")
+
+    return KernelState(
+        equity=equity,
+        initial_capital=initial_capital,
+        instrument_rules=copy.deepcopy(instrument_rules),
+        execution_start_at=execution_start_at,
+        execution_end_at=execution_end_at,
+        frames=list(frames),
+        pending_entry=pending_entry,
+        position=position,
+        last_exit_index=last_exit_index,
+        trade_seq=trade_seq,
+    )
+
+
 __all__ = [
     "ARTIFACT_DIGEST_SCHEMA",
     "ARTIFACT_MANIFEST_SCHEMA",
@@ -3312,6 +3561,7 @@ __all__ = [
     "ERR_SPEC_INVALID",
     "ERR_SPEC_UNSUPPORTED",
     "FeatureFrame",
+    "KERNEL_STATE_SNAPSHOT_SCHEMA",
     "KernelExecutionError",
     "KernelState",
     "StrategyContractError",
@@ -3320,10 +3570,12 @@ __all__ = [
     "capability_hash",
     "capability_payload",
     "compile_strategy",
+    "from_snapshot",
     "initial_state",
     "kline_primary_bucket_required_end",
     "kline_primary_bucket_required_start",
     "ohlcv_resample",
     "paper_tick",
     "simulate",
+    "to_snapshot",
 ]

@@ -33,26 +33,36 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from strategy_execution import (
     EXECUTION_MAX_RANGE_DAYS,
+    PAPER_TICK_RESULT_SCHEMA,
     CoverageInput,
+    PaperCoverageInput,
     build_artifact_response,
     build_coverage_manifest,
+    build_paper_tick_coverage_manifest,
     is_strategy_execution_intent,
+    is_strategy_paper_tick_intent,
     max_primary_lag_frames,
     validate_execution_request,
+    validate_paper_tick_request,
 )
 from strategy_kernel import (
     COMPILER_TOOL_ID,
     ERR_CAPABILITY_MISMATCH,
     ERR_COVERAGE_INCOMPLETE,
+    ERR_SPEC_INVALID,
     KernelExecutionError,
     StrategyContractError,
+    StrategyKernel,
     build_frames,
     capability_hash,
     capability_payload,
+    from_snapshot,
     initial_state,
+    kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
     ohlcv_resample,
     simulate,
+    to_snapshot,
 )
 
 # ---------------------------------------------------------------------------
@@ -1499,6 +1509,287 @@ def _run_artifact_backtest(
         )
 
 
+_PAPER_TICK_EXIT_KINDS = {"stop_loss", "take_profit", "time_exit", "signal_exit"}
+
+
+def _run_paper_tick(
+    body: dict[str, Any],
+    capability_pair: tuple[dict[str, Any], str],
+    connector_version: Optional[str],
+) -> JSONResponse:
+    """SPEC §17: paper_tick incremental execution.
+
+    Rebuilds the full [window_start_at, target_bar_close) feature-frame
+    window every tick (declared_only, same fetch/derive helpers as
+    _run_artifact_backtest) but calls StrategyKernel.evaluate() exactly once
+    -- on the single frame identified by tick.bar_open_at -- restoring
+    trading state from the wire snapshot (or initial_state on the first
+    tick) rather than replaying decision logic for already-evaluated bars.
+    """
+    raw_paper_run_id = body.get("paper_run_id") if isinstance(body, dict) else None
+    try:
+        if not connector_version or len(connector_version) > 100:
+            raise StrategyContractError(
+                ERR_CAPABILITY_MISMATCH,
+                "$.headers.X-Cutie-Connector-Version",
+                "paper tick execution requires a bounded Connector version",
+            )
+        validated = validate_paper_tick_request(
+            body, capability_pair[0], capability_pair[1]
+        )
+        request = validated.request
+        params = request["execution_params"]
+        tick = request["tick"]
+        symbol = params["symbol"]
+        primary_step_seconds = _timeframe_milliseconds(params["timeframe"]) // 1000
+        window_start_at = tick["window_start_at"]
+        target_bar_close = tick["bar_open_at"] + primary_step_seconds
+
+        requirements = request["artifact_manifest"]["data_requirements"]
+        primary_requirement = next(
+            (
+                item
+                for item in requirements
+                if item["execution_role"] == "primary_execution_kline"
+            ),
+            None,
+        )
+        if primary_requirement is None:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE, "$.data_streams", "primary K-line is missing"
+            )
+        expected_source = _CENTRAL_MARKET_SOURCES.get(primary_requirement["market"])
+        if primary_requirement["result_source"] != expected_source:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                "$.artifact_manifest.data_requirements.primary.result_source",
+                "declared result source differs from the actual central adapter",
+                required=expected_source,
+                actual=primary_requirement["result_source"],
+            )
+
+        data_streams: dict[str, list[dict[str, Any]]] = {}
+        coverage_inputs: list[PaperCoverageInput] = []
+
+        # §17.1.1: every stream shares the same [window_start_at,
+        # target_bar_close) window -- window_start_at is already the full
+        # warmup/lag anchor frozen at run creation, so (unlike
+        # _run_artifact_backtest) there is no separate lag-frames widening
+        # here. The primary fetch is still widened up front to also cover
+        # any coarse kline.primary derived requirement's own bucket-aligned
+        # resample-source need, for the same single-union-fetch reason
+        # _run_artifact_backtest documents (a second independent fetch could
+        # race a live central source and resample data decision frames never
+        # actually saw).
+        primary_fetch_start = window_start_at
+        for requirement in requirements:
+            if requirement is primary_requirement:
+                continue
+            if (
+                _kline_primary_field_for_requirement(
+                    requirement, request["strategy_spec"]
+                )
+                is None
+            ):
+                continue
+            derived_step = _timeframe_milliseconds(requirement["interval"]) // 1000
+            derived_required_start = kline_primary_bucket_required_start(
+                window_start_at, 0, derived_step
+            )
+            primary_fetch_start = min(
+                primary_fetch_start,
+                _kline_primary_resample_source_start(derived_required_start, derived_step),
+            )
+        primary_fetch_rows = _fetch_artifact_klines(
+            primary_requirement, symbol, primary_fetch_start, target_bar_close
+        )
+        primary_rows = [
+            row
+            for row in primary_fetch_rows
+            if window_start_at <= row["open_time"] < target_bar_close
+        ]
+        if not primary_rows:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                "$.data_streams",
+                "primary K-line stream is empty",
+            )
+        data_streams[primary_requirement["stream_id"]] = primary_rows
+        primary_fetch_checksum = canonical_json_sha256(primary_fetch_rows)
+        coverage_inputs.append(
+            PaperCoverageInput(
+                requirement=primary_requirement,
+                checksum=primary_fetch_checksum,
+                revision=primary_fetch_checksum,
+                point_count=len(primary_rows),
+                required_start_at=window_start_at,
+                required_end_at=target_bar_close,
+                actual_start_at=primary_rows[0]["open_time"],
+                actual_end_at=primary_rows[-1]["open_time"],
+                available_through=primary_rows[-1]["open_time"] + primary_step_seconds,
+            )
+        )
+
+        for requirement in requirements:
+            if requirement is primary_requirement:
+                continue
+            requirement_step = _timeframe_milliseconds(requirement["interval"]) // 1000
+            kline_primary_field = _kline_primary_field_for_requirement(
+                requirement, request["strategy_spec"]
+            )
+            if kline_primary_field is not None:
+                fetch_start = kline_primary_bucket_required_start(
+                    window_start_at, 0, requirement_step
+                )
+                required_end = kline_primary_bucket_required_end(
+                    target_bar_close, requirement_step
+                )
+                rows = _derive_kline_primary_feature_rows(
+                    primary_fetch_rows,
+                    primary_step_seconds,
+                    primary_fetch_checksum,
+                    requirement,
+                    kline_primary_field,
+                    fetch_start,
+                    target_bar_close,
+                )
+            else:
+                fetch_start = window_start_at
+                required_end = target_bar_close
+                if requirement["kind"] == "kline":
+                    rows = _fetch_artifact_klines(
+                        requirement, symbol, fetch_start, target_bar_close
+                    )
+                else:
+                    rows = _fetch_artifact_features(
+                        requirement,
+                        request["strategy_spec"],
+                        symbol,
+                        fetch_start,
+                        target_bar_close,
+                    )
+            data_streams[requirement["stream_id"]] = rows
+            checksum = canonical_json_sha256(rows)
+            timestamp_key = "open_time" if requirement["kind"] == "kline" else "ts"
+            if not rows:
+                raise StrategyContractError(
+                    ERR_COVERAGE_INCOMPLETE,
+                    f"$.coverage.{requirement['stream_id']}",
+                    "stream returned no rows inside its declared range",
+                )
+            coverage_inputs.append(
+                PaperCoverageInput(
+                    requirement=requirement,
+                    checksum=checksum,
+                    revision=checksum,
+                    point_count=len(rows),
+                    required_start_at=fetch_start,
+                    required_end_at=required_end,
+                    actual_start_at=rows[0][timestamp_key],
+                    actual_end_at=rows[-1][timestamp_key],
+                    available_through=rows[-1][timestamp_key] + requirement_step,
+                )
+            )
+
+        coverage = build_paper_tick_coverage_manifest(request, coverage_inputs)
+        frames = build_frames(data_streams, coverage, validated.plan)
+        target_index = next(
+            (
+                index
+                for index, item in enumerate(frames)
+                if item.bar_open_at == tick["bar_open_at"]
+            ),
+            None,
+        )
+        if target_index is None:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                "$.tick.bar_open_at",
+                "target frame is missing from the reconstructed window",
+            )
+        history_frames = frames[:target_index]
+        target_frame = frames[target_index]
+
+        if request["state"] is None:
+            state = initial_state(validated.plan, params)
+            state.frames = history_frames
+            prev_state_hash = canonical_json_sha256(to_snapshot(state))
+        else:
+            state = from_snapshot(
+                request["state"],
+                history_frames,
+                execution_start_at=params["start_at"],
+                execution_end_at=params["end_at"],
+            )
+            prev_state_hash = request["prev_state_hash"]
+
+        kernel = StrategyKernel(validated.plan)
+        evaluated = kernel.evaluate(state, target_frame)
+
+        closed_trades: list[dict[str, Any]] = []
+        for trade, trace in zip(state.trades, state.trace_trades):
+            if trace["exit_kind"] not in _PAPER_TICK_EXIT_KINDS:
+                # finalize() is never called by paper_tick (§17.6), so
+                # exit_kind=="end_of_data" (a finalize()-only value) can
+                # never legitimately appear here; treat it as an internal bug
+                # rather than emitting an out-of-contract closed_trades row.
+                raise StrategyContractError(
+                    ERR_SPEC_INVALID,
+                    "$.closed_trades.exit_kind",
+                    "paper tick produced an impossible end_of_data exit",
+                    actual=trace["exit_kind"],
+                )
+            closed_trades.append(
+                {
+                    "trade_seq": trade["seq"],
+                    "symbol": target_frame.symbol,
+                    "direction": trade["side"],
+                    "entry_time": trade["opened_at"],
+                    "exit_time": trade["closed_at"],
+                    "entry_price": trade["entry_price"],
+                    "exit_price": trade["exit_price"],
+                    "stop_loss": trace["stop_loss"],
+                    "take_profit": trace["take_profit"],
+                    "exit_kind": trace["exit_kind"],
+                    "pnl_usd": trade["pnl"],
+                    "equity_after": canonical_decimal_str(state.equity),
+                }
+            )
+
+        next_state_snapshot = to_snapshot(state)
+        next_state_hash = canonical_json_sha256(next_state_snapshot)
+        result = {
+            "schema": PAPER_TICK_RESULT_SCHEMA,
+            "paper_run_id": request["paper_run_id"],
+            "bar_open_at": tick["bar_open_at"],
+            "prev_state_hash": prev_state_hash,
+            "next_state": next_state_snapshot,
+            "next_state_hash": next_state_hash,
+            "decisions": evaluated["decisions"],
+            "closed_trades": closed_trades,
+            "diagnostics": evaluated["diagnostics"],
+            "coverage_manifest": coverage,
+            "coverage_manifest_hash": canonical_json_sha256(coverage),
+            "executed_artifact_hash": request["artifact"]["artifact_hash"],
+            "capability_hash": capability_hash(capability_pair[0]),
+            "provider_revision": capability_pair[0]["provider_revision"],
+            "provider_process_fingerprint": _process_fingerprint(),
+        }
+        return JSONResponse(content=result)
+    except (StrategyContractError, KernelExecutionError) as exc:
+        return _artifact_failure(exc, run_id=raw_paper_run_id)
+    except Exception:
+        logger.exception("Paper tick execution failed")
+        return _artifact_failure(
+            StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                "$.execution",
+                "paper tick execution failed closed",
+            ),
+            run_id=raw_paper_run_id,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Strategy library (multi-tool registry)
 #
@@ -2450,6 +2741,27 @@ async def run_backtest(
         return _validation_failure(
             "INVALID_REQUEST", "Request body must be valid JSON", status_code=400
         )
+
+    # SPEC §17.5: paper_tick's own explicit schema+execution_mode probe must
+    # be checked before is_strategy_execution_intent's key-set fallback --
+    # a paper_tick body also carries artifact/strategy_spec/artifact_manifest/
+    # expected_capability_hash/expected_provider_revision/result_contract, so
+    # the replay probe's fallback would also match it and misroute into the
+    # frozen 11-key historical_replay validator (which would then reject a
+    # legal 14-key paper_tick body as a structural error instead of routing
+    # correctly). is_strategy_execution_intent itself is untouched.
+    if is_strategy_paper_tick_intent(body):
+        pair = _artifact_capability_pair()
+        if pair is None:
+            return _artifact_failure(
+                StrategyContractError(
+                    ERR_CAPABILITY_MISMATCH,
+                    "$.provider_revision",
+                    "artifact capability is unavailable until an immutable revision is configured",
+                ),
+                run_id=body.get("paper_run_id") if isinstance(body, dict) else None,
+            )
+        return _run_paper_tick(body, pair, x_cutie_connector_version)
 
     if is_strategy_execution_intent(body):
         pair = _artifact_capability_pair()
