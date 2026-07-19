@@ -2,7 +2,7 @@
   "schema": "cutie.strategy_kernel_conformance.v1",
   "target_schema": "cutie.strategy_kernel_state.v1",
   "source_of_truth": "TokenBeep 主仓 docs/features/62_KOL策略市场/SPEC_策略工件与统一执行契约.md §17.2",
-  "note": "KernelState snapshot round-trip conformance vectors (Feature 62-3): each case's snapshot must satisfy to_snapshot(from_snapshot(snapshot)) == snapshot byte-for-byte (decimal128 context, §17.2 编解码往返必须逐位保真). Shared across Server/Connector/Provider re-implementations.",
+  "note": "KernelState snapshot round-trip conformance vectors (Feature 62-3): each case's snapshot must satisfy to_snapshot(from_snapshot(snapshot)) == snapshot byte-for-byte (decimal128 context, §17.2 编解码往返必须逐位保真). Shared across Server/Connector/Provider re-implementations. position.opened_at is epoch MILLISECONDS (§17.2) -- a genuine 13-digit value, not a small offset, so a seconds/milliseconds unit confusion in a re-implementation fails this fixture immediately instead of passing by coincidence (2026-07-19 Codex P1 review).",
   "cases": [
     {
       "name": "all_null_minimal_state",
@@ -47,7 +47,7 @@
           "side": "short",
           "qty": "1.25",
           "entry_price": "2500",
-          "opened_at": 43200,
+          "opened_at": 1700013600000,
           "stop_loss": null,
           "take_profit": "2400.75",
           "bars_held": 4,
