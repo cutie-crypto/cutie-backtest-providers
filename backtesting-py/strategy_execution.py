@@ -173,6 +173,13 @@ def is_strategy_execution_intent(value: Any) -> bool:
         "cutie.strategy_execution_request."
     ):
         return True
+    # Probe keys must be exclusive to the bound execution request. The legacy
+    # backtest dispatch envelope has carried dispatch_nonce +
+    # expected_provider_revision since 62-1 as integrity evidence, so
+    # expected_provider_revision is not an artifact-intent signal (sibling of
+    # the connector-side fix shipped in @cutie-crypto/connector 3.9.13; on Pre
+    # 2026-07-19 the connector variant rejected every legacy one-click
+    # backtest as AGENT_REJECTED).
     return any(
         key in value
         for key in (
@@ -180,7 +187,6 @@ def is_strategy_execution_intent(value: Any) -> bool:
             "strategy_spec",
             "artifact_manifest",
             "expected_capability_hash",
-            "expected_provider_revision",
             "result_contract",
         )
     )
