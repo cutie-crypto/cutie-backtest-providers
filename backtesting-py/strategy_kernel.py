@@ -3344,15 +3344,23 @@ _POSITION_SNAPSHOT_KEYS = {
 }
 
 
-def _snapshot_decimal_str(value: Decimal) -> str:
-    # canonical_decimal_str()'s normalize() rounds to whatever Decimal
-    # context is ambient at the call site (Python default prec=28, not
-    # decimal128's 34) -- wrap explicitly so a 29..34 significant-digit
-    # equity/pnl value (routine after chained _DECIMAL_CONTEXT arithmetic)
-    # round-trips byte-exact instead of silently truncating (SPEC §17.2
-    # "编解码往返必须逐位保真", see
-    # tests/fixtures/strategy_kernel_state_conformance_v1.json's decimal128
-    # boundary case, exercised by tests/test_paper_tick.py).
+def snapshot_decimal_str(value: Decimal) -> str:
+    """canonical_decimal_str() wrapped in the decimal128 (_DECIMAL_CONTEXT)
+    ambient context -- exported (not module-private) so any Provider caller
+    serializing a Decimal that will be compared/hashed against a §17.2
+    snapshot field (e.g. a paper_tick closed_trades row's ``equity_after``,
+    which must byte-for-byte match ``next_state.equity`` for the same
+    post-trade equity) uses the same precision, not the Python default
+    context (prec=28, not decimal128's 34).
+
+    canonical_decimal_str()'s own normalize() rounds to whatever Decimal
+    context is ambient at the call site -- calling it unwrapped on a
+    29..34 significant-digit equity/pnl value (routine after chained
+    _DECIMAL_CONTEXT arithmetic) silently truncates instead of round-tripping
+    byte-exact (SPEC §17.2 "编解码往返必须逐位保真", see
+    tests/fixtures/strategy_kernel_state_conformance_v1.json's decimal128
+    boundary case, exercised by tests/test_paper_tick.py).
+    """
     with localcontext(_DECIMAL_CONTEXT):
         return canonical_decimal_str(value)
 
@@ -3367,7 +3375,7 @@ def _snapshot_decimal(
     except (ArithmeticError, ValueError):
         _raise(path, "invalid canonical Decimal string", actual=value)
         raise AssertionError("unreachable")  # pragma: no cover
-    if _snapshot_decimal_str(parsed) != value:
+    if snapshot_decimal_str(parsed) != value:
         _raise(
             path,
             "must be exponent-free without redundant zeros or negative zero",
@@ -3386,8 +3394,8 @@ def to_snapshot(state: KernelState) -> dict[str, Any]:
     position = state.position
     return {
         "schema": KERNEL_STATE_SNAPSHOT_SCHEMA,
-        "equity": _snapshot_decimal_str(state.equity),
-        "initial_capital": _snapshot_decimal_str(state.initial_capital),
+        "equity": snapshot_decimal_str(state.equity),
+        "initial_capital": snapshot_decimal_str(state.initial_capital),
         "instrument_rules": copy.deepcopy(state.instrument_rules),
         "pending_entry": (
             None
@@ -3397,12 +3405,12 @@ def to_snapshot(state: KernelState) -> dict[str, Any]:
                 "stop_value": (
                     None
                     if pending_entry.stop_value is None
-                    else _snapshot_decimal_str(pending_entry.stop_value)
+                    else snapshot_decimal_str(pending_entry.stop_value)
                 ),
                 "take_value": (
                     None
                     if pending_entry.take_value is None
-                    else _snapshot_decimal_str(pending_entry.take_value)
+                    else snapshot_decimal_str(pending_entry.take_value)
                 ),
             }
         ),
@@ -3411,18 +3419,25 @@ def to_snapshot(state: KernelState) -> dict[str, Any]:
             if position is None
             else {
                 "side": position.side,
-                "qty": _snapshot_decimal_str(position.qty),
-                "entry_price": _snapshot_decimal_str(position.entry_price),
-                "opened_at": position.opened_at,
+                "qty": snapshot_decimal_str(position.qty),
+                "entry_price": snapshot_decimal_str(position.entry_price),
+                # §17.2: snapshot times are epoch milliseconds; the kernel's
+                # own internal FeatureFrame/Position timestamps are epoch
+                # seconds (frozen, historical_replay convention -- see
+                # _canonical_kline_rows' ``open_time = int(candle[0]) //
+                # 1000``). This is the one wire/internal unit boundary the
+                # snapshot codec bridges; frame indices are unaffected (not
+                # times).
+                "opened_at": position.opened_at * 1000,
                 "stop_loss": (
                     None
                     if position.stop_loss is None
-                    else _snapshot_decimal_str(position.stop_loss)
+                    else snapshot_decimal_str(position.stop_loss)
                 ),
                 "take_profit": (
                     None
                     if position.take_profit is None
-                    else _snapshot_decimal_str(position.take_profit)
+                    else snapshot_decimal_str(position.take_profit)
                 ),
                 "bars_held": position.bars_held,
                 "pending_signal_exit": position.pending_signal_exit,
@@ -3502,7 +3517,14 @@ def from_snapshot(
         entry_price = _snapshot_decimal(
             pos["entry_price"], "$.state.position.entry_price", positive=True
         )
-        opened_at = _safe_int(pos["opened_at"], "$.state.position.opened_at")
+        opened_at_ms = _safe_int(pos["opened_at"], "$.state.position.opened_at")
+        if opened_at_ms % 1000 != 0:
+            _raise(
+                "$.state.position.opened_at",
+                "must be a whole-second epoch millisecond timestamp",
+                actual=opened_at_ms,
+            )
+        opened_at = opened_at_ms // 1000
         stop_loss = (
             None
             if pos["stop_loss"] is None
@@ -3577,5 +3599,6 @@ __all__ = [
     "ohlcv_resample",
     "paper_tick",
     "simulate",
+    "snapshot_decimal_str",
     "to_snapshot",
 ]
