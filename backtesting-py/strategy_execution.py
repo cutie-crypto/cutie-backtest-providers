@@ -7,7 +7,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from canonical_json import canonical_decimal_str, canonical_json_sha256
+from canonical_json import (
+    CanonicalJsonError,
+    canonical_decimal_str,
+    canonical_json_sha256,
+)
 from strategy_kernel import (
     ARTIFACT_DIGEST_SCHEMA,
     COMPILER_TOOL_ID,
@@ -25,6 +29,13 @@ from strategy_kernel import (
 
 EXECUTION_REQUEST_SCHEMA = "cutie.strategy_execution_request.v1"
 EXECUTION_MAX_RANGE_DAYS = 365
+# SPEC §17: paper_tick wire types, additive to the frozen 62-2 historical_replay
+# request/result above -- independent schema/key sets, zero shared validation
+# path with _REQUEST_KEYS/validate_execution_request (§17.5 "探测/校验独立于
+# isStrategyExecutionRequestIntent").
+PAPER_TICK_REQUEST_SCHEMA = "cutie.strategy_paper_tick_request.v1"
+PAPER_TICK_RESULT_SCHEMA = "cutie.strategy_paper_tick_result.v1"
+ERR_PAPER_STATE_MISMATCH = "ERR_STRATEGY_PAPER_STATE_MISMATCH"
 _REQUEST_KEYS = {
     "schema",
     "execution_mode",
@@ -65,6 +76,25 @@ _RESULT_CONTRACT_KEYS = {
     "trace_schema",
     "evidence_schema",
 }
+# SPEC §17.3 cutie.strategy_paper_tick_request.v1 -- top-level exactly 14 keys.
+_PAPER_TICK_REQUEST_KEYS = {
+    "schema",
+    "execution_mode",
+    "paper_run_id",
+    "artifact",
+    "strategy_spec",
+    "artifact_manifest",
+    "execution_params",
+    "tick",
+    "state",
+    "prev_state_hash",
+    "expected_capability_hash",
+    "expected_provider_revision",
+    "dispatch_nonce",
+    "result_contract",
+}
+_TICK_KEYS = {"bar_open_at", "window_start_at", "execution_start_at"}
+_PAPER_RESULT_CONTRACT_KEYS = {"result_schema", "coverage_schema"}
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _DECIMAL_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$")
@@ -78,11 +108,38 @@ class ValidatedExecution:
 
 
 @dataclass(frozen=True)
+class ValidatedPaperTick:
+    request: dict[str, Any]
+    plan: CompiledPlan
+
+
+@dataclass(frozen=True)
 class CoverageInput:
     requirement: dict[str, Any]
     checksum: str
     revision: str
     point_count: int
+    actual_start_at: int
+    actual_end_at: int
+    available_through: int
+
+
+@dataclass(frozen=True)
+class PaperCoverageInput:
+    """Companion to ``CoverageInput`` for §7 coverage math anchored on a
+    paper_tick's shared [window_start_at, target_bar_close) window (§17.1)
+    instead of historical_replay's per-requirement warmup_bars-relative
+    ``execution_params.start_at``/``end_at`` math -- kept as its own
+    dataclass rather than adding fields to ``CoverageInput`` so
+    ``build_coverage_manifest``'s historical_replay behavior is untouched.
+    """
+
+    requirement: dict[str, Any]
+    checksum: str
+    revision: str
+    point_count: int
+    required_start_at: int
+    required_end_at: int
     actual_start_at: int
     actual_end_at: int
     available_through: int
@@ -189,6 +246,24 @@ def is_strategy_execution_intent(value: Any) -> bool:
             "expected_capability_hash",
             "result_contract",
         )
+    )
+
+
+def is_strategy_paper_tick_intent(value: Any) -> bool:
+    """SPEC §17.5: explicit schema-prefix + execution_mode=='paper_tick'
+    probe, never a key-set heuristic (both the request's ``artifact``/
+    ``strategy_spec``/... keys and its own tighter 14-key shape overlap with
+    ``is_strategy_execution_intent``'s fallback heuristic, so this must be
+    checked first by the caller -- historical_replay's own probe is left
+    byte-for-byte unchanged, zero regression per the 2026-07-19 探测键回归
+    lesson referenced in the SPEC)."""
+    if not isinstance(value, dict):
+        return False
+    schema = value.get("schema")
+    return (
+        isinstance(schema, str)
+        and schema.startswith("cutie.strategy_paper_tick_request.")
+        and value.get("execution_mode") == "paper_tick"
     )
 
 
@@ -480,6 +555,300 @@ def validate_execution_request(
                 },
             )
     return ValidatedExecution(copy.deepcopy(request), plan)
+
+
+# SPEC §17.1.4: paper's window grows every tick and is bounded independently
+# of historical_replay's EXECUTION_MAX_RANGE_DAYS -- 1h-bucket run life cap.
+PAPER_WINDOW_MAX_BARS = 26280
+
+
+def validate_paper_tick_request(
+    value: Any,
+    capability: dict[str, Any],
+    advertised_capability_hash: str,
+) -> ValidatedPaperTick:
+    """SPEC §17.3 cutie.strategy_paper_tick_request.v1 wire validation.
+
+    Deliberately independent of ``validate_execution_request``: separate
+    exact-key set, separate result_contract, separate hash-mismatch code
+    (``ERR_PAPER_STATE_MISMATCH``) -- the historical_replay validator above
+    is untouched by this function.
+    """
+    request = _exact(value, _PAPER_TICK_REQUEST_KEYS, "$")
+    if request["schema"] != PAPER_TICK_REQUEST_SCHEMA:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.schema",
+            "unsupported paper tick request schema",
+            actual=request["schema"],
+        )
+    if request["execution_mode"] != "paper_tick":
+        _error(
+            ERR_SPEC_INVALID, "$.execution_mode", "API only permits paper_tick"
+        )
+    _decimal_id(request["paper_run_id"], "$.paper_run_id")
+    artifact = _exact(request["artifact"], _ARTIFACT_KEYS, "$.artifact")
+    _decimal_id(artifact["artifact_id"], "$.artifact.artifact_id")
+    _decimal_id(artifact["artifact_version_id"], "$.artifact.artifact_version_id")
+    if (
+        isinstance(artifact["version_no"], bool)
+        or not isinstance(artifact["version_no"], int)
+        or artifact["version_no"] <= 0
+        or artifact["version_no"] > 2**53 - 1
+    ):
+        _error(
+            ERR_SPEC_INVALID, "$.artifact.version_no", "must be a positive safe integer"
+        )
+    for key in ("spec_hash", "manifest_hash", "artifact_hash"):
+        _hash(artifact[key], f"$.artifact.{key}")
+    if not isinstance(request["strategy_spec"], dict) or not isinstance(
+        request["artifact_manifest"], dict
+    ):
+        _error(
+            ERR_SPEC_INVALID, "$", "strategy_spec and artifact_manifest must be objects"
+        )
+    if canonical_json_sha256(request["strategy_spec"]) != artifact["spec_hash"]:
+        _error(
+            ERR_BINDING_MISMATCH, "$.artifact.spec_hash", "does not match strategy_spec"
+        )
+    if canonical_json_sha256(request["artifact_manifest"]) != artifact["manifest_hash"]:
+        _error(
+            ERR_BINDING_MISMATCH,
+            "$.artifact.manifest_hash",
+            "does not match artifact_manifest",
+        )
+    digest = canonical_json_sha256(
+        {
+            "schema": ARTIFACT_DIGEST_SCHEMA,
+            "spec_hash": artifact["spec_hash"],
+            "manifest_hash": artifact["manifest_hash"],
+        }
+    )
+    if digest != artifact["artifact_hash"]:
+        _error(
+            ERR_BINDING_MISMATCH,
+            "$.artifact.artifact_hash",
+            "does not match digest payload",
+        )
+
+    params = _exact(
+        request["execution_params"], _EXECUTION_PARAM_KEYS, "$.execution_params"
+    )
+    if params["schema_version"] != "cutie.execution_params.v1":
+        _error(
+            ERR_SPEC_INVALID, "$.execution_params.schema_version", "unsupported schema"
+        )
+    if params["provider_tool_id"] != COMPILER_TOOL_ID:
+        _error(
+            ERR_BINDING_MISMATCH,
+            "$.execution_params.provider_tool_id",
+            "must route to compiler tool",
+        )
+    for key in ("symbol", "market", "timeframe"):
+        if not isinstance(params[key], str) or not params[key]:
+            _error(
+                ERR_SPEC_INVALID,
+                f"$.execution_params.{key}",
+                "must be a non-empty string",
+            )
+    for key in ("start_at", "end_at"):
+        if (
+            isinstance(params[key], bool)
+            or not isinstance(params[key], int)
+            or not 0 <= params[key] <= 2**53 - 1
+        ):
+            _error(
+                ERR_SPEC_INVALID,
+                f"$.execution_params.{key}",
+                "must be a non-negative safe integer",
+            )
+    if params["end_at"] <= params["start_at"]:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.execution_params",
+            "end_at must be greater than start_at",
+        )
+    _canonical_decimal(
+        params["initial_capital"], "$.execution_params.initial_capital", positive=True
+    )
+    _canonical_decimal(
+        params["fee_bps"], "$.execution_params.fee_bps", nonnegative=True
+    )
+    _canonical_decimal(
+        params["slippage_bps"], "$.execution_params.slippage_bps", nonnegative=True
+    )
+    if not isinstance(params["provider_params"], dict):
+        _error(
+            ERR_SPEC_INVALID, "$.execution_params.provider_params", "must be an object"
+        )
+    market = request["strategy_spec"].get("market")
+    if (
+        not isinstance(market, dict)
+        or params["symbol"] not in market.get("symbols", [])
+        or params["market"] != market.get("market_type")
+        or params["timeframe"] != market.get("timeframe")
+    ):
+        _error(
+            ERR_BINDING_MISMATCH,
+            "$.execution_params",
+            "symbol/market/timeframe differs from StrategySpec",
+        )
+
+    tick = _exact(request["tick"], _TICK_KEYS, "$.tick")
+    for key in ("bar_open_at", "window_start_at", "execution_start_at"):
+        if (
+            isinstance(tick[key], bool)
+            or not isinstance(tick[key], int)
+            or not 0 <= tick[key] <= 2**53 - 1
+        ):
+            _error(
+                ERR_SPEC_INVALID,
+                f"$.tick.{key}",
+                "must be a non-negative safe integer",
+            )
+    if not tick["window_start_at"] <= tick["execution_start_at"] <= tick["bar_open_at"]:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.tick",
+            "must satisfy window_start_at <= execution_start_at <= bar_open_at",
+        )
+    # execution_params.start_at/end_at reuse §6.2's field shape verbatim
+    # (SPEC "语义与 §6.2 完全一致"); for paper_tick they must describe the
+    # same immutable execution_start_at and this tick's own target frame
+    # window, or the two redundant wire representations have silently
+    # diverged (Server bug, not a legal request).
+    step_seconds = _interval_seconds(params["timeframe"])
+    target_bar_close = tick["bar_open_at"] + step_seconds
+    if params["start_at"] != tick["execution_start_at"]:
+        _error(
+            ERR_BINDING_MISMATCH,
+            "$.execution_params.start_at",
+            "must equal tick.execution_start_at",
+        )
+    if params["end_at"] < target_bar_close:
+        _error(
+            ERR_BINDING_MISMATCH,
+            "$.execution_params.end_at",
+            "must cover the tick's own target frame close",
+            required={"minimum": target_bar_close},
+            actual=params["end_at"],
+        )
+    if (tick["bar_open_at"] - tick["window_start_at"]) % step_seconds != 0:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.tick.window_start_at",
+            "must align to the primary timeframe grid",
+        )
+    window_bars = (tick["bar_open_at"] - tick["window_start_at"]) // step_seconds
+    if window_bars > PAPER_WINDOW_MAX_BARS:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.tick.window_start_at",
+            "window exceeds PAPER_WINDOW_MAX_BARS; the run must stop and a "
+            "follow-on run must anchor a new window",
+            required={"max_bars": PAPER_WINDOW_MAX_BARS},
+            actual=window_bars,
+        )
+
+    _hash(request["expected_capability_hash"], "$.expected_capability_hash")
+    if request["expected_capability_hash"] != advertised_capability_hash:
+        _error(
+            ERR_CAPABILITY_MISMATCH,
+            "$.expected_capability_hash",
+            "does not match local capability",
+            required=advertised_capability_hash,
+            actual=request["expected_capability_hash"],
+        )
+    revision = request["expected_provider_revision"]
+    if not isinstance(revision, str) or _REVISION_RE.fullmatch(revision) is None:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.expected_provider_revision",
+            "must be an immutable lowercase revision",
+        )
+    if revision != capability.get("provider_revision"):
+        _error(
+            ERR_CAPABILITY_MISMATCH,
+            "$.expected_provider_revision",
+            "does not match local capability",
+            required=capability.get("provider_revision"),
+            actual=revision,
+        )
+    if capability_hash(capability) != advertised_capability_hash:
+        _error(
+            ERR_CAPABILITY_MISMATCH,
+            "$.capability",
+            "local payload/hash pair is inconsistent",
+        )
+    if (
+        not isinstance(request["dispatch_nonce"], str)
+        or not 1 <= len(request["dispatch_nonce"]) <= 64
+    ):
+        _error(ERR_SPEC_INVALID, "$.dispatch_nonce", "must be a 1..64 character string")
+    contract = _exact(
+        request["result_contract"], _PAPER_RESULT_CONTRACT_KEYS, "$.result_contract"
+    )
+    expected_contract = {
+        "result_schema": PAPER_TICK_RESULT_SCHEMA,
+        "coverage_schema": "cutie.strategy_coverage_manifest.v1",
+    }
+    if contract != expected_contract:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.result_contract",
+            "unsupported result contract",
+            required=expected_contract,
+            actual=contract,
+        )
+
+    plan = compile_strategy(
+        request["strategy_spec"], request["artifact_manifest"], capability
+    )
+    if (plan.spec_hash, plan.manifest_hash, plan.artifact_hash) != (
+        artifact["spec_hash"],
+        artifact["manifest_hash"],
+        artifact["artifact_hash"],
+    ):
+        _error(
+            ERR_BINDING_MISMATCH,
+            "$.artifact",
+            "compiled hashes differ from execution binding",
+        )
+
+    # SPEC §17.3: state=null iff prev_state_hash=null (first tick); otherwise
+    # Provider must recompute state's canonical hash and reject a mismatch
+    # without executing.
+    state = request["state"]
+    prev_state_hash = request["prev_state_hash"]
+    if state is None:
+        if prev_state_hash is not None:
+            _error(
+                ERR_SPEC_INVALID,
+                "$.prev_state_hash",
+                "must be null when state is null (first tick)",
+            )
+    else:
+        if not isinstance(state, dict):
+            _error(ERR_SPEC_INVALID, "$.state", "must be an object or null")
+        _hash(prev_state_hash, "$.prev_state_hash")
+        try:
+            state_hash = canonical_json_sha256(state)
+        except CanonicalJsonError:
+            _error(
+                ERR_SPEC_INVALID,
+                "$.state",
+                "state is not canonical_json.v1 serializable",
+            )
+        if state_hash != prev_state_hash:
+            _error(
+                ERR_PAPER_STATE_MISMATCH,
+                "$.state",
+                "state hash does not match prev_state_hash",
+                required=prev_state_hash,
+                actual=state_hash,
+            )
+
+    return ValidatedPaperTick(copy.deepcopy(request), plan)
 
 
 _KLINE_PRIMARY_PREFIX = "kline.primary."
@@ -790,6 +1159,142 @@ def build_coverage_manifest(
     }
 
 
+def build_paper_tick_coverage_manifest(
+    request: dict[str, Any],
+    inputs: list[PaperCoverageInput],
+) -> dict[str, Any]:
+    """SPEC §7 coverage manifest for a paper_tick request.
+
+    Every stream in a paper_tick request shares one required window,
+    [tick.window_start_at, target_bar_close) -- §17.1: window_start_at is
+    frozen at run creation to already cover every requirement's warmup/lag
+    need, so (unlike ``build_coverage_manifest``'s historical_replay path)
+    there is no per-requirement ``warmup_bars``-relative math here; callers
+    pass each stream's already-computed required/actual range via
+    ``PaperCoverageInput`` instead.
+    """
+    requirements = request["artifact_manifest"]["data_requirements"]
+    strategy_spec = request["strategy_spec"]
+    by_stream = {item.requirement["stream_id"]: item for item in inputs}
+    if set(by_stream) != {item["stream_id"] for item in requirements}:
+        _error(
+            ERR_COVERAGE_INCOMPLETE,
+            "$.coverage",
+            "stream evidence does not equal requirement exact-set",
+        )
+    symbol = request["execution_params"]["symbol"]
+    primary_requirement = next(
+        item for item in requirements if item["execution_role"] == "primary_execution_kline"
+    )
+    primary_item = by_stream[primary_requirement["stream_id"]]
+    streams: list[dict[str, Any]] = []
+    transforms: list[dict[str, Any]] = []
+    for requirement in requirements:
+        item = by_stream[requirement["stream_id"]]
+        if item.point_count <= 0:
+            _error(
+                ERR_COVERAGE_INCOMPLETE,
+                f"$.coverage.{requirement['stream_id']}",
+                "stream is empty",
+            )
+        step = _interval_seconds(requirement["interval"])
+        derived = (
+            requirement["execution_role"] != "primary_execution_kline"
+            and _is_kline_primary_derived(strategy_spec, requirement)
+        )
+        if (
+            (item.required_end_at - item.required_start_at) % step != 0
+            or item.actual_start_at > item.required_start_at
+            or item.available_through < item.required_end_at
+            or item.point_count != (item.required_end_at - item.required_start_at) // step
+        ):
+            _error(
+                ERR_COVERAGE_INCOMPLETE,
+                f"$.coverage.{requirement['stream_id']}",
+                "stream does not cover the complete aligned required range",
+            )
+        if derived:
+            feature = _matching_feature(strategy_spec, requirement)
+            stream_id = f"{feature['source_stream']}@{requirement['interval']}"
+            revision_value = primary_item.revision
+        else:
+            stream_id = f"{requirement['stream_id']}.{symbol}"
+            revision_value = item.revision
+        streams.append(
+            {
+                "stream_id": stream_id,
+                "kind": requirement["kind"],
+                "execution_role": requirement["execution_role"],
+                "provider": requirement["provider"],
+                "storage_source": requirement["storage_source"],
+                "result_source": requirement["result_source"],
+                "exchange": requirement["exchange"],
+                "market": requirement["market"],
+                "symbol": symbol,
+                "timeframe": requirement["interval"],
+                "required_range": {
+                    "start_at": request["tick"]["window_start_at"],
+                    "end_at": request["tick"]["bar_open_at"]
+                    + _interval_seconds(request["strategy_spec"]["market"]["timeframe"]),
+                    "warmup_start_at": item.required_start_at,
+                },
+                "actual_range": {
+                    "start_at": item.actual_start_at,
+                    "end_at": item.actual_end_at,
+                    "available_through": item.available_through,
+                },
+                "point_count": item.point_count,
+                "granularity": requirement["interval"],
+                "freshness": {
+                    "checked_at": request["tick"]["bar_open_at"],
+                    "age_seconds": 0,
+                    "max_age_seconds": requirement["max_freshness_seconds"],
+                },
+                "gaps": [],
+                "revision": {"schema": "source_revision.v1", "value": revision_value},
+                "checksum": {"algo": "sha256", "value": item.checksum},
+                "permitted_uses": {"backtest": False, "golden_replay": False, "paper": True},
+                "status": "complete",
+            }
+        )
+        if derived:
+            transforms.append(
+                {
+                    "output_stream_id": stream_id,
+                    "input_stream_ids": [f"{primary_requirement['stream_id']}.{symbol}"],
+                    "transform": "ohlcv_resample.v1",
+                    "transform_version": "1",
+                    "params": {"target_interval": requirement["interval"]},
+                    "synthetic_ranges": [],
+                    "checksum": {"algo": "sha256", "value": item.checksum},
+                }
+            )
+    streams.sort(key=lambda stream: stream["stream_id"])
+    transforms.sort(key=lambda transform: transform["output_stream_id"])
+    permitted_uses = {"backtest": False, "golden_replay": False, "paper": True}
+    for stream in streams:
+        stream["permitted_uses"] = dict(permitted_uses)
+    return {
+        "schema": "cutie.strategy_coverage_manifest.v1",
+        "request_identity": {
+            "artifact_version_id": request["artifact"]["artifact_version_id"],
+            "artifact_hash": request["artifact"]["artifact_hash"],
+            "run_id": request["paper_run_id"],
+            "symbol": symbol,
+            "execution_mode": request["execution_mode"],
+        },
+        "streams": streams,
+        "transforms": transforms,
+        "summary": {
+            "status": "complete",
+            "strict_eligible": True,
+            "degraded": False,
+            "degraded_reasons": [],
+            "permitted_uses": permitted_uses,
+        },
+    }
+
+
 def build_artifact_response(
     *,
     request: dict[str, Any],
@@ -886,11 +1391,20 @@ def _interval_seconds(interval: str) -> int:
 
 __all__ = [
     "CoverageInput",
+    "ERR_PAPER_STATE_MISMATCH",
     "EXECUTION_MAX_RANGE_DAYS",
     "EXECUTION_REQUEST_SCHEMA",
+    "PAPER_TICK_REQUEST_SCHEMA",
+    "PAPER_TICK_RESULT_SCHEMA",
+    "PAPER_WINDOW_MAX_BARS",
+    "PaperCoverageInput",
     "ValidatedExecution",
+    "ValidatedPaperTick",
     "build_artifact_response",
     "build_coverage_manifest",
+    "build_paper_tick_coverage_manifest",
     "is_strategy_execution_intent",
+    "is_strategy_paper_tick_intent",
     "validate_execution_request",
+    "validate_paper_tick_request",
 ]
