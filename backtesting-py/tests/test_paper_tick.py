@@ -33,9 +33,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import cutie_backtesting_provider as provider  # noqa: E402
 import test_strategy_kernel as tsk  # noqa: E402
-from canonical_json import canonical_decimal_str, canonical_json_sha256  # noqa: E402
+from canonical_json import canonical_json_sha256  # noqa: E402
 from strategy_execution import (  # noqa: E402
     ERR_PAPER_STATE_MISMATCH,
+    PAPER_WINDOW_MAX_BARS,
     is_strategy_execution_intent,
     is_strategy_paper_tick_intent,
     validate_paper_tick_request,
@@ -56,6 +57,7 @@ from strategy_kernel import (  # noqa: E402
     from_snapshot,
     initial_state,
     simulate,
+    snapshot_decimal_str,
     to_snapshot,
 )
 
@@ -63,6 +65,21 @@ REVISION = tsk.REVISION
 STATE_CONFORMANCE_FIXTURE = (
     Path(__file__).parent / "fixtures" / "strategy_kernel_state_conformance_v1.json"
 )
+
+# SPEC §17.2/§17.3: tick.bar_open_at/window_start_at/execution_start_at and
+# KernelState.position.opened_at are epoch MILLISECONDS on the wire (Server
+# dispatches on a 3_600_000 hourly step) -- distinct from the kernel's own
+# internal FeatureFrame/KernelState time axis, which stays epoch SECONDS
+# (frozen, historical_replay convention, unchanged). Every fixture below uses
+# a genuine 13-digit millisecond epoch value (never a bare small int like
+# 0/3600) specifically because a small value doesn't distinguish "correct
+# unit" from "seconds silently treated as milliseconds" -- that confusion is
+# exactly the P1 bug this test file exists to lock against (2026-07-19 Codex
+# review). T0_MS is hour-grid aligned (T0_MS % 3_600_000 == 0) so every
+# tick built by adding whole-hour multiples stays grid-aligned too.
+T0_MS = 1_699_999_200_000
+assert T0_MS % 3_600_000 == 0
+T0_SEC = T0_MS // 1000
 
 
 def _load_state_conformance_cases() -> list[dict]:
@@ -198,14 +215,21 @@ def _paper_capability() -> tuple[dict, str]:
 def build_paper_request(
     spec: dict,
     *,
-    bar_open_at: int,
-    window_start_at: int,
-    execution_start_at: int,
-    end_at: int,
+    bar_open_at_ms: int,
+    window_start_at_ms: int,
+    execution_start_at_ms: int,
+    end_at_ms: int,
     state: dict | None,
     prev_state_hash: str | None,
     paper_run_id: str = "800001",
 ) -> dict:
+    """All ``*_ms`` params are epoch milliseconds (the tick object's own
+    wire unit, §17.2/§17.3). ``execution_params.start_at``/``end_at`` reuse
+    §6.2's shape verbatim and stay epoch SECONDS (validate_paper_tick_request
+    cross-checks params["start_at"]*1000 == tick.execution_start_at) -- this
+    helper derives them here so every call site only ever states times in
+    milliseconds, the one unit that actually appears on this schema's wire.
+    """
     manifest = tsk.make_manifest(spec)
     spec_hash = canonical_json_sha256(spec)
     manifest_hash = canonical_json_sha256(manifest)
@@ -217,8 +241,8 @@ def build_paper_request(
         }
     )
     params = tsk.execution_params()
-    params["start_at"] = execution_start_at
-    params["end_at"] = end_at
+    params["start_at"] = execution_start_at_ms // 1000
+    params["end_at"] = end_at_ms // 1000
     capability, cap_hash = _paper_capability()
     return {
         "schema": "cutie.strategy_paper_tick_request.v1",
@@ -236,15 +260,15 @@ def build_paper_request(
         "artifact_manifest": manifest,
         "execution_params": params,
         "tick": {
-            "bar_open_at": bar_open_at,
-            "window_start_at": window_start_at,
-            "execution_start_at": execution_start_at,
+            "bar_open_at": bar_open_at_ms,
+            "window_start_at": window_start_at_ms,
+            "execution_start_at": execution_start_at_ms,
         },
         "state": state,
         "prev_state_hash": prev_state_hash,
         "expected_capability_hash": cap_hash,
         "expected_provider_revision": REVISION,
-        "dispatch_nonce": f"nonce-{bar_open_at}",
+        "dispatch_nonce": f"nonce-{bar_open_at_ms}",
         "result_contract": {
             "result_schema": "cutie.strategy_paper_tick_result.v1",
             "coverage_schema": "cutie.strategy_coverage_manifest.v1",
@@ -256,15 +280,15 @@ def test_validate_paper_tick_request_first_tick_exact_keys() -> None:
     capability, cap_hash = _paper_capability()
     request = build_paper_request(
         tsk.make_spec(),
-        bar_open_at=0,
-        window_start_at=0,
-        execution_start_at=0,
-        end_at=3600,
+        bar_open_at_ms=T0_MS,
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=T0_MS,
+        end_at_ms=T0_MS + 3_600_000,
         state=None,
         prev_state_hash=None,
     )
     validated = validate_paper_tick_request(request, capability, cap_hash)
-    assert validated.request["tick"]["bar_open_at"] == 0
+    assert validated.request["tick"]["bar_open_at"] == T0_MS
 
     missing_tick = dict(request)
     del missing_tick["tick"]
@@ -277,10 +301,10 @@ def test_validate_paper_tick_request_first_tick_requires_null_prev_hash() -> Non
     capability, cap_hash = _paper_capability()
     request = build_paper_request(
         tsk.make_spec(),
-        bar_open_at=0,
-        window_start_at=0,
-        execution_start_at=0,
-        end_at=3600,
+        bar_open_at_ms=T0_MS,
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=T0_MS,
+        end_at_ms=T0_MS + 3_600_000,
         state=None,
         prev_state_hash="0" * 64,
     )
@@ -288,6 +312,28 @@ def test_validate_paper_tick_request_first_tick_requires_null_prev_hash() -> Non
         validate_paper_tick_request(request, capability, cap_hash)
     assert caught.value.code == ERR_SPEC_INVALID
     assert caught.value.path == "$.prev_state_hash"
+
+
+def test_validate_paper_tick_request_first_tick_must_target_execution_start_at_bar() -> None:
+    """Pi medium hardening (2026-07-19): a state=null request whose
+    bar_open_at disagrees with tick.execution_start_at is rejected outright
+    -- guards against a Server bug mis-dispatching a non-first tick with
+    state=null, which would otherwise be silently treated as tick one and
+    discard real accumulated position/equity/trade_seq history."""
+    capability, cap_hash = _paper_capability()
+    request = build_paper_request(
+        tsk.make_spec(),
+        bar_open_at_ms=T0_MS + 3_600_000,  # one bar past execution_start_at
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=T0_MS,
+        end_at_ms=T0_MS + 7_200_000,
+        state=None,
+        prev_state_hash=None,
+    )
+    with pytest.raises(StrategyContractError) as caught:
+        validate_paper_tick_request(request, capability, cap_hash)
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert caught.value.path == "$.tick.bar_open_at"
 
 
 def test_validate_paper_tick_request_non_first_tick_state_hash_match() -> None:
@@ -299,10 +345,10 @@ def test_validate_paper_tick_request_non_first_tick_state_hash_match() -> None:
     capability, cap_hash = _paper_capability()
     request = build_paper_request(
         spec,
-        bar_open_at=0,
-        window_start_at=0,
-        execution_start_at=0,
-        end_at=3600,
+        bar_open_at_ms=T0_MS,
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=T0_MS,
+        end_at_ms=T0_MS + 3_600_000,
         state=snapshot,
         prev_state_hash=snapshot_hash,
     )
@@ -318,16 +364,61 @@ def test_validate_paper_tick_request_state_hash_mismatch_rejected() -> None:
     capability, cap_hash = _paper_capability()
     request = build_paper_request(
         spec,
-        bar_open_at=0,
-        window_start_at=0,
-        execution_start_at=0,
-        end_at=3600,
+        bar_open_at_ms=T0_MS,
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=T0_MS,
+        end_at_ms=T0_MS + 3_600_000,
         state=snapshot,
         prev_state_hash="0" * 64,
     )
     with pytest.raises(StrategyContractError) as caught:
         validate_paper_tick_request(request, capability, cap_hash)
     assert caught.value.code == ERR_PAPER_STATE_MISMATCH
+
+
+def test_paper_tick_window_bars_uses_millisecond_step_not_1000x_inflated() -> None:
+    """Regression lock for the ms/seconds confusion (Codex P1, 2026-07-19
+    review): PAPER_WINDOW_MAX_BARS=26280 (§17.1.4, ~3 years of hourly bars)
+    must be compared against a genuine bar count. Before the fix, tick.*
+    milliseconds were divided by a seconds-denominated step, inflating the
+    computed window_bars by 1000x -- a mere 30-hour warmup window (>26 bars)
+    was misjudged as exceeding the 3-year cap and rejected outright even
+    though it is nowhere close."""
+    capability, cap_hash = _paper_capability()
+    warmup_bars = 30
+    bar_open_at_ms = T0_MS + warmup_bars * 3_600_000
+    request = build_paper_request(
+        tsk.make_spec(),
+        bar_open_at_ms=bar_open_at_ms,
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=bar_open_at_ms,
+        end_at_ms=bar_open_at_ms + 3_600_000,
+        state=None,
+        prev_state_hash=None,
+    )
+    validated = validate_paper_tick_request(request, capability, cap_hash)
+    assert validated.request["tick"]["bar_open_at"] == bar_open_at_ms
+
+
+def test_paper_tick_window_bars_exceeding_max_is_still_rejected() -> None:
+    """Companion to the regression lock above: the fix must not have
+    disabled the cap outright -- a window genuinely beyond
+    PAPER_WINDOW_MAX_BARS is still rejected."""
+    capability, cap_hash = _paper_capability()
+    bar_open_at_ms = T0_MS + (PAPER_WINDOW_MAX_BARS + 1) * 3_600_000
+    request = build_paper_request(
+        tsk.make_spec(),
+        bar_open_at_ms=bar_open_at_ms,
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=bar_open_at_ms,
+        end_at_ms=bar_open_at_ms + 3_600_000,
+        state=None,
+        prev_state_hash=None,
+    )
+    with pytest.raises(StrategyContractError) as caught:
+        validate_paper_tick_request(request, capability, cap_hash)
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert caught.value.path == "$.tick.window_start_at"
 
 
 def test_paper_tick_probe_is_independent_of_and_checked_before_execution_probe() -> None:
@@ -337,10 +428,10 @@ def test_paper_tick_probe_is_independent_of_and_checked_before_execution_probe()
 
     paper_body = build_paper_request(
         tsk.make_spec(),
-        bar_open_at=0,
-        window_start_at=0,
-        execution_start_at=0,
-        end_at=3600,
+        bar_open_at_ms=T0_MS,
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=T0_MS,
+        end_at_ms=T0_MS + 3_600_000,
         state=None,
         prev_state_hash=None,
     )
@@ -360,7 +451,7 @@ def test_paper_tick_sequence_matches_one_shot_evaluate_through_snapshot_round_tr
     monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
 
     def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
-        return [[i * 3_600_000, 100, 101, 99, 100, 1] for i in range(6)]
+        return [[T0_MS + i * 3_600_000, 100, 101, 99, 100, 1] for i in range(6)]
 
     monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
 
@@ -375,9 +466,14 @@ def test_paper_tick_sequence_matches_one_shot_evaluate_through_snapshot_round_tr
     manifest = tsk.make_manifest(spec)
     plan = compile_strategy(spec, manifest, capability_payload(REVISION))
 
+    # The kernel's own internal FeatureFrame/KernelState axis is epoch
+    # SECONDS (frozen, unaffected by the wire's millisecond tick.* fields) --
+    # this "reference" one-shot simulate() run stays entirely on that axis,
+    # anchored at T0_SEC to match what the mocked millisecond central fetch
+    # above resolves to after _canonical_kline_rows' //1000.
     primary_rows = [
         {
-            "open_time": i * 3600,
+            "open_time": T0_SEC + i * 3600,
             "open": "100",
             "high": "101",
             "low": "99",
@@ -394,7 +490,8 @@ def test_paper_tick_sequence_matches_one_shot_evaluate_through_snapshot_round_tr
     assert len(frames) == 6
 
     reference_params = tsk.execution_params()
-    reference_params["end_at"] = 21600  # covers all 6 bars (0..18000, close 21600)
+    reference_params["start_at"] = T0_SEC
+    reference_params["end_at"] = T0_SEC + 21600  # covers all 6 bars, close T0_SEC+21600
     reference = simulate(plan, frames, initial_state(plan, reference_params))
     assert reference["diagnostics"] == []
     assert len(reference["trades"]) == 1
@@ -404,13 +501,14 @@ def test_paper_tick_sequence_matches_one_shot_evaluate_through_snapshot_round_tr
     all_decisions: list[dict] = []
     all_closed_trades: list[dict] = []
     client = TestClient(provider.app)
-    for bar_open_at in (0, 3600, 7200, 10800, 14400, 18000):
+    for i in range(6):
+        bar_open_at_ms = T0_MS + i * 3_600_000
         request = build_paper_request(
             spec,
-            bar_open_at=bar_open_at,
-            window_start_at=0,
-            execution_start_at=0,
-            end_at=bar_open_at + 3600,
+            bar_open_at_ms=bar_open_at_ms,
+            window_start_at_ms=T0_MS,
+            execution_start_at_ms=T0_MS,
+            end_at_ms=bar_open_at_ms + 3_600_000,
             state=state_json,
             prev_state_hash=prev_hash,
         )
@@ -460,15 +558,22 @@ def test_paper_tick_sequence_matches_one_shot_evaluate_through_snapshot_round_tr
                 "trade_seq": trade["seq"],
                 "symbol": "BTCUSDT",
                 "direction": trade["side"],
-                "entry_time": trade["opened_at"],
-                "exit_time": trade["closed_at"],
+                # wire contract: epoch milliseconds (§17.4); trade[...] is
+                # the kernel's internal epoch-seconds axis.
+                "entry_time": trade["opened_at"] * 1000,
+                "exit_time": trade["closed_at"] * 1000,
                 "entry_price": trade["entry_price"],
                 "exit_price": trade["exit_price"],
                 "stop_loss": trace["stop_loss"],
                 "take_profit": trace["take_profit"],
                 "exit_kind": trace["exit_kind"],
                 "pnl_usd": trade["pnl"],
-                "equity_after": canonical_decimal_str(running_equity),
+                # decimal128-wrapped to match production's snapshot_decimal_str
+                # (Kimi medium, 2026-07-19): an unwrapped canonical_decimal_str
+                # here would normalize() under the ambient prec=28 default
+                # context and could diverge from a >28-significant-digit
+                # equity value even though both describe the same balance.
+                "equity_after": snapshot_decimal_str(running_equity),
             }
         )
     assert all_closed_trades == expected_closed_trades
@@ -485,7 +590,7 @@ def test_paper_tick_second_tick_reuses_restored_state_without_reopening_history(
     monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
 
     def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
-        return [[i * 3_600_000, 100, 101, 99, 100, 1] for i in range(3)]
+        return [[T0_MS + i * 3_600_000, 100, 101, 99, 100, 1] for i in range(3)]
 
     monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
 
@@ -496,10 +601,10 @@ def test_paper_tick_second_tick_reuses_restored_state_without_reopening_history(
         "/cutie/backtest",
         json=build_paper_request(
             spec,
-            bar_open_at=0,
-            window_start_at=0,
-            execution_start_at=0,
-            end_at=3600,
+            bar_open_at_ms=T0_MS,
+            window_start_at_ms=T0_MS,
+            execution_start_at_ms=T0_MS,
+            end_at_ms=T0_MS + 3_600_000,
             state=None,
             prev_state_hash=None,
         ),
@@ -513,10 +618,10 @@ def test_paper_tick_second_tick_reuses_restored_state_without_reopening_history(
         "/cutie/backtest",
         json=build_paper_request(
             spec,
-            bar_open_at=3600,
-            window_start_at=0,
-            execution_start_at=0,
-            end_at=7200,
+            bar_open_at_ms=T0_MS + 3_600_000,
+            window_start_at_ms=T0_MS,
+            execution_start_at_ms=T0_MS,
+            end_at_ms=T0_MS + 7_200_000,
             state=first["next_state"],
             prev_state_hash=first["next_state_hash"],
         ),
@@ -540,17 +645,23 @@ def test_paper_tick_insufficient_central_history_fails_closed_coverage_incomplet
     monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
 
     def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
-        return [[i * 3_600_000, 100, 101, 99, 100, 1] for i in range(6)]
+        return [[T0_MS + i * 3_600_000, 100, 101, 99, 100, 1] for i in range(6)]
 
     monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
 
     spec = tsk.make_spec()
+    # 100 bars past window_start_at -- far beyond the 6 bars the mock
+    # actually returns. execution_start_at is set equal to bar_open_at (a
+    # first tick may legally target any run execution_start_at, not just
+    # "now") so this still satisfies the Pi-medium first-tick hardening and
+    # isolates the coverage-incompleteness failure this test targets.
+    bar_open_at_ms = T0_MS + 100 * 3_600_000
     request = build_paper_request(
         spec,
-        bar_open_at=360_000,  # far beyond the 6 bars the mock actually returns
-        window_start_at=0,
-        execution_start_at=0,
-        end_at=360_000 + 3600,
+        bar_open_at_ms=bar_open_at_ms,
+        window_start_at_ms=T0_MS,
+        execution_start_at_ms=bar_open_at_ms,
+        end_at_ms=bar_open_at_ms + 3_600_000,
         state=None,
         prev_state_hash=None,
     )

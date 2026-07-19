@@ -712,34 +712,48 @@ def validate_paper_tick_request(
             "$.tick",
             "must satisfy window_start_at <= execution_start_at <= bar_open_at",
         )
-    # execution_params.start_at/end_at reuse §6.2's field shape verbatim
-    # (SPEC "语义与 §6.2 完全一致"); for paper_tick they must describe the
-    # same immutable execution_start_at and this tick's own target frame
-    # window, or the two redundant wire representations have silently
-    # diverged (Server bug, not a legal request).
+    # SPEC §17.2/§17.3: tick.* timestamps are epoch MILLISECONDS (Server
+    # dispatches on a 3_600_000 hourly step) -- distinct from
+    # execution_params.start_at/end_at, which reuse §6.2's execution_params
+    # shape verbatim and therefore stay epoch SECONDS (the kernel's own
+    # internal FeatureFrame/KernelState time axis is frozen at seconds, see
+    # cutie_backtesting_provider.py's ``_canonical_kline_rows``). Every
+    # tick.* value below is compared in milliseconds (execution_params
+    # values scaled *1000 to match) -- never compared to a bare
+    # seconds-typed quantity, and never handed to a seconds-typed kernel
+    # call without an explicit //1000 conversion at the call site.
     step_seconds = _interval_seconds(params["timeframe"])
-    target_bar_close = tick["bar_open_at"] + step_seconds
-    if params["start_at"] != tick["execution_start_at"]:
+    step_ms = step_seconds * 1000
+    if tick["bar_open_at"] % 1000 != 0 or tick["window_start_at"] % 1000 != 0:
+        _error(
+            ERR_SPEC_INVALID,
+            "$.tick",
+            "bar_open_at/window_start_at must be whole-second epoch "
+            "millisecond timestamps",
+        )
+    target_bar_close_ms = tick["bar_open_at"] + step_ms
+    if params["start_at"] * 1000 != tick["execution_start_at"]:
         _error(
             ERR_BINDING_MISMATCH,
             "$.execution_params.start_at",
-            "must equal tick.execution_start_at",
+            "must equal tick.execution_start_at (milliseconds, "
+            "execution_params.start_at scaled *1000)",
         )
-    if params["end_at"] < target_bar_close:
+    if params["end_at"] * 1000 < target_bar_close_ms:
         _error(
             ERR_BINDING_MISMATCH,
             "$.execution_params.end_at",
             "must cover the tick's own target frame close",
-            required={"minimum": target_bar_close},
-            actual=params["end_at"],
+            required={"minimum_ms": target_bar_close_ms},
+            actual=params["end_at"] * 1000,
         )
-    if (tick["bar_open_at"] - tick["window_start_at"]) % step_seconds != 0:
+    if (tick["bar_open_at"] - tick["window_start_at"]) % step_ms != 0:
         _error(
             ERR_SPEC_INVALID,
             "$.tick.window_start_at",
             "must align to the primary timeframe grid",
         )
-    window_bars = (tick["bar_open_at"] - tick["window_start_at"]) // step_seconds
+    window_bars = (tick["bar_open_at"] - tick["window_start_at"]) // step_ms
     if window_bars > PAPER_WINDOW_MAX_BARS:
         _error(
             ERR_SPEC_INVALID,
@@ -826,6 +840,22 @@ def validate_paper_tick_request(
                 ERR_SPEC_INVALID,
                 "$.prev_state_hash",
                 "must be null when state is null (first tick)",
+            )
+        # Pi medium hardening: a genuine first tick's target bar is always
+        # the run's own execution_start_at (Server's cursor derivation
+        # guarantees this) -- reject a state=null request whose bar_open_at
+        # disagrees instead of silently treating a Server bug (a later,
+        # non-first tick mis-dispatched with state=null) as if it were tick
+        # one, which would discard real accumulated position/equity/
+        # trade_seq history.
+        if tick["bar_open_at"] != tick["execution_start_at"]:
+            _error(
+                ERR_SPEC_INVALID,
+                "$.tick.bar_open_at",
+                "first tick (state=null) must target the run's own "
+                "execution_start_at bar",
+                required=tick["execution_start_at"],
+                actual=tick["bar_open_at"],
             )
     else:
         if not isinstance(state, dict):
@@ -1233,8 +1263,18 @@ def build_paper_tick_coverage_manifest(
                 "symbol": symbol,
                 "timeframe": requirement["interval"],
                 "required_range": {
-                    "start_at": request["tick"]["window_start_at"],
-                    "end_at": request["tick"]["bar_open_at"]
+                    # §7.2's coverage schema is frozen at epoch SECONDS
+                    # (shared with historical_replay's build_coverage_manifest,
+                    # itself keyed off execution_params.start_at/end_at) --
+                    # tick.window_start_at/bar_open_at are wire MILLISECONDS
+                    # (§17.2/§17.3), so both are //1000'd here at the one
+                    # point this function reads them directly. Every other
+                    # field below (required_start_at/actual_range/available_
+                    # through) already arrives pre-converted to seconds via
+                    # PaperCoverageInput (computed from the orchestration's
+                    # seconds-typed fetch loop).
+                    "start_at": request["tick"]["window_start_at"] // 1000,
+                    "end_at": request["tick"]["bar_open_at"] // 1000
                     + _interval_seconds(request["strategy_spec"]["market"]["timeframe"]),
                     "warmup_start_at": item.required_start_at,
                 },
@@ -1246,7 +1286,7 @@ def build_paper_tick_coverage_manifest(
                 "point_count": item.point_count,
                 "granularity": requirement["interval"],
                 "freshness": {
-                    "checked_at": request["tick"]["bar_open_at"],
+                    "checked_at": request["tick"]["bar_open_at"] // 1000,
                     "age_seconds": 0,
                     "max_age_seconds": requirement["max_freshness_seconds"],
                 },
