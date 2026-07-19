@@ -62,6 +62,7 @@ from strategy_kernel import (
     kline_primary_bucket_required_start,
     ohlcv_resample,
     simulate,
+    snapshot_decimal_str,
     to_snapshot,
 )
 
@@ -1542,8 +1543,19 @@ def _run_paper_tick(
         tick = request["tick"]
         symbol = params["symbol"]
         primary_step_seconds = _timeframe_milliseconds(params["timeframe"]) // 1000
-        window_start_at = tick["window_start_at"]
-        target_bar_close = tick["bar_open_at"] + primary_step_seconds
+        # SPEC §17.2/§17.3: tick.* is epoch MILLISECONDS on the wire
+        # (validate_paper_tick_request already enforces bar_open_at/
+        # window_start_at are whole-second-aligned). Every internal fetch/
+        # frame helper below (_fetch_artifact_klines, build_frames,
+        # FeatureFrame.bar_open_at, KernelState.execution_start_at/
+        # execution_end_at, ...) is the kernel's frozen epoch-SECONDS axis
+        # (historical_replay, unchanged) -- convert once here at ingress and
+        # never touch a raw tick["..."] value again in this function; the
+        # wire-facing echo below (result["bar_open_at"]) uses the original
+        # millisecond value instead of re-deriving it from these seconds.
+        window_start_at = tick["window_start_at"] // 1000
+        bar_open_at = tick["bar_open_at"] // 1000
+        target_bar_close = bar_open_at + primary_step_seconds
 
         requirements = request["artifact_manifest"]["data_requirements"]
         primary_requirement = next(
@@ -1697,7 +1709,7 @@ def _run_paper_tick(
             (
                 index
                 for index, item in enumerate(frames)
-                if item.bar_open_at == tick["bar_open_at"]
+                if item.bar_open_at == bar_open_at
             ),
             None,
         )
@@ -1744,15 +1756,27 @@ def _run_paper_tick(
                     "trade_seq": trade["seq"],
                     "symbol": target_frame.symbol,
                     "direction": trade["side"],
-                    "entry_time": trade["opened_at"],
-                    "exit_time": trade["closed_at"],
+                    # wire contract: epoch milliseconds (§17.4); trade[...]
+                    # is the kernel's internal epoch-seconds axis (frozen,
+                    # historical_replay convention) -- Server floor-divides
+                    # by 1000 landing the forward ledger, so a seconds value
+                    # here would silently land in 1970.
+                    "entry_time": trade["opened_at"] * 1000,
+                    "exit_time": trade["closed_at"] * 1000,
                     "entry_price": trade["entry_price"],
                     "exit_price": trade["exit_price"],
                     "stop_loss": trace["stop_loss"],
                     "take_profit": trace["take_profit"],
                     "exit_kind": trace["exit_kind"],
                     "pnl_usd": trade["pnl"],
-                    "equity_after": canonical_decimal_str(state.equity),
+                    # decimal128 (_DECIMAL_CONTEXT, prec=34) wrapped, same as
+                    # to_snapshot()'s equity field -- an unwrapped
+                    # canonical_decimal_str() here would normalize() under
+                    # the ambient prec=28 default context and silently
+                    # truncate a >28-significant-digit equity value,
+                    # diverging byte-for-byte from next_state.equity for the
+                    # same post-trade balance (Kimi medium, 2026-07-19).
+                    "equity_after": snapshot_decimal_str(state.equity),
                 }
             )
 
