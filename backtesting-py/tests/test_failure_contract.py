@@ -59,5 +59,13 @@ def test_intent_probe_ignores_legacy_integrity_fields():
 
 def test_intent_probe_still_detects_bound_requests():
     assert is_strategy_execution_intent({"schema": "cutie.strategy_execution_request.v1"}) is True
-    for key in ("artifact", "strategy_spec", "artifact_manifest", "expected_capability_hash", "result_contract"):
+    for key in (
+        "artifact",
+        "strategy_spec",
+        "artifact_manifest",
+        "execution_mode",
+        "execution_params",
+        "expected_capability_hash",
+        "result_contract",
+    ):
         assert is_strategy_execution_intent({key: {}}) is True

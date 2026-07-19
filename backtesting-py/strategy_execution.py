@@ -237,12 +237,18 @@ def is_strategy_execution_intent(value: Any) -> bool:
     # the connector-side fix shipped in @cutie-crypto/connector 3.9.13; on Pre
     # 2026-07-19 the connector variant rejected every legacy one-click
     # backtest as AGENT_REJECTED).
+    # execution_mode/execution_params are likewise bound-only top-level keys
+    # (the legacy envelope uses params/provider_params), so a partial bound
+    # payload stripped of schema and the five structural keys still fails
+    # closed instead of falling through to legacy (Codex follow-up review M2).
     return any(
         key in value
         for key in (
             "artifact",
             "strategy_spec",
             "artifact_manifest",
+            "execution_mode",
+            "execution_params",
             "expected_capability_hash",
             "result_contract",
         )
