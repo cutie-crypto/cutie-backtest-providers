@@ -1585,14 +1585,29 @@ def _run_paper_tick(
 
         # §17.1.1: every stream shares the same [window_start_at,
         # target_bar_close) window -- window_start_at is already the full
-        # warmup/lag anchor frozen at run creation, so (unlike
-        # _run_artifact_backtest) there is no separate lag-frames widening
-        # here. The primary fetch is still widened up front to also cover
-        # any coarse kline.primary derived requirement's own bucket-aligned
-        # resample-source need, for the same single-union-fetch reason
-        # _run_artifact_backtest documents (a second independent fetch could
-        # race a live central source and resample data decision frames never
-        # actually saw).
+        # warmup/lag anchor frozen at run creation for *same-interval*
+        # requirements, so (unlike _run_artifact_backtest) there is no
+        # separate lag-frames widening here. A coarse kline.primary derived
+        # requirement is a different case: its own warmup_bars is counted in
+        # its *own*, coarser interval's buckets (e.g. "1" for a 4h feature
+        # means one whole 4h bucket, a few hours), and
+        # kline_primary_bucket_required_start floors to the bucket
+        # *containing* the anchor before stepping back warmup_bars buckets --
+        # passing warmup_bars=0 there always lands exactly on that
+        # containing bucket with zero prior buckets, which can never satisfy
+        # a primitive needing >=1 prior complete bucket (e.g. rolling_extreme
+        # window_bars=1), independent of how early window_start_at itself
+        # is (2026-07-19 Pre S20 review: kline.primary.low@4h paper ticks
+        # rejected ERR_STRATEGY_COVERAGE_INCOMPLETE even though the
+        # identical manifest replays fine, because replay's
+        # build_coverage_manifest/fetch path always uses the requirement's
+        # real warmup_bars here, never 0). Anchoring at window_start_at
+        # (rather than replay's execution_start_at) is a safe superset: it
+        # additionally covers every warmup frame between window_start_at and
+        # execution_start_at too, which build_frames requires a value for
+        # just as unconditionally as an evaluation frame (see
+        # StrategyKernel.evaluate's warmup-frame handling -- build_frames
+        # itself never distinguishes warmup rows from evaluation rows).
         primary_fetch_start = window_start_at
         for requirement in requirements:
             if requirement is primary_requirement:
@@ -1606,7 +1621,7 @@ def _run_paper_tick(
                 continue
             derived_step = _timeframe_milliseconds(requirement["interval"]) // 1000
             derived_required_start = kline_primary_bucket_required_start(
-                window_start_at, 0, derived_step
+                window_start_at, requirement["warmup_bars"], derived_step
             )
             primary_fetch_start = min(
                 primary_fetch_start,
@@ -1650,8 +1665,10 @@ def _run_paper_tick(
                 requirement, request["strategy_spec"]
             )
             if kline_primary_field is not None:
+                # requirement["warmup_bars"] here, not 0 -- see the primary
+                # union-fetch widening loop above for the full rationale.
                 fetch_start = kline_primary_bucket_required_start(
-                    window_start_at, 0, requirement_step
+                    window_start_at, requirement["warmup_bars"], requirement_step
                 )
                 required_end = kline_primary_bucket_required_end(
                     target_bar_close, requirement_step

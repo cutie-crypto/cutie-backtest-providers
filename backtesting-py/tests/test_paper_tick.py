@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import cutie_backtesting_provider as provider  # noqa: E402
 import test_strategy_kernel as tsk  # noqa: E402
+import test_strategy_kernel_primitives as tsp  # noqa: E402
 from canonical_json import canonical_json_sha256  # noqa: E402
 from strategy_execution import (  # noqa: E402
     ERR_PAPER_STATE_MISMATCH,
@@ -222,6 +223,7 @@ def build_paper_request(
     state: dict | None,
     prev_state_hash: str | None,
     paper_run_id: str = "800001",
+    manifest: dict | None = None,
 ) -> dict:
     """All ``*_ms`` params are epoch milliseconds (the tick object's own
     wire unit, §17.2/§17.3). ``execution_params.start_at``/``end_at`` reuse
@@ -229,8 +231,15 @@ def build_paper_request(
     cross-checks params["start_at"]*1000 == tick.execution_start_at) -- this
     helper derives them here so every call site only ever states times in
     milliseconds, the one unit that actually appears on this schema's wire.
+
+    ``manifest`` defaults to ``tsk.make_manifest(spec)`` (a plain-feature
+    manifest); pass an explicit one (e.g. from
+    ``test_strategy_kernel_primitives._kline_primary_manifest``) for a
+    coarse kline.primary derived-feature spec, whose manifest tsk.make_manifest
+    cannot produce.
     """
-    manifest = tsk.make_manifest(spec)
+    if manifest is None:
+        manifest = tsk.make_manifest(spec)
     spec_hash = canonical_json_sha256(spec)
     manifest_hash = canonical_json_sha256(manifest)
     artifact_hash = canonical_json_sha256(
@@ -699,3 +708,132 @@ def test_historical_replay_end_to_end_still_succeeds_alongside_paper_tick(
     assert response.status_code == 200
     body = response.json()
     assert body["result_status"] == "success", body
+
+
+# T0_4H_MS is aligned to BOTH the 1h primary grid and the 4h derived-feature
+# bucket grid (T0_4H_MS % 14_400_000 == 0) -- picked deliberately so the
+# coarse-feature warmup math below is exact, not fuzzed by an extra partial
+# bucket at either edge (2026-07-19 Pre S20 review regression pair).
+T0_4H_MS = 1_699_992_000_000
+assert T0_4H_MS % (4 * 3_600_000) == 0
+
+
+def _coarse_feature_paper_request(*, warmup_bars: int) -> dict:
+    """A paper_tick request whose first evaluation frame (bar_open_at ==
+    execution_start_at, 4h/one bucket after window_start_at) as-of reads a
+    kline.primary.close@4h derived feature. The frame at window_start_at
+    itself (the first *warmup* frame, since window_start_at is 4h -- one
+    bucket -- before execution_start_at) as-of reads the bucket immediately
+    *before* window_start_at -- exactly the bucket a warmup_bars=0 fetch
+    (the pre-fix bug) never covers regardless of how far back
+    window_start_at itself already is, since kline_primary_bucket_required_
+    start always floors to the bucket *containing* its anchor first.
+    """
+    feature = {
+        "key": "close_4h_high",
+        "primitive": "rolling_extreme",
+        "primitive_version": "1",
+        "source_stream": "kline.primary.close",
+        "interval": "4h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"window_bars": 1, "mode": "max"},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "close_4h_high", "lag_bars": 0},
+        "right": {"node": "literal", "value_type": "decimal", "value": "0"},
+    }
+    spec = tsk.make_spec(condition=condition, features=[feature])
+    manifest = tsp._kline_primary_manifest(
+        spec, requirement_interval="4h", warmup_bars=warmup_bars
+    )
+    window_start_at_ms = T0_4H_MS
+    execution_start_at_ms = T0_4H_MS + 4 * 3_600_000  # one 4h bucket later
+    return build_paper_request(
+        spec,
+        bar_open_at_ms=execution_start_at_ms,
+        window_start_at_ms=window_start_at_ms,
+        execution_start_at_ms=execution_start_at_ms,
+        end_at_ms=execution_start_at_ms + 3_600_000,
+        state=None,
+        prev_state_hash=None,
+        manifest=manifest,
+    )
+
+
+def test_paper_tick_coarse_derived_feature_first_frame_succeeds_with_sufficient_warmup(
+    monkeypatch,
+) -> None:
+    """Regression lock for the Pre S20 review (2026-07-19, provider_revision
+    052e132, task 337203174446202880): a spec using a coarse
+    kline.primary.close@4h derived feature (§5.5) must succeed on paper_tick's
+    first evaluation frame when the manifest declares sufficient
+    warmup_bars -- the identical manifest already replays successfully
+    (control group: kline-only strategies over the same window worked fine,
+    isolating the bug to paper's derived-feature fetch, not data/time-axis
+    plumbing). Before the fix, _run_paper_tick fetched every kline.primary
+    derived stream with warmup_bars hardcoded to 0 regardless of the
+    manifest's own declared value, so build_frames rejected the run's first
+    *warmup* frame (window_start_at itself, one bucket before
+    execution_start_at) with ERR_STRATEGY_COVERAGE_INCOMPLETE even though
+    the manifest was correctly sized.
+    """
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    mock_start_ms = T0_4H_MS - 8 * 3_600_000
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [mock_start_ms + i * 3_600_000, 100, 200, 50, 100 + i, 1]
+            for i in range(24)
+        ]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+
+    request = _coarse_feature_paper_request(warmup_bars=1)
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get("result_status") != "failed", body
+    assert "next_state" in body
+
+
+def test_paper_tick_coarse_derived_feature_insufficient_warmup_still_rejected(
+    monkeypatch,
+) -> None:
+    """Companion to the regression lock above, identical request geometry
+    and manifest (warmup_bars=1, compile-time valid for window_bars=1) --
+    only the mocked central source's actual history changes: it starts
+    exactly at window_start_at instead of 8h earlier, so the bucket the
+    first *warmup* frame's as-of read needs (one bucket before
+    window_start_at) is genuinely absent. Must still fail closed as
+    STRATEGY_COVERAGE_INCOMPLETE: the fix must widen the fetch to reach the
+    manifest's declared warmup_bars, not disable the completeness check --
+    a real data gap the manifest warmup_bars cannot paper over is still
+    rejected, not silently passed."""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [T0_4H_MS + i * 3_600_000, 100, 200, 50, 100 + i, 1] for i in range(8)
+        ]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+
+    request = _coarse_feature_paper_request(warmup_bars=1)
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "failed", body
+    assert body["error_type"] == ERR_COVERAGE_INCOMPLETE
