@@ -718,7 +718,14 @@ def _strategy_semantics(
 
 
 def _validation_failure(error_type: str, error_message: str, status_code: int = 200) -> JSONResponse:
-    """Early validation failure: provider could not even start a backtest."""
+    """Early validation failure: provider could not even start a backtest.
+
+    IMPL §6.3: failed responses must still satisfy the P0 contract —
+    assumptions/limitations are required objects. Connector ≥3.9.5 rejects a
+    failed body missing them as PROVIDER_CONTRACT_VIOLATION, which swallows the
+    real error_message (observed on Pre 2026-07-19: a legacy validation reject
+    surfaced as 'Provider response field "assumptions" must be an object').
+    """
     return JSONResponse(status_code=status_code, content={
         "schema": RESPONSE_SCHEMA,
         "result_status": "failed",
@@ -729,6 +736,8 @@ def _validation_failure(error_type: str, error_message: str, status_code: int = 
         "market_data_cache_hit": False,
         "error_type": error_type,
         "error_message": error_message,
+        "assumptions": {},
+        "limitations": {"reason": "validation_failure"},
         "raw_report": {
             "market_data_provenance": {
                 "provider_revision": PROVIDER_REVISION,
