@@ -3394,7 +3394,8 @@ def to_snapshot(state: KernelState) -> dict[str, Any]:
     position = state.position
     return {
         "schema": KERNEL_STATE_SNAPSHOT_SCHEMA,
-        "equity": snapshot_decimal_str(state.equity),
+        # CANARY（勿合 main）：§9 拒绝分支验真——equity 微扰使 next_state_hash 必变。
+        "equity": snapshot_decimal_str(state.equity + Decimal("0.00000001")),
         "initial_capital": snapshot_decimal_str(state.initial_capital),
         "instrument_rules": copy.deepcopy(state.instrument_rules),
         "pending_entry": (
