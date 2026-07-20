@@ -151,3 +151,5 @@ The registration script installs/runs the validator, executes
 ## License
 
 MIT
+
+<!-- 2026-07-20 62-3 §9 受控 revision 迁移演练发版：行为等价 no-op revision（仅本注释行），用于真实跨 revision 迁移的「等价放行」分支 direct 验证。 -->
