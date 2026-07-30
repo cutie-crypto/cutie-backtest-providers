@@ -116,6 +116,44 @@ CENTRAL_SUPPORTED_MARKETS = frozenset({"spot", "futures"})
 # 数据缺口容差：中心 API 返回条数 < 预期条数 * 该比例即视为缺口，回退 ccxt（不是硬失败）。
 CENTRAL_GAP_TOLERANCE_RATIO = 0.9
 
+# ``central_market_data_used`` only says whether central data won; failures also
+# need a stable reason so Server never has to infer a machine fault from None.
+CENTRAL_REASON_USED = "used"
+CENTRAL_REASON_NOT_CONFIGURED = "central_not_configured"
+CENTRAL_REASON_OUTSIDE_COVERAGE = "outside_coverage"
+CENTRAL_REASON_NO_DATA = "no_data"
+CENTRAL_REASON_DATA_GAP = "data_gap"
+CENTRAL_REASON_TIMEOUT = "central_timeout"
+CENTRAL_REASON_AUTH_FAILED = "central_auth_failed"
+CENTRAL_REASON_HTTP_ERROR = "central_http_error"
+CENTRAL_REASON_SERVICE_ERROR = "central_service_error"
+CENTRAL_REASON_INVALID_RESPONSE = "central_invalid_response"
+
+
+class MarketDataFetchError(RuntimeError):
+    """Market-data failure with redaction-safe, machine-readable provenance."""
+
+    def __init__(
+        self,
+        error_type: str,
+        message: str,
+        *,
+        central_failure_reason: Optional[str],
+        central_attempted: bool,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.public_message = message
+        self.provenance = {
+            "provider_revision": PROVIDER_REVISION,
+            "source": None,
+            "central_market_data_used": False if central_attempted else None,
+            "central_market_data_attempted": central_attempted,
+            "central_failure_reason": central_failure_reason,
+            "auth_mode": _central_market_data_auth_mode(),
+            "cache_hit": False,
+        }
+
 # 62-1 result.v2（SPEC_验证复核契约.md §2）：schema 常量 + data_manifest.source 命名。
 # 后者必须与 TokenBeep 主仓 cutie-server/services/strategy_backtest_service.py 的
 # _CENTRAL_MARKET_SOURCES 完全一致——server 的逐 run 完整性门按此常量做身份核对，
@@ -352,10 +390,14 @@ def _process_fingerprint() -> str:
 CENTRAL_MAX_CHUNK_MS = 90 * 24 * 60 * 60 * 1000
 
 
-def _fetch_from_central(
+def _fetch_from_central_with_reason(
     exchange_id: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
-) -> Optional[list]:
-    """尝试从 cutie-server 中心行情 API 拉 K 线；任何失败/缺口都返回 None 触发 ccxt 回退。
+) -> tuple[Optional[list], str, bool]:
+    """Fetch central OHLCV while preserving the exact fallback reason.
+
+    The compatibility wrapper below still returns ``list | None``. Ordinary
+    backtests consume this richer result so a later ccxt failure cannot erase
+    whether central returned no rows, timed out, rejected auth, or was absent.
 
     回退条件（附录 C.4）：超时 / 5xx / 数据缺口。未配置中心 API 或
     exchange/market 不在中心缓存覆盖范围内（binance spot + futures，见
@@ -380,38 +422,50 @@ def _fetch_from_central(
     （USDT 本位永续），所以 `:` 前半段才是真正要核对的计价币种。
     """
     if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_TOKEN:
-        return None
+        return None, CENTRAL_REASON_NOT_CONFIGURED, False
     if exchange_id != CENTRAL_SUPPORTED_EXCHANGE or market not in CENTRAL_SUPPORTED_MARKETS:
-        return None
+        return None, CENTRAL_REASON_OUTSIDE_COVERAGE, False
 
     full_normalized = _normalize_ohlcv_symbol(symbol, market)
     if "/" not in full_normalized:
-        return None
+        return None, CENTRAL_REASON_OUTSIDE_COVERAGE, False
     base, _, quote_with_settle = full_normalized.partition("/")
     quote = quote_with_settle.split(":", 1)[0]
     if quote != "USDT":
         # 中心 API 只服务 USDT 计价对；非 USDT quote 直接回退 ccxt，避免张冠李戴。
-        return None
+        return None, CENTRAL_REASON_OUTSIDE_COVERAGE, False
     normalized_symbol = base
 
     all_rows: list = []
     chunk_start = start_ms
     while chunk_start < end_ms:
         chunk_end = min(chunk_start + CENTRAL_MAX_CHUNK_MS, end_ms)
-        chunk_rows = _fetch_central_chunk(exchange_id, market, normalized_symbol, timeframe, chunk_start, chunk_end)
+        chunk_rows, reason = _fetch_central_chunk_with_reason(
+            exchange_id, market, normalized_symbol, timeframe, chunk_start, chunk_end
+        )
         if chunk_rows is None:
-            return None  # 任一分片失败/缺口 → 整体回退 ccxt，不拼混合数据源
+            return None, reason, True  # 任一分片失败/缺口 → 整体回退 ccxt，不拼混合数据源
         all_rows.extend(chunk_rows)
         chunk_start = chunk_end
 
     _record_central_fetch_success()
-    return all_rows
+    return all_rows, CENTRAL_REASON_USED, True
 
 
-def _fetch_central_chunk(
-    exchange_id: str, market: str, normalized_symbol: str, timeframe: str, start_ms: int, end_ms: int
+def _fetch_from_central(
+    exchange_id: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
 ) -> Optional[list]:
-    """单个 ≤90 天分片的中心 API 请求 + 解析 + 缺口检测。返回 None 表示该分片失败/缺口。"""
+    """Compatibility wrapper used by strict artifact execution and legacy tests."""
+    rows, _reason, _attempted = _fetch_from_central_with_reason(
+        exchange_id, market, symbol, timeframe, start_ms, end_ms
+    )
+    return rows
+
+
+def _fetch_central_chunk_with_reason(
+    exchange_id: str, market: str, normalized_symbol: str, timeframe: str, start_ms: int, end_ms: int
+) -> tuple[Optional[list], str]:
+    """单个 ≤90 天分片请求；返回数据及稳定失败原因。"""
     params = {
         "symbol": normalized_symbol,
         "exchange": exchange_id,
@@ -441,27 +495,31 @@ def _fetch_central_chunk(
             logger.warning("Central market-data 5xx (%s), falling back to ccxt: %s", e.code, e)
         else:
             logger.warning("Central market-data HTTP error %s, falling back to ccxt", e.code)
-        return None
+        if e.code in {401, 403}:
+            return None, CENTRAL_REASON_AUTH_FAILED
+        if e.code in {408, 504}:
+            return None, CENTRAL_REASON_TIMEOUT
+        return None, CENTRAL_REASON_HTTP_ERROR
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         logger.warning("Central market-data unreachable/timeout, falling back to ccxt: %s", e)
-        return None
+        return None, CENTRAL_REASON_TIMEOUT
 
     try:
         body = json.loads(raw)
     except json.JSONDecodeError as e:
         logger.warning("Central market-data response not JSON, falling back to ccxt: %s", e)
-        return None
+        return None, CENTRAL_REASON_INVALID_RESPONSE
 
     if body.get("err_code") != 100:
         logger.warning("Central market-data err_code=%s, falling back to ccxt", body.get("err_code"))
-        return None
+        return None, CENTRAL_REASON_SERVICE_ERROR
     data = body.get("data") or {}
     if not data.get("available"):
         # exchange/symbol 组合中心缓存不覆盖：非错误，静默回退 ccxt。
-        return None
+        return None, CENTRAL_REASON_OUTSIDE_COVERAGE
     items = data.get("items") or []
     if not items:
-        return None  # 数据缺口（空区间）：回退 ccxt
+        return None, CENTRAL_REASON_NO_DATA
 
     expected = _expected_bar_count(timeframe, start_ms, end_ms)
     if expected and len(items) < expected * CENTRAL_GAP_TOLERANCE_RATIO:
@@ -470,12 +528,27 @@ def _fetch_central_chunk(
             len(items),
             expected,
         )
-        return None
+        return None, CENTRAL_REASON_DATA_GAP
 
-    return [
-        [item["open_time"] * 1000, item["open"], item["high"], item["low"], item["close"], item["volume"]]
-        for item in items
-    ]
+    try:
+        rows = [
+            [item["open_time"] * 1000, item["open"], item["high"], item["low"], item["close"], item["volume"]]
+            for item in items
+        ]
+    except (KeyError, TypeError, ValueError):
+        logger.warning("Central market-data rows malformed, falling back to ccxt")
+        return None, CENTRAL_REASON_INVALID_RESPONSE
+    return rows, CENTRAL_REASON_USED
+
+
+def _fetch_central_chunk(
+    exchange_id: str, market: str, normalized_symbol: str, timeframe: str, start_ms: int, end_ms: int
+) -> Optional[list]:
+    """Compatibility wrapper for tests and internal callers."""
+    rows, _reason = _fetch_central_chunk_with_reason(
+        exchange_id, market, normalized_symbol, timeframe, start_ms, end_ms
+    )
+    return rows
 
 
 def _safe_float(series: Any, key: str, default: float = 0.0) -> float:
@@ -573,12 +646,20 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
 
     cache_key = _cache_key(exchange_id, market, symbol, timeframe, start_ms, end_ms)
     cached = _read_cache(cache_key)
+    central_ohlcv: Optional[list] = None
+    central_failure_reason: Optional[str] = None
+    central_market_data_attempted = False
     if cached is not None:
         ohlcv = cached["ohlcv"]
         actual_data_source = cached["source"]
         central_market_data_used: Optional[bool] = cached["central_market_data_used"]
         market_data_cache_hit = True
-    elif (central_ohlcv := _fetch_from_central(exchange_id, market, symbol, timeframe, start_ms, end_ms)) is not None:
+    else:
+        central_ohlcv, central_failure_reason, central_market_data_attempted = _fetch_from_central_with_reason(
+            exchange_id, market, symbol, timeframe, start_ms, end_ms
+        )
+
+    if cached is None and central_ohlcv is not None:
         # WS-7 Step 7.3：中心 API 命中，跳过 ccxt，直接写缓存。
         ohlcv = central_ohlcv
         actual_data_source = "cutie_central_market_data"
@@ -590,7 +671,7 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
             source=actual_data_source,
             central_market_data_used=central_market_data_used,
         )
-    else:
+    elif cached is None:
         actual_data_source = DATA_SOURCE
         central_market_data_used = False
         market_data_cache_hit = False
@@ -629,7 +710,21 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
             except ccxt.RateLimitExceeded:
                 raise RuntimeError("RATE_LIMITED")
             except ccxt.NetworkError as e:
-                raise RuntimeError(f"Network error fetching OHLCV: {e}")
+                # A central empty-range response is stronger evidence than a
+                # later ccxt network/geo failure for the same 2010-style window.
+                if central_failure_reason == CENTRAL_REASON_NO_DATA:
+                    raise MarketDataFetchError(
+                        "NO_DATA",
+                        "No OHLCV data is available in the requested range",
+                        central_failure_reason=central_failure_reason,
+                        central_attempted=central_market_data_attempted,
+                    ) from e
+                raise MarketDataFetchError(
+                    "DATA_FETCH_FAILED",
+                    "Market data could not be fetched; please retry later",
+                    central_failure_reason=central_failure_reason,
+                    central_attempted=central_market_data_attempted,
+                ) from e
 
             if not batch:
                 break
@@ -653,7 +748,14 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
             )
 
     if not ohlcv:
-        raise ValueError("NO_DATA")
+        # A successful exchange request returning no candles is direct no-data
+        # evidence, even if the earlier central attempt failed for another reason.
+        raise MarketDataFetchError(
+            "NO_DATA",
+            "No OHLCV data is available in the requested range",
+            central_failure_reason=(None if cached is not None else central_failure_reason),
+            central_attempted=cached is None and central_market_data_attempted,
+        )
 
     df = pd.DataFrame(ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
@@ -756,11 +858,21 @@ def _business_failure(
     error_type: str,
     error_message: str,
     reason: Optional[str] = None,
+    market_data_provenance: Optional[dict[str, Any]] = None,
 ) -> JSONResponse:
     """Business failure with provider metadata (IMPL §6.3)."""
     limitations: dict[str, Any] = {}
     if reason:
         limitations["reason"] = reason
+    provenance = market_data_provenance or {
+        "provider_revision": PROVIDER_REVISION,
+        "source": None,
+        "central_market_data_used": None,
+        "central_market_data_attempted": False,
+        "central_failure_reason": None,
+        "auth_mode": _central_market_data_auth_mode(),
+        "cache_hit": False,
+    }
     return JSONResponse(content={
         "schema": RESPONSE_SCHEMA,
         "result_status": "failed",
@@ -770,7 +882,7 @@ def _business_failure(
         "engine_name": ENGINE_NAME,
         "engine_version": _engine_version(),
         "data_source": DATA_SOURCE,
-        "central_market_data_used": None,
+        "central_market_data_used": provenance.get("central_market_data_used"),
         "central_market_data_auth_mode": _central_market_data_auth_mode(),
         "market_data_cache_hit": False,
         "error_type": error_type,
@@ -778,13 +890,7 @@ def _business_failure(
         "assumptions": {},
         "limitations": limitations,
         "raw_report": {
-            "market_data_provenance": {
-                "provider_revision": PROVIDER_REVISION,
-                "source": None,
-                "central_market_data_used": None,
-                "auth_mode": _central_market_data_auth_mode(),
-                "cache_hit": False,
-            }
+            "market_data_provenance": provenance
         },
     })
 
@@ -2908,6 +3014,14 @@ async def run_backtest(
     # --- Fetch OHLCV ---
     try:
         df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
+    except MarketDataFetchError as e:
+        return _business_failure(
+            run_id,
+            e.error_type,
+            e.public_message,
+            reason=("data_missing" if e.error_type == "NO_DATA" else "market_data_fetch_failed"),
+            market_data_provenance=e.provenance,
+        )
     except ValueError as e:
         error_msg = str(e)
         if error_msg == "NO_DATA":

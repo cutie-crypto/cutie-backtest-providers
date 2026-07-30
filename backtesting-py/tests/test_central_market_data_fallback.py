@@ -169,6 +169,13 @@ def test_central_timeout_returns_none(central_configured, monkeypatch):
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 3600_000)
     assert result is None
 
+    rows, reason, attempted = provider._fetch_from_central_with_reason(
+        "binance", "spot", "BTCUSDT", "1h", 0, 3600_000
+    )
+    assert rows is None
+    assert reason == "central_timeout"
+    assert attempted is True
+
 
 def test_central_5xx_returns_none(central_configured, monkeypatch):
     def fake_urlopen(*_a, **_kw):
@@ -177,6 +184,159 @@ def test_central_5xx_returns_none(central_configured, monkeypatch):
     monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
     result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 3600_000)
     assert result is None
+
+
+def test_central_empty_range_returns_explicit_no_data(central_configured, monkeypatch):
+    """2010 这类空区间必须保留 no_data 证据，不能只留下 used=None。"""
+
+    def fake_urlopen(*_a, **_kw):
+        return _FakeResponse(
+            {"err_code": 100, "data": {"available": True, "count": 0, "items": []}}
+        )
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+    rows, reason, attempted = provider._fetch_from_central_with_reason(
+        "binance", "spot", "BTCUSDT", "4h", 1262304000_000, 1264982400_000
+    )
+
+    assert rows is None
+    assert reason == "no_data"
+    assert attempted is True
+
+
+def test_business_failure_exposes_redaction_safe_central_reason():
+    response = provider._business_failure(
+        "run-1",
+        "NO_DATA",
+        "No OHLCV data is available in the requested range",
+        market_data_provenance={
+            "provider_revision": "abc1234",
+            "source": None,
+            "central_market_data_used": False,
+            "central_market_data_attempted": True,
+            "central_failure_reason": "no_data",
+            "auth_mode": "market_data_bearer",
+            "cache_hit": False,
+        },
+    )
+    body = json.loads(response.body)
+
+    assert body["central_market_data_used"] is False
+    assert body["raw_report"]["market_data_provenance"]["central_failure_reason"] == "no_data"
+    assert "token" not in response.body.decode("utf-8").lower()
+
+
+def test_empty_central_range_wins_over_ccxt_network_error(monkeypatch):
+    """The exact 2010 failure shape must remain NO_DATA even if ccxt is geo-blocked."""
+    import ccxt
+
+    monkeypatch.setattr(
+        provider,
+        "_fetch_from_central_with_reason",
+        lambda *_a, **_kw: (None, provider.CENTRAL_REASON_NO_DATA, True),
+    )
+
+    class FakeExchange:
+        def __init__(self, _options):
+            pass
+
+        def fetch_ohlcv(self, *_a, **_kw):
+            raise ccxt.NetworkError("HTTP 451 restricted location")
+
+    monkeypatch.setattr(ccxt, "binance", FakeExchange)
+
+    with pytest.raises(provider.MarketDataFetchError) as caught:
+        provider._fetch_ohlcv(
+            "binance", "spot", "BTCUSDT", "4h", 1262304000, 1264982400
+        )
+    assert caught.value.error_type == "NO_DATA"
+    assert caught.value.provenance["central_failure_reason"] == "no_data"
+    assert caught.value.provenance["central_market_data_attempted"] is True
+
+
+def test_explicit_central_auth_failure_survives_ccxt_network_error(monkeypatch):
+    import ccxt
+
+    monkeypatch.setattr(
+        provider,
+        "_fetch_from_central_with_reason",
+        lambda *_a, **_kw: (None, provider.CENTRAL_REASON_AUTH_FAILED, True),
+    )
+
+    class FakeExchange:
+        def __init__(self, _options):
+            pass
+
+        def fetch_ohlcv(self, *_a, **_kw):
+            raise ccxt.NetworkError("network unavailable")
+
+    monkeypatch.setattr(ccxt, "binance", FakeExchange)
+
+    with pytest.raises(provider.MarketDataFetchError) as caught:
+        provider._fetch_ohlcv(
+            "binance", "spot", "BTCUSDT", "4h", 1700000000, 1700086400
+        )
+    assert caught.value.error_type == "DATA_FETCH_FAILED"
+    assert caught.value.provenance["central_failure_reason"] == "central_auth_failed"
+
+
+def test_empty_ccxt_result_is_direct_no_data_evidence(monkeypatch):
+    import ccxt
+
+    monkeypatch.setattr(
+        provider,
+        "_fetch_from_central_with_reason",
+        lambda *_a, **_kw: (None, provider.CENTRAL_REASON_AUTH_FAILED, True),
+    )
+
+    class FakeExchange:
+        def __init__(self, _options):
+            pass
+
+        def fetch_ohlcv(self, *_a, **_kw):
+            return []
+
+    monkeypatch.setattr(ccxt, "binance", FakeExchange)
+
+    with pytest.raises(provider.MarketDataFetchError) as caught:
+        provider._fetch_ohlcv(
+            "binance", "spot", "BTCUSDT", "4h", 1700000000, 1700086400
+        )
+    assert caught.value.error_type == "NO_DATA"
+    assert caught.value.provenance["central_failure_reason"] == "central_auth_failed"
+    assert caught.value.provenance["central_market_data_attempted"] is True
+
+
+@pytest.mark.parametrize(
+    "central_reason",
+    [provider.CENTRAL_REASON_OUTSIDE_COVERAGE, provider.CENTRAL_REASON_DATA_GAP],
+)
+def test_ambiguous_central_range_reason_does_not_mask_ccxt_network_error(
+    monkeypatch, central_reason
+):
+    import ccxt
+
+    monkeypatch.setattr(
+        provider,
+        "_fetch_from_central_with_reason",
+        lambda *_a, **_kw: (None, central_reason, True),
+    )
+
+    class FakeExchange:
+        def __init__(self, _options):
+            pass
+
+        def fetch_ohlcv(self, *_a, **_kw):
+            raise ccxt.NetworkError("network unavailable")
+
+    monkeypatch.setattr(ccxt, "binance", FakeExchange)
+
+    with pytest.raises(provider.MarketDataFetchError) as caught:
+        provider._fetch_ohlcv(
+            "binance", "spot", "BTCUSDT", "4h", 1700000000, 1700086400
+        )
+    assert caught.value.error_type == "DATA_FETCH_FAILED"
+    assert caught.value.provenance["central_failure_reason"] == central_reason
 
 
 class _FakeResponse:
