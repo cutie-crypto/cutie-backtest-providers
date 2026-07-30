@@ -17,6 +17,7 @@ Environment variables:
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import logging
@@ -31,6 +32,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -63,6 +65,16 @@ EXECUTION_TIMEOUT_MS = BACKTEST_TIMEOUT * 1000
 EXECUTION_MAX_RANGE_DAYS = 365
 
 SUPPORTED_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
+TIMEFRAME_SECONDS = {
+    "1m": 60,
+    "5m": 5 * 60,
+    "15m": 15 * 60,
+    "30m": 30 * 60,
+    "1h": 60 * 60,
+    "4h": 4 * 60 * 60,
+    "1d": 24 * 60 * 60,
+}
+ERROR_OUTPUT_LIMIT = 1000
 
 logger = logging.getLogger("cutie_freqtrade_provider")
 
@@ -240,13 +252,273 @@ def _check_data_directory() -> tuple[bool, list[str]]:
         if not exchange_dir.is_dir():
             continue
         for data_file in exchange_dir.iterdir():
-            if data_file.suffix in (".json", ".feather", ".h5", ".gz"):
+            if data_file.suffix in (".json", ".feather", ".h5", ".gz", ".parquet"):
                 # Extract pair from filename like "BTC_USDT-1h.json"
                 name = data_file.stem
                 if "-" in name:
                     pair_part = name.rsplit("-", 1)[0]
                     pairs.add(pair_part)
     return len(pairs) > 0, sorted(pairs)
+
+
+def _ohlcv_file_format(path: Path) -> Optional[str]:
+    name = path.name.lower()
+    if name.endswith(".json.gz"):
+        return "jsongz"
+    if name.endswith(".json"):
+        return "json"
+    if name.endswith(".feather"):
+        return "feather"
+    if name.endswith(".parquet"):
+        return "parquet"
+    if name.endswith(".h5"):
+        return "hdf5"
+    return None
+
+
+def _find_local_ohlcv_files(exchange: str, pair: str, timeframe: str) -> list[Path]:
+    """Return exact spot OHLCV files without trusting exchange as a path."""
+    data_dir = FREQTRADE_USERDIR / "data"
+    if not data_dir.is_dir():
+        return []
+
+    exchange_dir = next(
+        (
+            item
+            for item in data_dir.iterdir()
+            if item.is_dir() and item.name.lower() == str(exchange).strip().lower()
+        ),
+        None,
+    )
+    if exchange_dir is None:
+        return []
+
+    expected_prefix = f"{pair.replace('/', '_')}-{timeframe}.".lower()
+    return sorted(
+        item
+        for item in exchange_dir.iterdir()
+        if item.is_file()
+        and item.name.lower().startswith(expected_prefix)
+        and _ohlcv_file_format(item) is not None
+    )
+
+
+def _timestamp_to_seconds(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(number):
+            return None
+        magnitude = abs(number)
+        if magnitude >= 1e17:  # nanoseconds
+            number /= 1_000_000_000
+        elif magnitude >= 1e14:  # microseconds
+            number /= 1_000_000
+        elif magnitude >= 1e11:  # milliseconds
+            number /= 1000
+        return int(number)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return int(value.timestamp())
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return _timestamp_to_seconds(Decimal(text))
+    except InvalidOperation:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
+def _row_timestamp(row: Any) -> Optional[int]:
+    if isinstance(row, (list, tuple)) and row:
+        return _timestamp_to_seconds(row[0])
+    if isinstance(row, dict):
+        for key in ("date", "timestamp", "open_time"):
+            if key in row:
+                return _timestamp_to_seconds(row[key])
+    return None
+
+
+@lru_cache(maxsize=128)
+def _read_ohlcv_file_bounds_cached(
+    path_text: str,
+    _mtime_ns: int,
+    _size: int,
+) -> Optional[tuple[int, int]]:
+    """Read first/last candle timestamps from a supported Freqtrade data file."""
+    path = Path(path_text)
+    data_format = _ohlcv_file_format(path)
+    if data_format in {"json", "jsongz"}:
+        opener = gzip.open if data_format == "jsongz" else open
+        with opener(path, "rt", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        rows = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list) or not rows:
+            return None
+        start_at = _row_timestamp(rows[0])
+        end_at = _row_timestamp(rows[-1])
+    else:
+        # Freqtrade itself depends on pandas and the selected storage backend.
+        # Import lazily so a missing optional legacy reader does not make the
+        # provider fail at startup; an unreadable file falls back to the CLI's
+        # own diagnostic instead of being misclassified as out-of-coverage.
+        import pandas as pd
+
+        if data_format == "feather":
+            frame = pd.read_feather(path)
+        elif data_format == "parquet":
+            frame = pd.read_parquet(path)
+        elif data_format == "hdf5":
+            frame = pd.read_hdf(path)
+        else:
+            return None
+        if frame.empty:
+            return None
+        series = None
+        for key in ("date", "timestamp", "open_time"):
+            if key in frame.columns:
+                series = frame[key]
+                break
+        if series is None:
+            series = frame.index
+        if hasattr(series, "iloc"):
+            first_value = series.iloc[0]
+            last_value = series.iloc[-1]
+        else:
+            first_value = series[0]
+            last_value = series[-1]
+        start_at = _timestamp_to_seconds(first_value)
+        end_at = _timestamp_to_seconds(last_value)
+
+    if start_at is None or end_at is None:
+        return None
+    if end_at < start_at:
+        start_at, end_at = end_at, start_at
+    return start_at, end_at
+
+
+def _read_ohlcv_file_bounds(path: Path) -> Optional[tuple[int, int]]:
+    stat = path.stat()
+    return _read_ohlcv_file_bounds_cached(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _inspect_local_data_coverage(
+    exchange: str,
+    pair: str,
+    timeframe: str,
+    requested_start_at: int,
+    requested_end_at: int,
+) -> dict[str, Any]:
+    files = _find_local_ohlcv_files(exchange, pair, timeframe)
+    if not files:
+        return {
+            "status": "missing",
+            "requested_start_at": requested_start_at,
+            "requested_end_at": requested_end_at,
+        }
+
+    readable: list[dict[str, Any]] = []
+    unreadable = False
+    for path in files:
+        try:
+            bounds = _read_ohlcv_file_bounds(path)
+        except Exception as exc:
+            unreadable = True
+            logger.warning("Unable to inspect Freqtrade OHLCV coverage for %s: %s", path.name, exc)
+            continue
+        if bounds is None:
+            unreadable = True
+            continue
+        first_open_at, last_open_at = bounds
+        actual_end_at = last_open_at + TIMEFRAME_SECONDS[timeframe]
+        candidate = {
+            "status": "covered",
+            "requested_start_at": requested_start_at,
+            "requested_end_at": requested_end_at,
+            "actual_start_at": first_open_at,
+            "actual_last_open_at": last_open_at,
+            "actual_end_at": actual_end_at,
+            "data_format": _ohlcv_file_format(path),
+        }
+        if first_open_at <= requested_start_at and actual_end_at >= requested_end_at:
+            return candidate
+        candidate["status"] = "outside_coverage"
+        readable.append(candidate)
+
+    # Do not pre-empt Freqtrade when an exact matching file exists but this
+    # provider process lacks its optional reader. The CLI remains authoritative
+    # and its now-tail-preserved error will be returned if it cannot use it.
+    if unreadable:
+        return {
+            "status": "unreadable",
+            "requested_start_at": requested_start_at,
+            "requested_end_at": requested_end_at,
+        }
+    if not readable:
+        return {
+            "status": "unreadable",
+            "requested_start_at": requested_start_at,
+            "requested_end_at": requested_end_at,
+        }
+
+    # Report the candidate with the greatest overlap, then the newest end. This
+    # is display provenance only; every readable candidate failed the hard gate.
+    def score(item: dict[str, Any]) -> tuple[int, int]:
+        overlap = max(
+            0,
+            min(item["actual_end_at"], requested_end_at)
+            - max(item["actual_start_at"], requested_start_at),
+        )
+        return overlap, item["actual_end_at"]
+
+    return max(readable, key=score)
+
+
+def _utc_date(timestamp: int) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _utc_minute(timestamp: int) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _download_data_command(
+    exchange: str,
+    pair: str,
+    timeframe: str,
+    start_at: int,
+    end_at: int,
+    *,
+    prepend: bool,
+) -> str:
+    timerange = _ts_to_timerange_str(start_at, end_at)
+    prepend_arg = " --prepend" if prepend else ""
+    return (
+        f"freqtrade download-data --exchange {exchange} --pairs {pair} "
+        f"--timeframes {timeframe} --timerange {timerange}{prepend_arg}"
+    )
+
+
+def _diagnostic_tail(value: str, limit: int = ERROR_OUTPUT_LIMIT) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"... (truncated; showing last {limit} characters)\n{text[-limit:]}"
 
 
 def _pair_file_to_symbol(pair_file_name: str) -> str:
@@ -946,34 +1218,54 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             error_message=str(e),
         )
 
-    # Check data availability
-    has_data, available_pairs = _check_data_directory()
-    if not has_data:
-        return _business_failure(
-            run_id=run_id,
-            engine_version=engine_version,
-            error_type="NO_DATA",
-            error_message=(
-                "No OHLCV data found in the Freqtrade data directory. "
-                f"Download data first: freqtrade download-data "
-                f"--exchange {exchange} --pairs {pair} --timeframes {timeframe}"
-            ),
+    # Check the exact exchange + pair + timeframe and, when the local storage
+    # format is readable, prove the requested interval is fully covered before
+    # paying the cost of a Freqtrade subprocess. The previous pair-only check
+    # treated stale May data as ready for a recent 30-day run.
+    coverage = _inspect_local_data_coverage(exchange, pair, timeframe, start_at, end_at)
+    if coverage["status"] == "missing":
+        download_command = _download_data_command(
+            exchange,
+            pair,
+            timeframe,
+            start_at,
+            end_at,
+            prepend=False,
         )
-
-    # Normalize pair for comparison: BTC/USDT -> BTC_USDT (Freqtrade file naming)
-    pair_file_name = pair.replace("/", "_")
-    pair_found = any(pair_file_name in p for p in available_pairs)
-    if not pair_found:
         return _business_failure(
             run_id=run_id,
             engine_version=engine_version,
             error_type="NO_DATA",
             error_message=(
-                f"No data for pair {pair} ({pair_file_name}). "
-                f"Available pairs: {available_pairs}. "
-                f"Download: freqtrade download-data --exchange {exchange} "
-                f"--pairs {pair} --timeframes {timeframe}"
+                f"No local OHLCV file for {exchange} {pair} {timeframe}. "
+                f"Download it first: {download_command}"
             ),
+            reason="local_data_missing",
+            raw_report={"market_data_coverage": coverage},
+        )
+    if coverage["status"] == "outside_coverage":
+        prepend = start_at < coverage["actual_start_at"]
+        download_command = _download_data_command(
+            exchange,
+            pair,
+            timeframe,
+            start_at,
+            end_at,
+            prepend=prepend,
+        )
+        return _business_failure(
+            run_id=run_id,
+            engine_version=engine_version,
+            error_type="NO_DATA",
+            error_message=(
+                f"Local {exchange} {pair} {timeframe} data covers "
+                f"{_utc_minute(coverage['actual_start_at'])} through "
+                f"{_utc_minute(coverage['actual_last_open_at'])}, but this backtest requests "
+                f"{_utc_date(start_at)} to {_utc_date(end_at)}. "
+                f"Update the local data, then retry: {download_command}"
+            ),
+            reason="local_data_outside_coverage",
+            raw_report={"market_data_coverage": coverage},
         )
 
     # ----- Build temporary Freqtrade config -----
@@ -1021,6 +1313,12 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             "order_book_top": 1,
         },
     }
+    if coverage.get("status") == "covered" and coverage.get("data_format"):
+        # Make the CLI consume the same physical format whose bounds passed the
+        # preflight.  Otherwise a covered JSON file could pass this guard while
+        # Freqtrade silently keeps its default (normally Feather) and reports no
+        # data for the very same request.
+        ft_config["dataformat_ohlcv"] = coverage["data_format"]
 
     # Write temp config
     tmp_config = None
@@ -1063,14 +1361,17 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
 
         if proc.returncode != 0:
             error_output = proc.stderr.strip() or proc.stdout.strip()
-            # Truncate long error output
-            if len(error_output) > 1000:
-                error_output = error_output[:1000] + "... (truncated)"
+            # CLI log prologues are long; Freqtrade puts the actionable cause
+            # (for example "No data found") at the end. Preserve that tail.
+            error_output = _diagnostic_tail(error_output)
+            no_data = "no data found" in error_output.lower()
             return _business_failure(
                 run_id=run_id,
                 engine_version=engine_version,
-                error_type="ENGINE_ERROR",
+                error_type="NO_DATA" if no_data else "ENGINE_ERROR",
                 error_message=f"Freqtrade backtesting failed (exit {proc.returncode}): {error_output}",
+                reason="freqtrade_no_data" if no_data else None,
+                raw_report={"market_data_coverage": coverage},
             )
 
         # ----- Parse results -----
@@ -1174,6 +1475,9 @@ def _business_failure(
     engine_version: str,
     error_type: str,
     error_message: str,
+    *,
+    reason: Optional[str] = None,
+    raw_report: Optional[dict[str, Any]] = None,
 ) -> dict:
     """Return a business failure response (provider is healthy, but backtest cannot proceed)."""
     return {
@@ -1188,9 +1492,9 @@ def _business_failure(
         "error_message": error_message,
         "assumptions": {},
         "limitations": {
-            "reason": error_type.lower(),
+            "reason": reason or error_type.lower(),
         },
-        "raw_report": {},
+        "raw_report": raw_report or {},
     }
 
 

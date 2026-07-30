@@ -86,6 +86,15 @@ re-running without credential variables preserves the existing values.
 Freqtrade-only: `CUTIE_FREQTRADE_EXCHANGE` (`okx`), `CUTIE_FREQTRADE_PAIRS`
 (`BTC/USDT`), `CUTIE_FREQTRADE_TIMEFRAMES` (`1h 4h`).
 
+Before spawning a Freqtrade backtest, the provider checks the exact local
+exchange + pair + timeframe file. For readable Freqtrade OHLCV formats it also
+requires the stored first/last candle range to cover the requested interval.
+Missing or stale data returns `NO_DATA` with the observed UTC coverage and a
+copy-paste `freqtrade download-data` command; it is not reported as a platform
+engine fault. If Freqtrade itself exits non-zero, diagnostics keep the final
+1,000 characters because the actionable cause is normally at the end of its
+log output.
+
 ### Quick Start (backtesting.py)
 
 ```bash
