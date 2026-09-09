@@ -95,3 +95,9 @@ def test_daily_author_limits_and_cooldown_apply_after_exit():
         result = run(intents, [candle(0), candle(300), candle(600)], **overrides)
         assert result["outcomes"][-1]["outcome"] == reason
         assert len(result["settlements"]) == 1
+
+
+def test_empty_intent_sequence_still_rejects_missing_observations():
+    import pytest
+    with pytest.raises(ValueError, match="contiguous"):
+        run([], [candle(0), candle(600)])

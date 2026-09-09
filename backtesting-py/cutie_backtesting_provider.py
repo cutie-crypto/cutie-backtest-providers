@@ -3123,8 +3123,22 @@ async def run_backtest(
             df=df,
         )
 
+        signal_result = None
+        if bt_req.get("signal_execution") is not None:
+            from strategy_signal_report import build_signal_report
+            try:
+                signal_result = build_signal_report(
+                    request=bt_req["signal_execution"], risk_policy=bt_req.get("risk_policy"),
+                    tool_id=effective_tool_id, params=params, market=market, symbol=symbol,
+                    exchange=exchange_id, timeframe=timeframe,
+                    step=_timeframe_milliseconds(timeframe) // 1000,
+                    start_at=start_at, end_at=end_at, fee_bps=fee_bps,
+                    slippage_bps=slippage_bps, fetch_ohlcv=_fetch_ohlcv,
+                )
+            except ValueError as exc:
+                return _business_failure(run_id, "INVALID_PARAMS", str(exc))
         risk_result = None
-        if bt_req.get("risk_policy") is not None:
+        if bt_req.get("risk_policy") is not None and signal_result is None:
             from strategy_risk_report import build_risk_report
 
             risk_result = build_risk_report(
@@ -3224,6 +3238,7 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,
