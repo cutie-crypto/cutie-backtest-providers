@@ -3123,6 +3123,15 @@ async def run_backtest(
             df=df,
         )
 
+        risk_result = None
+        if bt_req.get("risk_policy") is not None:
+            from strategy_risk_report import build_risk_report
+
+            risk_result = build_risk_report(
+                result_v2, bt_req["risk_policy"], market=market, symbol=symbol,
+                exchange=exchange_id, fee_bps=fee_bps, slippage_bps=slippage_bps,
+            )
+
         total_return_pct = _safe_float(stats, "Return [%]", 0.0)
         win_rate_pct = _safe_float(stats, "Win Rate [%]", 0.0)
         max_drawdown_pct = abs(_safe_float(stats, "Max. Drawdown [%]", 0.0))
@@ -3215,6 +3224,7 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,
                 # 旧版展示性百分比指标（result.v2 迁移前的 metrics 形状），保留兼容旧

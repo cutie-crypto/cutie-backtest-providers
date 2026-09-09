@@ -267,7 +267,8 @@ def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
         assert math.isfinite(body["raw_report"]["legacy_metrics"][metric_key])
 
 
-def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, tmp_path):
+@pytest.mark.parametrize("with_risk", [False, True])
+def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, tmp_path, with_risk):
     monkeypatch.setattr(provider, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(provider, "REPORTS_DIR", tmp_path / "reports")
     from backtesting import Backtest
@@ -284,6 +285,7 @@ def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, t
 
     resp = client.post("/cutie/backtest", json={
         "backtest": {
+            **({"risk_policy": {"schema": "cutie.strategy_risk_policy.v1", "direction": "long", "leverage": 1}} if with_risk else {}),
             "run_id": "spot_run_1",
             "provider_tool_id": "local.backtesting_py.ema_cross",
             "provider_params": {"ema_fast": 3, "ema_slow": 5, "exchange": "okx"},
@@ -303,3 +305,12 @@ def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, t
     assert constructed[0].last_symbol == "BTC/USDT"
     assert body["assumptions"]["market"] == "spot"
     assert "funding_rate_included" not in body["limitations"]
+
+    if with_risk:
+        from canonical_json import canonical_json_sha256
+        risk = body["raw_report"]["strategy_risk_result"]
+        assert risk["sha256"] == canonical_json_sha256(risk["payload"])
+        assert risk["payload"]["policy"]["loss_limit"] == 5
+    else:
+        assert "strategy_risk_result" not in body["raw_report"]
+    assert set(body["metrics"]) == {"total_return", "max_drawdown", "trade_count"}
