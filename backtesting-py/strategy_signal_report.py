@@ -7,7 +7,7 @@ from canonical_json import canonical_json_sha256, normalize_numbers_for_hash
 from funding_history import fetch_history
 from signal_lifecycle_kernel import Candle
 from strategy_entry_evaluators import Bar
-from strategy_execution_policy import validate_execution_policy
+from strategy_execution_policy import requested_signal_execution
 from strategy_intent_replay import generate_intents
 from strategy_cycle_replay import replay_cycle
 
@@ -30,17 +30,10 @@ def build_signal_report(
     fetch_ohlcv,
     history_loader=fetch_history
 ):
-    if not isinstance(request, dict) or set(request) != {"execution_policy", "cycle_limits"}:
-        raise ValueError("signal execution requires frozen policy and cycle limits")
-    policy = validate_execution_policy(request["execution_policy"])
-    limits = request["cycle_limits"]
-    if not isinstance(limits, dict) or set(limits) != {
-        "daily_limit",
-        "author_daily_limit",
-        "cooldown_seconds",
-        "day_offset_seconds",
-    }:
-        raise ValueError("signal execution requires complete cycle limits")
+    normalized = requested_signal_execution(request, risk_policy)
+    if normalized is None:
+        raise ValueError("signal execution request is required")
+    policy, limits = normalized["execution_policy"], normalized["cycle_limits"]
     if (
         not isinstance(risk_policy, dict)
         or set(risk_policy) != {"schema", "direction", "leverage"}

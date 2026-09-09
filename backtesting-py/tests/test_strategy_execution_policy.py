@@ -72,3 +72,34 @@ def test_unknown_fields_and_input_mutation_do_not_change_frozen_profile():
     raw["sl_tp_rule"]["stop_loss"]["trailing"] = True
     with pytest.raises(ValueError):
         validate_execution_policy(raw)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        {},
+        {"daily_limit": True, "author_daily_limit": 10, "cooldown_seconds": 0, "day_offset_seconds": 0},
+        {"daily_limit": 3, "author_daily_limit": 10, "cooldown_seconds": 0, "day_offset_seconds": 86400},
+    ],
+)
+def test_signal_request_rejects_incomplete_or_invalid_limits(bad):
+    from strategy_execution_policy import requested_signal_execution
+
+    with pytest.raises(ValueError):
+        requested_signal_execution({"execution_policy": policy(), "cycle_limits": bad}, {"direction": "long"})
+
+
+def test_signal_request_requires_risk_and_normalizes_before_snapshot():
+    from strategy_execution_policy import requested_signal_execution
+
+    request = {
+        "execution_policy": policy(),
+        "cycle_limits": {"daily_limit": 3, "author_daily_limit": 10, "cooldown_seconds": 0, "day_offset_seconds": 0},
+    }
+    request["execution_policy"]["sl_tp_rule"]["stop_loss"]["pct"] = 5.0
+    with pytest.raises(ValueError, match="requires risk_policy"):
+        requested_signal_execution(request, None)
+    normalized = requested_signal_execution(request, {"direction": "long"})
+    assert normalized["execution_policy"]["sl_tp_rule"]["stop_loss"]["pct"] == "5"
+    assert request["execution_policy"]["sl_tp_rule"]["stop_loss"]["pct"] == 5.0
