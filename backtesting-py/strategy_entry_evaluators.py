@@ -19,7 +19,7 @@ process_trigger 负责持仓状态机。CCI+RSI 入场和出场使用独立判�
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 
@@ -37,11 +37,12 @@ class Bar:
 
 @dataclass(frozen=True)
 class TriggerResult:
-    """判定器触发结果：方向 + 触发 bar 的 close_time（触发账本唯一键用）+ 指标快照（审计用）。"""
+    """判定器结果：显式动作、目标持仓方向、bar close_time 和审计指标。"""
 
     direction: str  # "long" | "short"
     trigger_bar_ts: int
     indicators: dict[str, float]
+    action: str = "entry"  # entry | exit; exit.direction identifies the position to close
 
 
 # ---------------------------------------------------------------------------
@@ -246,15 +247,13 @@ def evaluate_cci_rsi_exit(params: dict[str, Any], bars: list[Bar], position_dire
     # 固定阈值与 backtest_tool_router 的模板出场校验一致，不读取入场阈值参数。
     if position_direction == "long":
         satisfied = cci_v > 0 or rsi_v > 50
-        direction = "short"
     elif position_direction == "short":
         satisfied = cci_v < 0 or rsi_v < 50
-        direction = "long"
     else:
         return None
     if not satisfied:
         return None
-    return TriggerResult(direction, bars[-1].close_time, {"cci": cci_v, "rsi": rsi_v})
+    return TriggerResult(position_direction, bars[-1].close_time, {"cci": cci_v, "rsi": rsi_v}, action="exit")
 
 
 def breakout_windows(params: dict[str, Any]) -> Optional[tuple[int, int]]:
@@ -313,11 +312,7 @@ def evaluate_breakout_exit(params: dict[str, Any], bars: list[Bar], position_dir
         if position_direction == "long"
         else indicators["close"] > indicators["donchian_high"]
     )
-    return (
-        TriggerResult("short" if position_direction == "long" else "long", bars[-1].close_time, indicators)
-        if hit
-        else None
-    )
+    return TriggerResult(position_direction, bars[-1].close_time, indicators, action="exit") if hit else None
 
 
 def rsi_reversal_settings(params: dict[str, Any]) -> Optional[tuple[int, float, float]]:
@@ -365,7 +360,7 @@ def evaluate_rsi_reversal_exit(
     indicators = _rsi_reversal_indicators(params, bars)
     if settings is None or indicators is None or not indicators["rsi"] > settings[2]:
         return None
-    return TriggerResult("short", bars[-1].close_time, indicators)
+    return TriggerResult(position_direction, bars[-1].close_time, indicators, action="exit")
 
 
 # watcher 每 tick 为一组布防拉取的补扫窗口（根）。放在这里而不是 watcher 里，是因为
@@ -399,11 +394,13 @@ def evaluate_exit(
     evaluators = EVALUATOR_REGISTRY.get(strategy_type)
     if evaluators is None:
         return None
-    if evaluators.exit is not None:
-        return evaluators.exit(params, bars, position_direction=position_direction)
     if position_direction not in ("long", "short"):
         return None
-    return evaluators.entry(params, bars, "short" if position_direction == "long" else "long")
+    if evaluators.exit is not None:
+        result = evaluators.exit(params, bars, position_direction=position_direction)
+    else:
+        result = evaluators.entry(params, bars, "short" if position_direction == "long" else "long")
+    return replace(result, action="exit", direction=position_direction) if result is not None else None
 
 
 def required_warmup_bars(strategy_type: str, params: dict[str, Any]) -> Optional[int]:
