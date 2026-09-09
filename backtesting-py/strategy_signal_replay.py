@@ -11,7 +11,7 @@ from decimal import Decimal
 from signal_lifecycle_kernel import Candle, SignalLifecycleKernel
 
 
-def replay_limit_signal(signal: dict, candles: list[Candle]) -> dict:
+def validate_limit_signal(signal: dict, candles: list[Candle]) -> dict:
     """Replay one freshly published, single-target limit signal at closed bars.
 
     Each observation occurs at candle.close_time + 1. Historical expiry therefore
@@ -54,33 +54,50 @@ def replay_limit_signal(signal: dict, candles: list[Candle]) -> dict:
         if not candle.low <= min(candle.open, candle.close) <= max(candle.open, candle.close) <= candle.high:
             raise ValueError("invalid observation OHLC bounds")
         previous_close = candle.close_time
+    return state
+
+
+def advance_limit_signal(signal: dict, candle: Candle) -> dict:
+    """Advance already validated state by one observation, without input mutation."""
+    state = deepcopy(signal)
+    if state.get("status") == "closed":
+        return {"signal": state, "events": [], "terminal": True}
+    events = []
+    detected = SignalLifecycleKernel.detect_candle_events(state, [candle], now=candle.close_time + 1)
+    for event in detected:
+        events.append(asdict(event))
+        if event.event_type == "entry_hit":
+            state.update(
+                status="active",
+                lifecycle_status="entered",
+                entry_hit_at=event.observed_at,
+                actual_entry_price=event.observed_price,
+                filled_position_pct=Decimal(100),
+                remaining_position_pct=Decimal(100),
+            )
+        elif event.event_type in ("tp_hit", "sl_hit", "expired_unfilled"):
+            lifecycle = {"tp_hit": "tp_full", "sl_hit": "stopped_out", "expired_unfilled": "expired_unfilled"}
+            state.update(
+                status="closed",
+                lifecycle_status=lifecycle[event.event_type],
+                closed_at=event.observed_at,
+                close_price=event.observed_price,
+                remaining_position_pct=Decimal(0),
+            )
+            if event.event_type == "tp_hit":
+                state["tp_hit_count"] = 1
+        else:
+            raise ValueError("unexpected event for frozen single-target limit model")
+    return {"signal": state, "events": events, "terminal": state.get("status") == "closed"}
+
+
+def replay_limit_signal(signal: dict, candles: list[Candle]) -> dict:
+    state = validate_limit_signal(signal, candles)
     events = []
     for candle in candles:
         if state.get("status") == "closed":
             break
-        detected = SignalLifecycleKernel.detect_candle_events(state, [candle], now=candle.close_time + 1)
-        for event in detected:
-            events.append(asdict(event))
-            if event.event_type == "entry_hit":
-                state.update(
-                    status="active",
-                    lifecycle_status="entered",
-                    entry_hit_at=event.observed_at,
-                    actual_entry_price=event.observed_price,
-                    filled_position_pct=Decimal(100),
-                    remaining_position_pct=Decimal(100),
-                )
-            elif event.event_type in ("tp_hit", "sl_hit", "expired_unfilled"):
-                lifecycle = {"tp_hit": "tp_full", "sl_hit": "stopped_out", "expired_unfilled": "expired_unfilled"}
-                state.update(
-                    status="closed",
-                    lifecycle_status=lifecycle[event.event_type],
-                    closed_at=event.observed_at,
-                    close_price=event.observed_price,
-                    remaining_position_pct=Decimal(0),
-                )
-                if event.event_type == "tp_hit":
-                    state["tp_hit_count"] = 1
-            else:
-                raise ValueError("unexpected event for frozen single-target limit model")
+        result = advance_limit_signal(state, candle)
+        state = result["signal"]
+        events.extend(result["events"])
     return {"signal": state, "events": events, "terminal": state.get("status") == "closed"}
