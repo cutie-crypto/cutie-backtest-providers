@@ -2,10 +2,37 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Optional
 
 from strategy_entry_evaluators import Bar
+
+
+def align_initial_prices(*, direction, entry, stop, take, price_tick):
+    """Use one frozen tick rule for signal creation and historical intents.
+
+    Limit entry rounds away from paying more; protection and profit targets
+    round toward earlier exits. Reject collapsed levels rather than fabricate
+    a wider risk distance. No tick preserves the legacy price contract.
+    """
+    if price_tick is None:
+        return entry, stop, take
+    tick = Decimal(str(price_tick))
+    if direction not in {"long", "short"} or not tick.is_finite() or tick <= 0:
+        raise ValueError("invalid frozen price tick")
+    long = direction == "long"
+    entry_round = ROUND_FLOOR if long else ROUND_CEILING
+    stop_round = ROUND_CEILING if long else ROUND_FLOOR
+    values = [
+        (value / tick).to_integral_value(rounding=rounding) * tick
+        for value, rounding in ((entry, entry_round), (stop, stop_round), (take, entry_round))
+    ]
+    entry, stop, take = values
+    if any(not value.is_finite() or value <= 0 for value in values) or not (
+        stop < entry < take if long else take < entry < stop
+    ):
+        raise ValueError("price tick collapses initial order levels")
+    return entry, stop, take
 
 
 def atr_series(bars: list[Bar], period: int) -> list[Optional[float]]:
