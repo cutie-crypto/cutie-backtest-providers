@@ -208,3 +208,34 @@ def apply_managed_stop(signal: dict, stop_state, rules: StopRules, bar: Candle):
         }
         state["stop_loss"] = stop_state.effective_stop
     return state, stop_state, update
+
+
+def managed_cycle_options(policy: dict, candles: list[Candle], step: int) -> dict:
+    """Derive complete UTC strategy bars from the exact execution observations."""
+    management = policy.get("stop_management")
+    if management is None:
+        return {}
+    if type(step) is not int or step < 300 or step % 300:
+        raise ValueError("invalid managed strategy timeframe")
+    validate_observation_candles(candles)
+    bars = []
+    width = step // 300
+    for i, candle in enumerate(candles):
+        if candle.open_time % step or i + width > len(candles):
+            continue
+        parts = candles[i : i + width]
+        bars.append(
+            Candle(
+                parts[0].open_time,
+                parts[-1].close_time,
+                parts[0].open,
+                max(c.high for c in parts),
+                min(c.low for c in parts),
+                parts[-1].close,
+            )
+        )
+    pct = management["trailing_pct"]
+    return {
+        "stop_rules": StopRules(None if pct is None else Decimal(pct), management["breakeven"]),
+        "management_candles": bars,
+    }

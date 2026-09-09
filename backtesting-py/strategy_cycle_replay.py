@@ -7,7 +7,7 @@ No end-of-data liquidation or automatic risk-cycle restoration is performed.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from decimal import Decimal
 
 from funding_history import funding_paid
@@ -19,6 +19,7 @@ from strategy_signal_replay import (
     validate_new_limit_signal,
     validate_observation_candles,
 )
+from canonical_json import canonical_decimal_str
 
 
 def replay_cycle(
@@ -41,6 +42,24 @@ def replay_cycle(
     management_candles=None,
 ):
     validate_observation_candles(candles)
+    if stop_rules is not None:
+        # Evidence normalization removes decimal exponents during JSON transport.
+        # Canonicalize before detection so nested string evidence also round-trips.
+        def canonical_bars(values):
+            return [
+                replace(
+                    bar,
+                    **{
+                        key: Decimal(canonical_decimal_str(getattr(bar, key)))
+                        for key in ("open", "high", "low", "close")
+                    },
+                )
+                for bar in values
+            ]
+
+        candles = canonical_bars(candles)
+        if management_candles is not None:
+            management_candles = canonical_bars(management_candles)
     timeline = _validated_timeline(
         intents,
         candles,

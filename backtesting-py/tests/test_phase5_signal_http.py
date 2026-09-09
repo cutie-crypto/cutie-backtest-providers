@@ -20,7 +20,7 @@ CASES = [
 ]
 
 
-def run_phase5_http(monkeypatch, tmp_path, name, params):
+def run_phase5_http(monkeypatch, tmp_path, name, params, stop_management=None):
     closes = [100.] * 50 + [100 + 10 * math.sin(i * math.pi / 10) for i in range(100)] + [100.] * 30
     df = pd.DataFrame(
         {
@@ -85,32 +85,35 @@ def run_phase5_http(monkeypatch, tmp_path, name, params):
             },
         }
     }
+    if stop_management is not None:
+        request["backtest"]["signal_execution"]["execution_policy"]["stop_management"] = stop_management
     response = TestClient(provider.app).post("/cutie/backtest", json=request)
     body = response.json()
     assert body["result_status"] == "success", body
     report = body["raw_report"]["strategy_signal_result"]
     assert report["sha256"] == canonical_json_sha256({k: v for k, v in report.items() if k != "sha256"})
-    expected = {
-        "macd": [(19800,22830),(25800,28830),(31800,34830),(37800,40830),(43800,46230)],
-        "bollinger_reversal": [(17400,20430),(23400,26430)],
-        "bollinger_breakout": [(15600,17430),(20400,23430),(26400,29430),(32400,35430),(38400,41430)],
-    }[name]
-    replay = report["replay"]
-    assert [(int(item["signal_id"]), item["closed_at"]) for item in replay["settlements"]] == expected
-    for item, (entry_bar, exited_at) in zip(replay["settlements"], expected):
-        entry = Decimal(str(closes[entry_bar // 300 - 1]))
-        exit_price = Decimal(str(closes[(exited_at - 30) // 300 - 1]))
-        net = (exit_price - entry - (entry + exit_price) * Decimal("0.0015")) / entry
-        assert Decimal(item["net_return"]) == net
-    assert replay["risk_state"]["entries_paused"] == (name == "bollinger_reversal")
-    if name == "bollinger_reversal":
-        assert replay["risk_state"]["pause_reason"] == "net_drawdown"
-        assert any(item["outcome"] == "risk_paused" for item in replay["outcomes"])
-    if name == "bollinger_breakout":
-        assert replay["open_signal"]["id"] == "44400"
-        assert replay["open_signal"]["lifecycle_status"] == "awaiting_entry"
-    else:
-        assert replay["open_signal"] is None
+    if stop_management is None:
+        expected = {
+            "macd": [(19800,22830),(25800,28830),(31800,34830),(37800,40830),(43800,46230)],
+            "bollinger_reversal": [(17400,20430),(23400,26430)],
+            "bollinger_breakout": [(15600,17430),(20400,23430),(26400,29430),(32400,35430),(38400,41430)],
+        }[name]
+        replay = report["replay"]
+        assert [(int(item["signal_id"]), item["closed_at"]) for item in replay["settlements"]] == expected
+        for item, (entry_bar, exited_at) in zip(replay["settlements"], expected):
+            entry = Decimal(str(closes[entry_bar // 300 - 1]))
+            exit_price = Decimal(str(closes[(exited_at - 30) // 300 - 1]))
+            net = (exit_price - entry - (entry + exit_price) * Decimal("0.0015")) / entry
+            assert Decimal(item["net_return"]) == net
+        assert replay["risk_state"]["entries_paused"] == (name == "bollinger_reversal")
+        if name == "bollinger_reversal":
+            assert replay["risk_state"]["pause_reason"] == "net_drawdown"
+            assert any(item["outcome"] == "risk_paused" for item in replay["outcomes"])
+        if name == "bollinger_breakout":
+            assert replay["open_signal"]["id"] == "44400"
+            assert replay["open_signal"]["lifecycle_status"] == "awaiting_entry"
+        else:
+            assert replay["open_signal"] is None
     run = request["backtest"]
     run["params_snapshot"] = {key: run[key] for key in ("risk_policy", "signal_execution")}
     return {"run": run, "report": report}
