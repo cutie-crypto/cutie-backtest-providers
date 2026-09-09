@@ -14,6 +14,8 @@ from funding_history import funding_paid
 from strategy_risk_accounting import RiskState, completed_signal_trade, settle_risk
 from strategy_signal_replay import (
     advance_limit_signal,
+    apply_managed_stop,
+    validate_management_candles,
     validate_new_limit_signal,
     validate_observation_candles,
 )
@@ -35,6 +37,8 @@ def replay_cycle(
     cooldown_seconds,
     day_offset_seconds,
     external_entry_times=(),
+    stop_rules=None,
+    management_candles=None,
 ):
     validate_observation_candles(candles)
     timeline = _validated_timeline(
@@ -50,6 +54,17 @@ def replay_cycle(
         day_offset_seconds,
         funding_history,
     )
+    if (stop_rules is None) != (management_candles is None):
+        raise ValueError("stop rules require complete strategy bar evidence")
+    if stop_rules is not None:
+        from strategy_dynamic_stop import StopRules
+
+        if not isinstance(stop_rules, StopRules):
+            raise ValueError("invalid stop rules")
+        management = validate_management_candles(candles, management_candles)
+        timeline.extend((bar.close_time + 1, 0.5, i, bar) for i, bar in enumerate(management.values()))
+    stop_state = None
+    stop_updates = []
     state, active, last_entry = RiskState(), None, None
     strategy_days, author_days = {}, {}
 
@@ -68,6 +83,12 @@ def replay_cycle(
             observation = advance_limit_signal(active, item)
             active = observation["signal"]
             event_log.extend(observation["events"])
+        elif kind == 0.5:
+            if active is not None and active.get("status") == "active":
+                active, stop_state, update = apply_managed_stop(active, stop_state, stop_rules, item)
+                if update is not None:
+                    stop_updates.append({"signal_id": str(active["id"]), **update})
+            continue
         elif kind == 1:
             author_days[day(at)] = author_days.get(day(at), 0) + 1
             continue
@@ -145,13 +166,18 @@ def replay_cycle(
                 }
             )
         active = None
-    return {
+        stop_state = None
+    result = {
         "outcomes": outcomes,
         "settlements": settlements,
         "events": event_log,
         "risk_state": asdict(state),
         "open_signal": active,
     }
+    if stop_rules is not None:
+        result["stop_updates"] = stop_updates
+        result["stop_state"] = asdict(stop_state) if stop_state else None
+    return result
 
 
 def _validated_timeline(

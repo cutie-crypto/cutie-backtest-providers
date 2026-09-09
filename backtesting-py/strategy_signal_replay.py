@@ -136,37 +136,11 @@ def replay_managed_limit_signal(
         events.extend(result["events"])
         if state.get("status") != "active":
             continue
-        if stop_state is None:
-            stop_state = initial_stop_state(
-                direction=state["direction"],
-                entry_price=Decimal(str(state["entry_price"])),
-                initial_stop=Decimal(str(state["stop_loss"])),
-                entry_at=state["entry_hit_at"],
-            )
         bar = management.get(candle.close_time)
-        if bar is None:
-            continue
-        previous = stop_state
-        stop_state = advance_stop(
-            stop_state,
-            rules,
-            open_at=bar.open_time,
-            close_at=bar.close_time,
-            high=bar.high,
-            low=bar.low,
-            close=bar.close,
-        )
-        if stop_state.effective_stop != previous.effective_stop:
-            updates.append(
-                {
-                    "observed_at": bar.close_time,
-                    "effective_from": bar.close_time + 1,
-                    "previous_stop": previous.effective_stop,
-                    "stop_loss": stop_state.effective_stop,
-                    "breakeven_active": stop_state.breakeven_active,
-                }
-            )
-            state["stop_loss"] = stop_state.effective_stop
+        if bar is not None:
+            state, stop_state, update = apply_managed_stop(state, stop_state, rules, bar)
+            if update is not None:
+                updates.append(update)
     return {
         "signal": state,
         "events": events,
@@ -205,3 +179,32 @@ def validate_management_candles(observations: list[Candle], bars: list[Candle]) 
     ):
         raise ValueError("management bars do not cover the observation range")
     return {bar.close_time: bar for bar in bars}
+
+
+def apply_managed_stop(signal: dict, stop_state, rules: StopRules, bar: Candle):
+    """Shared post-observation step for single-signal and campaign replay."""
+    state = deepcopy(signal)
+    if state.get("status") != "active":
+        return state, stop_state, None
+    if stop_state is None:
+        stop_state = initial_stop_state(
+            direction=state["direction"],
+            entry_price=Decimal(str(state["entry_price"])),
+            initial_stop=Decimal(str(state["stop_loss"])),
+            entry_at=state["entry_hit_at"],
+        )
+    previous = stop_state
+    stop_state = advance_stop(
+        stop_state, rules, open_at=bar.open_time, close_at=bar.close_time, high=bar.high, low=bar.low, close=bar.close
+    )
+    update = None
+    if stop_state.effective_stop != previous.effective_stop:
+        update = {
+            "observed_at": bar.close_time,
+            "effective_from": bar.close_time + 1,
+            "previous_stop": previous.effective_stop,
+            "stop_loss": stop_state.effective_stop,
+            "breakeven_active": stop_state.breakeven_active,
+        }
+        state["stop_loss"] = stop_state.effective_stop
+    return state, stop_state, update
