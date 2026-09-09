@@ -9,13 +9,14 @@ prices. The entry price seeds the extreme until a full post-entry bar closes.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 
 @dataclass(frozen=True)
 class StopRules:
     trailing_pct: Decimal | None = None
     breakeven: bool = False
+    price_tick: Decimal | None = None
 
     def __post_init__(self):
         if type(self.breakeven) is not bool:
@@ -28,6 +29,10 @@ class StopRules:
             raise ValueError("trailing percentage must be between zero and 100")
         if self.trailing_pct is None and not self.breakeven:
             raise ValueError("at least one stop management rule is required")
+        if self.price_tick is not None and (
+            not isinstance(self.price_tick, Decimal) or not self.price_tick.is_finite() or self.price_tick <= 0
+        ):
+            raise ValueError("price tick must be a finite positive decimal")
 
 
 @dataclass(frozen=True)
@@ -83,4 +88,13 @@ def advance_stop(
     active = state.breakeven_active or (rules.breakeven and reached)
     if active:
         candidate = tighten(candidate, state.entry_price)
+    if rules.price_tick is not None and candidate != state.effective_stop:
+        # Tick conversion is part of the replay rule, never an App-only change.
+        # Long rounds up and short down, preserving the shared tightening rule.
+        rounded = (candidate / rules.price_tick).to_integral_value(
+            rounding=ROUND_CEILING if long else ROUND_FLOOR
+        ) * rules.price_tick
+        if rounded <= 0:
+            raise ValueError("price tick cannot represent a positive stop")
+        candidate = tighten(state.effective_stop, rounded)
     return replace(state, effective_stop=candidate, extreme=extreme, breakeven_active=active, last_bar_close=close_at)

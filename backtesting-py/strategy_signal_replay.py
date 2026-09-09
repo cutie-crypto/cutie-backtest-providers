@@ -237,7 +237,11 @@ def managed_cycle_options(policy: dict, candles: list[Candle], step: int) -> dic
         )
     pct = management["trailing_pct"]
     return {
-        "stop_rules": StopRules(None if pct is None else Decimal(pct), management["breakeven"]),
+        "stop_rules": StopRules(
+            None if pct is None else Decimal(pct),
+            management["breakeven"],
+            Decimal(management["price_tick"]) if "price_tick" in management else None,
+        ),
         "management_candles": bars,
     }
 

@@ -56,7 +56,7 @@ def validate_execution_policy(raw: object) -> dict:
     result = {**raw, "sl_tp_rule": normalized}
     if "stop_management" in raw:
         management = raw["stop_management"]
-        if not isinstance(management, dict) or set(management) != {
+        if not isinstance(management, dict) or set(management) - {"price_tick"} != {
             "trailing_pct",
             "breakeven",
             "update_timeframe",
@@ -73,8 +73,13 @@ def validate_execution_policy(raw: object) -> dict:
         pct = None if management["trailing_pct"] is None else _positive(management["trailing_pct"])
         from strategy_dynamic_stop import StopRules
 
-        StopRules(None if pct is None else Decimal(pct), management["breakeven"])
+        tick = _positive(management["price_tick"]) if "price_tick" in management else None
+        StopRules(
+            None if pct is None else Decimal(pct), management["breakeven"], None if tick is None else Decimal(tick)
+        )
         result["stop_management"] = {**management, "trailing_pct": pct}
+        if tick is not None:
+            result["stop_management"]["price_tick"] = tick
     return result
 
 

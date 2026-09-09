@@ -5,8 +5,10 @@ from decimal import Decimal
 RULES = {"trailing_pct": "3", "breakeven": True, "update_timeframe": "strategy", "entry_bar": "exclude", "effective_from": "next_bar"}
 
 @pytest.mark.parametrize("name,params", CASES)
-def test_managed_http_report(monkeypatch, tmp_path, name, params):
-    fixture = run_phase5_http(monkeypatch, tmp_path, name, params, RULES)
+@pytest.mark.parametrize("tick", [None, "0.1"])
+def test_managed_http_report(monkeypatch, tmp_path, name, params, tick):
+    rules = RULES if tick is None else {**RULES, "price_tick": tick}
+    fixture = run_phase5_http(monkeypatch, tmp_path, name, params, rules)
     replay = fixture["report"]["replay"]
     assert all(event["evidence_source"] in ("system", "okx_spot") for event in replay["events"])
     assert replay["stop_updates"]
@@ -15,3 +17,5 @@ def test_managed_http_report(monkeypatch, tmp_path, name, params):
     assert all(update["effective_from"] == update["observed_at"] + 1 for update in replay["stop_updates"])
     assert len(replay["settlements"]) == 5
     assert len(replay["stop_updates"]) == 5
+    if tick is not None:
+        assert all(Decimal(str(update["stop_loss"])) % Decimal(tick) == 0 for update in replay["stop_updates"])
