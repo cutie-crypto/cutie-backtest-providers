@@ -11,6 +11,8 @@ from strategy_sl_tp_kernel import compute_leg
 
 
 def generate_intents(*, bars, evaluator, params, direction, leverage, symbol, execution_policy, start_at):
+    if evaluator == "cci_rsi" and params.get("direction", "both") != direction:
+        raise ValueError("CCI+RSI requires an explicit matching single-side backtest")
     if evaluator == "breakout" and params.get("direction", "long") != direction:
         raise ValueError("Donchian direction differs from the requested single-side backtest")
     policy = validate_execution_policy(execution_policy)
