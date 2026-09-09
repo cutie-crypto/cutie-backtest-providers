@@ -69,3 +69,22 @@ def test_intent_probe_still_detects_bound_requests():
         "result_contract",
     ):
         assert is_strategy_execution_intent({key: {}}) is True
+
+
+def test_oversized_risk_evidence_is_explicit_failure_not_truncated():
+    report = {'strategy_risk_result': {'payload': {'rows': ['资金费'] * 30000}, 'sha256': 'a' * 64}}
+    response = provider._bounded_template_response('bounded', {'result_status':'success', 'raw_report':report})
+    body = _body_of(response)
+    assert body['result_status'] == 'failed'
+    assert body['error_type'] == 'INVALID_PARAMS'
+    assert 'raw_report' in body['error_message'] and 'shorten' in body['error_message']
+    assert len(report['strategy_risk_result']['payload']['rows']) == 30000
+    assert len(json.dumps(body['raw_report']).encode()) < 262144
+
+
+def test_callback_field_size_boundaries_use_utf8_bytes():
+    # Quotes count as two bytes; ASCII fits exactly, multibyte text does not.
+    valid = {'raw_report': 'x' * (262144 - 2)}
+    assert _body_of(provider._bounded_template_response('boundary', valid)) == valid
+    invalid = {'raw_report': 'x' * (262144 - 2) + '中'}
+    assert _body_of(provider._bounded_template_response('boundary', invalid))['result_status'] == 'failed'

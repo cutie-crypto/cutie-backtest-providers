@@ -3172,7 +3172,7 @@ async def run_backtest(
             executed_name,
         )
 
-        return JSONResponse(content=_json_safe({
+        response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
             "provider_name": PROVIDER_NAME,
@@ -3238,11 +3238,30 @@ async def run_backtest(
                     "cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
                 },
             },
-        }))
+        })
+        return _bounded_template_response(run_id, response_body)
 
     except Exception as e:
         logger.exception("Result post-processing failed")
         return _business_failure(run_id, "ENGINE_ERROR", f"Result processing failed: {e}")
+
+
+def _bounded_template_response(run_id, body):
+    """Never truncate signed evidence; return a submit-able failure if too large.
+
+    Matches legacy callback field limits in StrategyBacktestService. JSON uses
+    UTF-8 compact encoding, like connector JSON.stringify; individual fields are
+    checked because the callback sends each as a separate FormData string.
+    """
+    for field, limit in {"metrics": 262144, "equity_curve": 262144, "trades": 262144,
+                         "assumptions": 262144, "limitations": 262144,
+                         "raw_report": 262144, "data_manifest": 8192}.items():
+        if len(json.dumps(body.get(field), ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > limit:
+            return _business_failure(
+                run_id, "INVALID_PARAMS",
+                f"Complete {field} evidence exceeds callback limit ({limit} bytes); shorten the backtest range.",
+            )
+    return JSONResponse(content=body)
 
 
 # ---------------------------------------------------------------------------
