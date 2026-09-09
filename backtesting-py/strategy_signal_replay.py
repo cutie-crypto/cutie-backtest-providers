@@ -9,6 +9,7 @@ from dataclasses import asdict
 from decimal import Decimal
 
 from signal_lifecycle_kernel import Candle, SignalLifecycleKernel
+from strategy_dynamic_stop import StopRules, advance_stop, initial_stop_state
 
 
 def validate_limit_signal(signal: dict, candles: list[Candle]) -> dict:
@@ -112,3 +113,95 @@ def replay_limit_signal(signal: dict, candles: list[Candle]) -> dict:
         state = result["signal"]
         events.extend(result["events"])
     return {"signal": state, "events": events, "terminal": state.get("status") == "closed"}
+
+
+def replay_managed_limit_signal(
+    signal: dict, candles: list[Candle], *, rules: StopRules, management_candles: list[Candle]
+) -> dict:
+    """Replay managed stops with separate closed strategy bars and 5m execution.
+
+    Each management bar must be exactly reconstructible from the observations;
+    this prevents different price sources or timeframes from silently changing
+    the stop. The observation at its close is processed with the OLD stop first.
+    """
+    state = validate_limit_signal(signal, candles)
+    management = validate_management_candles(candles, management_candles)
+    stop_state = None
+    events, updates = [], []
+    for candle in candles:
+        if state.get("status") == "closed":
+            break
+        result = advance_limit_signal(state, candle)
+        state = result["signal"]
+        events.extend(result["events"])
+        if state.get("status") != "active":
+            continue
+        if stop_state is None:
+            stop_state = initial_stop_state(
+                direction=state["direction"],
+                entry_price=Decimal(str(state["entry_price"])),
+                initial_stop=Decimal(str(state["stop_loss"])),
+                entry_at=state["entry_hit_at"],
+            )
+        bar = management.get(candle.close_time)
+        if bar is None:
+            continue
+        previous = stop_state
+        stop_state = advance_stop(
+            stop_state,
+            rules,
+            open_at=bar.open_time,
+            close_at=bar.close_time,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+        )
+        if stop_state.effective_stop != previous.effective_stop:
+            updates.append(
+                {
+                    "observed_at": bar.close_time,
+                    "effective_from": bar.close_time + 1,
+                    "previous_stop": previous.effective_stop,
+                    "stop_loss": stop_state.effective_stop,
+                    "breakeven_active": stop_state.breakeven_active,
+                }
+            )
+            state["stop_loss"] = stop_state.effective_stop
+    return {
+        "signal": state,
+        "events": events,
+        "terminal": state.get("status") == "closed",
+        "stop_updates": updates,
+        "stop_state": asdict(stop_state) if stop_state else None,
+    }
+
+
+def validate_management_candles(observations: list[Candle], bars: list[Candle]) -> dict[int, Candle]:
+    if not bars:
+        raise ValueError("closed strategy bars required for stop management")
+    by_open = {bar.open_time: index for index, bar in enumerate(observations)}
+    period = bars[0].close_time + 1 - bars[0].open_time
+    if period < 300 or period % 300:
+        raise ValueError("management timeframe must be a multiple of 5m")
+    previous = None
+    for bar in bars:
+        if bar.close_time + 1 - bar.open_time != period or (previous is not None and bar.open_time != previous + 1):
+            raise ValueError("management bars must be contiguous")
+        index = by_open.get(bar.open_time)
+        if index is None:
+            raise ValueError("management bar lacks observation coverage")
+        parts = observations[index : index + period // 300]
+        if not parts or parts[-1].close_time != bar.close_time:
+            raise ValueError("management bar lacks observation coverage")
+        expected = (parts[0].open, max(part.high for part in parts), min(part.low for part in parts), parts[-1].close)
+        if (bar.open, bar.high, bar.low, bar.close) != expected:
+            raise ValueError("management OHLC differs from execution observations")
+        previous = bar.close_time
+    # Partial boundary bars may be absent, but no complete interior bar may be
+    # omitted; otherwise later updates could rely on an incomplete extreme.
+    if (
+        bars[0].open_time - observations[0].open_time >= period
+        or observations[-1].close_time - bars[-1].close_time >= period
+    ):
+        raise ValueError("management bars do not cover the observation range")
+    return {bar.close_time: bar for bar in bars}
