@@ -14,7 +14,7 @@ SCHEMA = "cutie.strategy_signal_execution.v1"
 
 
 def validate_execution_policy(raw: object) -> dict:
-    if not isinstance(raw, dict) or set(raw) != {
+    if not isinstance(raw, dict) or set(raw) - {"stop_management"} != {
         "schema",
         "reference_price",
         "entry_mode",
@@ -53,7 +53,29 @@ def validate_execution_policy(raw: object) -> dict:
             normalized[name] = {"type": kind, "period": rule["period"], "multiplier": _positive(rule["multiplier"])}
         else:
             raise ValueError("unsupported exit rule")
-    return {**raw, "sl_tp_rule": normalized}
+    result = {**raw, "sl_tp_rule": normalized}
+    if "stop_management" in raw:
+        management = raw["stop_management"]
+        if not isinstance(management, dict) or set(management) != {
+            "trailing_pct",
+            "breakeven",
+            "update_timeframe",
+            "entry_bar",
+            "effective_from",
+        }:
+            raise ValueError("stop management requires complete frozen rules")
+        if (
+            management["update_timeframe"] != "strategy"
+            or management["entry_bar"] != "exclude"
+            or management["effective_from"] != "next_bar"
+        ):
+            raise ValueError("unsupported stop management timing")
+        pct = None if management["trailing_pct"] is None else _positive(management["trailing_pct"])
+        from strategy_dynamic_stop import StopRules
+
+        StopRules(None if pct is None else Decimal(pct), management["breakeven"])
+        result["stop_management"] = {**management, "trailing_pct": pct}
+    return result
 
 
 def _positive(value: object) -> str:

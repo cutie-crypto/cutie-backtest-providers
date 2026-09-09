@@ -10,6 +10,7 @@ from strategy_entry_evaluators import Bar
 from strategy_execution_policy import requested_signal_execution
 from strategy_intent_replay import generate_intents
 from strategy_cycle_replay import replay_cycle
+from strategy_signal_replay import managed_cycle_options
 
 
 def build_signal_report(
@@ -119,7 +120,8 @@ def build_signal_report(
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
         funding_history=history,
-        **limits
+        **limits,
+        **managed_cycle_options(policy, candles, step)
     )
     evidence = {
         "schema": "cutie.strategy_signal_result.v1",
