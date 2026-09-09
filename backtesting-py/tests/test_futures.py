@@ -267,12 +267,16 @@ def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
         assert math.isfinite(body["raw_report"]["legacy_metrics"][metric_key])
 
 
-@pytest.mark.parametrize("with_risk", [False, True])
+@pytest.mark.parametrize("with_risk", [False, True, "oversized"])
 def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, tmp_path, with_risk):
     monkeypatch.setattr(provider, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(provider, "REPORTS_DIR", tmp_path / "reports")
     from backtesting import Backtest
     monkeypatch.setattr(Backtest, "plot", lambda self, **kwargs: None)
+
+    if with_risk == "oversized":
+        import strategy_risk_report
+        monkeypatch.setattr(strategy_risk_report, "build_risk_report", lambda *a, **kw: {"payload": "x" * 262144})
 
     step_ms = 3600 * 1000
     start_ms = 1_700_000_000_000
@@ -300,6 +304,12 @@ def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, t
 
     assert resp.status_code == 200
     body = resp.json()
+    if with_risk == "oversized":
+        assert body["result_status"] == "failed"
+        assert body["error_type"] == "INVALID_PARAMS"
+        assert "raw_report" in body["error_message"]
+        return
+
     assert body["result_status"] == "success", body
     assert constructed[0].options.get("options") is None
     assert constructed[0].last_symbol == "BTC/USDT"
