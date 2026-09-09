@@ -369,6 +369,88 @@ def evaluate_rsi_reversal_exit(
 MAX_CATCHUP_BARS = 200
 
 
+def macd_settings(params: dict[str, Any]) -> Optional[tuple[int, int, int]]:
+    fast, slow, signal = (params.get(key, default) for key, default in (("fast", 12), ("slow", 26), ("signal", 9)))
+    if any(type(value) is not int for value in (fast, slow, signal)) or not (2 <= fast < slow and signal >= 1):
+        return None
+    return fast, slow, signal
+
+
+def bollinger_settings(params: dict[str, Any]) -> Optional[tuple[int, float]]:
+    period, multiplier = params.get("bb_period", 20), params.get("bb_std", 2.0)
+    if type(period) is not int or period < 2 or type(multiplier) not in (int, float):
+        return None
+    if not math.isfinite(multiplier) or multiplier <= 0:
+        return None
+    return period, multiplier
+
+
+def _macd_trigger(params, bars, direction, *, exiting=False):
+    settings = macd_settings(params)
+    if direction != "long" or settings is None:
+        return None
+    fast, slow, signal_period = settings
+    if len(bars) < slow * 3 + signal_period + 1:
+        return None
+    closes = [bar.close for bar in bars]
+    macd = [a - b for a, b in zip(ema_series(closes, fast), ema_series(closes, slow))]
+    signal = ema_series(macd, signal_period)
+    if not all(math.isfinite(v) for v in macd[-2:] + signal[-2:]):
+        return None
+    # backtesting.lib.crossover uses strict comparison on both samples.
+    hit = (
+        (macd[-2] > signal[-2] and macd[-1] < signal[-1])
+        if exiting
+        else (macd[-2] < signal[-2] and macd[-1] > signal[-1])
+    )
+    indicators = {"macd": macd[-1], "signal": signal[-1], "close": closes[-1]}
+    return TriggerResult(direction, bars[-1].close_time, indicators, "exit" if exiting else "entry") if hit else None
+
+
+def evaluate_macd(params, bars, direction):
+    return _macd_trigger(params, bars, direction)
+
+
+def evaluate_macd_exit(params, bars, position_direction):
+    return _macd_trigger(params, bars, position_direction, exiting=True)
+
+
+def _bollinger_trigger(params, bars, direction, *, breakout=False, exiting=False):
+    settings = bollinger_settings(params)
+    if direction != "long" or settings is None or len(bars) < settings[0] + 1:
+        return None
+    period, multiplier = settings
+    closes = [bar.close for bar in bars[-period:]]
+    if not all(math.isfinite(value) for value in closes):
+        return None
+    mid = sum(closes) / period
+    sd = math.sqrt(sum((value - mid) ** 2 for value in closes) / period)
+    lower, upper = mid - multiplier * sd, mid + multiplier * sd
+    price = closes[-1]
+    if exiting:
+        hit = price < mid if breakout else price >= mid
+    else:
+        hit = price > upper if breakout else price < lower
+    indicators = {"close": price, "bb_mid": mid, "bb_lower": lower, "bb_upper": upper}
+    return TriggerResult(direction, bars[-1].close_time, indicators, "exit" if exiting else "entry") if hit else None
+
+
+def evaluate_bollinger_reversal(params, bars, direction):
+    return _bollinger_trigger(params, bars, direction)
+
+
+def evaluate_bollinger_reversal_exit(params, bars, position_direction):
+    return _bollinger_trigger(params, bars, position_direction, exiting=True)
+
+
+def evaluate_bollinger_breakout(params, bars, direction):
+    return _bollinger_trigger(params, bars, direction, breakout=True)
+
+
+def evaluate_bollinger_breakout_exit(params, bars, position_direction):
+    return _bollinger_trigger(params, bars, position_direction, breakout=True, exiting=True)
+
+
 Evaluator = Callable[[dict[str, Any], list[Bar], str], Optional[TriggerResult]]
 
 
@@ -380,6 +462,9 @@ class Evaluators:
 
 # 新增策略同时维护 required_warmup_bars；EMA 不登记 exit，沿用反向入场判定。
 EVALUATOR_REGISTRY: dict[str, Evaluators] = {
+    "macd": Evaluators(evaluate_macd, evaluate_macd_exit),
+    "bollinger_reversal": Evaluators(evaluate_bollinger_reversal, evaluate_bollinger_reversal_exit),
+    "bollinger_breakout": Evaluators(evaluate_bollinger_breakout, evaluate_bollinger_breakout_exit),
     "ma_cross": Evaluators(evaluate_ma_cross),
     "ema_cross": Evaluators(evaluate_ma_cross),
     "cci_rsi": Evaluators(evaluate_cci_rsi, evaluate_cci_rsi_exit),
@@ -405,6 +490,12 @@ def evaluate_exit(
 
 def required_warmup_bars(strategy_type: str, params: dict[str, Any]) -> Optional[int]:
     """判定器需要的最小 bar 数（对齐 provider 各工具的 `min_bars`）；strategy_type 未注册返回 None。"""
+    if strategy_type == "macd":
+        settings = macd_settings(params)
+        return settings[1] * 3 + settings[2] + 1 if settings else None
+    if strategy_type in {"bollinger_reversal", "bollinger_breakout"}:
+        settings = bollinger_settings(params)
+        return settings[0] + 1 if settings else None
     if strategy_type in ("ma_cross", "ema_cross"):
         ema_fast_n = int(params.get("ema_fast", 20) or 20)
         ema_slow_n = int(params.get("ema_slow", 60) or 60)
