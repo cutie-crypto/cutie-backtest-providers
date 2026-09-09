@@ -2275,6 +2275,10 @@ def _build_cci_rsi(params: dict[str, Any]) -> dict[str, Any]:
     if not (0 < rsi_oversold < rsi_overbought < 100):
         raise ValueError("INVALID_PARAMS:require 0 < rsi_oversold < rsi_overbought < 100")
 
+    direction = params.get("direction", "both")
+    if direction not in {"both", "long", "short"}:
+        raise ValueError("INVALID_PARAMS:direction must be both, long or short")
+
     from backtesting import Strategy
 
     class CciRsiStrategy(Strategy):
@@ -2299,9 +2303,9 @@ def _build_cci_rsi(params: dict[str, Any]) -> dict[str, Any]:
                 return
             # Dual-indicator mean-reversion, long & short (KOL 'CCI+RSI 双指标超买超卖').
             if not self.position:
-                if cci < cci_oversold and rsi < rsi_oversold:
+                if direction in {"both", "long"} and cci < cci_oversold and rsi < rsi_oversold:
                     self.buy()
-                elif cci > cci_overbought and rsi > rsi_overbought:
+                elif direction in {"both", "short"} and cci > cci_overbought and rsi > rsi_overbought:
                     self.sell()
             elif self.position.is_long:
                 if cci > 0 or rsi > 50:
@@ -2430,6 +2434,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": False,
         "build": _build_cci_rsi,
         "param_schema_properties": {
+            "direction": {"type": "string", "enum": ["both", "long", "short"], "default": "both"},
             "cci_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
             "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
             "cci_oversold": {"type": "number", "default": -100, "minimum": -500, "maximum": 0},
