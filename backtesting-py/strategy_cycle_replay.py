@@ -7,13 +7,16 @@ No end-of-data liquidation or automatic risk-cycle restoration is performed.
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import asdict
 from decimal import Decimal
 
 from funding_history import funding_paid
 from strategy_risk_accounting import RiskState, completed_signal_trade, settle_risk
-from strategy_signal_replay import advance_limit_signal, validate_limit_signal
+from strategy_signal_replay import (
+    advance_limit_signal,
+    validate_new_limit_signal,
+    validate_observation_candles,
+)
 
 
 def replay_cycle(
@@ -33,6 +36,7 @@ def replay_cycle(
     day_offset_seconds,
     external_entry_times=(),
 ):
+    validate_observation_candles(candles)
     timeline = _validated_timeline(
         intents,
         candles,
@@ -103,7 +107,7 @@ def replay_cycle(
             if reason:
                 outcomes.append({"intent_id": item["id"], "outcome": reason})
                 continue
-            active = validate_limit_signal(deepcopy(item["signal"]), candles)
+            active = validate_new_limit_signal(item["signal"], candles[0].open_time)
             if active["created_at"] != at:
                 raise ValueError("intent time differs from signal publication")
             last_entry = at

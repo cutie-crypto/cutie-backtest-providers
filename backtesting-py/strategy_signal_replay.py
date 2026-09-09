@@ -18,6 +18,12 @@ def validate_limit_signal(signal: dict, candles: list[Candle]) -> dict:
     uses the replay clock, never wall clock. Same-bar ambiguity uses the exact
     runtime detector, including its current TP preference. Input is not mutated.
     """
+    validate_observation_candles(candles)
+    return validate_new_limit_signal(signal, candles[0].open_time)
+
+
+def validate_new_limit_signal(signal: dict, observation_start: int) -> dict:
+    """Validate a new intent against an already validated observation range."""
     state = deepcopy(signal)
     if (
         state.get("entry_execution_mode") != "limit_only"
@@ -30,7 +36,7 @@ def validate_limit_signal(signal: dict, candles: list[Candle]) -> dict:
     ):
         raise ValueError("replay requires a new single-target limit signal")
     created_at = state.get("created_at")
-    if type(created_at) is not int or created_at < 0 or not candles or candles[0].open_time > created_at:
+    if type(created_at) is not int or created_at < 0 or observation_start > created_at:
         raise ValueError("observation evidence must cover signal creation")
     prices = [
         Decimal(str(state.get("entry_price"))),
@@ -42,6 +48,12 @@ def validate_limit_signal(signal: dict, candles: list[Candle]) -> dict:
     entry, stop, take = prices
     if not (stop < entry < take if state["direction"] == "long" else take < entry < stop):
         raise ValueError("signal exit prices conflict with direction")
+    return state
+
+
+def validate_observation_candles(candles: list[Candle]) -> None:
+    if not candles:
+        raise ValueError("observation evidence must cover signal creation")
     previous_close = None
     for candle in candles:
         if candle.close_time - candle.open_time != 299 or (
@@ -54,7 +66,6 @@ def validate_limit_signal(signal: dict, candles: list[Candle]) -> dict:
         if not candle.low <= min(candle.open, candle.close) <= max(candle.open, candle.close) <= candle.high:
             raise ValueError("invalid observation OHLC bounds")
         previous_close = candle.close_time
-    return state
 
 
 def advance_limit_signal(signal: dict, candle: Candle) -> dict:
