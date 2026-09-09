@@ -5,7 +5,7 @@ replayer must supply signal intents, rule exits and a complete candle manifest.
 """
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from decimal import Decimal
 
 from signal_lifecycle_kernel import Candle, SignalLifecycleKernel
@@ -69,7 +69,7 @@ def validate_observation_candles(candles: list[Candle]) -> None:
         previous_close = candle.close_time
 
 
-def advance_limit_signal(signal: dict, candle: Candle) -> dict:
+def advance_limit_signal(signal: dict, candle: Candle, *, observation_source=None) -> dict:
     """Advance already validated state by one observation, without input mutation."""
     state = deepcopy(signal)
     if state.get("status") == "closed":
@@ -77,6 +77,7 @@ def advance_limit_signal(signal: dict, candle: Candle) -> dict:
     events = []
     detected = SignalLifecycleKernel.detect_candle_events(state, [candle], now=candle.close_time + 1)
     for event in detected:
+        event = label_observation_event(event, observation_source)
         events.append(asdict(event))
         if event.event_type == "entry_hit":
             state.update(
@@ -239,3 +240,16 @@ def managed_cycle_options(policy: dict, candles: list[Candle], step: int) -> dic
         "stop_rules": StopRules(None if pct is None else Decimal(pct), management["breakeven"]),
         "management_candles": bars,
     }
+
+
+def label_observation_event(event, source):
+    """Use the frozen venue/market, retaining system-only expiry provenance."""
+    if source is None:
+        return event
+    import re
+
+    if not isinstance(source, str) or not re.fullmatch(r"[a-z0-9]+_(spot|futures)", source):
+        raise ValueError("invalid observation source")
+    if event.evidence_source == "system":
+        return event
+    return replace(event, evidence_source=source, evidence={**(event.evidence or {}), "provider": source})

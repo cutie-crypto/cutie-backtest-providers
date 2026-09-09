@@ -40,6 +40,7 @@ def replay_cycle(
     external_entry_times=(),
     stop_rules=None,
     management_candles=None,
+    observation_source=None,
 ):
     validate_observation_candles(candles)
     if stop_rules is not None:
@@ -99,7 +100,7 @@ def replay_cycle(
         if kind == 0:
             if active is None:
                 continue
-            observation = advance_limit_signal(active, item)
+            observation = advance_limit_signal(active, item, observation_source=observation_source)
             active = observation["signal"]
             event_log.extend(observation["events"])
         elif kind == 0.5:

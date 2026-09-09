@@ -8,6 +8,7 @@ RULES = {"trailing_pct": "3", "breakeven": True, "update_timeframe": "strategy",
 def test_managed_http_report(monkeypatch, tmp_path, name, params):
     fixture = run_phase5_http(monkeypatch, tmp_path, name, params, RULES)
     replay = fixture["report"]["replay"]
+    assert all(event["evidence_source"] in ("system", "okx_spot") for event in replay["events"])
     assert replay["stop_updates"]
     assert replay["settlements"]
     assert all(Decimal(str(update["stop_loss"])) >= Decimal(str(update["previous_stop"])) for update in replay["stop_updates"])

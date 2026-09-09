@@ -121,6 +121,7 @@ def build_signal_report(
         slippage_bps=slippage_bps,
         funding_history=history,
         **limits,
+        observation_source=f"{exchange}_{market}" if "stop_management" in policy else None,
         **managed_cycle_options(policy, candles, step)
     )
     evidence = {
