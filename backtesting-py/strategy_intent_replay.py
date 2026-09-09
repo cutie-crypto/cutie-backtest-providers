@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from strategy_entry_evaluators import evaluate_entry, evaluate_exit, required_warmup_bars
 from strategy_execution_policy import validate_execution_policy
-from strategy_sl_tp_kernel import compute_leg
+from strategy_sl_tp_kernel import align_initial_prices, compute_leg
 
 
 def generate_intents(*, bars, evaluator, params, direction, leverage, symbol, execution_policy, start_at):
@@ -74,6 +74,13 @@ def generate_intents(*, bars, evaluator, params, direction, leverage, symbol, ex
                 )
                 if stop is None or take is None or not stop.is_finite() or not take.is_finite():
                     raise ValueError("cannot price frozen exit rules")
+                reference, stop, take = align_initial_prices(
+                    direction=direction,
+                    entry=reference,
+                    stop=stop,
+                    take=take,
+                    price_tick=policy.get("stop_management", {}).get("price_tick"),
+                )
                 sid = str(bar.close_time)
                 intents.append(
                     {
