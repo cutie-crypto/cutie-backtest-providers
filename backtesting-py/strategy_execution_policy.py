@@ -4,6 +4,8 @@ An explicit profile is required: neither current ticker pricing nor the legacy
 provider's next-open market fills may be silently presented as this model.
 """
 
+from __future__ import annotations
+
 from decimal import Decimal, InvalidOperation
 
 from canonical_json import canonical_decimal_str, canonical_json_sha256
@@ -76,3 +78,28 @@ def require_matching_execution_policy(backtested: object, requested: object) -> 
     if canonical_json_sha256(policy) != execution_policy_hash(requested):
         raise ValueError("execution configuration changed; a new backtest is required")
     return policy
+
+
+def requested_signal_execution(raw: object, risk_policy: object) -> dict | None:
+    """Normalize the optional request before snapshotting, hashing and dispatch."""
+    if raw is None:
+        return None
+    if risk_policy is None:
+        raise ValueError("signal_execution requires risk_policy")
+    if not isinstance(raw, dict) or set(raw) != {"execution_policy", "cycle_limits"}:
+        raise ValueError("signal_execution requires execution_policy and cycle_limits")
+    limits = raw["cycle_limits"]
+    if not isinstance(limits, dict) or set(limits) != {
+        "daily_limit",
+        "author_daily_limit",
+        "cooldown_seconds",
+        "day_offset_seconds",
+    }:
+        raise ValueError("signal_execution requires complete cycle limits")
+    if any(type(value) is not int for value in limits.values()):
+        raise ValueError("signal_execution limits require integers")
+    if not 1 <= limits["daily_limit"] <= 10 or limits["author_daily_limit"] < 1 or limits["cooldown_seconds"] < 0:
+        raise ValueError("signal_execution limits outside supported range")
+    if not -86400 < limits["day_offset_seconds"] < 86400:
+        raise ValueError("signal_execution day offset outside supported range")
+    return {"execution_policy": validate_execution_policy(raw["execution_policy"]), "cycle_limits": dict(limits)}
