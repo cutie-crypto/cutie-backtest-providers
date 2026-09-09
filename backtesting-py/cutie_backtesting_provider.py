@@ -2146,6 +2146,10 @@ def _build_breakout(params: dict[str, Any]) -> dict[str, Any]:
     if exit_lookback < 1:
         raise ValueError(f"INVALID_PARAMS:exit_lookback must be >= 1 (got {exit_lookback})")
 
+    direction = params.get("direction", "long")
+    if direction not in ("long", "short"):
+        raise ValueError("INVALID_PARAMS:direction must be long or short")
+
     from backtesting import Strategy
 
     class BreakoutStrategy(Strategy):
@@ -2165,8 +2169,24 @@ def _build_breakout(params: dict[str, Any]) -> dict[str, Any]:
                 name=f"Donchian-LL({self._xlb})",
             )
 
+            if direction == "short":
+                self.entry_low = self.I(
+                    lambda x: pd.Series(x, dtype="float64").rolling(self._lb).min().shift(1).to_numpy(),
+                    self.data.Low, name=f"Donchian-Entry-LL({self._lb})",
+                )
+                self.exit_high = self.I(
+                    lambda x: pd.Series(x, dtype="float64").rolling(self._xlb).max().shift(1).to_numpy(),
+                    self.data.High, name=f"Donchian-Exit-HH({self._xlb})",
+                )
+
         def next(self):
             price = self.data.Close[-1]
+            if direction == "short":
+                if not self.position and price < self.entry_low[-1]:
+                    self.sell()
+                elif self.position and price > self.exit_high[-1]:
+                    self.position.close()
+                return
             if not self.position and price > self.hh[-1]:
                 self.buy()
             elif self.position and price < self.ll[-1]:
@@ -2174,7 +2194,7 @@ def _build_breakout(params: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "strategy": BreakoutStrategy,
-        "executed_name": f"Donchian Breakout ({lookback}/{exit_lookback})",
+        "executed_name": f"Donchian Breakout ({lookback}/{exit_lookback})" + (" Short" if direction == "short" else ""),
         # F1: exit channel uses exit_lookback; min_bars must cover the longer of the two.
         "min_bars": max(lookback, exit_lookback) + 1,
     }
@@ -2368,13 +2388,15 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "name": "Local Backtesting.py Donchian Breakout",
         "description": (
             "Breakout: buy when price breaks above the N-bar high (Donchian "
-            "channel), exit when it breaks below the M-bar low. Maps to KOL "
+            "channel), exit when it breaks below the M-bar low. Short direction mirrors the channels: "
+            "sell below prior N-bar low, exit above prior M-bar high. Maps to KOL "
             "'突破关键阻力位'. Channel uses prior bars only (no look-ahead)."
         ),
         "strategy_family": "breakout",
         "is_default": False,
         "build": _build_breakout,
         "param_schema_properties": {
+            "direction": {"type": "string", "enum": ["long", "short"], "default": "long"},
             "lookback": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
             "exit_lookback": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
@@ -2434,7 +2456,7 @@ def _validate_params_against_schema(
     """F2: enforce the catalog param_schema at runtime (single source of truth).
 
     additionalProperties:false (reject unknown keys) + type (integer/number/string,
-    bool excluded per project governance) + minimum/maximum. Returns an error
+    bool excluded per project governance) + minimum/maximum + enum. Returns an error
     message, or None if valid. Cross-field rules (fast<slow etc.) stay in build().
     """
     for key in params:
@@ -2457,6 +2479,8 @@ def _validate_params_against_schema(
         elif typ == "string":
             if not isinstance(val, str):
                 return f"{key} must be a string"
+        if "enum" in spec and val not in spec["enum"]:
+            return f"{key} must be one of {spec['enum']}"
     return None
 
 
@@ -2993,6 +3017,8 @@ async def run_backtest(
     schema_err = _validate_params_against_schema(params, tool_spec["param_schema_properties"])
     if schema_err:  # F2: enforce catalog schema at runtime (unknown key / type / bounds)
         return _validation_failure("INVALID_PARAMS", schema_err)
+    if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
+        return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:

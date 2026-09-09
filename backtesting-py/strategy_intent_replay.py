@@ -11,6 +11,8 @@ from strategy_sl_tp_kernel import compute_leg
 
 
 def generate_intents(*, bars, evaluator, params, direction, leverage, symbol, execution_policy, start_at):
+    if evaluator == "breakout" and params.get("direction", "long") != direction:
+        raise ValueError("Donchian direction differs from the requested single-side backtest")
     policy = validate_execution_policy(execution_policy)
     history_bars = policy["indicator_history_bars"]
     warmup = required_warmup_bars(evaluator, params)

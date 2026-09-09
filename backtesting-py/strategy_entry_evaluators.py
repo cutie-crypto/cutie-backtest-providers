@@ -270,11 +270,15 @@ def breakout_windows(params: dict[str, Any]) -> Optional[tuple[int, int]]:
     return lookback, exit_lookback
 
 
-def _donchian_indicators(params: dict[str, Any], bars: list[Bar]) -> Optional[dict[str, float]]:
+def _donchian_indicators(
+    params: dict[str, Any], bars: list[Bar], direction: str = "long"
+) -> Optional[dict[str, float]]:
     windows = breakout_windows(params)
     if windows is None or len(bars) < max(windows) + 1:
         return None
     lookback, exit_lookback = windows
+    if direction == "short":
+        lookback, exit_lookback = exit_lookback, lookback
     return {
         "donchian_high": max(bar.high for bar in bars[-1 - lookback : -1]),
         "donchian_low": min(bar.low for bar in bars[-1 - exit_lookback : -1]),
@@ -283,25 +287,37 @@ def _donchian_indicators(params: dict[str, Any], bars: list[Bar]) -> Optional[di
 
 
 def evaluate_breakout(params: dict[str, Any], bars: list[Bar], direction: str) -> Optional[TriggerResult]:
-    """provider _build_breakout：close > rolling_max(high, lookback).shift(1)。"""
-    if direction != "long":
-        # 做空留待四期。
+    """Mirror the prior-N entry channel for the explicitly backtested side."""
+    if direction not in ("long", "short") or params.get("direction", "long") != direction:
         return None
-    indicators = _donchian_indicators(params, bars)
-    if indicators is None or not indicators["close"] > indicators["donchian_high"]:
+    indicators = _donchian_indicators(params, bars, direction)
+    if indicators is None:
         return None
-    return TriggerResult("long", bars[-1].close_time, indicators)
+    hit = (
+        indicators["close"] > indicators["donchian_high"]
+        if direction == "long"
+        else indicators["close"] < indicators["donchian_low"]
+    )
+    return TriggerResult(direction, bars[-1].close_time, indicators) if hit else None
 
 
 def evaluate_breakout_exit(params: dict[str, Any], bars: list[Bar], position_direction: str) -> Optional[TriggerResult]:
-    """provider _build_breakout：close < rolling_min(low, exit_lookback).shift(1)。"""
-    if position_direction != "long":
-        # 做空留待四期。
+    """The prior-M opposite channel closes the current single-side position."""
+    if position_direction not in ("long", "short") or params.get("direction", "long") != position_direction:
         return None
-    indicators = _donchian_indicators(params, bars)
-    if indicators is None or not indicators["close"] < indicators["donchian_low"]:
+    indicators = _donchian_indicators(params, bars, position_direction)
+    if indicators is None:
         return None
-    return TriggerResult("short", bars[-1].close_time, indicators)
+    hit = (
+        indicators["close"] < indicators["donchian_low"]
+        if position_direction == "long"
+        else indicators["close"] > indicators["donchian_high"]
+    )
+    return (
+        TriggerResult("short" if position_direction == "long" else "long", bars[-1].close_time, indicators)
+        if hit
+        else None
+    )
 
 
 def rsi_reversal_settings(params: dict[str, Any]) -> Optional[tuple[int, float, float]]:
