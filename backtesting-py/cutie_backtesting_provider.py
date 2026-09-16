@@ -2478,12 +2478,12 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
                 "Public OHLCV fetched via ccxt; Cutie does not verify "
                 "coverage, gaps, or unclosed candles."
             ),
-            "coverage_hint": f"{', '.join(supported_symbols[:5])} 1h/4h/1d from exchange public API",
+            "coverage_hint": f"{', '.join(supported_symbols[:5])} 15m/1h/4h/1d from exchange public API",
             "external_unverified": True,
         },
         "supported_symbols": supported_symbols,
         "markets": ["spot", "futures"],
-        "timeframes": ["1h", "4h", "1d"],
+        "timeframes": ["15m", "1h", "4h", "1d"],
         "is_default": spec.get("is_default", False),
         "execution": {
             "mode": "sync",

@@ -200,7 +200,8 @@ def _synthetic_candles(start_ms: int, count: int, step_ms: int):
     return candles
 
 
-def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
+@pytest.mark.parametrize("timeframe, step_ms", [("1h", 3600 * 1000), ("15m", 900 * 1000)])
+def test_backtest_futures_happy_path(client, monkeypatch, tmp_path, timeframe, step_ms):
     monkeypatch.setattr(provider, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(provider, "REPORTS_DIR", tmp_path / "reports")
     # bt.plot()'s HTML report is unrelated to the futures feature under test and
@@ -209,7 +210,6 @@ def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
     from backtesting import Backtest
     monkeypatch.setattr(Backtest, "plot", lambda self, **kwargs: None)
 
-    step_ms = 3600 * 1000  # 1h
     start_ms = 1_700_000_000_000
     count = 40
     candles = _synthetic_candles(start_ms, count, step_ms)
@@ -225,7 +225,7 @@ def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
             "provider_params": {"ema_fast": 3, "ema_slow": 5, "exchange": "okx"},
             "symbol": "BTCUSDT",
             "market": "futures",
-            "timeframe": "1h",
+            "timeframe": timeframe,
             "start_at": start_at,
             "end_at": end_at,
             "initial_capital": "10000",
@@ -303,3 +303,8 @@ def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, t
     assert constructed[0].last_symbol == "BTC/USDT"
     assert body["assumptions"]["market"] == "spot"
     assert "funding_rate_included" not in body["limitations"]
+
+
+def test_ema_catalog_exposes_executable_15m(client):
+    tool = next(t for t in client.get("/catalog").json()["tools"] if t["tool_id"] == "local.backtesting_py.ema_cross")
+    assert "15m" in tool["timeframes"]
