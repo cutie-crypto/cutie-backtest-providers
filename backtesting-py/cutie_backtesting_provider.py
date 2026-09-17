@@ -1959,7 +1959,128 @@ def _rsi_series(values: Any, period: int):
     return rsi.fillna(50.0).to_numpy()
 
 
-def _build_ema_cross(params: dict[str, Any]) -> dict[str, Any]:
+# A6 二层（0917 会议清单）：给 7 个内置模板统一接固定百分比止损/止盈 + 固定仓位
+# （固定百分比仓位 / 固定名义金额）。范围明确排除 ATR、移动止损、保本止损、
+# fixed_risk（按风险算仓位）、加仓/金字塔——这些字段不出现在下面的 schema 里，
+# 闸门/build 都不认，交给 TokenBeep server 侧 backtest_tool_router.py 继续拒绝。
+_FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
+    "stop_loss_pct": {"type": "number", "minimum": 0, "maximum": 100},
+    "take_profit_pct": {"type": "number", "minimum": 0, "maximum": 100},
+    "position_size_pct": {"type": "number", "minimum": 0, "maximum": 100},
+    "position_size_notional": {"type": "number", "minimum": 0},
+}
+
+
+def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, float]:
+    """解析 stop_loss_pct/take_profit_pct/position_size_pct/position_size_notional。
+
+    全部缺省时返回空 dict（7 模板原有 buy()/sell() 行为逐字节不变——回归底线）。
+    非法值一律 ``INVALID_PARAMS:`` 前缀 ValueError，被 run_backtest() 的既有 except
+    分支捕获转成 400。
+    """
+    out: dict[str, float] = {}
+    for key in ("stop_loss_pct", "take_profit_pct"):
+        raw = params.get(key)
+        if raw is None:
+            continue
+        try:
+            pct = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"INVALID_PARAMS:{key} must be a number")
+        if not (0 < pct < 100):
+            raise ValueError(f"INVALID_PARAMS:{key} must be > 0 and < 100")
+        out[key] = pct / 100.0
+
+    size_pct = params.get("position_size_pct")
+    size_notional = params.get("position_size_notional")
+    if size_pct is not None and size_notional is not None:
+        raise ValueError(
+            "INVALID_PARAMS:position_size_pct and position_size_notional are mutually exclusive"
+        )
+    if size_pct is not None:
+        try:
+            pct = float(size_pct)
+        except (TypeError, ValueError):
+            raise ValueError("INVALID_PARAMS:position_size_pct must be a number")
+        if not (0 < pct <= 100):
+            raise ValueError("INVALID_PARAMS:position_size_pct must be > 0 and <= 100")
+        out["position_size_pct"] = pct / 100.0
+    if size_notional is not None:
+        try:
+            notional = float(size_notional)
+        except (TypeError, ValueError):
+            raise ValueError("INVALID_PARAMS:position_size_notional must be a number")
+        if notional <= 0:
+            raise ValueError("INVALID_PARAMS:position_size_notional must be > 0")
+        out["position_size_notional"] = notional
+    return out
+
+
+class _FixedRiskMixin:
+    """7 模板共用的固定百分比止损/止盈 + 固定仓位覆盖层（A6 二层）。
+
+    决策时钟只认收盘价（不看当根 High/Low 触碰）：``_risk_check_exit`` 在 next() 每根
+    K 线收盘后判定，同一根先判止损、后判止盈；命中即调用现有 position.close()，与
+    模板原有信号出场走同一条成交路径（backtesting.py 默认 trade_on_close=False，两者
+    都在下一根开盘价成交——不改动整条 Backtest 的全局成交时机，否则连 SL/TP 都没触发
+    的回归基线也会漂移）。position_size_notional 用起始权益比折回，抵消 provider 为
+    高价资产做的 internal_cash 放大，避免固定名义金额随放大倍数漂移。
+    """
+
+    _risk: dict[str, float] = {}
+    _initial_capital: float = 10000.0
+    _start_equity: float = 0.0
+
+    def _risk_init(self) -> None:
+        self._start_equity = self.equity
+
+    def _risk_entry_size(self) -> Optional[float]:
+        """None 表示未配置固定仓位——调用方必须不传 size=，直接吃库内 __FULL_EQUITY
+        哨兵值（该哨兵是 float 子类，真实值≈0.9999999999999998，不是字面 0.9999；
+        显式传 0.9999 会让仓位比原逻辑略小，破坏"未配置时逐字节不变"的回归底线）。
+        """
+        size_pct = self._risk.get("position_size_pct")
+        if size_pct is not None:
+            return size_pct
+        notional = self._risk.get("position_size_notional")
+        if notional is not None:
+            fraction = (notional * self._start_equity) / (self._initial_capital * self.equity)
+            return min(0.999999, max(1e-9, fraction))
+        return None
+
+    def _risk_buy(self) -> None:
+        size = self._risk_entry_size()
+        self.buy() if size is None else self.buy(size=size)
+
+    def _risk_sell(self) -> None:
+        size = self._risk_entry_size()
+        self.sell() if size is None else self.sell(size=size)
+
+    def _risk_check_exit(self) -> bool:
+        if not self.position or not self.trades:
+            return False
+        sl_pct = self._risk.get("stop_loss_pct")
+        tp_pct = self._risk.get("take_profit_pct")
+        if sl_pct is None and tp_pct is None:
+            return False
+        entry_price = self.trades[-1].entry_price
+        close = self.data.Close[-1]
+        is_long = self.position.is_long
+        if sl_pct is not None:
+            stop_price = entry_price * (1 - sl_pct) if is_long else entry_price * (1 + sl_pct)
+            if (is_long and close <= stop_price) or (not is_long and close >= stop_price):
+                self.position.close()
+                return True
+        if tp_pct is not None:
+            take_price = entry_price * (1 + tp_pct) if is_long else entry_price * (1 - tp_pct)
+            if (is_long and close >= take_price) or (not is_long and close <= take_price):
+                self.position.close()
+                return True
+        return False
+
+
+def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
     try:
         ema_fast = int(params.get("ema_fast", 20))
         ema_slow = int(params.get("ema_slow", 60))
@@ -1975,9 +2096,11 @@ def _build_ema_cross(params: dict[str, Any]) -> dict[str, Any]:
     from backtesting import Strategy
     from backtesting.lib import crossover
 
-    class EmaCrossStrategy(Strategy):
+    class EmaCrossStrategy(_FixedRiskMixin, Strategy):
         _ema_fast = ema_fast
         _ema_slow = ema_slow
+        _risk = risk
+        _initial_capital = initial_capital
 
         def init(self):
             close = self.data.Close
@@ -1991,10 +2114,13 @@ def _build_ema_cross(params: dict[str, Any]) -> dict[str, Any]:
                 close,
                 name=f"EMA({self._ema_slow})",
             )
+            self._risk_init()
 
         def next(self):
+            if self.position and self._risk_check_exit():
+                return
             if crossover(self.fast_ema, self.slow_ema):
-                self.buy()
+                self._risk_buy()
             elif crossover(self.slow_ema, self.fast_ema):
                 self.position.close()
 
@@ -2002,10 +2128,12 @@ def _build_ema_cross(params: dict[str, Any]) -> dict[str, Any]:
         "strategy": EmaCrossStrategy,
         "executed_name": f"EMA Cross ({ema_fast}/{ema_slow})",
         "min_bars": max(ema_fast, ema_slow) + 1,
+        "trade_on_close": bool(risk),
     }
 
 
-def _build_rsi_reversal(params: dict[str, Any]) -> dict[str, Any]:
+def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
     try:
         period = int(params.get("rsi_period", 14))
         oversold = float(params.get("oversold", 30))
@@ -2019,10 +2147,12 @@ def _build_rsi_reversal(params: dict[str, Any]) -> dict[str, Any]:
 
     from backtesting import Strategy
 
-    class RsiReversalStrategy(Strategy):
+    class RsiReversalStrategy(_FixedRiskMixin, Strategy):
         _period = period
         _oversold = oversold
         _overbought = overbought
+        _risk = risk
+        _initial_capital = initial_capital
 
         def init(self):
             self.rsi = self.I(
@@ -2030,10 +2160,13 @@ def _build_rsi_reversal(params: dict[str, Any]) -> dict[str, Any]:
                 self.data.Close,
                 name=f"RSI({self._period})",
             )
+            self._risk_init()
 
         def next(self):
+            if self.position and self._risk_check_exit():
+                return
             if not self.position and self.rsi[-1] < self._oversold:
-                self.buy()
+                self._risk_buy()
             elif self.position and self.rsi[-1] > self._overbought:
                 self.position.close()
 
@@ -2042,10 +2175,12 @@ def _build_rsi_reversal(params: dict[str, Any]) -> dict[str, Any]:
         "executed_name": f"RSI Reversal ({period}, {oversold:g}/{overbought:g})",
         # F4: Wilder EWM needs more than period+1 bars to converge; require a real warmup.
         "min_bars": 3 * period + 1,
+        "trade_on_close": bool(risk),
     }
 
 
-def _build_bollinger_reversal(params: dict[str, Any]) -> dict[str, Any]:
+def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
     try:
         period = int(params.get("bb_period", 20))
         std_mult = float(params.get("bb_std", 2.0))
@@ -2064,8 +2199,10 @@ def _build_bollinger_reversal(params: dict[str, Any]) -> dict[str, Any]:
         sd = s.rolling(period).std(ddof=0)
         return (ma - std_mult * sd).to_numpy()
 
-    class BollingerReversalStrategy(Strategy):
+    class BollingerReversalStrategy(_FixedRiskMixin, Strategy):
         _period = period
+        _risk = risk
+        _initial_capital = initial_capital
 
         def init(self):
             close = self.data.Close
@@ -2075,11 +2212,14 @@ def _build_bollinger_reversal(params: dict[str, Any]) -> dict[str, Any]:
                 name=f"BB-mid({self._period})",
             )
             self.lower = self.I(_lower_band, close, name="BB-lower")
+            self._risk_init()
 
         def next(self):
+            if self.position and self._risk_check_exit():
+                return
             price = self.data.Close[-1]
             if not self.position and price < self.lower[-1]:
-                self.buy()
+                self._risk_buy()
             elif self.position and price >= self.mid[-1]:
                 self.position.close()
 
@@ -2087,10 +2227,12 @@ def _build_bollinger_reversal(params: dict[str, Any]) -> dict[str, Any]:
         "strategy": BollingerReversalStrategy,
         "executed_name": f"Bollinger Reversal ({period}, {std_mult:g}sigma)",
         "min_bars": period + 1,
+        "trade_on_close": bool(risk),
     }
 
 
-def _build_bollinger_breakout(params: dict[str, Any]) -> dict[str, Any]:
+def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
     try:
         period = int(params.get("bb_period", 20))
         std_mult = float(params.get("bb_std", 2.0))
@@ -2109,8 +2251,10 @@ def _build_bollinger_breakout(params: dict[str, Any]) -> dict[str, Any]:
         sd = s.rolling(period).std(ddof=0)
         return (ma + std_mult * sd).to_numpy()
 
-    class BollingerBreakoutStrategy(Strategy):
+    class BollingerBreakoutStrategy(_FixedRiskMixin, Strategy):
         _period = period
+        _risk = risk
+        _initial_capital = initial_capital
 
         def init(self):
             close = self.data.Close
@@ -2120,11 +2264,14 @@ def _build_bollinger_breakout(params: dict[str, Any]) -> dict[str, Any]:
                 name=f"BB-mid({self._period})",
             )
             self.upper = self.I(_upper_band, close, name="BB-upper")
+            self._risk_init()
 
         def next(self):
+            if self.position and self._risk_check_exit():
+                return
             price = self.data.Close[-1]
             if not self.position and price > self.upper[-1]:
-                self.buy()
+                self._risk_buy()
             elif self.position and price < self.mid[-1]:
                 self.position.close()
 
@@ -2135,7 +2282,8 @@ def _build_bollinger_breakout(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_breakout(params: dict[str, Any]) -> dict[str, Any]:
+def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
     try:
         lookback = int(params.get("lookback", 20))
         exit_lookback = int(params.get("exit_lookback", 10))
@@ -2146,11 +2294,17 @@ def _build_breakout(params: dict[str, Any]) -> dict[str, Any]:
     if exit_lookback < 1:
         raise ValueError(f"INVALID_PARAMS:exit_lookback must be >= 1 (got {exit_lookback})")
 
+    direction = params.get("direction", "long")
+    if direction not in ("long", "short"):
+        raise ValueError("INVALID_PARAMS:direction must be long or short")
+
     from backtesting import Strategy
 
-    class BreakoutStrategy(Strategy):
+    class BreakoutStrategy(_FixedRiskMixin, Strategy):
         _lb = lookback
         _xlb = exit_lookback
+        _risk = risk
+        _initial_capital = initial_capital
 
         def init(self):
             # shift(1): the channel uses prior bars only, no look-ahead on the current bar.
@@ -2165,22 +2319,42 @@ def _build_breakout(params: dict[str, Any]) -> dict[str, Any]:
                 name=f"Donchian-LL({self._xlb})",
             )
 
+            if direction == "short":
+                self.entry_low = self.I(
+                    lambda x: pd.Series(x, dtype="float64").rolling(self._lb).min().shift(1).to_numpy(),
+                    self.data.Low, name=f"Donchian-Entry-LL({self._lb})",
+                )
+                self.exit_high = self.I(
+                    lambda x: pd.Series(x, dtype="float64").rolling(self._xlb).max().shift(1).to_numpy(),
+                    self.data.High, name=f"Donchian-Exit-HH({self._xlb})",
+                )
+            self._risk_init()
+
         def next(self):
+            if self.position and self._risk_check_exit():
+                return
             price = self.data.Close[-1]
+            if direction == "short":
+                if not self.position and price < self.entry_low[-1]:
+                    self._risk_sell()
+                elif self.position and price > self.exit_high[-1]:
+                    self.position.close()
+                return
             if not self.position and price > self.hh[-1]:
-                self.buy()
+                self._risk_buy()
             elif self.position and price < self.ll[-1]:
                 self.position.close()
 
     return {
         "strategy": BreakoutStrategy,
-        "executed_name": f"Donchian Breakout ({lookback}/{exit_lookback})",
+        "executed_name": f"Donchian Breakout ({lookback}/{exit_lookback})" + (" Short" if direction == "short" else ""),
         # F1: exit channel uses exit_lookback; min_bars must cover the longer of the two.
         "min_bars": max(lookback, exit_lookback) + 1,
     }
 
 
-def _build_macd(params: dict[str, Any]) -> dict[str, Any]:
+def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
     try:
         fast = int(params.get("fast", 12))
         slow = int(params.get("slow", 26))
@@ -2201,7 +2375,10 @@ def _build_macd(params: dict[str, Any]) -> dict[str, Any]:
         s = pd.Series(values, dtype="float64")
         return s.ewm(span=fast, adjust=False).mean() - s.ewm(span=slow, adjust=False).mean()
 
-    class MacdStrategy(Strategy):
+    class MacdStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
         def init(self):
             close = self.data.Close
             self.macd = self.I(lambda x: _macd_line(x).to_numpy(), close, name="MACD")
@@ -2210,10 +2387,13 @@ def _build_macd(params: dict[str, Any]) -> dict[str, Any]:
                 close,
                 name="Signal",
             )
+            self._risk_init()
 
         def next(self):
+            if self.position and self._risk_check_exit():
+                return
             if crossover(self.macd, self.signal):
-                self.buy()
+                self._risk_buy()
             elif crossover(self.signal, self.macd):
                 self.position.close()
 
@@ -2238,7 +2418,8 @@ def _cci_series(high: Any, low: Any, close: Any, period: int):
     return ((tp - sma) / (0.015 * mad)).to_numpy()
 
 
-def _build_cci_rsi(params: dict[str, Any]) -> dict[str, Any]:
+def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
     try:
         cci_period = int(params.get("cci_period", 20))
         rsi_period = int(params.get("rsi_period", 14))
@@ -2255,9 +2436,16 @@ def _build_cci_rsi(params: dict[str, Any]) -> dict[str, Any]:
     if not (0 < rsi_oversold < rsi_overbought < 100):
         raise ValueError("INVALID_PARAMS:require 0 < rsi_oversold < rsi_overbought < 100")
 
+    direction = params.get("direction", "both")
+    if direction not in {"both", "long", "short"}:
+        raise ValueError("INVALID_PARAMS:direction must be both, long or short")
+
     from backtesting import Strategy
 
-    class CciRsiStrategy(Strategy):
+    class CciRsiStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
         def init(self):
             self.cci = self.I(
                 lambda h, l, c: _cci_series(h, l, c, cci_period),
@@ -2271,18 +2459,22 @@ def _build_cci_rsi(params: dict[str, Any]) -> dict[str, Any]:
                 self.data.Close,
                 name=f"RSI({rsi_period})",
             )
+            self._risk_init()
 
         def next(self):
+            # 止损/止盈判定不依赖 CCI/RSI 是否已跑出有限值，保护不能被指标暖机期挡住。
+            if self.position and self._risk_check_exit():
+                return
             cci = self.cci[-1]
             rsi = self.rsi[-1]
             if not (math.isfinite(cci) and math.isfinite(rsi)):
                 return
             # Dual-indicator mean-reversion, long & short (KOL 'CCI+RSI 双指标超买超卖').
             if not self.position:
-                if cci < cci_oversold and rsi < rsi_oversold:
-                    self.buy()
-                elif cci > cci_overbought and rsi > rsi_overbought:
-                    self.sell()
+                if direction in {"both", "long"} and cci < cci_oversold and rsi < rsi_oversold:
+                    self._risk_buy()
+                elif direction in {"both", "short"} and cci > cci_overbought and rsi > rsi_overbought:
+                    self._risk_sell()
             elif self.position.is_long:
                 if cci > 0 or rsi > 50:
                     self.position.close()
@@ -2368,13 +2560,15 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "name": "Local Backtesting.py Donchian Breakout",
         "description": (
             "Breakout: buy when price breaks above the N-bar high (Donchian "
-            "channel), exit when it breaks below the M-bar low. Maps to KOL "
+            "channel), exit when it breaks below the M-bar low. Short direction mirrors the channels: "
+            "sell below prior N-bar low, exit above prior M-bar high. Maps to KOL "
             "'突破关键阻力位'. Channel uses prior bars only (no look-ahead)."
         ),
         "strategy_family": "breakout",
         "is_default": False,
         "build": _build_breakout,
         "param_schema_properties": {
+            "direction": {"type": "string", "enum": ["long", "short"], "default": "long"},
             "lookback": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
             "exit_lookback": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
@@ -2408,6 +2602,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "is_default": False,
         "build": _build_cci_rsi,
         "param_schema_properties": {
+            "direction": {"type": "string", "enum": ["both", "long", "short"], "default": "both"},
             "cci_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
             "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
             "cci_oversold": {"type": "number", "default": -100, "minimum": -500, "maximum": 0},
@@ -2418,6 +2613,15 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         },
     },
 }
+
+# A6 二层：固定止损/止盈/仓位对全部 7 个内置模板统一生效，直接合并进每个工具的
+# param_schema_properties（而不是逐个手写 7 遍），新工具接入 TOOL_SPECS 时自动带上。
+for _tool_spec in TOOL_SPECS.values():
+    _tool_spec["param_schema_properties"] = {
+        **_tool_spec["param_schema_properties"],
+        **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
+    }
+del _tool_spec
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
 
@@ -2434,7 +2638,7 @@ def _validate_params_against_schema(
     """F2: enforce the catalog param_schema at runtime (single source of truth).
 
     additionalProperties:false (reject unknown keys) + type (integer/number/string,
-    bool excluded per project governance) + minimum/maximum. Returns an error
+    bool excluded per project governance) + minimum/maximum + enum. Returns an error
     message, or None if valid. Cross-field rules (fast<slow etc.) stay in build().
     """
     for key in params:
@@ -2457,6 +2661,8 @@ def _validate_params_against_schema(
         elif typ == "string":
             if not isinstance(val, str):
                 return f"{key} must be a string"
+        if "enum" in spec and val not in spec["enum"]:
+            return f"{key} must be one of {spec['enum']}"
     return None
 
 
@@ -2993,10 +3199,12 @@ async def run_backtest(
     schema_err = _validate_params_against_schema(params, tool_spec["param_schema_properties"])
     if schema_err:  # F2: enforce catalog schema at runtime (unknown key / type / bounds)
         return _validation_failure("INVALID_PARAMS", schema_err)
+    if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
+        return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
-        built = tool_spec["build"](params)
+        built = tool_spec["build"](params, initial_capital=float(initial_capital))
     except ValueError as e:
         msg = str(e)
         if msg.startswith("INVALID_PARAMS:"):
@@ -3123,6 +3331,29 @@ async def run_backtest(
             df=df,
         )
 
+        signal_result = None
+        if bt_req.get("signal_execution") is not None:
+            from strategy_signal_report import build_signal_report
+            try:
+                signal_result = build_signal_report(
+                    request=bt_req["signal_execution"], risk_policy=bt_req.get("risk_policy"),
+                    tool_id=effective_tool_id, params=params, market=market, symbol=symbol,
+                    exchange=exchange_id, timeframe=timeframe,
+                    step=_timeframe_milliseconds(timeframe) // 1000,
+                    start_at=start_at, end_at=end_at, fee_bps=fee_bps,
+                    slippage_bps=slippage_bps, fetch_ohlcv=_fetch_ohlcv,
+                )
+            except ValueError as exc:
+                return _business_failure(run_id, "INVALID_PARAMS", str(exc))
+        risk_result = None
+        if bt_req.get("risk_policy") is not None and signal_result is None:
+            from strategy_risk_report import build_risk_report
+
+            risk_result = build_risk_report(
+                result_v2, bt_req["risk_policy"], market=market, symbol=symbol,
+                exchange=exchange_id, fee_bps=fee_bps, slippage_bps=slippage_bps,
+            )
+
         total_return_pct = _safe_float(stats, "Return [%]", 0.0)
         win_rate_pct = _safe_float(stats, "Win Rate [%]", 0.0)
         max_drawdown_pct = abs(_safe_float(stats, "Max. Drawdown [%]", 0.0))
@@ -3163,7 +3394,7 @@ async def run_backtest(
             executed_name,
         )
 
-        return JSONResponse(content=_json_safe({
+        response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
             "provider_name": PROVIDER_NAME,
@@ -3215,6 +3446,8 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
+                **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,
                 # 旧版展示性百分比指标（result.v2 迁移前的 metrics 形状），保留兼容旧
@@ -3228,11 +3461,30 @@ async def run_backtest(
                     "cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
                 },
             },
-        }))
+        })
+        return _bounded_template_response(run_id, response_body)
 
     except Exception as e:
         logger.exception("Result post-processing failed")
         return _business_failure(run_id, "ENGINE_ERROR", f"Result processing failed: {e}")
+
+
+def _bounded_template_response(run_id, body):
+    """Never truncate signed evidence; return a submit-able failure if too large.
+
+    Matches legacy callback field limits in StrategyBacktestService. JSON uses
+    UTF-8 compact encoding, like connector JSON.stringify; individual fields are
+    checked because the callback sends each as a separate FormData string.
+    """
+    for field, limit in {"metrics": 262144, "equity_curve": 262144, "trades": 262144,
+                         "assumptions": 262144, "limitations": 262144,
+                         "raw_report": 262144, "data_manifest": 8192}.items():
+        if len(json.dumps(body.get(field), ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > limit:
+            return _business_failure(
+                run_id, "INVALID_PARAMS",
+                f"Complete {field} evidence exceeds callback limit ({limit} bytes); shorten the backtest range.",
+            )
+    return JSONResponse(content=body)
 
 
 # ---------------------------------------------------------------------------
