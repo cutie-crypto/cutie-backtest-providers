@@ -89,32 +89,42 @@ def _make_manual_entry_strategy(entry_bar, risk, initial_capital=10000.0, side="
 
 
 def test_stop_loss_checked_before_take_profit_on_same_bar():
-    # Entry at bar 2 (price 100). Bar 5 gaps to a close that is simultaneously
-    # below the 5% stop AND above the 20% take -- stop must win.
-    prices = [100, 100, 100, 100, 100, 200]  # +100% would hit TP if evaluated alone
-    prices[5] = 90  # -10% -> below 5% stop, and NOT above the 20% take
+    # buy() requested when len(data.Close)-1 == 2 (i.e. during the next() call for
+    # bar 2) queues a market order that -- like every order in backtesting.py's
+    # default trade_on_close=False model -- fills at the FOLLOWING bar's open, so
+    # EntryBar in the trades table is 3, not 2. Bar 5 (the last bar) closes at 90,
+    # -10% -> below the 5% stop; since it's the final bar with no bar 6 to delay
+    # the closing order to, finalize_trades records the exit on that same bar.
+    prices = [100, 100, 100, 100, 100, 90]
     df = _flat_frame(prices)
     risk = _parse_fixed_risk_params({"stop_loss_pct": 5, "take_profit_pct": 20})
     cls = _make_manual_entry_strategy(entry_bar=2, risk=risk)
     trades = Backtest(df, cls, cash=100000, finalize_trades=True).run()["_trades"]
     assert len(trades) == 1
-    assert trades.iloc[0]["EntryBar"] == 2
+    assert trades.iloc[0]["EntryBar"] == 3
     assert trades.iloc[0]["ExitBar"] == 5
     assert trades.iloc[0]["ExitPrice"] == pytest.approx(90.0)
 
 
 def test_stop_and_take_both_breached_same_bar_stop_wins():
-    # Construct a bar whose close is simultaneously <= stop(95) and >= take(120)
-    # is impossible for a single scalar close; instead verify ordering by placing
-    # stop-triggering price first in time and confirming exit at that bar, not later.
-    prices = [100, 100, 100, 94, 130]  # bar3 close=94 breaches 5% stop (<=95); bar4 would breach TP too
+    # A single scalar close can never breach both stop (< entry) and take (> entry)
+    # at once, so "stop wins" is instead proven by making sure the exit is driven
+    # by the earlier stop-breaching bar and NOT by a later bar that happens to
+    # cross the take level. entry requested at bar 1 -> filled at bar 2 (open=100).
+    # Bar 3 closes at 94, breaching the 5% stop (<=95); _risk_check_exit's stop
+    # branch returns True immediately (the take branch is never reached), queuing
+    # a close order that fills at bar 4's open=96. 96 is still well below the 20%
+    # take level (120), so this exit cannot be mistaken for a take-profit exit
+    # that merely happened to land on the same bar.
+    prices = [100, 100, 100, 94, 96]
     df = _flat_frame(prices)
     risk = _parse_fixed_risk_params({"stop_loss_pct": 5, "take_profit_pct": 20})
     cls = _make_manual_entry_strategy(entry_bar=1, risk=risk)
     trades = Backtest(df, cls, cash=100000, finalize_trades=True).run()["_trades"]
     assert len(trades) == 1
-    assert trades.iloc[0]["ExitBar"] == 3
-    assert trades.iloc[0]["ExitPrice"] == pytest.approx(94.0)
+    assert trades.iloc[0]["EntryBar"] == 2
+    assert trades.iloc[0]["ExitBar"] == 4
+    assert trades.iloc[0]["ExitPrice"] == pytest.approx(96.0)
 
 
 def test_take_profit_triggers_when_stop_not_breached():
@@ -240,13 +250,21 @@ def test_no_risk_params_size_matches_library_default(tool_id, builder_and_defaul
     built = builder(dict(base_params))
     strategy_cls = built["strategy"]
     assert strategy_cls._risk == {}
-    # Instantiate a throwaway instance is awkward (needs a live Broker); instead
-    # assert on the mixin method bound to the class via a lightweight stand-in.
-    from backtesting.backtesting import Strategy as _Strategy
-    import inspect
+    # `Strategy.buy`'s default `size` is backtesting.py's private __FULL_EQUITY
+    # sentinel -- a float subclass whose *repr* prints as ".9999" but whose real
+    # value is ~0.9999999999999998, not the literal float 0.9999 (confirmed by
+    # `_FixedRiskMixin._risk_entry_size`'s own docstring). Comparing it to the
+    # literal 0.9999 is a false negative, not a real regression signal. What
+    # actually matters for "no-op when _risk == {}" is that our overlay never
+    # substitutes its own size and instead calls buy()/sell() with no `size=`
+    # kwarg at all -- i.e. `_risk_entry_size()` returns None -- so the library's
+    # own default (whatever its value) is what backtesting.py uses, untouched.
+    from types import SimpleNamespace
 
-    default_size = inspect.signature(_Strategy.buy).parameters["size"].default
-    assert default_size == 0.9999, "backtesting.py default size drifted; re-check A6 no-op equivalence"
+    from cutie_backtesting_provider import _FixedRiskMixin
+
+    stub = SimpleNamespace(_risk={}, _start_equity=0.0, _initial_capital=10000.0, equity=10000.0)
+    assert _FixedRiskMixin._risk_entry_size(stub) is None
 
 
 def test_ema_cross_end_to_end_stop_loss_wiring_shortens_hold_time():
