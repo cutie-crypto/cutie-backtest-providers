@@ -267,11 +267,16 @@ def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
         assert math.isfinite(body["raw_report"]["legacy_metrics"][metric_key])
 
 
-def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, tmp_path):
+@pytest.mark.parametrize("with_risk", [False, True, "oversized"])
+def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, tmp_path, with_risk):
     monkeypatch.setattr(provider, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(provider, "REPORTS_DIR", tmp_path / "reports")
     from backtesting import Backtest
     monkeypatch.setattr(Backtest, "plot", lambda self, **kwargs: None)
+
+    if with_risk == "oversized":
+        import strategy_risk_report
+        monkeypatch.setattr(strategy_risk_report, "build_risk_report", lambda *a, **kw: {"payload": "x" * 262144})
 
     step_ms = 3600 * 1000
     start_ms = 1_700_000_000_000
@@ -284,6 +289,7 @@ def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, t
 
     resp = client.post("/cutie/backtest", json={
         "backtest": {
+            **({"risk_policy": {"schema": "cutie.strategy_risk_policy.v1", "direction": "long", "leverage": 1}} if with_risk else {}),
             "run_id": "spot_run_1",
             "provider_tool_id": "local.backtesting_py.ema_cross",
             "provider_params": {"ema_fast": 3, "ema_slow": 5, "exchange": "okx"},
@@ -298,8 +304,23 @@ def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, t
 
     assert resp.status_code == 200
     body = resp.json()
+    if with_risk == "oversized":
+        assert body["result_status"] == "failed"
+        assert body["error_type"] == "INVALID_PARAMS"
+        assert "raw_report" in body["error_message"]
+        return
+
     assert body["result_status"] == "success", body
     assert constructed[0].options.get("options") is None
     assert constructed[0].last_symbol == "BTC/USDT"
     assert body["assumptions"]["market"] == "spot"
     assert "funding_rate_included" not in body["limitations"]
+
+    if with_risk:
+        from canonical_json import canonical_json_sha256
+        risk = body["raw_report"]["strategy_risk_result"]
+        assert risk["sha256"] == canonical_json_sha256(risk["payload"])
+        assert risk["payload"]["policy"]["loss_limit"] == 5
+    else:
+        assert "strategy_risk_result" not in body["raw_report"]
+    assert set(body["metrics"]) == {"total_return", "max_drawdown", "trade_count"}
