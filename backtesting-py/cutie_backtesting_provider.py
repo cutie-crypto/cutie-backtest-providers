@@ -106,6 +106,14 @@ CATALOG_TIMEFRAMES_EXCHANGE = ["15m", "30m", "1h", "4h", "1d", "1w"]
 # 这里取其中 15m 及以上，30m 中心行情没有，所以比交易所那份少一档。
 CATALOG_TIMEFRAMES_CENTRAL = ["15m", "1h", "4h", "1d", "1w"]
 
+# 目录还要声明单次回测最多取多少根 K 线：周期越短，同样的时间范围根数涨得越快，
+# 调用方（前端选时间范围、服务端兜底校验）得能提前算出「这个周期最多能回测多久」，
+# 而不是让用户点下去才失败。
+# 中心行情：cutie-server `services/backtest_data_source.py` 的 MAX_TOTAL_BARS 硬限制。
+CATALOG_MAX_BARS_CENTRAL = 5000
+# 交易所公开行情：没有硬限制，取执行超时（EXECUTION_TIMEOUT_MS）下能稳妥拉完并跑完的量。
+CATALOG_MAX_BARS_EXCHANGE = 20000
+
 BASE_DIR = Path(__file__).resolve().parent
 REPORTS_DIR = BASE_DIR / "reports"
 CACHE_DIR = BASE_DIR / "cache" / "ohlcv"
@@ -979,6 +987,7 @@ def _artifact_catalog_tool(
             "mode": "sync",
             "timeout_ms": EXECUTION_TIMEOUT_MS,
             "max_range_days": EXECUTION_MAX_RANGE_DAYS,
+            "max_bars": CATALOG_MAX_BARS_CENTRAL,
             # golden replay fans out one bound run per fixture symbol and
             # dispatches them together (S20: BTC+ETH) -- at 1 the second
             # sibling always dies with RUNNER_FAILURE. The async handler
@@ -2713,6 +2722,7 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
             "mode": "sync",
             "timeout_ms": EXECUTION_TIMEOUT_MS,
             "max_range_days": EXECUTION_MAX_RANGE_DAYS,
+            "max_bars": CATALOG_MAX_BARS_EXCHANGE,
             "max_parallel_runs": 1,
             "async_supported": False,
         },
