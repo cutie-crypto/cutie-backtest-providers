@@ -88,6 +88,24 @@ DEFAULT_SUPPORTED_SYMBOLS = (
 )
 EXECUTION_TIMEOUT_MS = 120000
 
+# 执行侧真正接受的周期（_validate_run_request 用这一份，别再各写各的）。
+EXECUTION_SUPPORTED_TIMEFRAMES = {
+    "1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M",
+}
+
+# 目录对外声明的周期。必须是 EXECUTION_SUPPORTED_TIMEFRAMES 的子集——前端按目录声明
+# 决定回测按钮能不能点，声明漏了就等于把能跑的策略挡在门外（0917 15m 草稿被误拦即此）。
+#
+# 下限取 15m 是产品决策，不是引擎限制：平台的用法是 KOL 发信号、用户跟单，行情延迟与
+# 滑点会吃掉更短周期的收益，15m 是业界公认跟单能承受的最短周期。1m/5m 引擎跑得动，
+# 但不对外开放，需要时把它加进来即可。
+CATALOG_TIMEFRAMES_EXCHANGE = ["15m", "30m", "1h", "4h", "1d", "1w"]
+
+# 平台中心行情（artifact / StrategySpec 编译器路径）只提供 1m/5m/15m/1h/4h/1d/1w 七档，
+# 见 cutie-server `services/backtest_data_source.py` 的 _TIMEFRAME_TO_INTERVAL；
+# 这里取其中 15m 及以上，30m 中心行情没有，所以比交易所那份少一档。
+CATALOG_TIMEFRAMES_CENTRAL = ["15m", "1h", "4h", "1d", "1w"]
+
 BASE_DIR = Path(__file__).resolve().parent
 REPORTS_DIR = BASE_DIR / "reports"
 CACHE_DIR = BASE_DIR / "cache" / "ohlcv"
@@ -955,7 +973,7 @@ def _artifact_catalog_tool(
         },
         "supported_symbols": supported_symbols,
         "markets": ["spot", "futures"],
-        "timeframes": ["1h", "1d"],
+        "timeframes": list(CATALOG_TIMEFRAMES_CENTRAL),
         "is_default": False,
         "execution": {
             "mode": "sync",
@@ -2684,12 +2702,12 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
                 "Public OHLCV fetched via ccxt; Cutie does not verify "
                 "coverage, gaps, or unclosed candles."
             ),
-            "coverage_hint": f"{', '.join(supported_symbols[:5])} 1h/4h/1d from exchange public API",
+            "coverage_hint": f"{', '.join(supported_symbols[:5])} {'/'.join(CATALOG_TIMEFRAMES_EXCHANGE)} from exchange public API",
             "external_unverified": True,
         },
         "supported_symbols": supported_symbols,
         "markets": ["spot", "futures"],
-        "timeframes": ["1h", "4h", "1d"],
+        "timeframes": list(CATALOG_TIMEFRAMES_EXCHANGE),
         "is_default": spec.get("is_default", False),
         "execution": {
             "mode": "sync",
@@ -3161,7 +3179,7 @@ async def run_backtest(
         )
 
     # --- Validate timeframe ---
-    supported_timeframes = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"}
+    supported_timeframes = EXECUTION_SUPPORTED_TIMEFRAMES
     if timeframe not in supported_timeframes:
         return _validation_failure(
             "TIMEFRAME_UNSUPPORTED",
