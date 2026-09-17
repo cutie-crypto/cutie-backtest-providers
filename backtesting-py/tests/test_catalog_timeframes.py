@@ -44,6 +44,21 @@ def test_catalog_declares_15m_for_copy_trading():
     assert "15m" in provider.CATALOG_TIMEFRAMES_CENTRAL
 
 
+def test_catalog_declares_max_bars_so_callers_can_derive_a_range_limit():
+    """周期越短、同样区间的根数越多，调用方要能提前算出上限，而不是让用户点了才失败。"""
+    symbols = ["BTCUSDT", "ETHUSDT"]
+
+    artifact_tool = provider._artifact_catalog_tool(symbols, None)
+    assert artifact_tool["execution"]["max_bars"] == provider.CATALOG_MAX_BARS_CENTRAL
+
+    tool_id, spec = next(iter(provider.TOOL_SPECS.items()))
+    exchange_tool = provider._catalog_tool(tool_id, spec, symbols)
+    assert exchange_tool["execution"]["max_bars"] == provider.CATALOG_MAX_BARS_EXCHANGE
+
+    # 中心行情那份必须跟 cutie-server 的 MAX_TOTAL_BARS 对齐，否则服务端会先于目录拒绝。
+    assert provider.CATALOG_MAX_BARS_CENTRAL == 5000
+
+
 def test_catalog_tools_use_the_shared_constants():
     symbols = ["BTCUSDT", "ETHUSDT"]
 
