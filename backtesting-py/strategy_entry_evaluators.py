@@ -477,8 +477,14 @@ def _roc_trigger(params, bars, direction, *, exiting=False):
     if len(bars) < period + 1:
         return None
     closes = [bar.close for bar in bars]
+    base = closes[-1 - period]
+    # provider `_build_roc` divides via pandas (0/0 -> NaN, x/0 -> inf, both filtered by
+    # isfinite()); a bare Python division raises ZeroDivisionError instead, so guard the
+    # denominator explicitly to stay behaviorally aligned (same as cci_series' mad==0 guard).
+    if base == 0 or not math.isfinite(base):
+        return None
     # provider `_build_roc`: (close / close.shift(n) - 1) * 100, only closed bars.
-    roc = (closes[-1] / closes[-1 - period] - 1) * 100
+    roc = (closes[-1] / base - 1) * 100
     if not math.isfinite(roc):
         return None
     # Strict comparisons -- threshold state, not a crossover event.

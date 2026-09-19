@@ -113,3 +113,16 @@ def test_roc_settings_rejects_exit_greater_than_entry():
     assert roc_settings(dict(entry_threshold=5, exit_threshold=10)) is None
     assert roc_settings(dict(entry_threshold=5, exit_threshold=5)) == (12, 5, 5)
     assert roc_settings(dict(roc_period=1)) is None
+
+
+def test_zero_close_denominator_returns_none_not_exception():
+    """Codex review 返修（P1 除零）：分母为 0（回看 bar 收盘价为 0）不得抛
+    ZeroDivisionError——按 CCI 的 mad==0 惯例返回 None，与 provider `_build_roc`
+    走 pandas 得 inf/nan 再 isfinite 过滤的行为对齐。"""
+    roc_period = 12
+    params = dict(roc_period=roc_period, entry_threshold=5, exit_threshold=0)
+    closes = [0.0] + [100.0] * roc_period  # bars[0].close == 0 -> denominator at bar[-1-period]
+    bars = _bars(closes)
+    assert len(bars) == roc_period + 1
+    assert evaluate_entry("roc", params, bars, "long") is None
+    assert evaluate_exit("roc", params, bars, "long") is None
