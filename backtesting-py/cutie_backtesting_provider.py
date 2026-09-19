@@ -2709,6 +2709,54 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
     }
 
 
+def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    try:
+        roc_period = int(params.get("roc_period", 12))
+        entry_threshold = float(params.get("entry_threshold", 5))
+        exit_threshold = float(params.get("exit_threshold", 0))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:roc_period/entry_threshold/exit_threshold must be numbers")
+    if roc_period < 2:
+        raise ValueError(f"INVALID_PARAMS:roc_period must be >= 2 (got {roc_period})")
+    if exit_threshold > entry_threshold:
+        raise ValueError("INVALID_PARAMS:exit_threshold must be <= entry_threshold")
+
+    from backtesting import Strategy
+
+    def _roc_series(values: Any) -> Any:
+        s = pd.Series(values, dtype="float64")
+        return ((s / s.shift(roc_period) - 1) * 100).to_numpy()
+
+    class RocStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            close = self.data.Close
+            self.roc = self.I(_roc_series, close, name=f"ROC({roc_period})")
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            value = self.roc[-1]
+            if not math.isfinite(value):
+                return
+            # Momentum threshold: strict > to enter, strict < to exit (not crossover —
+            # threshold state, not a level-cross event). Long only.
+            if not self.position and value > entry_threshold:
+                self._risk_buy()
+            elif self.position and value < exit_threshold:
+                self.position.close()
+
+    return {
+        "strategy": RocStrategy,
+        "executed_name": f"ROC ({roc_period}, entry={entry_threshold:g}, exit={exit_threshold:g})",
+        "min_bars": roc_period + 1,
+    }
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -2832,10 +2880,28 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    "local.backtesting_py.roc": {
+        "name": "Local Backtesting.py Momentum ROC Threshold",
+        "description": (
+            "Trend-following: go long while the N-bar rate of change is above the "
+            "entry threshold, exit while it falls below the exit threshold (threshold "
+            "state, not a crossover event). Suits trending markets — maps to KOL "
+            "'ROC / 动量 / 变动率'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_roc,
+        "param_schema_properties": {
+            "roc_period": {"type": "integer", "default": 12, "minimum": 2, "maximum": 200},
+            "entry_threshold": {"type": "number", "default": 5, "minimum": -100, "maximum": 100},
+            "exit_threshold": {"type": "number", "default": 0, "minimum": -100, "maximum": 100},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
 }
 
-# A6 二层：固定止损/止盈/仓位对全部 7 个内置模板统一生效，直接合并进每个工具的
-# param_schema_properties（而不是逐个手写 7 遍），新工具接入 TOOL_SPECS 时自动带上。
+# A6 二层：固定止损/止盈/仓位对全部 8 个内置模板统一生效，直接合并进每个工具的
+# param_schema_properties（而不是逐个手写 8 遍），新工具接入 TOOL_SPECS 时自动带上。
 for _tool_spec in TOOL_SPECS.values():
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
