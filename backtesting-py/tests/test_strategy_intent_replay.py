@@ -61,6 +61,18 @@ def test_first_enabled_bar_only_initializes_edge_state():
     assert not any(r["kind"] == "entry" for r in generate([103, 102, 100, 110, 111]))
 
 
+def test_roc_short_direction_is_explicitly_rejected_not_silently_empty():
+    """Codex review 返修（P3 方向守卫）：ROC 是 long-only（对齐 cci_rsi/breakout 的显式
+    方向守卫），direction="short" 必须报错，不能静默产出空信号列表。"""
+    with pytest.raises(ValueError, match="long-only"):
+        generate(
+            [100] * 13 + [110] * 5,
+            evaluator="roc",
+            params={"roc_period": 12, "entry_threshold": 5, "exit_threshold": 0},
+            direction="short",
+        )
+
+
 def test_missing_prehistory_is_not_silently_reseeded():
     with pytest.raises(ValueError, match="prehistory"):
         generate([100, 100, 100, 110], start_at=600)
