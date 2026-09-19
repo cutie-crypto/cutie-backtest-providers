@@ -609,3 +609,159 @@ def test_cache_lru_enforced(monkeypatch, tmp_path):
     remaining_names = {f.name for f in remaining}
     assert "file_0.json" not in remaining_names
     assert "file_1.json" not in remaining_names
+
+
+# ---------------------------------------------------------------------------
+# P1 治本：等分切片 + grid 对齐缺口判据 + 小样本下限
+# 生产 run 359532680989114368（1d×365 天）失败根因：365 mod 90 = 5 天的末片，
+# 期望按裸 (end-start)//step 算出 5 根，服务端起点非 UTC 零点实得 4 根，
+# 4 < 5*0.9=4.5 被判 data_gap 整段回退 ccxt，该 runtime ccxt 出口不通 -> 硬失败。
+# ---------------------------------------------------------------------------
+
+
+def _grid_items(start_ts: int, end_ts: int, timeframe: str) -> list[dict]:
+    """模拟服务端「只返回已收盘、grid 对齐 bar」的真实行为：不依赖被测的
+    ``_expected_bar_count``，独立按 timeframe 的 step 重新计算 grid 边界，
+    避免测试与实现用同一份公式互相自证。"""
+    step_ms = provider._timeframe_milliseconds(timeframe)
+    start_ms, end_ms = start_ts * 1000, end_ts * 1000
+    first_open = -(-start_ms // step_ms) * step_ms  # ceil 到下一个 grid 点
+    last_open = ((end_ms - step_ms) // step_ms) * step_ms  # 最后一个已收盘 grid 点
+    if last_open < first_open:
+        return []
+    opens = range(first_open, last_open + step_ms, step_ms)
+    return [
+        {"open_time": o // 1000, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}
+        for o in opens
+    ]
+
+
+@pytest.mark.parametrize(
+    ("total_days", "timeframe"),
+    [
+        (365, "1d"),
+        (181, "4h"),
+        (95, "1h"),
+        (364, "1d"),
+    ],
+)
+def test_non_grid_aligned_start_no_longer_false_positive_gap(
+    central_configured, monkeypatch, total_days, timeframe
+):
+    """回归 359532680989114368：起点非 UTC 零点、总跨度对 90 天取余数的窗口，
+    只要服务端按「已收盘 grid bar」如实返回，不应再被判 data_gap。"""
+    # 故意用一个不落在任何 timeframe grid 上的起点（不是 UTC 00:00 也不是任何
+    # 4h/1h 边界），复现"起点非零点少 1 根"的真实场景。
+    start_ts = 1_600_003_723
+    end_ts = start_ts + total_days * 24 * 3600
+
+    def fake_urlopen(req, timeout=None):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        chunk_start_ts = int(qs["start_ts"][0])
+        chunk_end_ts = int(qs["end_ts"][0])
+        items = _grid_items(chunk_start_ts, chunk_end_ts, timeframe)
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": len(items), "items": items}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    result = provider._fetch_from_central(
+        "binance", "spot", "BTCUSDT", timeframe, start_ts * 1000, end_ts * 1000
+    )
+    assert result is not None, "非 grid 对齐起点不应再被误判 data_gap"
+
+
+def test_true_gap_still_detected_after_split(central_configured, monkeypatch):
+    """真缺口（抠掉 20% 的 bar）仍要被抓到，不能因为治本改动放宽到抓不住真问题。"""
+    start_ts = 1_600_000_000
+    end_ts = start_ts + 200 * 3600  # 200 小时，1h 周期，单分片内（< 90 天上限）
+
+    def fake_urlopen(req, timeout=None):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        chunk_start_ts = int(qs["start_ts"][0])
+        chunk_end_ts = int(qs["end_ts"][0])
+        items = _grid_items(chunk_start_ts, chunk_end_ts, "1h")
+        keep = int(len(items) * 0.8)  # 抠掉 20%
+        return _FakeResponse(
+            {"err_code": 100, "data": {"available": True, "count": keep, "items": items[:keep]}}
+        )
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", start_ts * 1000, end_ts * 1000)
+    assert result is None, "抠掉 20% 的真缺口必须仍被判 data_gap"
+
+
+@pytest.mark.parametrize(("missing", "expect_gap"), [(1, False), (2, True)])
+def test_small_sample_floor_tolerates_at_most_one_bar(central_configured, monkeypatch, missing, expect_gap):
+    """expected < 20 时用绝对下限 actual >= expected - 1：缺 1 根放行，缺 2 根仍判缺口。"""
+    start_ts = 1_600_003_723  # 非 grid 对齐起点，真实 expected 会是 9（不是裸算的 10）
+    end_ts = start_ts + 10 * 3600  # 10 小时窗口 -> expected < 20，落入小样本区间
+
+    def fake_urlopen(req, timeout=None):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        chunk_start_ts = int(qs["start_ts"][0])
+        chunk_end_ts = int(qs["end_ts"][0])
+        items = _grid_items(chunk_start_ts, chunk_end_ts, "1h")
+        keep = max(0, len(items) - missing)
+        return _FakeResponse(
+            {"err_code": 100, "data": {"available": True, "count": keep, "items": items[:keep]}}
+        )
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", start_ts * 1000, end_ts * 1000)
+    if expect_gap:
+        assert result is None
+    else:
+        assert result is not None
+
+
+def test_split_central_range_365d_1d_produces_five_equal_chunks():
+    """365 天/1d 切成 5 片，每片恰好 73 天（365/5 整除，无需并余数），片间无重叠无空洞。"""
+    start_ms = 0
+    end_ms = 365 * 24 * 3600 * 1000
+    chunks = provider._split_central_range(start_ms, end_ms, "1d", provider.CENTRAL_MAX_CHUNK_MS)
+
+    assert len(chunks) == 5
+    day_ms = 24 * 3600 * 1000
+    for chunk_start, chunk_end in chunks:
+        assert (chunk_end - chunk_start) // day_ms >= 73
+
+    # 无重叠无空洞：前一片的 end 恰好是后一片的 start，首尾覆盖整个区间。
+    assert chunks[0][0] == start_ms
+    assert chunks[-1][1] == end_ms
+    for (prev_start, prev_end), (next_start, _next_end) in zip(chunks, chunks[1:]):
+        assert prev_end == next_start
+
+
+def test_split_central_range_364d_1d_no_tiny_tail():
+    """364 mod 90 = 4 天的余数不再单独成片：5 片里最小的一片仍有 72 天，不是 4 天。"""
+    start_ms = 0
+    end_ms = 364 * 24 * 3600 * 1000
+    chunks = provider._split_central_range(start_ms, end_ms, "1d", provider.CENTRAL_MAX_CHUNK_MS)
+
+    day_ms = 24 * 3600 * 1000
+    sizes_days = [(chunk_end - chunk_start) // day_ms for chunk_start, chunk_end in chunks]
+    assert min(sizes_days) >= 72
+    assert sum(sizes_days) == 364
+    assert chunks[0][0] == start_ms
+    assert chunks[-1][1] == end_ms
+
+
+def test_split_central_range_short_span_unchanged():
+    """跨度本就 <= 90 天：单片直通，不引入不必要的分片。"""
+    start_ms = 0
+    end_ms = 30 * 24 * 3600 * 1000
+    chunks = provider._split_central_range(start_ms, end_ms, "1d", provider.CENTRAL_MAX_CHUNK_MS)
+    assert chunks == [(start_ms, end_ms)]
+
+
+def test_expected_bar_count_grid_aligns_non_zero_start():
+    """非 UTC 零点起点：期望条数按下一个 grid 开盘点算，不多算起点到下一个
+    grid 点之间那一小段——这正是 359532680989114368 少算出来的那 1 根。"""
+    day_ms = 24 * 3600 * 1000
+    # 起点比零点晚 3 小时，跨度恰好 5 天：naive 公式给 5，grid 对齐给 4。
+    start_ms = 3 * 3600 * 1000
+    end_ms = start_ms + 5 * day_ms
+    expected = provider._expected_bar_count("1d", start_ms, end_ms)
+    assert expected == 4

@@ -375,10 +375,69 @@ def _enforce_cache_lru_limit() -> None:
 
 
 def _expected_bar_count(timeframe: str, start_ms: int, end_ms: int) -> int:
+    """Grid 对齐、只数已收盘 bar 的期望条数。
+
+    P1 治本：此前用裸 `(end-start)//step_ms` 隐含假设 `start_ms` 恰好落在 bar
+    的 grid 边界上（如 1d 的 UTC 00:00）。生产 run 359532680989114368 的失败根因
+    正是分片起点非 grid 对齐——服务端只返回已收盘 bar，真实可得的第一根 bar 在
+    `start_ms` 之后的下一个 grid 点才开盘，naive 公式却把这段"起点到下一个 grid
+    点"的部分也算进期望，导致期望比服务端实际能给的条数多 1，被 0.9 容忍率误判
+    `data_gap`。改为：期望 = [下一个 >= start_ms 的 grid 开盘点, 最后一个已收盘
+    （open+step_ms <= 有效截止时间）的 grid 开盘点] 之间的 bar 数。
+    """
     step_ms = _timeframe_milliseconds(timeframe)
     if step_ms <= 0:
         return 0
-    return max(0, (min(end_ms, int(time.time() * 1000)) - start_ms) // step_ms)
+    effective_end = min(end_ms, int(time.time() * 1000))
+    if effective_end <= start_ms:
+        return 0
+    first_open = -(-start_ms // step_ms) * step_ms  # ceil(start_ms / step_ms) * step_ms
+    last_open = ((effective_end - step_ms) // step_ms) * step_ms
+    if last_open < first_open:
+        return 0
+    return int((last_open - first_open) // step_ms) + 1
+
+
+def _split_central_range(
+    start_ms: int, end_ms: int, timeframe: str, max_chunk_ms: int
+) -> list[tuple[int, int]]:
+    """把 [start_ms, end_ms) 等分成 <= max_chunk_ms 的分片，不再出现「末片只剩几天」。
+
+    P1 治本：原实现按固定 `CENTRAL_MAX_CHUNK_MS` 从 start 起顺序切片，总跨度对
+    90 天取余数的末片可能只剩几天——期望 bar 数掉进小样本区间，任何一天的数据
+    缺失都会把整段判成 data_gap 回退 ccxt（生产 run 359532680989114368）。改为
+    先按 `ceil(总跨度 / max_chunk_ms)` 定片数，再把 bar 数尽量均分到每片（余数
+    分给靠前的分片，即"并入前一片"的等价实现），保证每片跨度接近总跨度/片数，
+    不再有远小于其它分片的尾片。分片边界按 timeframe 的 step 对齐（从 start_ms
+    起的整数倍 bar 数），不会把一根 bar 切在两个分片的请求区间里。
+    """
+    total_span = end_ms - start_ms
+    if total_span <= 0:
+        return []
+    if total_span <= max_chunk_ms:
+        return [(start_ms, end_ms)]
+    step_ms = _timeframe_milliseconds(timeframe)
+    num_chunks = math.ceil(total_span / max_chunk_ms)
+    total_bars = total_span // step_ms if step_ms > 0 else 0
+    if total_bars < num_chunks:
+        # 区间比 num_chunks 根 bar 还短的退化情形：按毫秒均分，最后一片吸收余数。
+        base_ms = total_span // num_chunks
+        chunks = []
+        chunk_start = start_ms
+        for i in range(num_chunks):
+            chunk_end = end_ms if i == num_chunks - 1 else chunk_start + base_ms
+            chunks.append((chunk_start, chunk_end))
+            chunk_start = chunk_end
+        return chunks
+    base_bars, remainder_bars = divmod(total_bars, num_chunks)
+    chunks = []
+    chunk_start = start_ms
+    for i in range(num_chunks):
+        bars = base_bars + (1 if i < remainder_bars else 0)
+        chunk_end = end_ms if i == num_chunks - 1 else chunk_start + bars * step_ms
+        chunks.append((chunk_start, chunk_end))
+        chunk_start = chunk_end
+    return chunks
 
 
 def _record_central_fetch_success() -> None:
@@ -463,16 +522,13 @@ def _fetch_from_central_with_reason(
     normalized_symbol = base
 
     all_rows: list = []
-    chunk_start = start_ms
-    while chunk_start < end_ms:
-        chunk_end = min(chunk_start + CENTRAL_MAX_CHUNK_MS, end_ms)
+    for chunk_start, chunk_end in _split_central_range(start_ms, end_ms, timeframe, CENTRAL_MAX_CHUNK_MS):
         chunk_rows, reason = _fetch_central_chunk_with_reason(
             exchange_id, market, normalized_symbol, timeframe, chunk_start, chunk_end
         )
         if chunk_rows is None:
             return None, reason, True  # 任一分片失败/缺口 → 整体回退 ccxt，不拼混合数据源
         all_rows.extend(chunk_rows)
-        chunk_start = chunk_end
 
     _record_central_fetch_success()
     return all_rows, CENTRAL_REASON_USED, True
@@ -548,13 +604,19 @@ def _fetch_central_chunk_with_reason(
         return None, CENTRAL_REASON_NO_DATA
 
     expected = _expected_bar_count(timeframe, start_ms, end_ms)
-    if expected and len(items) < expected * CENTRAL_GAP_TOLERANCE_RATIO:
-        logger.warning(
-            "Central market-data gap detected (got=%d expected=%d), falling back to ccxt",
-            len(items),
-            expected,
-        )
-        return None, CENTRAL_REASON_DATA_GAP
+    if expected:
+        # 小样本下限（P1 治本）：expected < 20 时 0.9 比例门槛的粒度太粗（如 expected=5
+        # 时门槛=4.5，向下取整=4，实际上只容许少 0（乘除精度偶发放行 4/5）——分片切细后
+        # 尾片常落在这个区间，改用绝对下限 actual >= expected - 1，语义等价于"最多容忍
+        # grid/收盘边界误差掉 1 根"，真缺口（如抠掉 20%）仍会被抓到。
+        is_gap = len(items) < expected - 1 if expected < 20 else len(items) < expected * CENTRAL_GAP_TOLERANCE_RATIO
+        if is_gap:
+            logger.warning(
+                "Central market-data gap detected (got=%d expected=%d), falling back to ccxt",
+                len(items),
+                expected,
+            )
+            return None, CENTRAL_REASON_DATA_GAP
 
     try:
         rows = [
