@@ -398,37 +398,25 @@ def _expected_bar_count(timeframe: str, start_ms: int, end_ms: int) -> int:
     return int((last_open - first_open) // step_ms) + 1
 
 
-def _split_central_range(
-    start_ms: int, end_ms: int, timeframe: str, max_chunk_ms: int
-) -> list[tuple[int, int]]:
-    """把 [start_ms, end_ms) 等分成 <= max_chunk_ms 的分片，不再出现「末片只剩几天」。
-
-    P1 治本：原实现按固定 `CENTRAL_MAX_CHUNK_MS` 从 start 起顺序切片，总跨度对
-    90 天取余数的末片可能只剩几天——期望 bar 数掉进小样本区间，任何一天的数据
-    缺失都会把整段判成 data_gap 回退 ccxt（生产 run 359532680989114368）。改为
-    先按 `ceil(总跨度 / max_chunk_ms)` 定片数，再把 bar 数尽量均分到每片（余数
-    分给靠前的分片，即"并入前一片"的等价实现），保证每片跨度接近总跨度/片数，
-    不再有远小于其它分片的尾片。分片边界按 timeframe 的 step 对齐（从 start_ms
-    起的整数倍 bar 数），不会把一根 bar 切在两个分片的请求区间里。
-    """
+def _ms_equal_split_chunks(start_ms: int, end_ms: int, num_chunks: int) -> list[tuple[int, int]]:
+    """退化情形（跨度比 num_chunks 根 bar 还短，或 step 不可用）：按毫秒均分，
+    最后一片吸收余数。"""
     total_span = end_ms - start_ms
-    if total_span <= 0:
-        return []
-    if total_span <= max_chunk_ms:
-        return [(start_ms, end_ms)]
-    step_ms = _timeframe_milliseconds(timeframe)
-    num_chunks = math.ceil(total_span / max_chunk_ms)
-    total_bars = total_span // step_ms if step_ms > 0 else 0
-    if total_bars < num_chunks:
-        # 区间比 num_chunks 根 bar 还短的退化情形：按毫秒均分，最后一片吸收余数。
-        base_ms = total_span // num_chunks
-        chunks = []
-        chunk_start = start_ms
-        for i in range(num_chunks):
-            chunk_end = end_ms if i == num_chunks - 1 else chunk_start + base_ms
-            chunks.append((chunk_start, chunk_end))
-            chunk_start = chunk_end
-        return chunks
+    base_ms = total_span // num_chunks
+    chunks = []
+    chunk_start = start_ms
+    for i in range(num_chunks):
+        chunk_end = end_ms if i == num_chunks - 1 else chunk_start + base_ms
+        chunks.append((chunk_start, chunk_end))
+        chunk_start = chunk_end
+    return chunks
+
+
+def _bars_equal_split_chunks(
+    start_ms: int, end_ms: int, step_ms: int, total_bars: int, num_chunks: int
+) -> list[tuple[int, int]]:
+    """按 bar 数把 [start_ms, end_ms) 尽量均分成 num_chunks 片，余数分给靠前的分片；
+    末片用 end_ms 收口，吸收 total_bars*step_ms 与 total_span 之间 < step_ms 的余数。"""
     base_bars, remainder_bars = divmod(total_bars, num_chunks)
     chunks = []
     chunk_start = start_ms
@@ -437,6 +425,78 @@ def _split_central_range(
         chunk_end = end_ms if i == num_chunks - 1 else chunk_start + bars * step_ms
         chunks.append((chunk_start, chunk_end))
         chunk_start = chunk_end
+    return chunks
+
+
+def _split_central_range(
+    start_ms: int, end_ms: int, timeframe: str, max_chunk_ms: int
+) -> list[tuple[int, int]]:
+    """把 [start_ms, end_ms) 等分成 <= max_chunk_ms 的分片，不再出现「末片只剩几天」。
+
+    P1 治本：原实现按固定 `CENTRAL_MAX_CHUNK_MS` 从 start 起顺序切片，总跨度对
+    90 天取余数的末片可能只剩几天——期望 bar 数掉进小样本区间，任何一天的数据
+    缺失都会把整段判成 data_gap 回退 ccxt（生产 run 359532680989114368）。改为
+    先定片数，再把 bar 数尽量均分到每片（余数分给靠前的分片，即"并入前一片"
+    的等价实现），保证每片跨度接近总跨度/片数，不再有远小于其它分片的尾片。
+    分片边界按 timeframe 的 step 对齐（从 start_ms 起的整数倍 bar 数），不会把
+    一根 bar 切在两个分片的请求区间里。
+
+    P1 返修（亲审发现）：片数不能只按毫秒算 `ceil(总跨度/max_chunk_ms)`——服务端
+    硬上限是「毫秒跨度 <= max_chunk_ms」，但分片是按 bar 数均分的，当 max_chunk_ms
+    不是 step 的整数倍时（如 90 天对 1w 不是 7 的整数倍），`ceil(total_bars /
+    num_chunks)` 根 bar 换算回毫秒可能超过 90 天（90 天 // 7 天 = 12 周，但
+    `ceil(25/2)=13` 周 = 91 天 > 90 天），被服务端 ERR_INVALID_PARAMS 拒绝 →
+    回退 ccxt。改为片数取"按毫秒算"与"按 bar 数上限算"两者较大值：
+    `num_chunks = max(ceil(total_span/max_chunk_ms), ceil(total_bars/max_bars_per_chunk))`，
+    其中 `max_bars_per_chunk = max_chunk_ms // step_ms`（向下取整，保证
+    `max_bars_per_chunk * step_ms <= max_chunk_ms`）。这保证除末片外每片的
+    bar 数 `ceil(total_bars/num_chunks) <= max_bars_per_chunk`（标准取整不等式）。
+    末片仍用 end_ms 收口以吸收 < step_ms 的毫秒余数，这段余数理论上可能把末片
+    推过 max_chunk_ms（只有 max_chunk_ms 非 step 整数倍时才可能，且幅度 < step_ms）
+    ——不假设这个边界情况已被数学证明兜住，用显式守卫检查每片跨度，命中就多切
+    一片重算，不静默放过。
+    """
+    total_span = end_ms - start_ms
+    if total_span <= 0:
+        return []
+    if total_span <= max_chunk_ms:
+        return [(start_ms, end_ms)]
+
+    step_ms = _timeframe_milliseconds(timeframe)
+    if step_ms <= 0 or step_ms > max_chunk_ms:
+        # step 不可用，或单根 bar 本身已经超过服务端单次跨度上限：bar 对齐没有
+        # 意义（甚至不可行），退化为纯毫秒均分（无法保证 <= max_chunk_ms，是
+        # 数据本身决定的硬约束，不是分片算法能解的）。
+        return _ms_equal_split_chunks(start_ms, end_ms, math.ceil(total_span / max_chunk_ms))
+
+    total_bars = total_span // step_ms
+    max_bars_per_chunk = max_chunk_ms // step_ms
+    if total_bars < 1 or max_bars_per_chunk < 1:
+        return _ms_equal_split_chunks(start_ms, end_ms, math.ceil(total_span / max_chunk_ms))
+
+    num_chunks = max(
+        math.ceil(total_span / max_chunk_ms),
+        math.ceil(total_bars / max_bars_per_chunk),
+    )
+
+    def _build(n: int) -> list[tuple[int, int]]:
+        if total_bars < n:
+            return _ms_equal_split_chunks(start_ms, end_ms, n)
+        return _bars_equal_split_chunks(start_ms, end_ms, step_ms, total_bars, n)
+
+    chunks = _build(num_chunks)
+    # 守卫：末片吸收的 < step_ms 毫秒余数理论上可能把它推过硬上限，命中就多切
+    # 一片重算；上限 total_bars + 1 次迭代避免任何未预见路径死循环。
+    guard_iterations = 0
+    while any(chunk_end - chunk_start > max_chunk_ms for chunk_start, chunk_end in chunks):
+        guard_iterations += 1
+        if guard_iterations > total_bars + 1:
+            raise AssertionError(
+                f"_split_central_range failed to bound chunks under max_chunk_ms={max_chunk_ms} "
+                f"for range [{start_ms},{end_ms}) timeframe={timeframe!r}"
+            )
+        num_chunks += 1
+        chunks = _build(num_chunks)
     return chunks
 
 

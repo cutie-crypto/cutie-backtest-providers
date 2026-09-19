@@ -756,6 +756,59 @@ def test_split_central_range_short_span_unchanged():
     assert chunks == [(start_ms, end_ms)]
 
 
+# ---------------------------------------------------------------------------
+# P1 返修（亲审）：服务端单次请求跨度硬上限 90 天（MAX_KLINE_RANGE_SECONDS），
+# 90 天不是 1w 的整数倍（90/7=12.86）时，纯按 bar 数均分会算出 13 周=91 天的
+# 分片，被 ERR_INVALID_PARAMS 拒绝整体回退 ccxt。num_chunks 必须取「按毫秒算」
+# 与「按 bar 数上限算」两者较大值，见 _split_central_range 修复。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("total_days", "timeframe"),
+    [
+        (175, "1w"),  # 团队亲审给出的复现例：25 周，naive ceil(25/2)=13 周=91 天超限
+        (180, "1w"),
+        (179, "1d"),  # 179/90=1.988，边界恰好卡在 2 片上，验证 90 天精确不超限
+        (365, "1d"),
+        (364, "1d"),
+        (181, "4h"),
+        (95, "1h"),
+    ],
+)
+def test_split_central_range_never_exceeds_server_hard_cap(total_days, timeframe):
+    """任一分片跨度都不得超过 max_chunk_ms（服务端硬上限），且片间无重叠无空洞。"""
+    start_ms = 0
+    end_ms = total_days * 24 * 3600 * 1000
+    chunks = provider._split_central_range(start_ms, end_ms, timeframe, provider.CENTRAL_MAX_CHUNK_MS)
+
+    assert chunks, "非空跨度必须产生至少一片"
+    for chunk_start, chunk_end in chunks:
+        assert chunk_end - chunk_start <= provider.CENTRAL_MAX_CHUNK_MS, (
+            f"chunk [{chunk_start},{chunk_end}) span exceeds CENTRAL_MAX_CHUNK_MS "
+            f"for total_days={total_days} timeframe={timeframe!r}"
+        )
+    assert chunks[0][0] == start_ms
+    assert chunks[-1][1] == end_ms
+    for (prev_start, prev_end), (next_start, _next_end) in zip(chunks, chunks[1:]):
+        assert prev_end == next_start
+
+
+def test_split_central_range_1w_175d_matches_reviewed_repro():
+    """175 天/1w（25 周）：亲审给出的具体复现例，确认修复后不再产生 91 天分片。"""
+    start_ms = 0
+    end_ms = 175 * 24 * 3600 * 1000
+    chunks = provider._split_central_range(start_ms, end_ms, "1w", provider.CENTRAL_MAX_CHUNK_MS)
+
+    week_ms = 7 * 24 * 3600 * 1000
+    day_ms = 24 * 3600 * 1000
+    for chunk_start, chunk_end in chunks:
+        span = chunk_end - chunk_start
+        assert span <= 90 * day_ms
+        assert span % week_ms == 0  # 非末片理应精确对齐 week grid（175 天恰好整除 7）
+    assert sum(chunk_end - chunk_start for chunk_start, chunk_end in chunks) == end_ms - start_ms
+
+
 def test_expected_bar_count_grid_aligns_non_zero_start():
     """非 UTC 零点起点：期望条数按下一个 grid 开盘点算，不多算起点到下一个
     grid 点之间那一小段——这正是 359532680989114368 少算出来的那 1 根。"""
