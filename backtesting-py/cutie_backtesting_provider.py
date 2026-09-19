@@ -374,6 +374,25 @@ def _enforce_cache_lru_limit() -> None:
             logger.warning("Failed to delete old cache file %s: %s", oldest, e)
 
 
+def _expected_bar_grid(timeframe: str, start_ms: int, end_ms: int) -> Optional[tuple[int, int, int]]:
+    """[start_ms, end_ms) 内 grid 对齐、已收盘 bar 的开盘时间范围：
+    (first_open_ms, last_open_ms, step_ms)；范围内没有任何已收盘 bar 时返回 None。
+    `_expected_bar_count` 与小样本边界校验（P1 返修）共用同一份 grid 计算，
+    避免两处对"起点非 grid 对齐"各自实现一遍容易漂移。
+    """
+    step_ms = _timeframe_milliseconds(timeframe)
+    if step_ms <= 0:
+        return None
+    effective_end = min(end_ms, int(time.time() * 1000))
+    if effective_end <= start_ms:
+        return None
+    first_open = -(-start_ms // step_ms) * step_ms  # ceil(start_ms / step_ms) * step_ms
+    last_open = ((effective_end - step_ms) // step_ms) * step_ms
+    if last_open < first_open:
+        return None
+    return first_open, last_open, step_ms
+
+
 def _expected_bar_count(timeframe: str, start_ms: int, end_ms: int) -> int:
     """Grid 对齐、只数已收盘 bar 的期望条数。
 
@@ -385,17 +404,58 @@ def _expected_bar_count(timeframe: str, start_ms: int, end_ms: int) -> int:
     `data_gap`。改为：期望 = [下一个 >= start_ms 的 grid 开盘点, 最后一个已收盘
     （open+step_ms <= 有效截止时间）的 grid 开盘点] 之间的 bar 数。
     """
-    step_ms = _timeframe_milliseconds(timeframe)
-    if step_ms <= 0:
+    grid = _expected_bar_grid(timeframe, start_ms, end_ms)
+    if grid is None:
         return 0
-    effective_end = min(end_ms, int(time.time() * 1000))
-    if effective_end <= start_ms:
-        return 0
-    first_open = -(-start_ms // step_ms) * step_ms  # ceil(start_ms / step_ms) * step_ms
-    last_open = ((effective_end - step_ms) // step_ms) * step_ms
-    if last_open < first_open:
-        return 0
+    first_open, last_open, step_ms = grid
     return int((last_open - first_open) // step_ms) + 1
+
+
+def _small_sample_gap_is_tolerable_boundary(
+    timeframe: str, start_ms: int, end_ms: int, items: list
+) -> bool:
+    """expected - actual == 1（且 expected < 20）的小样本情形：只有缺的那一根
+    恰好是 grid 的第一根或最后一根（起点边界效应，或最新 bar 尚未真正收盘、
+    服务端 closed_bound 略滞后）才可容忍；中段缺任何一根都是真缺口，不放行。
+
+    P1 返修（Codex 复审）：此前的小样本下限只比数量（`actual >= expected - 1`），
+    对 expected=15 这类样本，中段真缺 1 根和边界缺 1 根在数量上完全看不出区别，
+    会把中段真缺口也放过。改为按 open_time 集合比对，缺口必须落在 grid 首/尾
+    才放行，命中时打一条独立 INFO 日志留痕，便于事后审计放行了哪些边界缺口。
+    """
+    grid = _expected_bar_grid(timeframe, start_ms, end_ms)
+    if grid is None:
+        return False
+    first_open_ms, last_open_ms, step_ms = grid
+    step_sec = step_ms // 1000
+    if step_sec <= 0:
+        return False
+    first_open_sec = first_open_ms // 1000
+    last_open_sec = last_open_ms // 1000
+    expected_opens = set(range(first_open_sec, last_open_sec + step_sec, step_sec))
+    try:
+        actual_opens = {int(item["open_time"]) for item in items}
+    except (KeyError, TypeError, ValueError):
+        return False
+    missing = expected_opens - actual_opens
+    if len(missing) != 1:
+        # 数量上确实只差 1 根，但集合对比对不上（如重复 open_time 或范围外脏数据）：
+        # 不是我们能识别的边界情形，保守判缺口，不放行。
+        return False
+    missing_open = next(iter(missing))
+    if missing_open not in (first_open_sec, last_open_sec):
+        return False
+    position = "首根" if missing_open == first_open_sec else "末根"
+    logger.info(
+        "Central market-data small-sample gap tolerated: missing grid %s (open_time=%d) "
+        "timeframe=%s expected=%d actual=%d",
+        position,
+        missing_open,
+        timeframe,
+        len(expected_opens),
+        len(actual_opens),
+    )
+    return True
 
 
 def _ms_equal_split_chunks(start_ms: int, end_ms: int, num_chunks: int) -> list[tuple[int, int]]:
@@ -665,11 +725,22 @@ def _fetch_central_chunk_with_reason(
 
     expected = _expected_bar_count(timeframe, start_ms, end_ms)
     if expected:
-        # 小样本下限（P1 治本）：expected < 20 时 0.9 比例门槛的粒度太粗（如 expected=5
-        # 时门槛=4.5，向下取整=4，实际上只容许少 0（乘除精度偶发放行 4/5）——分片切细后
-        # 尾片常落在这个区间，改用绝对下限 actual >= expected - 1，语义等价于"最多容忍
-        # grid/收盘边界误差掉 1 根"，真缺口（如抠掉 20%）仍会被抓到。
-        is_gap = len(items) < expected - 1 if expected < 20 else len(items) < expected * CENTRAL_GAP_TOLERANCE_RATIO
+        actual = len(items)
+        deficit = expected - actual
+        if expected < 20:
+            # 小样本下限（P1 治本 + P1 返修/Codex 复审）：0.9 比例门槛在 expected=5
+            # 时门槛=4.5 向下取整=4，实际上只容许少 0——分片切细后尾片常落在这个
+            # 区间。改用绝对下限：deficit<=0 直接放行；deficit==1 时不能只看数量
+            # （会把中段真缺 1 根也放过），要看缺的那一根是不是 grid 首/尾边界；
+            # deficit>=2 一律判缺口，不进边界检查。
+            if deficit <= 0:
+                is_gap = False
+            elif deficit == 1:
+                is_gap = not _small_sample_gap_is_tolerable_boundary(timeframe, start_ms, end_ms, items)
+            else:
+                is_gap = True
+        else:
+            is_gap = actual < expected * CENTRAL_GAP_TOLERANCE_RATIO
         if is_gap:
             logger.warning(
                 "Central market-data gap detected (got=%d expected=%d), falling back to ccxt",

@@ -716,6 +716,85 @@ def test_small_sample_floor_tolerates_at_most_one_bar(central_configured, monkey
         assert result is not None
 
 
+# ---------------------------------------------------------------------------
+# P1 返修（Codex 复审）：小样本下限只比数量会放过中段真缺 1 根，改按 open_time
+# 集合比对，只有缺口落在 grid 首/尾才放行。expected=15（15 个 grid 点：
+# open_time = 0, 3600, ..., 50400 秒，1h 周期，窗口 [0, 15h)）。
+# ---------------------------------------------------------------------------
+
+
+def _fifteen_hour_grid_items() -> list[dict]:
+    return _grid_items(0, 15 * 3600, "1h")
+
+
+def test_small_sample_mid_bar_missing_is_still_data_gap(central_configured, monkeypatch, caplog):
+    """expected=15，缺第 8 根（中段，open_time=7*3600）：数量上只差 1 根，
+    但不是 grid 首/尾边界，必须仍判 data_gap，不能被小样本下限放过。"""
+    items = _fifteen_hour_grid_items()
+    assert len(items) == 15
+    missing_open_time = items[7]["open_time"]  # 第 8 根（0-indexed 7），中段
+    kept = items[:7] + items[8:]
+    assert len(kept) == 14
+
+    def fake_urlopen(*_a, **_kw):
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": len(kept), "items": kept}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 15 * 3600 * 1000)
+    assert result is None, f"中段缺失 open_time={missing_open_time} 必须仍判 data_gap"
+
+
+def test_small_sample_last_bar_missing_is_tolerated_and_logged(central_configured, monkeypatch, caplog):
+    """expected=15，缺最后一根（grid 尾边界，如 closed_bound 略滞后）：放行，
+    且要留下可审计的独立 INFO 日志。"""
+    items = _fifteen_hour_grid_items()
+    kept = items[:-1]
+    assert len(kept) == 14
+
+    def fake_urlopen(*_a, **_kw):
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": len(kept), "items": kept}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    with caplog.at_level("INFO", logger=provider.logger.name):
+        result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 15 * 3600 * 1000)
+    assert result is not None, "缺末根应被小样本边界容忍放行"
+    assert any("small-sample gap tolerated" in rec.message for rec in caplog.records)
+    assert any("末根" in rec.message for rec in caplog.records)
+
+
+def test_small_sample_first_bar_missing_is_tolerated(central_configured, monkeypatch):
+    """expected=15，缺第一根（grid 首边界，如起点邻近效应）：放行。"""
+    items = _fifteen_hour_grid_items()
+    kept = items[1:]
+    assert len(kept) == 14
+
+    def fake_urlopen(*_a, **_kw):
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": len(kept), "items": kept}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 15 * 3600 * 1000)
+    assert result is not None, "缺首根应被小样本边界容忍放行"
+
+
+def test_small_sample_missing_both_ends_is_data_gap(central_configured, monkeypatch):
+    """expected=15，首尾各缺 1 根（actual = expected - 2）：deficit>=2 一律判
+    data_gap，不进边界检查——即使两个缺口都恰好是边界，也不放行。"""
+    items = _fifteen_hour_grid_items()
+    kept = items[1:-1]
+    assert len(kept) == 13
+
+    def fake_urlopen(*_a, **_kw):
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": len(kept), "items": kept}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    result = provider._fetch_from_central("binance", "spot", "BTCUSDT", "1h", 0, 15 * 3600 * 1000)
+    assert result is None, "缺 2 根必须仍判 data_gap，不因为都在边界就放行"
+
+
 def test_split_central_range_365d_1d_produces_five_equal_chunks():
     """365 天/1d 切成 5 片，每片恰好 73 天（365/5 整除，无需并余数），片间无重叠无空洞。"""
     start_ms = 0
