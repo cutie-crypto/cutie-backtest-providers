@@ -451,6 +451,50 @@ def evaluate_bollinger_breakout_exit(params, bars, position_direction):
     return _bollinger_trigger(params, bars, position_direction, breakout=True, exiting=True)
 
 
+def roc_settings(params: dict[str, Any]) -> Optional[tuple[int, float, float]]:
+    """动量 ROC 阈值参数的**唯一**解析与校验点（周期、入场阈值、出场阈值），准入与判定器共用。
+
+    None = 参数不可用（非整数周期 / 周期 < 2 / 阈值不是数字 / exit_threshold > entry_threshold）。
+    对齐 provider `_build_roc`（0919 ROC-契约.md §约束）。
+    """
+    period = params.get("roc_period", 12)
+    entry_threshold = params.get("entry_threshold", 5)
+    exit_threshold = params.get("exit_threshold", 0)
+    if type(period) is not int or period < 2:
+        return None
+    if type(entry_threshold) not in (int, float) or type(exit_threshold) not in (int, float):
+        return None
+    if exit_threshold > entry_threshold:
+        return None
+    return period, entry_threshold, exit_threshold
+
+
+def _roc_trigger(params, bars, direction, *, exiting=False):
+    settings = roc_settings(params)
+    if direction != "long" or settings is None:
+        return None
+    period, entry_threshold, exit_threshold = settings
+    if len(bars) < period + 1:
+        return None
+    closes = [bar.close for bar in bars]
+    # provider `_build_roc`: (close / close.shift(n) - 1) * 100, only closed bars.
+    roc = (closes[-1] / closes[-1 - period] - 1) * 100
+    if not math.isfinite(roc):
+        return None
+    # Strict comparisons -- threshold state, not a crossover event.
+    hit = roc < exit_threshold if exiting else roc > entry_threshold
+    indicators = {"roc": roc, "close": closes[-1]}
+    return TriggerResult(direction, bars[-1].close_time, indicators, "exit" if exiting else "entry") if hit else None
+
+
+def evaluate_roc(params, bars, direction):
+    return _roc_trigger(params, bars, direction)
+
+
+def evaluate_roc_exit(params, bars, position_direction):
+    return _roc_trigger(params, bars, position_direction, exiting=True)
+
+
 Evaluator = Callable[[dict[str, Any], list[Bar], str], Optional[TriggerResult]]
 
 
@@ -470,6 +514,7 @@ EVALUATOR_REGISTRY: dict[str, Evaluators] = {
     "cci_rsi": Evaluators(evaluate_cci_rsi, evaluate_cci_rsi_exit),
     "breakout": Evaluators(evaluate_breakout, evaluate_breakout_exit),
     "rsi_reversal": Evaluators(evaluate_rsi_reversal, evaluate_rsi_reversal_exit),
+    "roc": Evaluators(evaluate_roc, evaluate_roc_exit),
 }
 
 
@@ -512,6 +557,10 @@ def required_warmup_bars(strategy_type: str, params: dict[str, Any]) -> Optional
         rsi_period = int(params.get("rsi_period", 14) or 14)
         # provider min_bars = max(cci_period, rsi_period) * 3 + 1（Wilder EWM 收敛所需 buffer）。
         return max(cci_period, rsi_period) * 3 + 1
+    if strategy_type == "roc":
+        settings = roc_settings(params)
+        # provider min_bars = roc_period + 1。
+        return settings[0] + 1 if settings is not None else None
     return None
 
 
