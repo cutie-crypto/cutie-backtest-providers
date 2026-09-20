@@ -2793,6 +2793,8 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
 
     from backtesting import Strategy
 
+    min_bars = max(ema_slow, rsi_period + 1)
+
     class EmaTrendRsiStrategy(_FixedRiskMixin, Strategy):
         _risk = risk
         _initial_capital = initial_capital
@@ -2826,6 +2828,11 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
                 return
             # State conditions (persistently above/below), not crossover events; long only.
             if not self.position:
+                # Warm-up guard: EMA(ewm) and RSI (NaN filled to 50) both produce
+                # finite values before min_bars bars have accumulated, so the
+                # isfinite check above cannot reject an under-warmed signal.
+                if len(self.data) < min_bars:
+                    return
                 if fast > slow and rsi < rsi_entry_below:
                     self._risk_buy()
             elif rsi > rsi_exit_above:
@@ -2837,7 +2844,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
             f"EMA Trend+RSI ({ema_fast}/{ema_slow}, RSI{rsi_period} "
             f"<{rsi_entry_below:g}/>{rsi_exit_above:g})"
         ),
-        "min_bars": max(ema_slow, rsi_period + 1),
+        "min_bars": min_bars,
     }
 
 
