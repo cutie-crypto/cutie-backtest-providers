@@ -233,17 +233,68 @@ def test_no_entry_when_rsi_not_low_even_though_trend_true():
 
 
 # ---------------------------------------------------------------------------
+# 2b. Warm-up guard: min_bars = max(ema_slow, rsi_period + 1) must gate entry
+# judgment, not just the overall data-length check in the router.
+# ---------------------------------------------------------------------------
+
+
+def test_no_entry_before_min_bars_even_though_conditions_hold_early():
+    """ema_fast=2/ema_slow=20/rsi_period=2：close 以 [100,110,105,105] 开头，之后
+    补足 105.0 到共 25 根。EMA(ewm) 与 RSI（NaN 填 50）在第 3 根（索引 2）就已经
+    双双满足入场条件（trend=True 且 RSI=66.667% < rsi_entry_below=70）并一路保持
+    ——`math.isfinite` 检查拦不住这种早熟信号，`min_bars = max(ema_slow, rsi_period+1)
+    = 20` 才是唯一的预热门槛。
+
+    断言预热期内（signal bar < min_bars-1 == 19）没有任何成交，且预热期结束后
+    （signal bar == 19，长度达到 min_bars 的第一根）条件仍满足时能正常入场
+    ——证明门槛只是延后判定，不是把入场永久关掉。
+
+    变异自证（本次实施已手工执行，回报里写 MUTANT_P2_EXIT= 行）：临时删掉
+    `next()` 里 `len(self.data) < min_bars` 的门槛，重跑本测试——必须由绿转红
+    （EntryBar 从 20 提前到 3），再恢复代码、确认转回绿。
+    """
+    closes = [100.0, 110.0, 105.0, 105.0] + [105.0] * 21  # 共 25 根
+    df = _frame(closes)
+    params = dict(
+        ema_fast=2, ema_slow=20, rsi_period=2, rsi_entry_below=70, rsi_exit_above=90
+    )
+    built = _build_ema_trend_rsi(params)
+    assert built["min_bars"] == 20  # max(ema_slow=20, rsi_period+1=3)
+
+    result = Backtest(df, built["strategy"], cash=100000, finalize_trades=True).run()
+    trades = result["_trades"]
+    assert len(trades) == 1
+    # signal bar 19（长度达到 min_bars=20 的第一根）下一根开盘成交 -> EntryBar 20。
+    assert list(trades["EntryBar"]) == [20]
+    assert all(bar >= built["min_bars"] for bar in trades["EntryBar"])
+
+
+# ---------------------------------------------------------------------------
 # 3. Contract boundary cases.
 # ---------------------------------------------------------------------------
 
 
 def test_rsi_equal_entry_threshold_does_not_enter():
-    """closes=[100,96,99,103], ema_fast=2/ema_slow=3/rsi_period=2：bar3 trend=True
+    """closes=[100,96,99,103,103], ema_fast=2/ema_slow=3/rsi_period=2：bar3 trend=True
     且 RSI 精确等于 73.33333333333333（Wilder ewm 精确计算，非四舍五入巧合）
-    ——严格 `<` 要求，恰好相等不入场。"""
-    closes = [100.0, 96.0, 99.0, 103.0]
+    ——严格 `<` 要求，恰好相等不入场。
+
+    追加的第 5 根（close 复用 103.0）不是凑数：若把 `next()` 里的入场比较误写成
+    `<=`，bar3 会误发买单，但 trade_on_close=False 下委托要等下一根开盘才能成交；
+    若序列只到 bar3 为止，委托没有下一根可成交，`_trades` 恒为空，误判仍会显示
+    0 trades 掩盖 bug。第 5 根 close 沿用 103.0 使 RSI 保持等于同一阈值（同一比率
+    下 Wilder 平滑值不变，见测试文件顶部 docstring 的 ewm 公式），因此正确实现
+    在 bar4 上同样不满足 `<` 而不会独立入场——`_trades` 非空只能来自 bar3 误发
+    的委托在 bar4 开盘成交，真正抓住 `<` vs `<=` 的边界。
+
+    变异自证（本次实施已手工执行，回报里写 MUTANT_P3_EXIT= 行）：临时把
+    `next()` 里的 `rsi < rsi_entry_below` 改成 `rsi <= rsi_entry_below`，重跑本
+    测试——必须由绿转红（trades 从 0 变成 1），再恢复代码、确认转回绿。
+    """
+    closes = [100.0, 96.0, 99.0, 103.0, 103.0]
     threshold = _hand_rsi(closes, 2)[3]
     assert threshold == 73.33333333333333
+    assert _hand_rsi(closes, 2)[4] == threshold  # 第 5 根维持同一阈值，不引入独立入场
     df = _frame(closes)
     built = _build_ema_trend_rsi(
         dict(ema_fast=2, ema_slow=3, rsi_period=2, rsi_entry_below=threshold, rsi_exit_above=100)
