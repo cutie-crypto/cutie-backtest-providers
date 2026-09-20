@@ -2757,6 +2757,90 @@ def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     }
 
 
+def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """108 顺序 5a-P：两条件 AND（EMA 趋势过滤 + RSI 入场）。契约唯一权威见 TokenBeep 仓
+    docs/features/108_策略自动发信号执行器扩容/IMPL_顺序5a_两条件AND回测.md §2/§3。
+
+    只做多；EMA 快线/慢线复用 EmaCrossStrategy(:2319) 同一 ewm(span=n, adjust=False)
+    公式，RSI 复用现有 _rsi_series（RsiReversalStrategy/CciRsiStrategy 同款）——不新增
+    指标公式。判定语义是状态条件（持续高于/低于），不是穿越事件，不用 crossover。
+    """
+    risk = _parse_fixed_risk_params(params)
+    try:
+        ema_fast = int(params.get("ema_fast", 50))
+        ema_slow = int(params.get("ema_slow", 200))
+        rsi_period = int(params.get("rsi_period", 14))
+        rsi_entry_below = float(params.get("rsi_entry_below", 30))
+        rsi_exit_above = float(params.get("rsi_exit_above", 70))
+    except (ValueError, TypeError):
+        raise ValueError(
+            "INVALID_PARAMS:ema_fast/ema_slow/rsi_period/rsi_entry_below/rsi_exit_above must be numbers"
+        )
+    if ema_fast < 2:
+        raise ValueError(f"INVALID_PARAMS:ema_fast must be >= 2 (got {ema_fast})")
+    if ema_slow < 3:
+        raise ValueError(f"INVALID_PARAMS:ema_slow must be >= 3 (got {ema_slow})")
+    if ema_fast >= ema_slow:
+        raise ValueError("INVALID_PARAMS:ema_fast must be less than ema_slow")
+    if rsi_period < 2:
+        raise ValueError(f"INVALID_PARAMS:rsi_period must be >= 2 (got {rsi_period})")
+    if not (0 <= rsi_entry_below <= 100):
+        raise ValueError(f"INVALID_PARAMS:rsi_entry_below must be within 0-100 (got {rsi_entry_below})")
+    if not (0 <= rsi_exit_above <= 100):
+        raise ValueError(f"INVALID_PARAMS:rsi_exit_above must be within 0-100 (got {rsi_exit_above})")
+    if rsi_exit_above <= rsi_entry_below:
+        raise ValueError("INVALID_PARAMS:rsi_exit_above must be > rsi_entry_below")
+
+    from backtesting import Strategy
+
+    class EmaTrendRsiStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            close = self.data.Close
+            self.ema_fast = self.I(
+                lambda x: pd.Series(x).ewm(span=ema_fast, adjust=False).mean(),
+                close,
+                name=f"EMA({ema_fast})",
+            )
+            self.ema_slow = self.I(
+                lambda x: pd.Series(x).ewm(span=ema_slow, adjust=False).mean(),
+                close,
+                name=f"EMA({ema_slow})",
+            )
+            self.rsi = self.I(
+                lambda x: _rsi_series(x, rsi_period),
+                close,
+                name=f"RSI({rsi_period})",
+            )
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            fast = self.ema_fast[-1]
+            slow = self.ema_slow[-1]
+            rsi = self.rsi[-1]
+            if not (math.isfinite(fast) and math.isfinite(slow) and math.isfinite(rsi)):
+                return
+            # State conditions (persistently above/below), not crossover events; long only.
+            if not self.position:
+                if fast > slow and rsi < rsi_entry_below:
+                    self._risk_buy()
+            elif rsi > rsi_exit_above:
+                self.position.close()
+
+    return {
+        "strategy": EmaTrendRsiStrategy,
+        "executed_name": (
+            f"EMA Trend+RSI ({ema_fast}/{ema_slow}, RSI{rsi_period} "
+            f"<{rsi_entry_below:g}/>{rsi_exit_above:g})"
+        ),
+        "min_bars": max(ema_slow, rsi_period + 1),
+    }
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -2898,10 +2982,30 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    "local.backtesting_py.ema_trend_rsi": {
+        "name": "Local Backtesting.py EMA Trend + RSI Entry",
+        "description": (
+            "Two-condition AND, long only: go long while the fast EMA is above the "
+            "slow EMA (trend filter) AND RSI is below the entry threshold, exit while "
+            "RSI rises above the exit threshold (threshold state, not a crossover "
+            "event). Maps to KOL '趋势过滤 + RSI 入场'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_ema_trend_rsi,
+        "param_schema_properties": {
+            "ema_fast": {"type": "integer", "default": 50, "minimum": 2, "maximum": 399},
+            "ema_slow": {"type": "integer", "default": 200, "minimum": 3, "maximum": 400},
+            "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
+            "rsi_entry_below": {"type": "number", "default": 30, "minimum": 0, "maximum": 100},
+            "rsi_exit_above": {"type": "number", "default": 70, "minimum": 0, "maximum": 100},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
 }
 
-# A6 二层：固定止损/止盈/仓位对全部 8 个内置模板统一生效，直接合并进每个工具的
-# param_schema_properties（而不是逐个手写 8 遍），新工具接入 TOOL_SPECS 时自动带上。
+# A6 二层：固定止损/止盈/仓位对全部 9 个内置模板统一生效，直接合并进每个工具的
+# param_schema_properties（而不是逐个手写 9 遍），新工具接入 TOOL_SPECS 时自动带上。
 for _tool_spec in TOOL_SPECS.values():
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
