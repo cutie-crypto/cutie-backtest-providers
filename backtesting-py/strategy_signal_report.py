@@ -51,6 +51,7 @@ def build_signal_report(
         "bollinger_reversal",
         "bollinger_breakout",
         "roc",
+        "ema_trend_rsi",
     }:
         raise ValueError("signal evaluator is not supported")
     if market == "futures" and exchange != "binance":

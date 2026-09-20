@@ -17,6 +17,8 @@ def generate_intents(*, bars, evaluator, params, direction, leverage, symbol, ex
         raise ValueError("Donchian direction differs from the requested single-side backtest")
     if evaluator == "roc" and direction != "long":
         raise ValueError("ROC threshold template is long-only")
+    if evaluator == "ema_trend_rsi" and direction != "long":
+        raise ValueError("EMA trend + RSI entry template is long-only")
     policy = validate_execution_policy(execution_policy)
     history_bars = policy["indicator_history_bars"]
     warmup = required_warmup_bars(evaluator, params)
