@@ -2316,6 +2316,8 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
     from backtesting import Strategy
     from backtesting.lib import crossover
 
+    min_bars = max(ema_fast, ema_slow) + 1
+
     class EmaCrossStrategy(_FixedRiskMixin, Strategy):
         _ema_fast = ema_fast
         _ema_slow = ema_slow
@@ -2339,6 +2341,10 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
         def next(self):
             if self.position and self._risk_check_exit():
                 return
+            # Warm-up guard: EMA(ewm) produces finite values from bar 0, so the
+            # crossover check below cannot reject an under-warmed signal.
+            if len(self.data) < min_bars:
+                return
             if crossover(self.fast_ema, self.slow_ema):
                 self._risk_buy()
             elif crossover(self.slow_ema, self.fast_ema):
@@ -2347,7 +2353,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
     return {
         "strategy": EmaCrossStrategy,
         "executed_name": f"EMA Cross ({ema_fast}/{ema_slow})",
-        "min_bars": max(ema_fast, ema_slow) + 1,
+        "min_bars": min_bars,
         "trade_on_close": bool(risk),
     }
 
@@ -2367,6 +2373,8 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
 
     from backtesting import Strategy
 
+    min_bars = 3 * period + 1
+
     class RsiReversalStrategy(_FixedRiskMixin, Strategy):
         _period = period
         _oversold = oversold
@@ -2385,6 +2393,10 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
         def next(self):
             if self.position and self._risk_check_exit():
                 return
+            # Warm-up guard: Wilder EWM RSI is NaN-filled to 50.0 from bar 0, so
+            # the threshold check below cannot reject an under-warmed signal.
+            if len(self.data) < min_bars:
+                return
             if not self.position and self.rsi[-1] < self._oversold:
                 self._risk_buy()
             elif self.position and self.rsi[-1] > self._overbought:
@@ -2394,7 +2406,7 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
         "strategy": RsiReversalStrategy,
         "executed_name": f"RSI Reversal ({period}, {oversold:g}/{overbought:g})",
         # F4: Wilder EWM needs more than period+1 bars to converge; require a real warmup.
-        "min_bars": 3 * period + 1,
+        "min_bars": min_bars,
         "trade_on_close": bool(risk),
     }
 
@@ -2591,6 +2603,8 @@ def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
     from backtesting import Strategy
     from backtesting.lib import crossover
 
+    min_bars = slow * 3 + signal_period + 1
+
     def _macd_line(values: Any) -> Any:
         s = pd.Series(values, dtype="float64")
         return s.ewm(span=fast, adjust=False).mean() - s.ewm(span=slow, adjust=False).mean()
@@ -2612,6 +2626,10 @@ def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
         def next(self):
             if self.position and self._risk_check_exit():
                 return
+            # Warm-up guard: MACD/signal are EWMA (infinite-response), finite from
+            # bar 0, so the crossover check below cannot reject an under-warmed signal.
+            if len(self.data) < min_bars:
+                return
             if crossover(self.macd, self.signal):
                 self._risk_buy()
             elif crossover(self.signal, self.macd):
@@ -2621,7 +2639,7 @@ def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
         "strategy": MacdStrategy,
         "executed_name": f"MACD ({fast}/{slow}/{signal_period})",
         # F4: EWMA is an infinite-response filter; signal line needs a real warmup.
-        "min_bars": slow * 3 + signal_period + 1,
+        "min_bars": min_bars,
     }
 
 
@@ -2662,6 +2680,8 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
 
     from backtesting import Strategy
 
+    min_bars = max(cci_period, rsi_period) * 3 + 1
+
     class CciRsiStrategy(_FixedRiskMixin, Strategy):
         _risk = risk
         _initial_capital = initial_capital
@@ -2685,6 +2705,11 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
             # 止损/止盈判定不依赖 CCI/RSI 是否已跑出有限值，保护不能被指标暖机期挡住。
             if self.position and self._risk_check_exit():
                 return
+            # Warm-up guard: RSI leg is NaN-filled to 50.0 from bar 0 (Wilder EWM),
+            # so isfinite() below only rejects the CCI leg's rolling-window NaN,
+            # not an under-warmed RSI leg when rsi_period > cci_period.
+            if len(self.data) < min_bars:
+                return
             cci = self.cci[-1]
             rsi = self.rsi[-1]
             if not (math.isfinite(cci) and math.isfinite(rsi)):
@@ -2705,7 +2730,7 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
     return {
         "strategy": CciRsiStrategy,
         "executed_name": f"CCI+RSI ({cci_period}/{rsi_period})",
-        "min_bars": max(cci_period, rsi_period) * 3 + 1,
+        "min_bars": min_bars,
     }
 
 
