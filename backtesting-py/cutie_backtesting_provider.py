@@ -64,6 +64,7 @@ from strategy_kernel import (
     capability_payload,
     compile_strategy_v3,
     from_snapshot,
+    in_decimal128,
     initial_state,
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
@@ -3160,7 +3161,11 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 
 # A6 二层：固定止损/止盈/仓位对全部 9 个内置模板统一生效，直接合并进每个工具的
 # param_schema_properties（而不是逐个手写 9 遍），新工具接入 TOOL_SPECS 时自动带上。
+# runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
+# 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
 for _tool_spec in TOOL_SPECS.values():
+    if _tool_spec.get("runner") == "kernel_v3":
+        continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
         **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
@@ -3675,6 +3680,36 @@ def _basket_warmup_bars(strategy_spec: dict[str, Any]) -> int:
     return needed
 
 
+# ccxt 回退路径的 K 线价格是 JSON float：repr 给出能往返的最短十进制表示，有效数字
+# 超过 15 位说明交易所的十进制报价已被 binary64 误差污染（如 0.30000000000000004），
+# 进 decimal128 内核只会把噪声当精度，整次回测按取数失败返回。中心行情是字符串，不受影响。
+_BASKET_FLOAT_PRICE_MAX_DIGITS = 15
+_BASKET_PRICE_FIELDS = (("open", 1), ("high", 2), ("low", 3), ("close", 4))
+
+
+def _basket_untrusted_float_price(ohlcv: list[Any], start_at: int, end_at: int) -> Optional[str]:
+    """First float price field in ``[start_at, end_at)`` whose shortest repr
+    carries more than 15 significant digits (or is non-finite), as a short
+    description; ``None`` when every float price is trustworthy."""
+    for candle in ohlcv:
+        if not isinstance(candle, (list, tuple)) or len(candle) < 6:
+            continue  # _canonical_kline_rows reports malformed rows
+        open_time = int(candle[0]) // 1000
+        if not start_at <= open_time < end_at:
+            continue
+        for name, index in _BASKET_PRICE_FIELDS:
+            value = candle[index]
+            if not isinstance(value, float):
+                continue
+            text = repr(value)
+            if not math.isfinite(value):
+                return f"{name}={text} at open_time={open_time}"
+            significant = "".join(str(d) for d in Decimal(text).as_tuple().digits).strip("0")
+            if len(significant) > _BASKET_FLOAT_PRICE_MAX_DIGITS:
+                return f"{name}={text} at open_time={open_time}"
+    return None
+
+
 def _fetch_basket_leg_klines(
     exchange_id: str, market: str, symbol: str, timeframe: str, start_at: int, end_at: int,
 ) -> tuple[list[dict[str, Any]], str, Optional[bool], bool]:
@@ -3683,12 +3718,46 @@ def _fetch_basket_leg_klines(
     central-then-ccxt fetch/cache as the legacy per-symbol path via
     ``_fetch_ohlcv_raw`` so every OHLCV value stays a canonical Decimal
     string -- never floated -- on its way into the decimal128 kernel
-    (§2.6.1 精度上下文)."""
+    (§2.6.1 精度上下文).  Must run inside decimal128: ``canonical_decimal_str``
+    normalizes in the current context, so a 29–34 digit central price would
+    otherwise be re-rounded to the caller's precision."""
     ohlcv, actual_data_source, central_market_data_used, market_data_cache_hit = _fetch_ohlcv_raw(
         exchange_id, market, symbol, timeframe, start_at, end_at
     )
+    untrusted = _basket_untrusted_float_price(ohlcv, start_at, end_at)
+    if untrusted is not None:
+        error = MarketDataFetchError(
+            "DATA_FETCH_FAILED",
+            f"Market data price precision is not trustworthy ({untrusted}); please retry later",
+            central_failure_reason=None,
+            central_attempted=False,
+        )
+        error.provenance["source"] = actual_data_source
+        raise error
     rows = _canonical_kline_rows(ohlcv, start_at, end_at)
     return rows, actual_data_source, central_market_data_used, market_data_cache_hit
+
+
+_PLAIN_DECIMAL_RE = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+
+
+@in_decimal128
+def _basket_cost_bps_str(name: str, raw: Any) -> str:
+    """信封 fee_bps/slippage_bps → v3 spec 里的 canonical Decimal 字符串。
+
+    必须与 server 重建 spec 的转换逐字一致：server 在 decimal128 里对 NUMERIC 列值取
+    ``canonical_decimal_str``（``StrategyBacktestService._rebuild_run_strategy_spec_v3``），
+    这里同一上下文、同一函数。信封是 v2 既有字段，可能是 JSON 数字：float 取 repr
+    最短表示；NaN/Infinity/指数形式/负数一律拒绝（调用方映射 INVALID_PARAMS）。"""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError(f"{name} must be a decimal number")
+    text = repr(raw) if isinstance(raw, float) else str(raw)
+    if not _PLAIN_DECIMAL_RE.fullmatch(text):
+        raise ValueError(f"{name} must be a plain decimal (no NaN/Infinity/exponent): {text!r}")
+    value = Decimal(text)
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return canonical_decimal_str(value)
 
 
 def _bounded_basket_response(run_id: str, body: dict[str, Any]) -> JSONResponse:
@@ -3712,6 +3781,7 @@ def _bounded_basket_response(run_id: str, body: dict[str, Any]) -> JSONResponse:
     return _bounded_template_response(run_id, body)
 
 
+@in_decimal128
 def _run_basket_backtest(
     *,
     run_id: str,
@@ -3724,13 +3794,16 @@ def _run_basket_backtest(
     initial_capital: Decimal,
     fee_bps: Decimal,
     slippage_bps: Decimal,
+    envelope_cost_bps: dict[str, str],
     instrument_rules: Any,
 ) -> JSONResponse:
     """SPEC_组合策略v3契约 §6.1/§6.2/§2.6.1/§3/§4: dispatched from run_backtest
     before any float conversion / Strategy class / single-symbol fetch /
     Backtest() -- an entirely independent Decimal path through
     strategy_spec_v3_builder -> compile_strategy_v3 -> simulate_v3 ->
-    build_result_v3."""
+    build_result_v3.  Runs wholly in decimal128 (prec=34) whatever the
+    caller's context; ``envelope_cost_bps`` is the canonical fee/slippage
+    pair already validated by ``_basket_cost_bps_str``."""
     if market != "futures":
         return _validation_failure(
             "INVALID_PARAMS", "basket strategies require market='futures' (market.market_type is fixed futures)"
@@ -3740,8 +3813,8 @@ def _run_basket_backtest(
 
     envelope = {
         "timeframe": timeframe,
-        "fee_bps": canonical_decimal_str(fee_bps),
-        "slippage_bps": canonical_decimal_str(slippage_bps),
+        "fee_bps": envelope_cost_bps["fee_bps"],
+        "slippage_bps": envelope_cost_bps["slippage_bps"],
     }
     try:
         strategy_spec = build_strategy_spec_v3(strategy_family, params, envelope)
@@ -3763,48 +3836,68 @@ def _run_basket_backtest(
 
     step = _timeframe_milliseconds(timeframe) // 1000
     warmup_bars = _basket_warmup_bars(strategy_spec)
-    warmup_start = max(0, start_at - warmup_bars * step)
 
-    leg_klines: dict[str, list[dict[str, Any]]] = {}
-    leg_provenance: dict[str, tuple[str, Optional[bool], bool]] = {}
-    for leg in plan.legs:
-        leg_id = leg["leg_id"]
-        leg_symbol = leg["symbol"]
-        try:
-            rows, data_source, central_used, cache_hit = _fetch_basket_leg_klines(
-                CENTRAL_SUPPORTED_EXCHANGE, market, leg_symbol, timeframe, warmup_start, end_at
-            )
-        except MarketDataFetchError as e:
-            return _business_failure(
-                run_id, e.error_type, f"leg {leg_id} ({leg_symbol}): {e.public_message}",
-                reason=("data_missing" if e.error_type == "NO_DATA" else "market_data_fetch_failed"),
-                market_data_provenance=e.provenance,
-            )
-        except StrategyContractError as e:
-            return _business_failure(
-                run_id, "INSUFFICIENT_DATA", f"leg {leg_id} ({leg_symbol}): {e.path}: {e.message}",
-                reason="data_missing",
-            )
-        except ValueError as e:
-            msg = str(e)
-            if msg == "NO_DATA":
+    def fetch_legs(fetch_start: int) -> Any:
+        """All legs over ``[fetch_start, end_at)``; a failure JSONResponse on
+        the first leg that cannot be fetched."""
+        leg_klines: dict[str, list[dict[str, Any]]] = {}
+        leg_provenance: dict[str, tuple[str, Optional[bool], bool]] = {}
+        for leg in plan.legs:
+            leg_id = leg["leg_id"]
+            leg_symbol = leg["symbol"]
+            try:
+                rows, data_source, central_used, cache_hit = _fetch_basket_leg_klines(
+                    CENTRAL_SUPPORTED_EXCHANGE, market, leg_symbol, timeframe, fetch_start, end_at
+                )
+            except MarketDataFetchError as e:
                 return _business_failure(
-                    run_id, "NO_DATA", f"leg {leg_id} ({leg_symbol}): no OHLCV data available",
+                    run_id, e.error_type, f"leg {leg_id} ({leg_symbol}): {e.public_message}",
+                    reason=("data_missing" if e.error_type == "NO_DATA" else "market_data_fetch_failed"),
+                    market_data_provenance=e.provenance,
+                )
+            except StrategyContractError as e:
+                return _business_failure(
+                    run_id, "INSUFFICIENT_DATA", f"leg {leg_id} ({leg_symbol}): {e.path}: {e.message}",
                     reason="data_missing",
                 )
-            return _business_failure(run_id, "INVALID_PARAMS", f"leg {leg_id} ({leg_symbol}): {msg}")
-        except RuntimeError as e:
-            if "RATE_LIMITED" in str(e):
-                return _business_failure(
-                    run_id, "RATE_LIMITED", "Exchange rate limit exceeded, please retry later",
-                    reason="rate_limited",
-                )
-            return _business_failure(run_id, "ENGINE_ERROR", str(e))
-        except Exception as e:
-            logger.exception("basket leg OHLCV fetch unexpected error leg=%s", leg_id)
-            return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch leg {leg_id} market data: {e}")
-        leg_klines[leg_id] = rows
-        leg_provenance[leg_id] = (data_source, central_used, cache_hit)
+            except ValueError as e:
+                msg = str(e)
+                if msg == "NO_DATA":
+                    return _business_failure(
+                        run_id, "NO_DATA", f"leg {leg_id} ({leg_symbol}): no OHLCV data available",
+                        reason="data_missing",
+                    )
+                return _business_failure(run_id, "INVALID_PARAMS", f"leg {leg_id} ({leg_symbol}): {msg}")
+            except RuntimeError as e:
+                if "RATE_LIMITED" in str(e):
+                    return _business_failure(
+                        run_id, "RATE_LIMITED", "Exchange rate limit exceeded, please retry later",
+                        reason="rate_limited",
+                    )
+                return _business_failure(run_id, "ENGINE_ERROR", str(e))
+            except Exception as e:
+                logger.exception("basket leg OHLCV fetch unexpected error leg=%s", leg_id)
+                return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch leg {leg_id} market data: {e}")
+            leg_klines[leg_id] = rows
+            leg_provenance[leg_id] = (data_source, central_used, cache_hit)
+        return leg_klines, leg_provenance
+
+    def aligned_warmup_count(leg_klines: dict[str, list[dict[str, Any]]]) -> int:
+        times = [{row["open_time"] for row in rows if row["open_time"] < start_at} for rows in leg_klines.values()]
+        return len(set.intersection(*times)) if times else 0
+
+    # §2.6.1 预热：start_at 前要有「plan 最大回看」根两腿都有的对齐 bar。先前推
+    # 回看根数×周期；预热段有腿缺 bar 导致对齐根数不足时再前推到 4 倍回看跨度；仍不足
+    # 照常回测（特征缺值按 §2.6.1 不触发），不报错。manifest 只计 [start_at, end_at)。
+    fetched = fetch_legs(max(0, start_at - warmup_bars * step))
+    if isinstance(fetched, JSONResponse):
+        return fetched
+    leg_klines, leg_provenance = fetched
+    if warmup_bars > 0 and aligned_warmup_count(leg_klines) < warmup_bars:
+        widened = fetch_legs(max(0, start_at - 4 * warmup_bars * step))
+        # 放宽后的取数失败（如上市前区间）不影响已取到的首轮数据，照常回测。
+        if not isinstance(widened, JSONResponse):
+            leg_klines, leg_provenance = widened
 
     try:
         simulation = simulate_v3(
@@ -4043,6 +4136,14 @@ async def run_backtest(
         initial_capital = Decimal(str(initial_capital_str))
         fee_bps = Decimal(str(fee_bps_str))
         slippage_bps = Decimal(str(slippage_bps_str))
+        # 123 B2：组合 tool 的 fee/slippage 要写进 v3 spec，在这里就 canonical 化，
+        # NaN/Infinity/指数/负数走 INVALID_PARAMS 而不是在内核路径里 500。
+        basket_cost_bps: Optional[dict[str, str]] = None
+        if TOOL_SPECS.get(effective_tool_id, {}).get("runner") == "kernel_v3":
+            basket_cost_bps = {
+                "fee_bps": _basket_cost_bps_str("fee_bps", fee_bps_str),
+                "slippage_bps": _basket_cost_bps_str("slippage_bps", slippage_bps_str),
+            }
     except (InvalidOperation, TypeError, ValueError) as e:
         return _validation_failure("INVALID_PARAMS", f"Cannot parse decimal fields: {e}")
 
@@ -4074,6 +4175,7 @@ async def run_backtest(
             initial_capital=initial_capital,
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
+            envelope_cost_bps=basket_cost_bps,
             instrument_rules=bt_req.get("instrument_rules"),
         )
 
