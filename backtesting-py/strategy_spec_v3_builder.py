@@ -10,12 +10,16 @@ output is still validated by ``compile_strategy_v3`` at execution time.
 from __future__ import annotations
 
 import copy
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Context, Decimal, InvalidOperation, localcontext
 from typing import Any
 
 from canonical_json import CanonicalJsonError, canonical_decimal_str
 
 STRATEGY_SPEC_V3_SCHEMA = "cutie.strategy_spec.v3"
+# 62-2 ``cutie.decimal128.v1``: the canonical check and every literal are
+# computed at 34 digits, never in the caller's context (a 29-digit canonical
+# value must not be re-rounded by the default 28-digit normalize).
+_DECIMAL128 = Context(prec=34, rounding=ROUND_HALF_EVEN)
 
 _COMMON_PARAM_KEYS = {
     "legs",
@@ -205,6 +209,13 @@ def build_strategy_spec_v3(
 ) -> dict[str, Any]:
     """§6.2 rules 1–8: ``(strategy_family, tool params, envelope
     {timeframe, fee_bps, slippage_bps})`` → v3 spec dict (then canonical_json)."""
+    with localcontext(_DECIMAL128):
+        return _build(strategy_family, params, envelope)
+
+
+def _build(
+    strategy_family: str, params: dict[str, Any], envelope: dict[str, Any]
+) -> dict[str, Any]:
     if strategy_family not in _FAMILY_PARAM_KEYS:
         _fail("$.strategy_family", "unsupported basket strategy family")
     expected = _COMMON_PARAM_KEYS | _FAMILY_PARAM_KEYS[strategy_family]

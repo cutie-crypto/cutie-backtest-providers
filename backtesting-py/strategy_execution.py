@@ -25,6 +25,7 @@ from strategy_kernel import (
     StrategyContractError,
     capability_hash,
     compile_strategy,
+    in_decimal128,
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
 )
@@ -1492,6 +1493,7 @@ def _leg_sorted(items: list[dict[str, Any]], path: str) -> None:
         )
 
 
+@in_decimal128
 def canonical_kline_rows_v3(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """One leg's K-lines in the v2 checksum shape: ``open_time`` ascending,
     ``open_time/open/high/low/close/volume`` with canonical Decimal strings."""
@@ -1506,6 +1508,7 @@ def canonical_kline_rows_v3(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+@in_decimal128
 def build_data_manifests_v3(
     *,
     legs: list[dict[str, str]],
@@ -1571,6 +1574,7 @@ def data_manifests_hash(manifests: list[dict[str, Any]]) -> str:
     return canonical_json_sha256(manifests)
 
 
+@in_decimal128
 def strategy_spec_v3_evidence(strategy_spec: dict[str, Any]) -> dict[str, str]:
     """§4 ``strategy_spec_json`` / ``strategy_spec_hash`` for the provider-built
     canonical v3 spec."""
@@ -1580,6 +1584,7 @@ def strategy_spec_v3_evidence(strategy_spec: dict[str, Any]) -> dict[str, str]:
     }
 
 
+@in_decimal128
 def _validate_trades_v3(trades: Any) -> None:
     path = "$.trades"
     if not isinstance(trades, list):
@@ -1609,6 +1614,7 @@ def _validate_trades_v3(trades: Any) -> None:
                 )
 
 
+@in_decimal128
 def build_result_v3(
     *, simulation: dict[str, Any], data_manifests: list[dict[str, Any]]
 ) -> dict[str, Any]:

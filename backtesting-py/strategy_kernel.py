@@ -9,6 +9,7 @@ loop plus the explicit end-of-data close required by result.v2.
 from __future__ import annotations
 
 import copy
+import functools
 import re
 from dataclasses import dataclass, field
 from decimal import (
@@ -23,7 +24,7 @@ from decimal import (
     Underflow,
     localcontext,
 )
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, TypeVar
 
 from canonical_json import (
     CanonicalJsonError,
@@ -61,6 +62,25 @@ _DECIMAL_CONTEXT.traps[DivisionByZero] = True
 _DECIMAL_CONTEXT.traps[Overflow] = True
 _DECIMAL_CONTEXT.traps[Underflow] = True
 _JS_SAFE_INT = 2**53 - 1
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def in_decimal128(func: _F) -> _F:
+    """Run a v3 entry point wholly inside ``cutie.decimal128.v1``
+    (``_DECIMAL_CONTEXT``): every Decimal operation, comparison, normalize and
+    canonical serialization below it uses 34 digits whatever context the
+    caller has installed.  ``canonical_decimal_str`` normalizes in the
+    *current* context, so leaving any serialization outside would re-round a
+    29–34 digit value to the default 28."""
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with localcontext(_DECIMAL_CONTEXT):
+            return func(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
 
 # SPEC §5.5 (2026-07-17 增补, 62-2b Phase 1): kline-sourced feature namespace.
 _KLINE_PRIMARY_PREFIX = "kline.primary."
@@ -2521,6 +2541,7 @@ def _validate_spec_v3(
     return legs, basket_key, feature_types, feature_order
 
 
+@in_decimal128
 def compile_strategy_v3(strategy_spec: dict[str, Any]) -> CompiledPlanV3:
     """Validate and type-check a ``cutie.strategy_spec.v3`` basket spec.
 
@@ -3286,7 +3307,8 @@ def _eval_value_v3(
     series: dict[str, list[tuple[Any, Optional[str]]]],
 ) -> tuple[Any, Optional[str]]:
     """Evaluate a compiled v3 derived ValueExpr on aligned bar ``index``.
-    Returns ``(value, None)`` or ``(None, gap_reason)``."""
+    Returns ``(value, None)`` or ``(None, gap_reason)``; an arithmetic
+    failure raises ``KernelExecutionError`` and is never a gap."""
     node = expr["node"]
     if node == "literal":
         if expr["value_type"] == "integer":
@@ -3305,10 +3327,7 @@ def _eval_value_v3(
         if value is None:
             return None, reason
         args.append(value)
-    try:
-        return _ctx_op(expr["op"], args), None
-    except KernelExecutionError:
-        return None, "undefined_arithmetic"
+    return _ctx_op(expr["op"], args), None
 
 
 def _primitive_series_v3(
@@ -3372,14 +3391,23 @@ def _primitive_series_v3(
     return out
 
 
+@in_decimal128
 def build_frames_v3(
-    leg_klines: dict[str, list[dict[str, Any]]], plan: CompiledPlanV3
+    leg_klines: dict[str, list[dict[str, Any]]],
+    plan: CompiledPlanV3,
+    *,
+    check_bar: Optional[Callable[[FeatureFrame], None]] = None,
 ) -> BasketFrameSet:
     """Align both legs' K-lines on ``bar_open_at`` and evaluate v3 features.
 
     ``leg_klines`` is keyed by ``leg_id``; rows use the v2 primary K-line
     shape ``open_time/open/high/low/close/volume``.  Only data structures and
-    the skip marker are produced here — no decisions or fills.
+    the skip marker are produced here — no decisions or fills.  ``check_bar``
+    runs on every aligned frame before any feature is evaluated, so a
+    coverage failure outranks a derived arithmetic failure on the same data.
+    A derived ``ValueExpr`` whose arithmetic fails (division by zero,
+    overflow) is a structured execution failure, as in v2 (62-2 §3.5), never
+    a feature gap.
     """
     leg_ids = [leg["leg_id"] for leg in plan.legs]
     if not isinstance(leg_klines, dict) or set(leg_klines) != set(leg_ids):
@@ -3419,18 +3447,19 @@ def build_frames_v3(
         else:
             aligned_positions.append(len(frames))
             leg_bars.append(present)
-        frames.append(
-            FeatureFrame(
-                open_at,
-                open_at + step,
-                open_at + step,
-                plan.basket_key,
-                {},
-                {},
-                legs=copy.deepcopy(present),
-                skipped=skipped,
-            )
+        frame = FeatureFrame(
+            open_at,
+            open_at + step,
+            open_at + step,
+            plan.basket_key,
+            {},
+            {},
+            legs=copy.deepcopy(present),
+            skipped=skipped,
         )
+        if check_bar is not None and not skipped:
+            check_bar(frame)
+        frames.append(frame)
 
     features = {item["key"]: item for item in plan.strategy_spec["features"]}
     series: dict[str, list[tuple[Any, Optional[str]]]] = {}
@@ -3438,10 +3467,20 @@ def build_frames_v3(
     for key in plan.feature_order:
         feature = features[key]
         if feature.get("kind") == "derived":
-            series[key] = [
-                _eval_value_v3(feature["expr"], index, leg_bars, series)
-                for index in range(count)
-            ]
+            values: list[tuple[Any, Optional[str]]] = []
+            for index in range(count):
+                try:
+                    values.append(
+                        _eval_value_v3(feature["expr"], index, leg_bars, series)
+                    )
+                except KernelExecutionError as exc:
+                    raise KernelExecutionError(
+                        ERR_SPEC_INVALID,
+                        f"$.features.{key}",
+                        "derived feature arithmetic failed",
+                        actual=frames[aligned_positions[index]].bar_open_at,
+                    ) from exc
+            series[key] = values
             continue
         source_stream = feature["source_stream"]
         if source_stream.startswith(_FEATURE_SOURCE_PREFIX_V3):
@@ -3462,8 +3501,7 @@ def build_frames_v3(
                     {"bar_open_at": frame.bar_open_at, "feature": key, "reason": reason}
                 )
                 continue
-            with localcontext(_DECIMAL_CONTEXT):
-                frame.values[key] = canonical_decimal_str(value)
+            frame.values[key] = canonical_decimal_str(value)
     return BasketFrameSet(
         frames=frames,
         unaligned_bars=unaligned,
@@ -4254,14 +4292,44 @@ def _condition_v3(
     )
 
 
+def _feature_refs_v3(
+    expr: dict[str, Any], index: int
+) -> Iterable[tuple[str, int]]:
+    """Every ``(feature key, aligned bar)`` a ConditionExpr reads on bar
+    ``index``, whichever branch ``any``/``all`` would visit first; a cross
+    also reads bar ``index - 1`` (from the second aligned bar on, matching
+    ``_condition_v3``'s ``index == 0`` rule)."""
+    node = expr["node"]
+    if node == "feature":
+        yield expr["key"], index - expr["lag_bars"]
+    elif node == "arithmetic":
+        for item in expr["args"]:
+            yield from _feature_refs_v3(item, index)
+    elif node in {"compare", "cross"}:
+        offsets = [0, 1] if node == "cross" and index > 0 else [0]
+        for offset in offsets:
+            yield from _feature_refs_v3(expr["left"], index - offset)
+            yield from _feature_refs_v3(expr["right"], index - offset)
+    elif node in {"all", "any"}:
+        for item in expr["args"]:
+            yield from _feature_refs_v3(item, index)
+    elif node == "not":
+        yield from _feature_refs_v3(expr["arg"], index)
+
+
 def _condition_hit_v3(
     expr: dict[str, Any],
     aligned: list[FeatureFrame],
     index: int,
     feature_types: dict[str, str],
 ) -> bool:
-    """A condition touching any feature gap is "not hit" as a whole (a gap is
-    never turned into a value, so ``not`` over a gap cannot fire either)."""
+    """§2.6.1 缺值: if any feature referenced anywhere in the tree is a gap
+    on this bar, the whole top-level condition is "not hit" -- checked
+    before evaluation so ``any``/``all`` short-circuiting cannot skip a gap,
+    and ``not`` over a gap cannot fire either."""
+    for key, target in _feature_refs_v3(expr, index):
+        if target < 0 or aligned[target].values.get(key) is None:
+            return False
     try:
         return _condition_v3(expr, aligned, index, feature_types)
     except _MissingFeatureV3:
@@ -4329,6 +4397,7 @@ def _check_leg_prices_v3(
             )
 
 
+@in_decimal128
 def simulate_v3(
     plan: CompiledPlanV3,
     leg_klines: dict[str, list[dict[str, Any]]],
@@ -4357,7 +4426,9 @@ def simulate_v3(
     if end_at <= start_at:
         _raise("$.end_at", "end_at must be greater than start_at")
     rules = _validate_leg_rules_v3(plan, instrument_rules_by_leg)
-    frame_set = build_frames_v3(leg_klines, plan)
+    frame_set = build_frames_v3(
+        leg_klines, plan, check_bar=lambda frame: _check_leg_prices_v3(frame, rules)
+    )
     if frame_set.frames and frame_set.frames[-1].bar_close_at > end_at:
         raise KernelExecutionError(
             ERR_COVERAGE_INCOMPLETE,
@@ -4535,7 +4606,6 @@ def simulate_v3(
                 )
                 pending_entry = None
             continue
-        _check_leg_prices_v3(frame, rules)
         aligned.append(frame)
         if warmup:
             continue
@@ -4906,6 +4976,7 @@ __all__ = [
     "capability_payload",
     "compile_strategy",
     "compile_strategy_v3",
+    "in_decimal128",
     "from_snapshot",
     "initial_state",
     "kline_primary_bucket_required_end",

@@ -6,7 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import sys
-from decimal import Decimal
+from decimal import ROUND_DOWN, Context, Decimal, localcontext
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,7 @@ from strategy_execution import (  # noqa: E402
 )
 from strategy_kernel import (  # noqa: E402
     ERR_COVERAGE_INCOMPLETE,
+    ERR_SPEC_INVALID,
     StrategyContractError,
     compile_strategy_v3,
     simulate_v3,
@@ -32,6 +33,7 @@ from test_strategy_kernel_basket import (  # noqa: E402
     _dec,
     _feature,
     _stream,
+    spread_inverse_spec,
     zscore_spec,
     example_spec,
 )
@@ -559,4 +561,161 @@ def test_bars_closing_after_end_at_are_still_rejected():
             start_at=T0 + H4,
             end_at=T0 + 3 * H4,
         )
+    assert exc.value.code == ERR_COVERAGE_INCOMPLETE
+
+
+# ------------------------------------------ decimal128 context and gaps (B1d)
+
+TINY_STEP = "0.0000000000000000000000000001"
+DECIMAL128 = Context(prec=34)
+
+
+def tiny_fee_case() -> tuple:
+    # qty = floor(1/3, 1e-28) has 28 significant digits, so each leg fee
+    # (3+4)*qty*1/10000 has 29: only decimal128's 34 digits keep it exact.
+    spec = signal_spec()
+    spec["risk"]["position_sizing"]["value"] = "1"
+    spec["risk"]["leverage"] = "1"
+    spec["execution"]["cost_model"]["fee_bps"] = "1"
+    tiny = {"qty_step": TINY_STEP, "min_qty": TINY_STEP, "min_notional": "0.01"}
+    return (
+        spec,
+        leg(["3", "3", "3", "4"], {0: "10"}),
+        leg(["3", "3", "3", "4"], {2: "10"}),
+        rules(tiny, tiny),
+    )
+
+
+def manifests_for(a_rows: list, b_rows: list) -> list:
+    return build_data_manifests_v3(
+        legs=example_spec()["market"]["legs"],
+        leg_klines={"a": a_rows, "b": b_rows},
+        source="binance_futures",
+        market="futures",
+        timeframe="4h",
+        start_at=START_AT,
+        end_at=max(row["open_time"] for row in a_rows + b_rows) + H4,
+    )
+
+
+def test_basket_totals_and_return_keep_decimal128_digits():
+    spec, a_rows, b_rows, instrument_rules = tiny_fee_case()
+    # initial_capital "1" keeps the running equity within 34 digits, so the
+    # 30-digit return survives decimal128 intact.
+    simulation = simulate_v3(
+        compile_strategy_v3(spec),
+        {"a": a_rows, "b": b_rows},
+        instrument_rules,
+        "1",
+        start_at=START_AT,
+        end_at=T0 + 4 * H4,
+    )
+    [trade] = simulation["trades"]
+    leg_a, leg_b = trade["legs"]
+    assert leg_a["qty"] == "0.3333333333333333333333333333"
+    assert leg_a["fee"] == leg_b["fee"] == "0.00023333333333333333333333333331"
+    assert trade["fee"] == "0.00046666666666666666666666666662"
+    for key in ("fee", "slippage", "pnl"):
+        assert Decimal(trade[key]) == DECIMAL128.add(Decimal(leg_a[key]), Decimal(leg_b[key]))
+    expected_return = Decimal(trade["pnl"])
+    assert simulation["equity_curve"][-1]["equity"] == format(
+        DECIMAL128.add(Decimal("1"), expected_return), "f"
+    )
+    assert simulation["metrics"]["total_return"] == format(expected_return, "f")
+    assert len(Decimal(simulation["metrics"]["total_return"]).as_tuple().digits) > 28
+    build_result_v3(simulation=simulation, data_manifests=manifests_for(a_rows, b_rows))
+
+
+def test_result_v3_basket_sum_is_checked_in_decimal128():
+    a_rows, b_rows = section_3_rows()
+    simulation = run(signal_spec(), a_rows, b_rows)
+    manifests = manifests_for(a_rows, b_rows)
+    trade = simulation["trades"][0]
+    trade["legs"][0]["fee"] = "1.0000000000000000000000000001"
+    trade["legs"][1]["fee"] = "1"
+    trade["fee"] = "2"
+    with pytest.raises(StrategyContractError, match="exact sum"):
+        build_result_v3(simulation=simulation, data_manifests=manifests)
+    trade["fee"] = "2.0000000000000000000000000001"
+    build_result_v3(simulation=simulation, data_manifests=manifests)
+
+
+def test_v3_outputs_do_not_depend_on_the_callers_decimal_context():
+    section_a, section_b = section_3_rows()
+    cases = [(signal_spec(), section_a, section_b, None), tiny_fee_case()]
+
+    def replay() -> list:
+        out = []
+        for spec, a_rows, b_rows, instrument_rules in cases:
+            simulation = run(spec, a_rows, b_rows, instrument_rules)
+            manifests = manifests_for(a_rows, b_rows)
+            result = build_result_v3(simulation=simulation, data_manifests=manifests)
+            out.append(
+                (
+                    compile_strategy_v3(spec).spec_hash,
+                    canonical_json(simulation),
+                    canonical_json(result),
+                    data_manifests_hash(manifests),
+                    strategy_spec_v3_evidence(spec),
+                )
+            )
+        return out
+
+    baseline = replay()
+    with localcontext() as ctx:
+        ctx.prec = 10
+        ctx.rounding = ROUND_DOWN
+        assert replay() == baseline
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        {
+            "node": "any",
+            "args": [
+                {"node": "compare", "op": "gt", "left": _feature("ratio"), "right": _dec("0")},
+                {"node": "compare", "op": "lt", "left": _feature("ratio_z"), "right": _dec("-2")},
+            ],
+        },
+        {
+            "node": "not",
+            "arg": {
+                "node": "all",
+                "args": [
+                    {"node": "compare", "op": "lt", "left": _feature("ratio"), "right": _dec("0")},
+                    {"node": "compare", "op": "lt", "left": _feature("ratio_z"), "right": _dec("-2")},
+                ],
+            },
+        },
+    ],
+)
+def test_a_gap_in_an_unvisited_branch_still_blocks_the_whole_condition(condition):
+    # §2.6.1 缺值: ratio_z is always a gap here; any()/all() short-circuit
+    # must not skip it, so the top-level condition never fires.
+    spec = zscore_spec(window=3)
+    spec["entry"]["condition"] = condition
+    result = run(spec, leg(["3000"] * 8), leg(["60000"] * 8))
+    assert result["trades"] == []
+    # Control: the same tree without the gap does fire.
+    spec["entry"]["condition"] = copy.deepcopy(condition)
+    branches = spec["entry"]["condition"].get("args") or spec["entry"]["condition"]["arg"]["args"]
+    branches[1]["left"] = _feature("ratio")
+    assert run(spec, leg(["3000"] * 8), leg(["60000"] * 8))["trades"]
+
+
+def test_derived_division_by_zero_fails_the_run_instead_of_zero_trades():
+    spec = spread_inverse_spec()
+    with pytest.raises(StrategyContractError) as exc:
+        run(spec, leg(["3000", "3000", "3000"]), leg(["60000", "3000", "60000"]))
+    assert (exc.value.code, exc.value.path, exc.value.actual) == (
+        ERR_SPEC_INVALID,
+        "$.features.spread_inv",
+        T0 + H4,
+    )
+
+
+def test_zero_leg_price_stays_a_coverage_error_before_derived_arithmetic():
+    with pytest.raises(StrategyContractError) as exc:
+        run(zscore_spec(window=3), leg(["3000", "3000"]), leg(["60000", "0"]))
     assert exc.value.code == ERR_COVERAGE_INCOMPLETE
