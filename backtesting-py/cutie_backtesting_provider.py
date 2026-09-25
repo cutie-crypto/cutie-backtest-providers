@@ -38,10 +38,14 @@ from strategy_execution import (
     PaperCoverageInput,
     build_artifact_response,
     build_coverage_manifest,
+    build_data_manifests_v3,
     build_paper_tick_coverage_manifest,
+    build_result_v3,
+    data_manifests_hash,
     is_strategy_execution_intent,
     is_strategy_paper_tick_intent,
     max_primary_lag_frames,
+    strategy_spec_v3_evidence,
     validate_execution_request,
     validate_paper_tick_request,
 )
@@ -50,21 +54,26 @@ from strategy_kernel import (
     ERR_CAPABILITY_MISMATCH,
     ERR_COVERAGE_INCOMPLETE,
     ERR_SPEC_INVALID,
+    ERR_SPEC_UNSUPPORTED,
     KernelExecutionError,
     StrategyContractError,
     StrategyKernel,
+    StrategySpecV3Error,
     build_frames,
     capability_hash,
     capability_payload,
+    compile_strategy_v3,
     from_snapshot,
     initial_state,
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
     ohlcv_resample,
     simulate,
+    simulate_v3,
     snapshot_decimal_str,
     to_snapshot,
 )
+from strategy_spec_v3_builder import StrategySpecV3BuildError, build_strategy_spec_v3
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -853,9 +862,21 @@ def _normalize_ohlcv_symbol(symbol: str, market: str) -> str:
     return normalized_symbol
 
 
-def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
-                 start_sec: int, end_sec: int) -> pd.DataFrame:
-    """Fetch OHLCV from ccxt with local file cache."""
+def _fetch_ohlcv_raw(
+    exchange_id: str, market: str, symbol: str, timeframe: str,
+    start_sec: int, end_sec: int,
+) -> tuple[list, str, Optional[bool], bool]:
+    """Central-then-ccxt raw-candle fetch with local file cache, shared by
+    ``_fetch_ohlcv`` (which floats the result for backtesting.py) and the
+    basket ``kernel_v3`` path (123 B2), which keeps every OHLCV value a
+    canonical Decimal string and must never let a price cross a Python
+    float on the way into the decimal128 kernel (SPEC_组合策略v3契约 §2.6.1).
+
+    Returns ``(ohlcv, actual_data_source, central_market_data_used,
+    market_data_cache_hit)``; raises ``MarketDataFetchError`` /
+    ``ValueError("NO_DATA")`` / ``RuntimeError("RATE_LIMITED")`` exactly like
+    the original inlined ``_fetch_ohlcv`` body did.
+    """
     import ccxt
 
     start_ms = start_sec * 1000
@@ -975,6 +996,16 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
             central_failure_reason=(None if cached is not None else central_failure_reason),
             central_attempted=cached is None and central_market_data_attempted,
         )
+
+    return ohlcv, actual_data_source, central_market_data_used, market_data_cache_hit
+
+
+def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
+                 start_sec: int, end_sec: int) -> pd.DataFrame:
+    """Fetch OHLCV from ccxt with local file cache."""
+    ohlcv, actual_data_source, central_market_data_used, market_data_cache_hit = _fetch_ohlcv_raw(
+        exchange_id, market, symbol, timeframe, start_sec, end_sec
+    )
 
     df = pd.DataFrame(ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
@@ -2873,6 +2904,40 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
     }
 
 
+# 123 B2：三个组合模板 tool 共用的公共参数 schema（SPEC_组合策略v3契约 §6.1）。
+# _validate_params_against_schema 只理解 integer/number/string + min/max/enum，
+# 对 array/object 不做深校验（deferred to strategy_spec_v3_builder._build 与
+# compile_strategy_v3._validate_legs_v3）；这里仍按真实 JSON Schema 写全，供
+# connector/server 侧消费方按真实语义解读。
+_BASKET_LEG_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "minItems": 2,
+    "maxItems": 2,
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["leg_id", "symbol", "side", "weight"],
+        "properties": {
+            "leg_id": {"type": "string"},
+            "symbol": {"type": "string"},
+            "side": {"type": "string", "enum": ["long", "short"]},
+            "weight": {"type": "string"},
+        },
+    },
+}
+_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
+    "legs": _BASKET_LEG_SCHEMA,
+    "leverage": {"type": "integer", "minimum": 1, "maximum": 3},
+    # decimal 字面量必须是 canonical Decimal 字符串（§2.6.1「builder 输入」）；
+    # 运行时 schema 只查 str 类型，范围/canonical 校验交给 builder。
+    "margin_per_leg": {"type": "string"},
+    "basket_stop_loss_pct": {"type": "string"},
+    "basket_take_profit_pct": {"type": "string"},
+    "cooldown_bars": {"type": "integer", "minimum": 0},
+    "time_exit_bars": {"type": ["integer", "null"], "minimum": 1},
+}
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -3034,6 +3099,63 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    # 123 B2：三个组合（两腿比值）模板 tool。runner="kernel_v3" 让 run_backtest 在
+    # float 转换 / Strategy 类 / 单标的取数 / Backtest 之前分派到独立的 Decimal
+    # 内核路径（SPEC_组合策略v3契约 §6.1）；无 "build" 键——kernel_v3 分派点严格早
+    # 于 run_backtest 里唯一读取 tool_spec["build"] 的那一行，不会被访问到。
+    "local.backtesting_py.basket_ratio_sma_cross": {
+        "name": "Local Backtesting.py Basket Ratio SMA Cross",
+        "description": (
+            "Two-leg futures basket, trend-following on the leg-a/leg-b close "
+            "ratio: go long leg a + short leg b (per each leg's declared side) "
+            "when the fast SMA of the ratio crosses above the slow SMA, exit on "
+            "the opposite cross. Maps to KOL '组合比价 / 对冲配对'."
+        ),
+        "strategy_family": "basket_ratio_sma_cross",
+        "is_default": False,
+        "runner": "kernel_v3",
+        "param_schema_properties": {
+            "fast_window": {"type": "integer", "minimum": 2, "maximum": 50},
+            "slow_window": {"type": "integer", "minimum": 5, "maximum": 200},
+            **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
+        },
+    },
+    "local.backtesting_py.basket_ratio_roc": {
+        "name": "Local Backtesting.py Basket Ratio ROC",
+        "description": (
+            "Two-leg futures basket, momentum on the leg-a/leg-b close ratio: "
+            "hold the basket while the N-bar rate of change of the ratio is "
+            "above the entry threshold, exit while it falls below the exit "
+            "threshold. Maps to KOL '组合比价动量'."
+        ),
+        "strategy_family": "basket_ratio_roc",
+        "is_default": False,
+        "runner": "kernel_v3",
+        "param_schema_properties": {
+            "roc_window": {"type": "integer", "minimum": 2, "maximum": 100},
+            "entry_threshold": {"type": "string"},
+            "exit_threshold": {"type": "string"},
+            **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
+        },
+    },
+    "local.backtesting_py.basket_ratio_zscore": {
+        "name": "Local Backtesting.py Basket Ratio Z-Score",
+        "description": (
+            "Two-leg futures basket, mean-reversion on the leg-a/leg-b close "
+            "ratio: hold the basket while the rolling z-score of the ratio is "
+            "below -entry_z, exit while it rises above -exit_z. Maps to KOL "
+            "'组合比价回归'."
+        ),
+        "strategy_family": "basket_ratio_zscore",
+        "is_default": False,
+        "runner": "kernel_v3",
+        "param_schema_properties": {
+            "zscore_window": {"type": "integer", "minimum": 10, "maximum": 200},
+            "entry_z": {"type": "string"},
+            "exit_z": {"type": "string"},
+            **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
+        },
+    },
 }
 
 # A6 二层：固定止损/止盈/仓位对全部 9 个内置模板统一生效，直接合并进每个工具的
@@ -3052,6 +3174,19 @@ assert sum(1 for s in TOOL_SPECS.values() if s.get("is_default")) == 1, (
     "exactly one TOOL_SPECS entry must have is_default=True"
 )
 assert DEFAULT_TOOL_ID in TOOL_SPECS, "DEFAULT_TOOL_ID must be a registered tool"
+
+# 123 B2 / SPEC_组合策略v3契约 §6.1：capability payload 与 catalog 输出不得出现
+# v3 result/spec schema 字符串（v3 首期不对外声明能力，只在 provider 内部编译）。
+_V3_SCHEMA_STRINGS = ("cutie.strategy_spec.v3", "cutie.backtest_result.v3")
+for _tool_id, _tool_spec_check in TOOL_SPECS.items():
+    _catalog_text = json.dumps(
+        {"description": _tool_spec_check.get("description", ""),
+         "param_schema_properties": _tool_spec_check.get("param_schema_properties", {})}
+    )
+    assert not any(token in _catalog_text for token in _V3_SCHEMA_STRINGS), (
+        f"{_tool_id}: catalog output must never mention v3 result/spec schema strings"
+    )
+del _tool_id, _tool_spec_check, _catalog_text
 
 
 def _validate_params_against_schema(
@@ -3109,7 +3244,10 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
             "coverage_hint": f"{', '.join(supported_symbols[:5])} {'/'.join(CATALOG_TIMEFRAMES_EXCHANGE)} from exchange public API",
             "external_unverified": True,
         },
-        "supported_symbols": supported_symbols,
+        # 123 B2 / SPEC §6.1：组合 tool 对 supported_symbols 不填——server 对
+        # execution_scope='portfolio_legs' 的 run 跳过这项比对，改按 legs[].symbol
+        # 各自校验中心行情覆盖。
+        "supported_symbols": [] if spec.get("runner") == "kernel_v3" else supported_symbols,
         "markets": ["spot", "futures"],
         "timeframes": list(CATALOG_TIMEFRAMES_EXCHANGE),
         "is_default": spec.get("is_default", False),
@@ -3472,6 +3610,304 @@ async def health():
         )
 
 
+# ---------------------------------------------------------------------------
+# 123 B2：组合模板 runner=kernel_v3（SPEC_组合策略v3契约 §2.6.1 / §6）
+# ---------------------------------------------------------------------------
+
+
+def _basket_condition_frame_offset(node: Any, feature_frame) -> int:
+    """Aligned-bar frame-index offset a ValueExpr/ConditionExpr node needs
+    below the frame it is evaluated at, before every feature it (transitively)
+    reads is first computable (§2.6.1 预热：预热根数由 provider 按编译后 plan
+    的最大回看计算).  ``cross`` additionally reads both operands at t-1 (same
+    +1 rule as v2's ``max_primary_lag_frames``); every other node just needs
+    the max of its children."""
+    if not isinstance(node, dict):
+        return 0
+    kind = node.get("node")
+    if kind == "feature":
+        return feature_frame(node["key"]) + int(node.get("lag_bars", 0) or 0)
+    if kind == "stream":
+        return int(node.get("lag_bars", 0) or 0)
+    if kind == "literal":
+        return 0
+    offset = 0
+    for side in ("left", "right"):
+        if side in node:
+            offset = max(offset, _basket_condition_frame_offset(node[side], feature_frame))
+    if isinstance(node.get("args"), list):
+        for arg in node["args"]:
+            offset = max(offset, _basket_condition_frame_offset(arg, feature_frame))
+    if kind == "cross":
+        offset += 1
+    return offset
+
+
+def _basket_warmup_bars(strategy_spec: dict[str, Any]) -> int:
+    """§2.6.1: provider-computed warmup depth (aligned bars strictly before
+    ``start_at``), derived from the compiled spec's own max lookback
+    (window/lag) -- v3 has no manifest/declared warmup_bars, so widening the
+    fetch is entirely the provider's responsibility."""
+    features_by_key = {feature["key"]: feature for feature in strategy_spec["features"]}
+    memo: dict[str, int] = {}
+
+    def feature_frame(key: str) -> int:
+        if key in memo:
+            return memo[key]
+        memo[key] = 0  # cycle guard; compile_strategy_v3 already rejects real cycles
+        feature = features_by_key[key]
+        if "primitive" in feature:
+            window = feature.get("params", {}).get("window_bars")
+            base = (window - 1) if isinstance(window, int) and not isinstance(window, bool) else 0
+            source = feature.get("source_stream", "")
+            if isinstance(source, str) and source.startswith("feature:"):
+                base += feature_frame(source.split(":", 1)[1])
+            value = base
+        else:
+            value = _basket_condition_frame_offset(feature["expr"], feature_frame)
+        memo[key] = value
+        return value
+
+    needed = _basket_condition_frame_offset(strategy_spec["entry"]["condition"], feature_frame)
+    signal_exit = strategy_spec["exit"].get("signal_exit")
+    if signal_exit is not None:
+        needed = max(needed, _basket_condition_frame_offset(signal_exit, feature_frame))
+    return needed
+
+
+def _fetch_basket_leg_klines(
+    exchange_id: str, market: str, symbol: str, timeframe: str, start_at: int, end_at: int,
+) -> tuple[list[dict[str, Any]], str, Optional[bool], bool]:
+    """One basket leg's canonical-Decimal K-lines for ``[start_at, end_at)``
+    (caller widens ``start_at`` for warmup before calling).  Reuses the same
+    central-then-ccxt fetch/cache as the legacy per-symbol path via
+    ``_fetch_ohlcv_raw`` so every OHLCV value stays a canonical Decimal
+    string -- never floated -- on its way into the decimal128 kernel
+    (§2.6.1 精度上下文)."""
+    ohlcv, actual_data_source, central_market_data_used, market_data_cache_hit = _fetch_ohlcv_raw(
+        exchange_id, market, symbol, timeframe, start_at, end_at
+    )
+    rows = _canonical_kline_rows(ohlcv, start_at, end_at)
+    return rows, actual_data_source, central_market_data_used, market_data_cache_hit
+
+
+def _bounded_basket_response(run_id: str, body: dict[str, Any]) -> JSONResponse:
+    """Same never-truncate-signed-evidence rule as ``_bounded_template_response``,
+    plus the two v3-specific wire limits (SPEC §4): ``data_manifests_json`` ≤
+    16384 bytes, ``strategy_spec_json`` ≤ 32768 bytes."""
+    manifests_len = len(
+        json.dumps(body.get("data_manifests"), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    if manifests_len > 16384:
+        return _business_failure(
+            run_id, "INVALID_PARAMS",
+            "Complete data_manifests evidence exceeds callback limit (16384 bytes); shorten the backtest range.",
+        )
+    spec_json_len = len(str(body.get("strategy_spec_json") or "").encode("utf-8"))
+    if spec_json_len > 32768:
+        return _business_failure(
+            run_id, "INVALID_PARAMS",
+            "strategy_spec_json exceeds callback limit (32768 bytes).",
+        )
+    return _bounded_template_response(run_id, body)
+
+
+def _run_basket_backtest(
+    *,
+    run_id: str,
+    strategy_family: str,
+    params: dict[str, Any],
+    market: str,
+    timeframe: str,
+    start_at: int,
+    end_at: int,
+    initial_capital: Decimal,
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+    instrument_rules: Any,
+) -> JSONResponse:
+    """SPEC_组合策略v3契约 §6.1/§6.2/§2.6.1/§3/§4: dispatched from run_backtest
+    before any float conversion / Strategy class / single-symbol fetch /
+    Backtest() -- an entirely independent Decimal path through
+    strategy_spec_v3_builder -> compile_strategy_v3 -> simulate_v3 ->
+    build_result_v3."""
+    if market != "futures":
+        return _validation_failure(
+            "INVALID_PARAMS", "basket strategies require market='futures' (market.market_type is fixed futures)"
+        )
+    if not isinstance(instrument_rules, dict):
+        return _validation_failure("INVALID_PARAMS", "instrument_rules is required for basket strategies")
+
+    envelope = {
+        "timeframe": timeframe,
+        "fee_bps": canonical_decimal_str(fee_bps),
+        "slippage_bps": canonical_decimal_str(slippage_bps),
+    }
+    try:
+        strategy_spec = build_strategy_spec_v3(strategy_family, params, envelope)
+    except StrategySpecV3BuildError as exc:
+        return _validation_failure("INVALID_PARAMS", f"{exc.path}: {exc.message}")
+    except Exception as exc:
+        logger.exception("basket strategy_spec_v3 build failed family=%s", strategy_family)
+        return _business_failure(run_id, "ENGINE_ERROR", f"basket spec build failed: {exc}")
+
+    try:
+        plan = compile_strategy_v3(strategy_spec)
+    except (StrategySpecV3Error, StrategyContractError) as exc:
+        # ERR_SPEC_INVALID/ERR_SPEC_UNSUPPORTED here means the assembled spec
+        # (built straight from the caller's own params) was rejected by the
+        # kernel -- from the dispatch envelope's point of view that is still
+        # "your params/legs didn't validate", mapped to the same existing
+        # INVALID_PARAMS code as a builder-level rejection (契约歧义，见回报).
+        return _validation_failure("INVALID_PARAMS", f"{exc.path}: {exc.message}")
+
+    step = _timeframe_milliseconds(timeframe) // 1000
+    warmup_bars = _basket_warmup_bars(strategy_spec)
+    warmup_start = max(0, start_at - warmup_bars * step)
+
+    leg_klines: dict[str, list[dict[str, Any]]] = {}
+    leg_provenance: dict[str, tuple[str, Optional[bool], bool]] = {}
+    for leg in plan.legs:
+        leg_id = leg["leg_id"]
+        leg_symbol = leg["symbol"]
+        try:
+            rows, data_source, central_used, cache_hit = _fetch_basket_leg_klines(
+                CENTRAL_SUPPORTED_EXCHANGE, market, leg_symbol, timeframe, warmup_start, end_at
+            )
+        except MarketDataFetchError as e:
+            return _business_failure(
+                run_id, e.error_type, f"leg {leg_id} ({leg_symbol}): {e.public_message}",
+                reason=("data_missing" if e.error_type == "NO_DATA" else "market_data_fetch_failed"),
+                market_data_provenance=e.provenance,
+            )
+        except StrategyContractError as e:
+            return _business_failure(
+                run_id, "INSUFFICIENT_DATA", f"leg {leg_id} ({leg_symbol}): {e.path}: {e.message}",
+                reason="data_missing",
+            )
+        except ValueError as e:
+            msg = str(e)
+            if msg == "NO_DATA":
+                return _business_failure(
+                    run_id, "NO_DATA", f"leg {leg_id} ({leg_symbol}): no OHLCV data available",
+                    reason="data_missing",
+                )
+            return _business_failure(run_id, "INVALID_PARAMS", f"leg {leg_id} ({leg_symbol}): {msg}")
+        except RuntimeError as e:
+            if "RATE_LIMITED" in str(e):
+                return _business_failure(
+                    run_id, "RATE_LIMITED", "Exchange rate limit exceeded, please retry later",
+                    reason="rate_limited",
+                )
+            return _business_failure(run_id, "ENGINE_ERROR", str(e))
+        except Exception as e:
+            logger.exception("basket leg OHLCV fetch unexpected error leg=%s", leg_id)
+            return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch leg {leg_id} market data: {e}")
+        leg_klines[leg_id] = rows
+        leg_provenance[leg_id] = (data_source, central_used, cache_hit)
+
+    try:
+        simulation = simulate_v3(
+            plan, leg_klines, instrument_rules, str(initial_capital),
+            start_at=start_at, end_at=end_at,
+        )
+    except (KernelExecutionError, StrategyContractError) as exc:
+        if exc.code == ERR_COVERAGE_INCOMPLETE:
+            return _business_failure(run_id, "INSUFFICIENT_DATA", f"{exc.path}: {exc.message}", reason="data_missing")
+        return _validation_failure("INVALID_PARAMS", f"{exc.path}: {exc.message}")
+    except Exception as exc:
+        logger.exception("basket simulate_v3 failed")
+        return _business_failure(run_id, "ENGINE_ERROR", f"Basket simulation failed: {exc}")
+
+    central_used_all = all(bool(prov[1]) for prov in leg_provenance.values())
+    manifest_source = (
+        _CENTRAL_MARKET_SOURCES.get(market, f"ccxt:{CENTRAL_SUPPORTED_EXCHANGE}")
+        if central_used_all
+        else f"ccxt:{CENTRAL_SUPPORTED_EXCHANGE}"
+    )
+    try:
+        data_manifests = build_data_manifests_v3(
+            legs=list(plan.legs),
+            leg_klines=leg_klines,
+            source=manifest_source,
+            market=market,
+            timeframe=timeframe,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        result_v3 = build_result_v3(simulation=simulation, data_manifests=data_manifests)
+    except StrategyContractError as exc:
+        logger.exception("basket result_v3 assembly failed")
+        return _business_failure(run_id, "ENGINE_ERROR", f"{exc.path}: {exc.message}")
+
+    manifests_hash = data_manifests_hash(data_manifests)
+    evidence = strategy_spec_v3_evidence(strategy_spec)
+
+    trade_count = result_v3["metrics"]["trade_count"]
+    provider_summary = (
+        f"basket {strategy_family} on {plan.basket_key} {timeframe} (futures), "
+        f"{manifest_source}, {trade_count} trades, total_return {result_v3['metrics']['total_return']}"
+    )
+    response_body = _json_safe({
+        "schema": RESPONSE_SCHEMA,
+        "result_status": "success",
+        "provider_name": PROVIDER_NAME,
+        "provider_revision": PROVIDER_REVISION,
+        "provider_run_id": f"bt_{run_id}",
+        "engine_name": ENGINE_NAME,
+        "engine_version": _engine_version(),
+        "data_source": "cutie_central_market_data" if central_used_all else DATA_SOURCE,
+        "central_market_data_used": central_used_all,
+        "central_market_data_auth_mode": _central_market_data_auth_mode(),
+        "market_data_cache_hit": all(prov[2] for prov in leg_provenance.values()),
+        "schema_version": result_v3["schema_version"],
+        "metrics": result_v3["metrics"],
+        "initial_capital": _decimal_str(initial_capital, places=2),
+        "equity_curve": result_v3["equity_curve"],
+        "trades": result_v3["trades"],
+        "data_manifests": result_v3["data_manifests"],
+        "data_manifests_hash": manifests_hash,
+        "strategy_spec_json": evidence["strategy_spec_json"],
+        "strategy_spec_hash": evidence["strategy_spec_hash"],
+        "assumptions": {
+            "fee_bps": _decimal_str(fee_bps, places=4),
+            "slippage_bps": _decimal_str(slippage_bps, places=4),
+            "exchange": CENTRAL_SUPPORTED_EXCHANGE,
+            "market": market,
+            "strategy_family": strategy_family,
+            "legs": [leg["symbol"] for leg in plan.legs],
+            "real_market_data": True,
+            "no_live_trading": True,
+            "funding_rate_included": False,
+            "funding_rate_note": (
+                "Futures basket backtest excludes perpetual funding rate costs; "
+                "PnL may be optimistic vs. live futures trading."
+            ),
+        },
+        "limitations": {
+            "verification": "external_unverified",
+            "verified_by_cutie": False,
+            "data_quality": "provider_reported",
+            "no_trades_executed": trade_count == 0,
+        },
+        "raw_report": {
+            "provider_summary": provider_summary,
+            "diagnostics": simulation.get("diagnostics", []),
+            "market_data_provenance": {
+                leg_id: {
+                    "provider_revision": PROVIDER_REVISION,
+                    "source": prov[0],
+                    "central_market_data_used": prov[1],
+                    "auth_mode": _central_market_data_auth_mode(),
+                    "cache_hit": prov[2],
+                }
+                for leg_id, prov in leg_provenance.items()
+            },
+        },
+    })
+    return _bounded_basket_response(run_id, response_body)
+
+
 @app.get("/catalog")
 async def catalog(authorization: Optional[str] = Header(default=None)):
     """Return provider tool catalog (IMPL §5.1 cutie.backtest_provider_catalog.v1)."""
@@ -3622,6 +4058,25 @@ async def run_backtest(
     schema_err = _validate_params_against_schema(params, tool_spec["param_schema_properties"])
     if schema_err:  # F2: enforce catalog schema at runtime (unknown key / type / bounds)
         return _validation_failure("INVALID_PARAMS", schema_err)
+
+    # 123 B2 / SPEC §6.1: basket combo tools dispatch to an independent Decimal
+    # kernel_v3 path before any float conversion / Strategy class / single-
+    # symbol fetch / Backtest() below.
+    if tool_spec.get("runner") == "kernel_v3":
+        return _run_basket_backtest(
+            run_id=run_id,
+            strategy_family=tool_spec["strategy_family"],
+            params=params,
+            market=market,
+            timeframe=timeframe,
+            start_at=start_at,
+            end_at=end_at,
+            initial_capital=initial_capital,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+            instrument_rules=bt_req.get("instrument_rules"),
+        )
+
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
