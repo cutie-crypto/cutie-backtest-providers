@@ -4149,6 +4149,458 @@ def simulate(
     }
 
 
+# ---------------------------------------------------------------- v3 basket
+# SPEC_组合策略v3契约 §2.6 / §2.6.1: the single basket execution semantics
+# shared by historical replay and the future signal watcher.
+
+_INSTRUMENT_RULE_KEYS = {"symbol", "price_tick", "qty_step", "min_qty", "min_notional"}
+
+
+@dataclass(frozen=True)
+class BasketLegFill:
+    leg_id: str
+    symbol: str
+    side: str
+    qty: Decimal
+    entry_price: Decimal
+
+
+@dataclass
+class BasketPosition:
+    """One open basket: both legs filled on the same bar at their own open."""
+
+    legs: tuple[BasketLegFill, ...]
+    opened_at: int
+    bars_held: int = 1
+    pending_stop: bool = False
+    pending_take: bool = False
+    pending_signal_exit: bool = False
+
+
+class _MissingFeatureV3(Exception):
+    """A referenced feature is a structured gap (or before the first aligned
+    bar); the enclosing top-level condition does not fire."""
+
+
+def _value_v3(
+    expr: dict[str, Any],
+    aligned: list[FeatureFrame],
+    index: int,
+    feature_types: dict[str, str],
+) -> Any:
+    node = expr["node"]
+    if node == "literal":
+        return (
+            Decimal(expr["value"]) if expr["value_type"] == "decimal" else expr["value"]
+        )
+    if node == "feature":
+        target = index - expr["lag_bars"]
+        if target < 0:
+            raise _MissingFeatureV3
+        value = aligned[target].values.get(expr["key"])
+        if value is None:
+            raise _MissingFeatureV3
+        if feature_types[expr["key"]] == "decimal":
+            return Decimal(value)
+        return int(value)
+    if node == "arithmetic":
+        return _ctx_op(
+            expr["op"],
+            [_value_v3(item, aligned, index, feature_types) for item in expr["args"]],
+        )
+    raise KernelExecutionError(
+        ERR_SPEC_INVALID, "$.expression", "unknown compiled ValueExpr"
+    )
+
+
+def _condition_v3(
+    expr: dict[str, Any],
+    aligned: list[FeatureFrame],
+    index: int,
+    feature_types: dict[str, str],
+) -> bool:
+    node = expr["node"]
+    if node in {"compare", "cross"}:
+        left = _value_v3(expr["left"], aligned, index, feature_types)
+        right = _value_v3(expr["right"], aligned, index, feature_types)
+        if node == "cross":
+            if index == 0:
+                return False
+            previous_left = _value_v3(expr["left"], aligned, index - 1, feature_types)
+            previous_right = _value_v3(expr["right"], aligned, index - 1, feature_types)
+            if expr["op"] == "crosses_above":
+                return previous_left <= previous_right and left > right
+            return previous_left >= previous_right and left < right
+        return {
+            "gt": left > right,
+            "gte": left >= right,
+            "lt": left < right,
+            "lte": left <= right,
+            "eq": left == right,
+            "neq": left != right,
+        }[expr["op"]]
+    if node == "all":
+        return all(
+            _condition_v3(item, aligned, index, feature_types) for item in expr["args"]
+        )
+    if node == "any":
+        return any(
+            _condition_v3(item, aligned, index, feature_types) for item in expr["args"]
+        )
+    if node == "not":
+        return not _condition_v3(expr["arg"], aligned, index, feature_types)
+    raise KernelExecutionError(
+        ERR_SPEC_INVALID, "$.condition", "unknown compiled ConditionExpr"
+    )
+
+
+def _condition_hit_v3(
+    expr: dict[str, Any],
+    aligned: list[FeatureFrame],
+    index: int,
+    feature_types: dict[str, str],
+) -> bool:
+    """A condition touching any feature gap is "not hit" as a whole (a gap is
+    never turned into a value, so ``not`` over a gap cannot fire either)."""
+    try:
+        return _condition_v3(expr, aligned, index, feature_types)
+    except _MissingFeatureV3:
+        return False
+
+
+def _validate_leg_rules_v3(
+    plan: CompiledPlanV3, instrument_rules_by_leg: Any
+) -> dict[str, dict[str, Decimal]]:
+    path = "$.instrument_rules"
+    leg_ids = [leg["leg_id"] for leg in plan.legs]
+    if not isinstance(instrument_rules_by_leg, dict) or set(
+        instrument_rules_by_leg
+    ) != set(leg_ids):
+        _raise(path, "must equal market.legs exact-set", required=leg_ids)
+    out: dict[str, dict[str, Decimal]] = {}
+    for leg in plan.legs:
+        leg_id = leg["leg_id"]
+        rules = _exact(
+            instrument_rules_by_leg[leg_id], _INSTRUMENT_RULE_KEYS, f"{path}.{leg_id}"
+        )
+        if rules["symbol"] != leg["symbol"]:
+            _raise(
+                f"{path}.{leg_id}.symbol",
+                "must equal the leg symbol",
+                required=leg["symbol"],
+                actual=rules["symbol"],
+            )
+        out[leg_id] = {
+            key: _canonical_decimal(rules[key], f"{path}.{leg_id}.{key}", positive=True)
+            for key in ("price_tick", "qty_step", "min_qty", "min_notional")
+        }
+    return out
+
+
+def _check_leg_prices_v3(
+    frame: FeatureFrame, rules: dict[str, dict[str, Decimal]]
+) -> None:
+    """v2 §3.11 trust boundary per leg: reference prices are positive,
+    on the leg's price_tick, and OHLC-ordered; otherwise coverage invalid."""
+    assert frame.legs is not None
+    for leg_id, bar in frame.legs.items():
+        prices = {}
+        for key in ("open", "high", "low", "close"):
+            price = Decimal(bar[key])
+            with localcontext(_DECIMAL_CONTEXT) as ctx:
+                remainder = ctx.remainder(price, rules[leg_id]["price_tick"])
+            if price <= 0 or remainder != 0:
+                raise KernelExecutionError(
+                    ERR_COVERAGE_INCOMPLETE,
+                    f"$.leg_klines.{leg_id}.{key}",
+                    "K-line reference price violates the trusted price_tick",
+                )
+            prices[key] = price
+        if not (
+            prices["low"]
+            <= min(prices["open"], prices["close"])
+            <= max(prices["open"], prices["close"])
+            <= prices["high"]
+        ):
+            raise KernelExecutionError(
+                ERR_COVERAGE_INCOMPLETE,
+                f"$.leg_klines.{leg_id}",
+                "K-line OHLC ordering is invalid",
+            )
+
+
+def simulate_v3(
+    plan: CompiledPlanV3,
+    leg_klines: dict[str, list[dict[str, Any]]],
+    instrument_rules_by_leg: dict[str, dict[str, str]],
+    initial_capital: str,
+    *,
+    start_at: int,
+    end_at: int,
+) -> dict[str, Any]:
+    """Replay a compiled v3 basket over both legs' K-lines (§2.6 / §2.6.1).
+
+    Not a v2 ``simulate`` variant: bars are aligned by ``build_frames_v3``;
+    an unaligned bar is not evaluated at all, except that a pending entry
+    whose t+1 is unaligned is dropped as ``no_next_bar``.  Every K-line must
+    lie in ``[start_at, end_at]`` (no warmup window in v3);
+    ``start_at``/``initial_capital`` is the equity curve origin.
+    """
+    capital = _canonical_decimal(
+        initial_capital, "$.initial_capital", positive=True
+    )
+    start_at = _safe_int(start_at, "$.start_at")
+    end_at = _safe_int(end_at, "$.end_at")
+    if end_at <= start_at:
+        _raise("$.end_at", "end_at must be greater than start_at")
+    rules = _validate_leg_rules_v3(plan, instrument_rules_by_leg)
+    frame_set = build_frames_v3(leg_klines, plan)
+    if frame_set.frames and (
+        frame_set.frames[0].bar_open_at < start_at
+        or frame_set.frames[-1].bar_close_at > end_at
+    ):
+        raise KernelExecutionError(
+            ERR_COVERAGE_INCOMPLETE,
+            "$.leg_klines",
+            "K-lines fall outside the execution window",
+        )
+
+    spec = plan.strategy_spec
+    legs_spec = {leg["leg_id"]: leg for leg in plan.legs}
+    leg_ids = [leg["leg_id"] for leg in plan.legs]
+    types = plan.feature_types
+    exit_spec = spec["exit"]
+    stop_value = Decimal(exit_spec["stop_loss"]["value"])
+    take_value = Decimal(exit_spec["take_profit"]["value"])
+    time_exit_bars = exit_spec["time_exit_bars"]
+    signal_exit = exit_spec["signal_exit"]
+    entry_condition = spec["entry"]["condition"]
+    cooldown = spec["entry"]["cooldown_bars"]
+    priority = spec["execution"]["intrabar_priority"]
+    margin_per_leg = Decimal(spec["risk"]["position_sizing"]["value"])
+    leverage = Decimal(spec["risk"]["leverage"])
+    fee_bps = Decimal(spec["execution"]["cost_model"]["fee_bps"])
+    slippage_bps = Decimal(spec["execution"]["cost_model"]["slippage_bps"])
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        margin_total = ctx.multiply(margin_per_leg, Decimal(len(leg_ids)))
+
+    aligned: list[FeatureFrame] = []
+    pending_entry: Optional[int] = None
+    position: Optional[BasketPosition] = None
+    last_exit_index: Optional[int] = None
+    trades: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+
+    def open_basket(frame: FeatureFrame) -> None:
+        nonlocal position
+        assert frame.legs is not None
+        fills: list[BasketLegFill] = []
+        rejected: list[str] = []
+        try:
+            with localcontext(_DECIMAL_CONTEXT) as ctx:
+                for leg_id in leg_ids:
+                    entry_price = Decimal(frame.legs[leg_id]["open"])
+                    leg_rules = rules[leg_id]
+                    raw_qty = ctx.divide(
+                        ctx.multiply(margin_per_leg, leverage), entry_price
+                    )
+                    step = leg_rules["qty_step"]
+                    qty = ctx.multiply(
+                        ctx.divide(raw_qty, step).to_integral_value(
+                            rounding=ROUND_FLOOR
+                        ),
+                        step,
+                    )
+                    notional = ctx.multiply(qty, entry_price)
+                    if qty < leg_rules["min_qty"] or notional < leg_rules["min_notional"]:
+                        rejected.append(leg_id)
+                    fills.append(
+                        BasketLegFill(
+                            leg_id=leg_id,
+                            symbol=legs_spec[leg_id]["symbol"],
+                            side=legs_spec[leg_id]["side"],
+                            qty=+qty,
+                            entry_price=entry_price,
+                        )
+                    )
+        except ArithmeticError as exc:
+            raise KernelExecutionError(
+                ERR_SPEC_INVALID,
+                "$.strategy_spec.risk.position_sizing",
+                "decimal sizing operation failed",
+            ) from exc
+        if rejected:
+            diagnostics.append(
+                {
+                    "bar_open_at": frame.bar_open_at,
+                    "kind": "leg_min_order",
+                    "legs": rejected,
+                }
+            )
+            return
+        position = BasketPosition(legs=tuple(fills), opened_at=frame.bar_open_at)
+
+    def close_basket(
+        frame: FeatureFrame, index: int, exit_kind: str, price_key: str
+    ) -> None:
+        nonlocal position, last_exit_index
+        assert position is not None and frame.legs is not None
+        legs_out: list[dict[str, Any]] = []
+        try:
+            with localcontext(_DECIMAL_CONTEXT) as ctx:
+                fee_total = Decimal(0)
+                slippage_total = Decimal(0)
+                pnl_total = Decimal(0)
+                for fill in position.legs:
+                    exit_price = Decimal(frame.legs[fill.leg_id][price_key])
+                    notional_sum = ctx.multiply(
+                        ctx.add(fill.entry_price, exit_price), fill.qty
+                    )
+                    fee = ctx.divide(ctx.multiply(notional_sum, fee_bps), Decimal(10000))
+                    slippage = ctx.divide(
+                        ctx.multiply(notional_sum, slippage_bps), Decimal(10000)
+                    )
+                    delta = (
+                        ctx.subtract(exit_price, fill.entry_price)
+                        if fill.side == "long"
+                        else ctx.subtract(fill.entry_price, exit_price)
+                    )
+                    gross = ctx.multiply(delta, fill.qty)
+                    pnl = ctx.subtract(ctx.subtract(gross, fee), slippage)
+                    fee_total = ctx.add(fee_total, fee)
+                    slippage_total = ctx.add(slippage_total, slippage)
+                    pnl_total = ctx.add(pnl_total, pnl)
+                    legs_out.append(
+                        {
+                            "leg_id": fill.leg_id,
+                            "symbol": fill.symbol,
+                            "side": fill.side,
+                            "qty": canonical_decimal_str(fill.qty),
+                            "entry_price": canonical_decimal_str(fill.entry_price),
+                            "exit_price": canonical_decimal_str(exit_price),
+                            "fee": canonical_decimal_str(fee),
+                            "slippage": canonical_decimal_str(slippage),
+                            "pnl": canonical_decimal_str(pnl),
+                        }
+                    )
+        except ArithmeticError as exc:
+            raise KernelExecutionError(
+                ERR_SPEC_INVALID, "$.execution.cost", "decimal cost operation failed"
+            ) from exc
+        trades.append(
+            {
+                "seq": len(trades) + 1,
+                "opened_at": position.opened_at,
+                "closed_at": (
+                    frame.bar_close_at
+                    if exit_kind in {"time_exit", "end_of_data"}
+                    else frame.bar_open_at
+                ),
+                "fee": canonical_decimal_str(fee_total),
+                "slippage": canonical_decimal_str(slippage_total),
+                "pnl": canonical_decimal_str(pnl_total),
+                "exit_kind": exit_kind,
+                "legs": legs_out,
+            }
+        )
+        position = None
+        last_exit_index = index
+
+    def basket_pnl_pct(frame: FeatureFrame) -> Decimal:
+        assert position is not None and frame.legs is not None
+        with localcontext(_DECIMAL_CONTEXT) as ctx:
+            unrealized = Decimal(0)
+            for fill in position.legs:
+                close = Decimal(frame.legs[fill.leg_id]["close"])
+                delta = (
+                    ctx.subtract(close, fill.entry_price)
+                    if fill.side == "long"
+                    else ctx.subtract(fill.entry_price, close)
+                )
+                unrealized = ctx.add(unrealized, ctx.multiply(delta, fill.qty))
+            return ctx.divide(unrealized, margin_total)
+
+    for frame in frame_set.frames:
+        if frame.skipped:
+            # §2.6 bar 对齐: not evaluated; only a pending entry whose t+1
+            # is this bar is dropped.  A held basket carries over untouched.
+            if pending_entry is not None:
+                diagnostics.append(
+                    {"bar_open_at": aligned[pending_entry].bar_open_at, "kind": "no_next_bar"}
+                )
+                pending_entry = None
+            continue
+        _check_leg_prices_v3(frame, rules)
+        aligned.append(frame)
+        index = len(aligned) - 1
+        held_from_previous_bar = position is not None
+        if pending_entry is not None:
+            pending_entry = None
+            open_basket(frame)
+        if held_from_previous_bar and position is not None:
+            position.bars_held += 1
+        if position is not None:
+            candidates: dict[str, str] = {}
+            if position.pending_stop:
+                candidates["stop_loss"] = "open"
+            if position.pending_take:
+                candidates["take_profit"] = "open"
+            if time_exit_bars is not None and position.bars_held >= time_exit_bars:
+                candidates["time_exit"] = "close"
+            if position.pending_signal_exit:
+                candidates["signal_exit"] = "open"
+            for exit_kind in priority:
+                if exit_kind in candidates:
+                    close_basket(frame, index, exit_kind, candidates[exit_kind])
+                    break
+        if position is not None:
+            pct = basket_pnl_pct(frame)
+            position.pending_stop = pct <= -stop_value
+            position.pending_take = pct >= take_value
+            position.pending_signal_exit = signal_exit is not None and _condition_hit_v3(
+                signal_exit, aligned, index, types
+            )
+        if position is None and pending_entry is None:
+            eligible = last_exit_index is None or index - last_exit_index >= cooldown
+            if eligible and _condition_hit_v3(entry_condition, aligned, index, types):
+                pending_entry = index
+
+    if pending_entry is not None:
+        diagnostics.append(
+            {"bar_open_at": aligned[pending_entry].bar_open_at, "kind": "no_next_bar"}
+        )
+    if position is not None:
+        close_basket(aligned[-1], len(aligned) - 1, "end_of_data", "close")
+
+    curve = [{"ts": start_at, "equity": canonical_decimal_str(capital)}]
+    running = capital
+    try:
+        with localcontext(_DECIMAL_CONTEXT) as ctx:
+            for trade in trades:
+                running = ctx.add(running, Decimal(trade["pnl"]))
+                curve.append(
+                    {"ts": trade["closed_at"], "equity": canonical_decimal_str(running)}
+                )
+            total_return = ctx.divide(ctx.subtract(running, capital), capital)
+    except ArithmeticError as exc:
+        raise KernelExecutionError(
+            ERR_SPEC_INVALID, "$.metrics", "decimal metric operation failed"
+        ) from exc
+    return {
+        "trades": trades,
+        "equity_curve": curve,
+        "metrics": {
+            "total_return": canonical_decimal_str(total_return),
+            "max_drawdown": canonical_decimal_str(_max_drawdown(curve)),
+            "trade_count": len(trades),
+            "skipped_bars": frame_set.skipped_bars,
+        },
+        "diagnostics": diagnostics,
+        "unaligned_bars": copy.deepcopy(frame_set.unaligned_bars),
+        "feature_gaps": copy.deepcopy(frame_set.feature_gaps),
+    }
+
+
 def paper_tick(
     kernel: StrategyKernel, state: KernelState, frame: FeatureFrame
 ) -> dict[str, Any]:
@@ -4423,6 +4875,8 @@ __all__ = [
     "ARTIFACT_DIGEST_SCHEMA",
     "ARTIFACT_MANIFEST_SCHEMA",
     "BasketFrameSet",
+    "BasketLegFill",
+    "BasketPosition",
     "CAPABILITY_SCHEMA",
     "CompiledPlanV3",
     "COMPILER_TOOL_ID",
@@ -4452,6 +4906,7 @@ __all__ = [
     "ohlcv_resample",
     "paper_tick",
     "simulate",
+    "simulate_v3",
     "snapshot_decimal_str",
     "to_snapshot",
 ]
