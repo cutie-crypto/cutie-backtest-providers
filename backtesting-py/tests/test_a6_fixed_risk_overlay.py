@@ -226,6 +226,13 @@ def test_absent_fields_produce_empty_risk_dict():
 def test_fixed_risk_keys_are_merged_into_every_tool_schema():
     for tool_id, spec in TOOL_SPECS.items():
         props = spec["param_schema_properties"]
+        if spec.get("runner") == "kernel_v3":
+            # 123 组合 tool 豁免：组合风险参数走 basket_stop_loss_pct /
+            # basket_take_profit_pct / margin_per_leg（SPEC_组合策略v3契约 §6.1），
+            # v3 内核不消费这 4 个 legacy 键，声明出来就是 catalog 里的死键。
+            for key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
+                assert key not in props, f"{tool_id} must not declare legacy risk key {key}"
+            continue
         for key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
             assert key in props, f"{tool_id} missing {key} in param_schema_properties"
 
