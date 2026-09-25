@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+from decimal import ROUND_DOWN, localcontext
 from pathlib import Path
 
 import pytest
@@ -229,3 +230,20 @@ def test_builder_is_deterministic_and_sorts_legs_by_leg_id():
 def test_builder_rejects_out_of_contract_params(family, params, envelope):
     with pytest.raises(StrategySpecV3BuildError):
         build_strategy_spec_v3(family, params, envelope)
+
+
+def test_29_digit_canonical_literal_is_accepted_under_any_caller_context():
+    # §0.6 / cutie.decimal128.v1: the canonical check runs at 34 digits, so a
+    # 29-digit canonical value is kept byte-for-byte whatever the caller's
+    # context is.
+    threshold = "0.12345678901234567890123456789"
+    params = common(roc_window=3, entry_threshold=threshold, exit_threshold="0.01")
+    built = build_strategy_spec_v3("basket_ratio_roc", params, ENVELOPE)
+    assert threshold in canonical_json(built)
+    compile_strategy_v3(built)
+    with localcontext() as ctx:
+        ctx.prec = 10
+        ctx.rounding = ROUND_DOWN
+        assert canonical_json(
+            build_strategy_spec_v3("basket_ratio_roc", params, ENVELOPE)
+        ) == canonical_json(built)

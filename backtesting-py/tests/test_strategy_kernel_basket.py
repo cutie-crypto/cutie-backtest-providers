@@ -603,13 +603,41 @@ def test_leg_set_and_grid_must_match():
     assert exc.value.code == ERR_COVERAGE_INCOMPLETE
 
 
-def test_division_by_zero_leg_price_is_a_gap():
-    frames = build_frames_v3(
-        {"a": _rows(["1", "1"]), "b": _rows(["0", "1"])},
-        compile_strategy_v3(roc_spec(window=1)),
-    )
-    assert frames.frames[0].values["ratio"] is None
-    assert {"bar_open_at": 0, "feature": "ratio", "reason": "undefined_arithmetic"} in (
-        frames.feature_gaps
-    )
-    assert frames.frames[1].values["ratio"] == "1"
+def spread_inverse_spec() -> dict:
+    """Derived ``a.close / (a.close - b.close)``: valid positive prices still
+    divide by zero on a bar where both legs close equal."""
+    spec = example_spec()
+    spec["features"] = [
+        _derived(
+            "spread_inv",
+            {
+                "node": "arithmetic",
+                "op": "div",
+                "args": [
+                    _stream("a"),
+                    {"node": "arithmetic", "op": "sub", "args": [_stream("a"), _stream("b")]},
+                ],
+            },
+        )
+    ]
+    spec["entry"]["condition"] = {
+        "node": "compare",
+        "op": "gt",
+        "left": _feature("spread_inv"),
+        "right": _dec("0"),
+    }
+    spec["exit"]["signal_exit"] = None
+    return spec
+
+
+def test_derived_arithmetic_failure_is_a_structured_error_not_a_gap():
+    # 62-2 §3.5 (v2 ``_ctx_op``): division by zero is a structured execution
+    # failure, never a gap that silently yields zero trades.
+    with pytest.raises(StrategyContractError) as exc:
+        build_frames_v3(
+            {"a": _rows(["2", "1"]), "b": _rows(["1", "1"])},
+            compile_strategy_v3(spread_inverse_spec()),
+        )
+    assert exc.value.code == ERR_SPEC_INVALID
+    assert exc.value.path == "$.features.spread_inv"
+    assert exc.value.actual == H4
