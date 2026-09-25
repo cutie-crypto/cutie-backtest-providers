@@ -1518,10 +1518,20 @@ def build_data_manifests_v3(
 ) -> list[dict[str, Any]]:
     """§3 ``data_manifests``: one ten-key item per leg (v2 nine keys +
     ``leg_id``) on one shared timeline; ``checksum`` is each leg's own v2
-    K-line checksum and ``kline_count`` its own row count."""
+    K-line checksum and ``kline_count`` its own row count.
+
+    Same warmup rule as the v2 ``data_manifest`` (§2.6.1 预热): only rows with
+    ``start_at <= open_time < end_at`` are counted and checksummed; warmup
+    rows fed to the kernel as feature history are not evidence."""
     manifests: list[dict[str, Any]] = []
     for leg in sorted(legs, key=lambda item: item["leg_id"]):
-        rows = canonical_kline_rows_v3(leg_klines[leg["leg_id"]])
+        rows = canonical_kline_rows_v3(
+            [
+                row
+                for row in leg_klines[leg["leg_id"]]
+                if start_at <= row["open_time"] < end_at
+            ]
+        )
         manifests.append(
             {
                 "leg_id": leg["leg_id"],

@@ -462,3 +462,101 @@ def test_k_lines_outside_the_execution_window_are_rejected():
             end_at=T0 + 3 * H4,
         )
     assert exc.value.code == ERR_COVERAGE_INCOMPLETE
+
+
+# ------------------------------------------------------ §2.6.1 预热 (warmup)
+
+
+def warmup_spec() -> dict:
+    # Entry reads the previous aligned bar's leg-a volume, so the first
+    # evaluated bar can only fire from warmup history.
+    spec = signal_spec()
+    spec["entry"]["condition"]["left"] = _feature("entry_sig", 1)
+    return spec
+
+
+def test_warmup_bars_feed_history_but_are_never_evaluated():
+    # start_at = bar 3.  Bars 0-2 are warmup; leg b lacks bar 0 (a warmup
+    # gap).  Bar 1 volume 10 makes the entry true at bar 2 (warmup: ignored,
+    # otherwise the basket would open at bar 3); bar 2 volume 10 makes it
+    # true at bar 3 through lag 1 into warmup history -> fill at bar 4 open.
+    a_rows = leg(["3000"] * 7, {1: "10", 2: "10"})
+    b_rows = leg(["60000"] * 7, missing=(0,))
+    start_at = T0 + 3 * H4
+    end_at = T0 + 7 * H4
+    simulation = simulate_v3(
+        compile_strategy_v3(warmup_spec()),
+        {"a": a_rows, "b": b_rows},
+        rules(),
+        "10000",
+        start_at=start_at,
+        end_at=end_at,
+    )
+    assert [(t["opened_at"], t["exit_kind"]) for t in simulation["trades"]] == [
+        (T0 + 4 * H4, "end_of_data")
+    ]
+    assert simulation["metrics"]["skipped_bars"] == 0
+    assert simulation["equity_curve"][0] == {"ts": start_at, "equity": "10000"}
+    assert simulation["diagnostics"] == []
+
+
+def test_warmup_gap_is_not_counted_but_an_evaluated_gap_is():
+    a_rows = leg(["3000"] * 6)
+    b_rows = leg(["60000"] * 6, missing=(1, 4))
+    simulation = simulate_v3(
+        compile_strategy_v3(warmup_spec()),
+        {"a": a_rows, "b": b_rows},
+        rules(),
+        "10000",
+        start_at=T0 + 2 * H4,
+        end_at=T0 + 6 * H4,
+    )
+    assert simulation["metrics"]["skipped_bars"] == 1
+
+
+def test_data_manifests_exclude_warmup_rows_like_v2():
+    # v2 data_manifest proves the evaluation window only: start_at/end_at are
+    # the run window and kline_count/checksum cover start_at <= open_time <
+    # end_at; v3 applies the same rule per leg.
+    a_rows = leg(["3000"] * 7)
+    b_rows = leg(["60000"] * 7, missing=(0,))
+    start_at = T0 + 3 * H4
+    end_at = T0 + 7 * H4
+    manifests = build_data_manifests_v3(
+        legs=example_spec()["market"]["legs"],
+        leg_klines={"a": a_rows, "b": b_rows},
+        source="binance_futures",
+        market="futures",
+        timeframe="4h",
+        start_at=start_at,
+        end_at=end_at,
+    )
+    assert [m["kline_count"] for m in manifests] == [4, 4]
+    assert [(m["start_at"], m["end_at"]) for m in manifests] == [(start_at, end_at)] * 2
+    evaluated = [row for row in a_rows if row["open_time"] >= start_at]
+    assert manifests[0]["checksum"] == hashlib.sha256(
+        canonical_json(
+            [
+                {
+                    "open_time": row["open_time"],
+                    **{k: str(Decimal(row[k])) for k in ("open", "high", "low", "close", "volume")},
+                }
+                for row in evaluated
+            ]
+        ).encode()
+    ).hexdigest()
+
+
+def test_bars_closing_after_end_at_are_still_rejected():
+    a_rows = leg(["3000"] * 4)
+    b_rows = leg(["60000"] * 4)
+    with pytest.raises(StrategyContractError) as exc:
+        simulate_v3(
+            compile_strategy_v3(warmup_spec()),
+            {"a": a_rows, "b": b_rows},
+            rules(),
+            "10000",
+            start_at=T0 + H4,
+            end_at=T0 + 3 * H4,
+        )
+    assert exc.value.code == ERR_COVERAGE_INCOMPLETE

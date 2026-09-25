@@ -4342,8 +4342,11 @@ def simulate_v3(
 
     Not a v2 ``simulate`` variant: bars are aligned by ``build_frames_v3``;
     an unaligned bar is not evaluated at all, except that a pending entry
-    whose t+1 is unaligned is dropped as ``no_next_bar``.  Every K-line must
-    lie in ``[start_at, end_at]`` (no warmup window in v3);
+    whose t+1 is unaligned is dropped as ``no_next_bar``.  K-lines before
+    ``start_at`` are warmup (§2.6.1 预热): aligned ones only feed feature
+    history -- no entry/exit evaluation, no ``skipped_bars``, no equity
+    point; evaluation starts at the first aligned bar with
+    ``bar_open_at >= start_at``.  Every bar must close by ``end_at``;
     ``start_at``/``initial_capital`` is the equity curve origin.
     """
     capital = _canonical_decimal(
@@ -4355,10 +4358,7 @@ def simulate_v3(
         _raise("$.end_at", "end_at must be greater than start_at")
     rules = _validate_leg_rules_v3(plan, instrument_rules_by_leg)
     frame_set = build_frames_v3(leg_klines, plan)
-    if frame_set.frames and (
-        frame_set.frames[0].bar_open_at < start_at
-        or frame_set.frames[-1].bar_close_at > end_at
-    ):
+    if frame_set.frames and frame_set.frames[-1].bar_close_at > end_at:
         raise KernelExecutionError(
             ERR_COVERAGE_INCOMPLETE,
             "$.leg_klines",
@@ -4520,10 +4520,15 @@ def simulate_v3(
                 unrealized = ctx.add(unrealized, ctx.multiply(delta, fill.qty))
             return ctx.divide(unrealized, margin_total)
 
+    skipped_bars = 0
     for frame in frame_set.frames:
+        warmup = frame.bar_open_at < start_at
         if frame.skipped:
             # §2.6 bar 对齐: not evaluated; only a pending entry whose t+1
             # is this bar is dropped.  A held basket carries over untouched.
+            # A warmup gap is feature history only and is not counted.
+            if not warmup:
+                skipped_bars += 1
             if pending_entry is not None:
                 diagnostics.append(
                     {"bar_open_at": aligned[pending_entry].bar_open_at, "kind": "no_next_bar"}
@@ -4532,6 +4537,8 @@ def simulate_v3(
             continue
         _check_leg_prices_v3(frame, rules)
         aligned.append(frame)
+        if warmup:
+            continue
         index = len(aligned) - 1
         held_from_previous_bar = position is not None
         if pending_entry is not None:
@@ -4593,7 +4600,7 @@ def simulate_v3(
             "total_return": canonical_decimal_str(total_return),
             "max_drawdown": canonical_decimal_str(_max_drawdown(curve)),
             "trade_count": len(trades),
-            "skipped_bars": frame_set.skipped_bars,
+            "skipped_bars": skipped_bars,
         },
         "diagnostics": diagnostics,
         "unaligned_bars": copy.deepcopy(frame_set.unaligned_bars),
