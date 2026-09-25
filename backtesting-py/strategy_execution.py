@@ -5,11 +5,13 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Optional
 
 from canonical_json import (
     CanonicalJsonError,
     canonical_decimal_str,
+    canonical_json,
     canonical_json_sha256,
 )
 from strategy_kernel import (
@@ -1429,6 +1431,193 @@ def build_artifact_response(
     }
 
 
+# ---------------------------------------------------------------- result.v3
+# SPEC_组合策略v3契约 §3 / §4: basket result assembly and wire evidence.  The
+# v2 ``build_artifact_response`` above is untouched.
+
+RESULT_V3_SCHEMA = "cutie.backtest_result.v3"
+_RESULT_V3_KEYS = {
+    "schema_version",
+    "trades",
+    "equity_curve",
+    "metrics",
+    "data_manifests",
+}
+_TRADE_V3_KEYS = {
+    "seq",
+    "opened_at",
+    "closed_at",
+    "fee",
+    "slippage",
+    "pnl",
+    "exit_kind",
+    "legs",
+}
+_TRADE_LEG_V3_KEYS = {
+    "leg_id",
+    "symbol",
+    "side",
+    "qty",
+    "entry_price",
+    "exit_price",
+    "fee",
+    "slippage",
+    "pnl",
+}
+_METRICS_V3_KEYS = {"total_return", "max_drawdown", "trade_count", "skipped_bars"}
+_DATA_MANIFEST_V3_KEYS = {
+    "leg_id",
+    "source",
+    "symbol",
+    "market",
+    "timeframe",
+    "start_at",
+    "end_at",
+    "kline_count",
+    "checksum_algo",
+    "checksum",
+}
+_SHARED_TIMELINE_KEYS = ("start_at", "end_at", "timeframe", "market", "source")
+_KLINE_V3_FIELDS = ("open", "high", "low", "close", "volume")
+
+
+def _leg_sorted(items: list[dict[str, Any]], path: str) -> None:
+    leg_ids = [item["leg_id"] for item in items]
+    if len(items) != 2 or leg_ids != sorted(set(leg_ids)):
+        _error(
+            ERR_SPEC_INVALID,
+            path,
+            "exactly two items sorted by leg_id required",
+            actual=leg_ids,
+        )
+
+
+def canonical_kline_rows_v3(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One leg's K-lines in the v2 checksum shape: ``open_time`` ascending,
+    ``open_time/open/high/low/close/volume`` with canonical Decimal strings."""
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "open_time": row["open_time"],
+                **{key: canonical_decimal_str(row[key]) for key in _KLINE_V3_FIELDS},
+            }
+        )
+    return out
+
+
+def build_data_manifests_v3(
+    *,
+    legs: list[dict[str, str]],
+    leg_klines: dict[str, list[dict[str, Any]]],
+    source: str,
+    market: str,
+    timeframe: str,
+    start_at: int,
+    end_at: int,
+) -> list[dict[str, Any]]:
+    """§3 ``data_manifests``: one ten-key item per leg (v2 nine keys +
+    ``leg_id``) on one shared timeline; ``checksum`` is each leg's own v2
+    K-line checksum and ``kline_count`` its own row count."""
+    manifests: list[dict[str, Any]] = []
+    for leg in sorted(legs, key=lambda item: item["leg_id"]):
+        rows = canonical_kline_rows_v3(leg_klines[leg["leg_id"]])
+        manifests.append(
+            {
+                "leg_id": leg["leg_id"],
+                "source": source,
+                "symbol": leg["symbol"],
+                "market": market,
+                "timeframe": timeframe,
+                "start_at": start_at,
+                "end_at": end_at,
+                "kline_count": len(rows),
+                "checksum_algo": "sha256",
+                "checksum": canonical_json_sha256(rows),
+            }
+        )
+    _validate_data_manifests_v3(manifests)
+    return manifests
+
+
+def _validate_data_manifests_v3(manifests: Any) -> None:
+    path = "$.data_manifests"
+    if not isinstance(manifests, list):
+        _error(ERR_SPEC_INVALID, path, "must be an array")
+    for index, item in enumerate(manifests):
+        _exact(item, _DATA_MANIFEST_V3_KEYS, f"{path}[{index}]")
+    _leg_sorted(manifests, path)
+    for key in _SHARED_TIMELINE_KEYS:
+        if len({item[key] for item in manifests}) != 1:
+            _error(
+                ERR_SPEC_INVALID,
+                f"{path}.{key}",
+                "legs must share one timeline",
+            )
+
+
+def data_manifests_hash(manifests: list[dict[str, Any]]) -> str:
+    """§3: sha256 over the canonical JSON of the whole array."""
+    return canonical_json_sha256(manifests)
+
+
+def strategy_spec_v3_evidence(strategy_spec: dict[str, Any]) -> dict[str, str]:
+    """§4 ``strategy_spec_json`` / ``strategy_spec_hash`` for the provider-built
+    canonical v3 spec."""
+    return {
+        "strategy_spec_json": canonical_json(strategy_spec),
+        "strategy_spec_hash": canonical_json_sha256(strategy_spec),
+    }
+
+
+def _validate_trades_v3(trades: Any) -> None:
+    path = "$.trades"
+    if not isinstance(trades, list):
+        _error(ERR_SPEC_INVALID, path, "must be an array")
+    for index, trade in enumerate(trades):
+        trade_path = f"{path}[{index}]"
+        _exact(trade, _TRADE_V3_KEYS, trade_path)
+        if trade["seq"] != index + 1:
+            _error(
+                ERR_SPEC_INVALID,
+                f"{trade_path}.seq",
+                "seq must increase from 1 without gaps",
+                actual=trade["seq"],
+            )
+        for leg_index, leg in enumerate(trade["legs"]):
+            _exact(leg, _TRADE_LEG_V3_KEYS, f"{trade_path}.legs[{leg_index}]")
+        _leg_sorted(trade["legs"], f"{trade_path}.legs")
+        for key in ("fee", "slippage", "pnl"):
+            total = sum((Decimal(leg[key]) for leg in trade["legs"]), Decimal(0))
+            if Decimal(trade[key]) != total:
+                _error(
+                    ERR_SPEC_INVALID,
+                    f"{trade_path}.{key}",
+                    "basket total must equal the exact sum of its legs",
+                    required=canonical_decimal_str(total),
+                    actual=trade[key],
+                )
+
+
+def build_result_v3(
+    *, simulation: dict[str, Any], data_manifests: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Assemble ``cutie.backtest_result.v3`` (§3): exactly five keys, checked
+    against every §3 shape rule before it leaves the provider."""
+    _validate_trades_v3(simulation["trades"])
+    _exact(simulation["metrics"], _METRICS_V3_KEYS, "$.metrics")
+    _validate_data_manifests_v3(data_manifests)
+    result = {
+        "schema_version": RESULT_V3_SCHEMA,
+        "trades": copy.deepcopy(simulation["trades"]),
+        "equity_curve": copy.deepcopy(simulation["equity_curve"]),
+        "metrics": copy.deepcopy(simulation["metrics"]),
+        "data_manifests": copy.deepcopy(data_manifests),
+    }
+    _exact(result, _RESULT_V3_KEYS, "$")
+    return result
+
+
 def _interval_seconds(interval: str) -> int:
     return (
         int(interval[:-1]) * {"m": 60, "h": 3600, "d": 86400, "w": 604800}[interval[-1]]
@@ -1444,13 +1633,19 @@ __all__ = [
     "PAPER_TICK_RESULT_SCHEMA",
     "PAPER_WINDOW_MAX_BARS",
     "PaperCoverageInput",
+    "RESULT_V3_SCHEMA",
     "ValidatedExecution",
     "ValidatedPaperTick",
     "build_artifact_response",
     "build_coverage_manifest",
+    "build_data_manifests_v3",
+    "build_result_v3",
+    "canonical_kline_rows_v3",
+    "data_manifests_hash",
     "build_paper_tick_coverage_manifest",
     "is_strategy_execution_intent",
     "is_strategy_paper_tick_intent",
+    "strategy_spec_v3_evidence",
     "validate_execution_request",
     "validate_paper_tick_request",
 ]
