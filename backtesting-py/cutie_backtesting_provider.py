@@ -498,6 +498,27 @@ def _bars_equal_split_chunks(
     return chunks
 
 
+# Binance 周线从周一 00:00 UTC 开盘；1970-01-01 是周四，周一网格相对 epoch 偏 4 天。
+_WEEK_GRID_OFFSET_MS = 4 * 24 * 60 * 60 * 1000
+
+
+def _timeframe_grid_offset_ms(timeframe: str) -> Optional[int]:
+    """K 线开盘网格相对 epoch 的偏移：开盘时间满足 (open - offset) % step == 0。
+
+    分钟/小时/日线是 epoch 整数倍（offset 0）；周线按 Binance 口径从周一开盘，
+    offset 为 4 天（不是 epoch 整数倍，按 epoch 切周线同样会丢跨切点那根）；
+    月线（M）步长不固定，没有固定网格，返回 None。"""
+    match = re.fullmatch(r"(\d+)([mhdwM])", str(timeframe or ""))
+    if not match:
+        return 0
+    unit = match.group(2)
+    if unit == "M":
+        return None
+    if unit == "w":
+        return _WEEK_GRID_OFFSET_MS
+    return 0
+
+
 def _split_central_range(
     start_ms: int, end_ms: int, timeframe: str, max_chunk_ms: int
 ) -> list[tuple[int, int]]:
@@ -508,8 +529,15 @@ def _split_central_range(
     缺失都会把整段判成 data_gap 回退 ccxt（生产 run 359532680989114368）。改为
     先定片数，再把 bar 数尽量均分到每片（余数分给靠前的分片，即"并入前一片"
     的等价实现），保证每片跨度接近总跨度/片数，不再有远小于其它分片的尾片。
-    分片边界按 timeframe 的 step 对齐（从 start_ms 起的整数倍 bar 数），不会把
-    一根 bar 切在两个分片的请求区间里。
+    分片切点对齐到 timeframe 的绝对 K 线网格（见 `_timeframe_grid_offset_ms`），
+    首片仍从原 start_ms 起、末片仍到原 end_ms 止。
+
+    123 B2b（D5）：此前切点是「从 start_ms 起整数倍 bar 数」，start_ms 不在网格上
+    时切点也不在网格上。中心 /klines 只返回 `start_ts <= open 且 open+step <= end_ts`
+    的 bar，跨切点的那根 bar 在前一片不算收盘、在后一片开盘早于起点，两片都不返回，
+    拼接后凭空少一根（本机真链路 4h 组合 run 丢 open=1786305600，逐腿 checksum 与
+    server 复核不一致）。切点落在网格上后，网格 bar 要么整根在前片、要么从后片起点开盘，
+    相邻分片不重不漏，拼接结果与一次性取全量逐根一致。
 
     P1 返修（亲审发现）：片数不能只按毫秒算 `ceil(总跨度/max_chunk_ms)`——服务端
     硬上限是「毫秒跨度 <= max_chunk_ms」，但分片是按 bar 数均分的，当 max_chunk_ms
@@ -539,20 +567,29 @@ def _split_central_range(
         # 数据本身决定的硬约束，不是分片算法能解的）。
         return _ms_equal_split_chunks(start_ms, end_ms, math.ceil(total_span / max_chunk_ms))
 
-    total_bars = total_span // step_ms
+    # 按网格起点 grid_start（<= start_ms 的最近网格点）算 bar 数与切点，再把首片起点
+    # 换回 start_ms：首片只会比按网格算的更短，其余片跨度不变，硬上限判断照旧成立。
+    grid_offset_ms = _timeframe_grid_offset_ms(timeframe)
+    if grid_offset_ms is None:
+        grid_start = start_ms  # 无固定网格（1M）：沿用从 start_ms 起按 bar 数切
+    else:
+        grid_start = start_ms - (start_ms - grid_offset_ms) % step_ms
+    aligned_span = end_ms - grid_start
+    total_bars = aligned_span // step_ms
     max_bars_per_chunk = max_chunk_ms // step_ms
     if total_bars < 1 or max_bars_per_chunk < 1:
         return _ms_equal_split_chunks(start_ms, end_ms, math.ceil(total_span / max_chunk_ms))
 
     num_chunks = max(
-        math.ceil(total_span / max_chunk_ms),
+        math.ceil(aligned_span / max_chunk_ms),
         math.ceil(total_bars / max_bars_per_chunk),
     )
 
     def _build(n: int) -> list[tuple[int, int]]:
         if total_bars < n:
             return _ms_equal_split_chunks(start_ms, end_ms, n)
-        return _bars_equal_split_chunks(start_ms, end_ms, step_ms, total_bars, n)
+        aligned = _bars_equal_split_chunks(grid_start, end_ms, step_ms, total_bars, n)
+        return [(start_ms, aligned[0][1])] + aligned[1:]
 
     chunks = _build(num_chunks)
     # 守卫：末片吸收的 < step_ms 毫秒余数理论上可能把它推过硬上限，命中就多切
