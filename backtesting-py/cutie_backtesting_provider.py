@@ -289,11 +289,16 @@ def _enforce_reports_retention() -> None:
             logger.warning("Failed to delete old report %s: %s", oldest, e)
 
 
+# OHLCV 磁盘缓存格式版本，进缓存文件名。123 B2b（D5）：修复前中心行情分片在起点非网格时
+# 每个切点丢一根 bar，旧缓存可能就是缺根序列——升版本后旧文件名一律不再命中（按 LRU/TTL 自然清掉）。
+OHLCV_CACHE_VERSION = "v2"
+
+
 def _cache_key(exchange: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> str:
     # fully-qualified 输入（BTC/USDT:USDT）含 / 会让 key 变成子目录路径，_write_cache
     # 不建中间目录导致缓存写入被静默吞掉——文件名字符一律 sanitize
     safe_symbol = re.sub(r"[^A-Za-z0-9]", "-", symbol)
-    return f"{exchange}_{market}_{safe_symbol}_{timeframe}_{start_ms}_{end_ms}.json"
+    return f"{OHLCV_CACHE_VERSION}_{exchange}_{market}_{safe_symbol}_{timeframe}_{start_ms}_{end_ms}.json"
 
 
 def _timeframe_milliseconds(timeframe: str) -> int:
@@ -396,8 +401,12 @@ def _expected_bar_grid(timeframe: str, start_ms: int, end_ms: int) -> Optional[t
     effective_end = min(end_ms, int(time.time() * 1000))
     if effective_end <= start_ms:
         return None
-    first_open = -(-start_ms // step_ms) * step_ms  # ceil(start_ms / step_ms) * step_ms
-    last_open = ((effective_end - step_ms) // step_ms) * step_ms
+    # 123 B2b 返修：网格与分片切点同一份口径（周线按周一开盘），否则周线期望根数按周四
+    # 网格算会比真实少一根，中段真缺一根时 actual == expected 被放过。月线无固定网格按 0。
+    offset_ms = _timeframe_grid_offset_ms(timeframe) or 0
+    first_open = start_ms + (-(start_ms - offset_ms)) % step_ms  # >= start_ms 的首个网格点
+    last_close_bound = effective_end - step_ms
+    last_open = last_close_bound - (last_close_bound - offset_ms) % step_ms  # 最后一个已收盘网格点
     if last_open < first_open:
         return None
     return first_open, last_open, step_ms
