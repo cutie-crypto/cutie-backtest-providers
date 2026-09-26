@@ -502,3 +502,63 @@ def test_basket_warmup_still_short_after_widening_runs_without_error(monkeypatch
     assert body["result_status"] == "success", body
     assert len(calls) == 4
     assert body["metrics"]["trade_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 123 B2b（D4）：信封 initial_capital 取自 NUMERIC 列（"10000.00000000"），进内核前
+# 规范化成 canonical 串；结果与传 "10000" 逐字一致。非法值仍 INVALID_PARAMS，
+# 内核自身的 canonical 校验不放宽。
+# ---------------------------------------------------------------------------
+
+
+def _body_without_run_identity(body: dict) -> dict:
+    return {k: v for k, v in body.items() if k not in {"provider_run_id", "elapsed_ms"}}
+
+
+@pytest.mark.parametrize("raw", ["10000.00000000", "10000.0", "010000", 10000, 10000.0])
+def test_basket_numeric_column_capital_matches_canonical_capital(monkeypatch, raw):
+    case = copy.deepcopy(CASES["sma_cross_basic"])
+    _install_leg_fetch(monkeypatch, case)
+    baseline = _post(_basket_request(case, run_id="capital"))
+    assert baseline["result_status"] == "success", baseline
+
+    request = _basket_request(case, run_id="capital")
+    request["backtest"]["initial_capital"] = raw
+    body = _post(request)
+    assert body["result_status"] == "success", body
+    assert json.dumps(_body_without_run_identity(body), sort_keys=True) == json.dumps(
+        _body_without_run_identity(baseline), sort_keys=True
+    )
+
+
+@pytest.mark.parametrize(
+    "raw", ["abc", "", "0", "0.000", "-1", "NaN", "Infinity", "1E+4", float("nan"), True, None, "1" + "0" * 40 + ".1"]
+)
+def test_basket_invalid_capital_is_still_invalid_params(monkeypatch, raw):
+    case = CASES["sma_cross_basic"]
+    _install_leg_fetch(monkeypatch, case)
+    request = _basket_request(case, run_id="capital-invalid")
+    request["backtest"]["initial_capital"] = raw
+    response = TestClient(provider.app).post(
+        "/cutie/backtest", content=json.dumps(request), headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "failed", body
+    assert body["error_type"] == "INVALID_PARAMS"
+
+
+def test_kernel_still_rejects_non_canonical_capital():
+    """规范化只发生在 provider 入口；内核 simulate_v3 对多余尾零照旧拒收。"""
+    from strategy_kernel import StrategyContractError, compile_strategy_v3, simulate_v3
+    from strategy_spec_v3_builder import build_strategy_spec_v3
+
+    case = CASES["sma_cross_basic"]
+    envelope = {k: case["envelope"][k] for k in ("timeframe", "fee_bps", "slippage_bps")}
+    plan = compile_strategy_v3(build_strategy_spec_v3(_family_of(case), case["provider_params"], envelope))
+    with pytest.raises(StrategyContractError) as excinfo:
+        simulate_v3(
+            plan, case["klines"], case["instrument_rules"], "10000.00000000",
+            start_at=case["envelope"]["start_at"], end_at=case["envelope"]["end_at"],
+        )
+    assert excinfo.value.path == "$.initial_capital"

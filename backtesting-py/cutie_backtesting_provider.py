@@ -3797,6 +3797,30 @@ def _basket_cost_bps_str(name: str, raw: Any) -> str:
     return canonical_decimal_str(value)
 
 
+@in_decimal128
+def _basket_capital_str(raw: Any) -> str:
+    """信封 initial_capital → 传给 ``simulate_v3`` 的 canonical Decimal 字符串。
+
+    123 B2b（D4）：server 从 NUMERIC 列取 initial_capital，信封里形如
+    ``"10000.00000000"``；内核 ``$.initial_capital`` 只收 canonical 串（无多余尾零），
+    原样 ``str()`` 传进去会被拒成 INVALID_PARAMS。这里在入口规范化，内核严格校验不放宽。
+    与 ``_basket_cost_bps_str`` 同一套输入口径（float 取 repr、拒 NaN/Infinity/指数），
+    另要求 > 0，且规范化不得改变数值（超 decimal128 34 位有效数字的输入直接拒，
+    不静默舍入）。"""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError("initial_capital must be a decimal number")
+    text = repr(raw) if isinstance(raw, float) else str(raw)
+    if not _PLAIN_DECIMAL_RE.fullmatch(text):
+        raise ValueError(f"initial_capital must be a plain decimal (no NaN/Infinity/exponent): {text!r}")
+    value = Decimal(text)
+    if value <= 0:
+        raise ValueError("initial_capital must be positive")
+    canonical = canonical_decimal_str(value)
+    if Decimal(canonical) != value:
+        raise ValueError("initial_capital exceeds decimal128 precision (34 significant digits)")
+    return canonical
+
+
 def _bounded_basket_response(run_id: str, body: dict[str, Any]) -> JSONResponse:
     """Same never-truncate-signed-evidence rule as ``_bounded_template_response``,
     plus the two v3-specific wire limits (SPEC §4): ``data_manifests_json`` ≤
@@ -3829,6 +3853,7 @@ def _run_basket_backtest(
     start_at: int,
     end_at: int,
     initial_capital: Decimal,
+    kernel_initial_capital: str,
     fee_bps: Decimal,
     slippage_bps: Decimal,
     envelope_cost_bps: dict[str, str],
@@ -3840,7 +3865,8 @@ def _run_basket_backtest(
     strategy_spec_v3_builder -> compile_strategy_v3 -> simulate_v3 ->
     build_result_v3.  Runs wholly in decimal128 (prec=34) whatever the
     caller's context; ``envelope_cost_bps`` is the canonical fee/slippage
-    pair already validated by ``_basket_cost_bps_str``."""
+    pair already validated by ``_basket_cost_bps_str``; ``kernel_initial_capital``
+    is the canonical capital from ``_basket_capital_str``."""
     if market != "futures":
         return _validation_failure(
             "INVALID_PARAMS", "basket strategies require market='futures' (market.market_type is fixed futures)"
@@ -3938,7 +3964,7 @@ def _run_basket_backtest(
 
     try:
         simulation = simulate_v3(
-            plan, leg_klines, instrument_rules, str(initial_capital),
+            plan, leg_klines, instrument_rules, kernel_initial_capital,
             start_at=start_at, end_at=end_at,
         )
     except (KernelExecutionError, StrategyContractError) as exc:
@@ -4176,11 +4202,14 @@ async def run_backtest(
         # 123 B2：组合 tool 的 fee/slippage 要写进 v3 spec，在这里就 canonical 化，
         # NaN/Infinity/指数/负数走 INVALID_PARAMS 而不是在内核路径里 500。
         basket_cost_bps: Optional[dict[str, str]] = None
+        basket_capital: Optional[str] = None
         if TOOL_SPECS.get(effective_tool_id, {}).get("runner") == "kernel_v3":
             basket_cost_bps = {
                 "fee_bps": _basket_cost_bps_str("fee_bps", fee_bps_str),
                 "slippage_bps": _basket_cost_bps_str("slippage_bps", slippage_bps_str),
             }
+            # 123 B2b（D4）：信封 capital 来自 NUMERIC 列（"10000.00000000"），进内核前规范化。
+            basket_capital = _basket_capital_str(initial_capital_str)
     except (InvalidOperation, TypeError, ValueError) as e:
         return _validation_failure("INVALID_PARAMS", f"Cannot parse decimal fields: {e}")
 
@@ -4210,6 +4239,7 @@ async def run_backtest(
             start_at=start_at,
             end_at=end_at,
             initial_capital=initial_capital,
+            kernel_initial_capital=basket_capital,
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
             envelope_cost_bps=basket_cost_bps,
