@@ -884,7 +884,11 @@ def test_split_central_range_1w_175d_matches_reviewed_repro():
     for chunk_start, chunk_end in chunks:
         span = chunk_end - chunk_start
         assert span <= 90 * day_ms
-        assert span % week_ms == 0  # 非末片理应精确对齐 week grid（175 天恰好整除 7）
+    # 123 B2b：切点对齐周线真实网格（Binance 周一 00:00 UTC 开盘，epoch 0 是周四），
+    # 不再是「从 start 起整数周」——start=0 不在周线网格上，首片比整周短。
+    for _chunk_start, chunk_end in chunks[:-1]:
+        assert (chunk_end - 4 * day_ms) % week_ms == 0
+    assert chunks[0][0] == start_ms
     assert sum(chunk_end - chunk_start for chunk_start, chunk_end in chunks) == end_ms - start_ms
 
 
@@ -897,3 +901,84 @@ def test_expected_bar_count_grid_aligns_non_zero_start():
     end_ms = start_ms + 5 * day_ms
     expected = provider._expected_bar_count("1d", start_ms, end_ms)
     assert expected == 4
+
+
+# ---------------------------------------------------------------------------
+# 123 B2b（D5）：切点必须落在 K 线绝对网格上。此前按「从 start 起整数倍 bar」切，
+# start 不在网格上时跨切点那根 bar 在前后两片都不被服务端返回（服务端只给
+# start_ts <= open 且 open+step <= end_ts 的 bar），拼接少一根。
+# ---------------------------------------------------------------------------
+
+_WEEK_OFFSET_SEC = 4 * 24 * 3600  # Binance 周线周一开盘，epoch 0 是周四
+
+
+def _server_grid_opens(start_ts: int, end_ts: int, timeframe: str) -> list[int]:
+    """独立复刻服务端 /klines 口径（market_kline_cache_service：start_ts <= open 且
+    open+step <= end_ts），网格按交易所真实开盘时间（周线周一），不调被测实现。"""
+    step = {"1h": 3600, "4h": 4 * 3600, "1d": 86400, "1w": 7 * 86400}[timeframe]
+    offset = _WEEK_OFFSET_SEC if timeframe == "1w" else 0
+    first = start_ts + (-(start_ts - offset)) % step
+    return [o for o in range(first, end_ts, step) if o + step <= end_ts]
+
+
+def _install_grid_server(monkeypatch, timeframe: str, requested: list[tuple[int, int]]):
+    def fake_urlopen(req, timeout=None):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        start_ts = int(qs["start_ts"][0])
+        end_ts = int(qs["end_ts"][0])
+        assert end_ts - start_ts <= 90 * 24 * 3600, "服务端单次跨度硬上限 90 天"
+        requested.append((start_ts, end_ts))
+        items = [
+            {"open_time": o, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}
+            for o in _server_grid_opens(start_ts, end_ts, timeframe)
+        ]
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": len(items), "items": items}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+
+@pytest.mark.parametrize(
+    ("timeframe", "start_ts", "total_days"),
+    [
+        ("1h", 1_700_000_123, 95),
+        ("4h", 1_782_323_503, 92),  # 本机真链路 D5 复现起点（08-09 20:00 那根跨切点）
+        ("4h", 1_700_000_123, 200),
+        ("1d", 1_700_000_123, 365),
+    ],
+)
+def test_unaligned_start_chunked_fetch_matches_one_shot(central_configured, monkeypatch, timeframe, start_ts, total_days):
+    """起点非整点、跨度 > 90 天：分片拼接的 bar 序列与一次性取全量逐根一致
+    （open_time 连续、无重复、无缺失），且切点落在网格上。"""
+    end_ts = start_ts + total_days * 86400
+    requested: list[tuple[int, int]] = []
+    _install_grid_server(monkeypatch, timeframe, requested)
+
+    rows = provider._fetch_from_central(
+        "binance", "futures", "BTCUSDT", timeframe, start_ts * 1000, end_ts * 1000
+    )
+
+    assert len(requested) >= 2, "跨度 > 90 天必须分片"
+    assert rows is not None
+    got = [row[0] // 1000 for row in rows]
+    assert got == _server_grid_opens(start_ts, end_ts, timeframe)
+    step = provider._timeframe_milliseconds(timeframe) // 1000
+    assert all(b - a == step for a, b in zip(got, got[1:]))
+    assert requested[0][0] == start_ts and requested[-1][1] == end_ts
+    for _chunk_start, chunk_end in requested[:-1]:
+        assert chunk_end % step == 0
+
+
+def test_unaligned_start_1w_split_cuts_on_monday_grid():
+    """周线：切点落在周一网格上，拼接后与一次性取全量逐根一致（只验切点，
+    周线的缺口期望条数另走 _expected_bar_grid，不在本批范围）。"""
+    start_ts = 1_700_000_123
+    end_ts = start_ts + 200 * 86400
+    chunks = provider._split_central_range(start_ts * 1000, end_ts * 1000, "1w", provider.CENTRAL_MAX_CHUNK_MS)
+    assert len(chunks) >= 2
+    for chunk_start, chunk_end in chunks:
+        assert chunk_end - chunk_start <= provider.CENTRAL_MAX_CHUNK_MS
+    for (_a, prev_end), (next_start, _b) in zip(chunks, chunks[1:]):
+        assert prev_end == next_start
+        assert (prev_end // 1000 - _WEEK_OFFSET_SEC) % (7 * 86400) == 0
+    concatenated = [o for a, b in chunks for o in _server_grid_opens(a // 1000, b // 1000, "1w")]
+    assert concatenated == _server_grid_opens(start_ts, end_ts, "1w")
