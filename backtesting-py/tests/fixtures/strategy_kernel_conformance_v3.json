@@ -1,0 +1,4959 @@
+{
+  "schema": "cutie.strategy_kernel_conformance.v3",
+  "fixture_version": "1",
+  "cases": [
+    {
+      "case_id": "sma_cross_basic",
+      "description": "§2.7 spec and §3 example: ratio SMA(5) crosses above SMA(20) on bar 20, both legs fill at bar 21 open, crosses_below on bar 22 closes both legs at bar 23 open (signal_exit)",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 6,
+        "time_exit_bars": null,
+        "fast_window": 5,
+        "slow_window": 20
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1719000000,
+        "end_at": 1720043200
+      },
+      "expected_spec_hash": "c8a549493f01f4d72f2a20cdbda63cd468605d2df597b4d59a3f68a097a6ade0",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_sma_cross",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_sma_fast",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "feature",
+                  "key": "ratio_sum_fast",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "literal",
+                  "value_type": "decimal",
+                  "value": "5"
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_sma_slow",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "feature",
+                  "key": "ratio_sum_slow",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "literal",
+                  "value_type": "decimal",
+                  "value": "20"
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_sum_fast",
+            "primitive": "rolling_sum",
+            "primitive_version": "1",
+            "source_stream": "feature:ratio",
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal",
+            "params": {
+              "window_bars": 5
+            },
+            "required": true
+          },
+          {
+            "key": "ratio_sum_slow",
+            "primitive": "rolling_sum",
+            "primitive_version": "1",
+            "source_stream": "feature:ratio",
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal",
+            "params": {
+              "window_bars": 20
+            },
+            "required": true
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "cross",
+            "op": "crosses_above",
+            "left": {
+              "node": "feature",
+              "key": "ratio_sma_fast",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "feature",
+              "key": "ratio_sma_slow",
+              "lag_bars": 0
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 6
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "cross",
+            "op": "crosses_below",
+            "left": {
+              "node": "feature",
+              "key": "ratio_sma_fast",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "feature",
+              "key": "ratio_sma_slow",
+              "lag_bars": 0
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1719697600,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719712000,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719726400,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719740800,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719755200,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719769600,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719784000,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719798400,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719812800,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719827200,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719841600,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719856000,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719870400,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719884800,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719899200,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719913600,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719928000,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719942400,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719956800,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719971200,
+            "open": "2994",
+            "high": "2994",
+            "low": "2994",
+            "close": "2994",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719985600,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720000000,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "3000",
+            "high": "3000",
+            "low": "2970",
+            "close": "2970",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3090",
+            "high": "3090",
+            "low": "3090",
+            "close": "3090",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1719697600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719712000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719726400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719740800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719755200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719769600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719784000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719798400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719812800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719827200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719841600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719856000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719870400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719884800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719899200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719913600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719928000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719942400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719956800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719971200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1719985600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "59400",
+            "high": "59400",
+            "low": "59400",
+            "close": "59400",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720000000,
+            "closed_at": 1720028800,
+            "fee": "12.06",
+            "slippage": "6.03",
+            "pnl": "101.91",
+            "exit_kind": "signal_exit",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "long",
+                "qty": "1",
+                "entry_price": "3000",
+                "exit_price": "3090",
+                "fee": "6.09",
+                "slippage": "3.045",
+                "pnl": "80.865"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "short",
+                "qty": "0.05",
+                "entry_price": "60000",
+                "exit_price": "59400",
+                "fee": "5.97",
+                "slippage": "2.985",
+                "pnl": "21.045"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1719000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720028800,
+            "equity": "10101.91"
+          }
+        ],
+        "metrics": {
+          "total_return": "0.010191",
+          "max_drawdown": "0",
+          "trade_count": 1,
+          "skipped_bars": 0
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1719000000,
+            "end_at": 1720043200,
+            "kline_count": 24,
+            "checksum_algo": "sha256",
+            "checksum": "a73ae9edeb618a5d035969275b39b4d5cb497685be52c4b141e44a73dad9a89a"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1719000000,
+            "end_at": 1720043200,
+            "kline_count": 24,
+            "checksum_algo": "sha256",
+            "checksum": "02ed2327bcfb82ee6dfb766fe54fc1e010bb21e23e379a793a2e130f3e17b908"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    },
+    {
+      "case_id": "unaligned_bar_skipped",
+      "description": "leg b lacks bar 4: bar 4 is not evaluated (skipped_bars=1), the basket opened at bar 3 carries over; ratio_roc lag and time_exit_bars count aligned bars only, so roc on bar 5 compares with bar 2 (no signal_exit) and time_exit fires at bar 7 close (4th aligned held bar)",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 0,
+        "time_exit_bars": 4,
+        "roc_window": 2,
+        "entry_threshold": "0.02",
+        "exit_threshold": "0"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720000000,
+        "end_at": 1720115200
+      },
+      "expected_spec_hash": "e76f3bc6ccecf2569fb9da95b0840b4fb0a354958c1aef50ccf6a5e6efafa220",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_roc",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_roc",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "arithmetic",
+                  "op": "sub",
+                  "args": [
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 0
+                    },
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 2
+                    }
+                  ]
+                },
+                {
+                  "node": "feature",
+                  "key": "ratio",
+                  "lag_bars": 2
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.02"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": 4,
+          "signal_exit": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3000",
+            "high": "3060",
+            "low": "3000",
+            "close": "3060",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3060",
+            "high": "3060",
+            "low": "3060",
+            "close": "3060",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "3060",
+            "high": "3060",
+            "low": "3030",
+            "close": "3030",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "3030",
+            "high": "3060",
+            "low": "3030",
+            "close": "3060",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720100800,
+            "open": "3060",
+            "high": "3060",
+            "low": "3030",
+            "close": "3030",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720100800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720043200,
+            "closed_at": 1720115200,
+            "fee": "12.03",
+            "slippage": "6.015",
+            "pnl": "11.955",
+            "exit_kind": "time_exit",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "long",
+                "qty": "1",
+                "entry_price": "3000",
+                "exit_price": "3030",
+                "fee": "6.03",
+                "slippage": "3.015",
+                "pnl": "20.955"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "short",
+                "qty": "0.05",
+                "entry_price": "60000",
+                "exit_price": "60000",
+                "fee": "6",
+                "slippage": "3",
+                "pnl": "-9"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720115200,
+            "equity": "10011.955"
+          }
+        ],
+        "metrics": {
+          "total_return": "0.0011955",
+          "max_drawdown": "0",
+          "trade_count": 1,
+          "skipped_bars": 1
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720115200,
+            "kline_count": 8,
+            "checksum_algo": "sha256",
+            "checksum": "3c9a75781d605679ae562574a0c956b7444b3151c65048f1ce401f8cfbf0df32"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720115200,
+            "kline_count": 7,
+            "checksum_algo": "sha256",
+            "checksum": "3aa90ce168ca5a119585715960c4eda59e1dfd9c236fbf3ae0f84dbe25ad12b5"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    },
+    {
+      "case_id": "no_next_bar_drop",
+      "description": "entry signal on bar 2, leg a lacks bar 3 (t+1): the pending entry is dropped with diagnostic no_next_bar at the signal bar, no trade; bar 3 counts as skipped",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 0,
+        "time_exit_bars": null,
+        "roc_window": 2,
+        "entry_threshold": "0.02",
+        "exit_threshold": "0"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720000000,
+        "end_at": 1720086400
+      },
+      "expected_spec_hash": "c925101c2dcd89fe1f65f537cfe50f19dd13cbf2a6282b99440e997d8aa492c1",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_roc",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_roc",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "arithmetic",
+                  "op": "sub",
+                  "args": [
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 0
+                    },
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 2
+                    }
+                  ]
+                },
+                {
+                  "node": "feature",
+                  "key": "ratio",
+                  "lag_bars": 2
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.02"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "2990",
+            "high": "2990",
+            "low": "2990",
+            "close": "2990",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "2990",
+            "high": "2990",
+            "low": "2990",
+            "close": "2990",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          }
+        ],
+        "metrics": {
+          "total_return": "0",
+          "max_drawdown": "0",
+          "trade_count": 0,
+          "skipped_bars": 1
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720086400,
+            "kline_count": 5,
+            "checksum_algo": "sha256",
+            "checksum": "c0cbfbbf5af76b77036c71b5ccba75c82f6980a55ca267c02330881db62ce650"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720086400,
+            "kline_count": 6,
+            "checksum_algo": "sha256",
+            "checksum": "8f85e4a4fbe9b16f144a9933719d6f32df248940145344b0170c38a68e50a8c4"
+          }
+        ]
+      },
+      "expected_diagnostics": [
+        {
+          "bar_open_at": 1720028800,
+          "kind": "no_next_bar"
+        }
+      ]
+    },
+    {
+      "case_id": "basket_stop_on_close",
+      "description": "bar 3 leg a low touches -10% intrabar but closes flat (no stop); bar 4 closes at basket_pnl_pct exactly -0.05 (leg a -40, leg b -60 over margin_total 2000) which is a stop candidate (<=), both legs close at bar 5 open with exit_kind stop_loss",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 0,
+        "time_exit_bars": null,
+        "roc_window": 2,
+        "entry_threshold": "0.02",
+        "exit_threshold": "0"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720000000,
+        "end_at": 1720086400
+      },
+      "expected_spec_hash": "c925101c2dcd89fe1f65f537cfe50f19dd13cbf2a6282b99440e997d8aa492c1",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_roc",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_roc",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "arithmetic",
+                  "op": "sub",
+                  "args": [
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 0
+                    },
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 2
+                    }
+                  ]
+                },
+                {
+                  "node": "feature",
+                  "key": "ratio",
+                  "lag_bars": 2
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.02"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "2800",
+            "high": "2800",
+            "low": "2800",
+            "close": "2800",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "2800",
+            "high": "2800",
+            "low": "2800",
+            "close": "2800",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "2900",
+            "high": "2900",
+            "low": "2900",
+            "close": "2900",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3000",
+            "high": "3000",
+            "low": "2800",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3000",
+            "high": "3000",
+            "low": "2960",
+            "close": "2960",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "2950",
+            "high": "2950",
+            "low": "2950",
+            "close": "2950",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "60000",
+            "high": "61200",
+            "low": "60000",
+            "close": "61200",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "61000",
+            "high": "61000",
+            "low": "61000",
+            "close": "61000",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720043200,
+            "closed_at": 1720072000,
+            "fee": "12",
+            "slippage": "6",
+            "pnl": "-118",
+            "exit_kind": "stop_loss",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "long",
+                "qty": "1",
+                "entry_price": "3000",
+                "exit_price": "2950",
+                "fee": "5.95",
+                "slippage": "2.975",
+                "pnl": "-58.925"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "short",
+                "qty": "0.05",
+                "entry_price": "60000",
+                "exit_price": "61000",
+                "fee": "6.05",
+                "slippage": "3.025",
+                "pnl": "-59.075"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720072000,
+            "equity": "9882"
+          }
+        ],
+        "metrics": {
+          "total_return": "-0.0118",
+          "max_drawdown": "0.0118",
+          "trade_count": 1,
+          "skipped_bars": 0
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720086400,
+            "kline_count": 6,
+            "checksum_algo": "sha256",
+            "checksum": "4c02e8140818b2f21a022e595b35fc5b95a06f17f104d4df17bf3edaddd5cd84"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720086400,
+            "kline_count": 6,
+            "checksum_algo": "sha256",
+            "checksum": "2e8e102f2fd108b6bdcf57d4cb0fef125dd56f842ac80161da2c0fec8d763ede"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    },
+    {
+      "case_id": "basket_take_priority_over_signal",
+      "description": "bar 4 closes with basket_pnl_pct exactly 0.1 (take candidate, >=) while ratio_roc < exit_threshold (signal_exit candidate): intrabar_priority picks take_profit, both legs close at bar 5 open",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 1,
+        "time_exit_bars": null,
+        "roc_window": 2,
+        "entry_threshold": "0.02",
+        "exit_threshold": "0.019"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720000000,
+        "end_at": 1720086400
+      },
+      "expected_spec_hash": "a3d299983ee06d6f893379abf168e32c3da26e54b408e3200007ad23dab38385",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_roc",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_roc",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "arithmetic",
+                  "op": "sub",
+                  "args": [
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 0
+                    },
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 2
+                    }
+                  ]
+                },
+                {
+                  "node": "feature",
+                  "key": "ratio",
+                  "lag_bars": 2
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.02"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 1
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.019"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3150",
+            "high": "3150",
+            "low": "3150",
+            "close": "3150",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3000",
+            "high": "3100",
+            "low": "3000",
+            "close": "3100",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3100",
+            "high": "3200",
+            "low": "3100",
+            "close": "3200",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "3250",
+            "high": "3250",
+            "low": "3250",
+            "close": "3250",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720043200,
+            "closed_at": 1720072000,
+            "fee": "12.25",
+            "slippage": "6.125",
+            "pnl": "231.625",
+            "exit_kind": "take_profit",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "long",
+                "qty": "1",
+                "entry_price": "3000",
+                "exit_price": "3250",
+                "fee": "6.25",
+                "slippage": "3.125",
+                "pnl": "240.625"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "short",
+                "qty": "0.05",
+                "entry_price": "60000",
+                "exit_price": "60000",
+                "fee": "6",
+                "slippage": "3",
+                "pnl": "-9"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720072000,
+            "equity": "10231.625"
+          }
+        ],
+        "metrics": {
+          "total_return": "0.0231625",
+          "max_drawdown": "0",
+          "trade_count": 1,
+          "skipped_bars": 0
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720086400,
+            "kline_count": 6,
+            "checksum_algo": "sha256",
+            "checksum": "b889c7f0d6265a604cfdfb5716036dcb0e1cec04db11bb538903c2d9dcde8209"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720086400,
+            "kline_count": 6,
+            "checksum_algo": "sha256",
+            "checksum": "8f85e4a4fbe9b16f144a9933719d6f32df248940145344b0170c38a68e50a8c4"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    },
+    {
+      "case_id": "leg_min_order_reject",
+      "description": "entry fills at bar 3 open: leg a qty 1 is fine but leg b qty 3000/60000=0.05 floors to 0.05 < min_qty 0.1, so the whole basket is rejected with diagnostic leg_min_order legs [b] at the fill bar and no trade",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 0,
+        "time_exit_bars": null,
+        "roc_window": 2,
+        "entry_threshold": "0.02",
+        "exit_threshold": "0"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720000000,
+        "end_at": 1720072000
+      },
+      "expected_spec_hash": "c925101c2dcd89fe1f65f537cfe50f19dd13cbf2a6282b99440e997d8aa492c1",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_roc",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_roc",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "arithmetic",
+                  "op": "sub",
+                  "args": [
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 0
+                    },
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 2
+                    }
+                  ]
+                },
+                {
+                  "node": "feature",
+                  "key": "ratio",
+                  "lag_bars": 2
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.02"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.01",
+          "min_qty": "0.1",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3000",
+            "high": "3000",
+            "low": "2990",
+            "close": "2990",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          }
+        ],
+        "metrics": {
+          "total_return": "0",
+          "max_drawdown": "0",
+          "trade_count": 0,
+          "skipped_bars": 0
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720072000,
+            "kline_count": 5,
+            "checksum_algo": "sha256",
+            "checksum": "a89ef3d29075d8365f3db063a39b0703120a76fd4c560187db51f6e90264bc7b"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720072000,
+            "kline_count": 5,
+            "checksum_algo": "sha256",
+            "checksum": "03db303ea9a1f1cb03a2b94f0dd24b2459cda20b964238b5fe17a37f189c12d6"
+          }
+        ]
+      },
+      "expected_diagnostics": [
+        {
+          "bar_open_at": 1720043200,
+          "kind": "leg_min_order",
+          "legs": [
+            "b"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "roc_basic",
+      "description": "basket_ratio_roc window 3: ratio_roc on bar 3 = 0.0689 > 0.05 opens both legs at bar 4 open (qty floored to qty_step: a 0.967, b 0.051); ratio_roc on bar 6 < 0.01 closes both at bar 7 open (signal_exit)",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 0,
+        "time_exit_bars": null,
+        "roc_window": 3,
+        "entry_threshold": "0.05",
+        "exit_threshold": "0.01"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720000000,
+        "end_at": 1720115200
+      },
+      "expected_spec_hash": "f48663becb3f141fb029714dd0032a36d0531d713a73d62d95b12e9571f87d25",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_roc",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_roc",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "arithmetic",
+                  "op": "sub",
+                  "args": [
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 0
+                    },
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 3
+                    }
+                  ]
+                },
+                {
+                  "node": "feature",
+                  "key": "ratio",
+                  "lag_bars": 3
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.05"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.01"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3100",
+            "high": "3100",
+            "low": "3100",
+            "close": "3100",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3100",
+            "high": "3150",
+            "low": "3100",
+            "close": "3150",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "3150",
+            "high": "3150",
+            "low": "3120",
+            "close": "3120",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "3120",
+            "high": "3120",
+            "low": "3100",
+            "close": "3100",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720100800,
+            "open": "3090",
+            "high": "3090",
+            "low": "3090",
+            "close": "3090",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "58000",
+            "high": "58000",
+            "low": "58000",
+            "close": "58000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "58000",
+            "high": "58000",
+            "low": "57500",
+            "close": "57500",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "57500",
+            "high": "57800",
+            "low": "57500",
+            "close": "57800",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "57800",
+            "high": "58400",
+            "low": "57800",
+            "close": "58400",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720100800,
+            "open": "58500",
+            "high": "58500",
+            "low": "58500",
+            "close": "58500",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720057600,
+            "closed_at": 1720100800,
+            "fee": "11.92723",
+            "slippage": "5.963615",
+            "pnl": "-53.060845",
+            "exit_kind": "signal_exit",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "long",
+                "qty": "0.967",
+                "entry_price": "3100",
+                "exit_price": "3090",
+                "fee": "5.98573",
+                "slippage": "2.992865",
+                "pnl": "-18.648595"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "short",
+                "qty": "0.051",
+                "entry_price": "58000",
+                "exit_price": "58500",
+                "fee": "5.9415",
+                "slippage": "2.97075",
+                "pnl": "-34.41225"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720100800,
+            "equity": "9946.939155"
+          }
+        ],
+        "metrics": {
+          "total_return": "-0.0053060845",
+          "max_drawdown": "0.0053060845",
+          "trade_count": 1,
+          "skipped_bars": 0
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720115200,
+            "kline_count": 8,
+            "checksum_algo": "sha256",
+            "checksum": "47d312d8f082c98dc5cf3f8b68cc0dd8600aa5b5659ed39386326959fcebe2c7"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720115200,
+            "kline_count": 8,
+            "checksum_algo": "sha256",
+            "checksum": "49fc3bb816084c33505ce6cac0bfb079be33ea21ca5bd9403e6103b14f5a3e41"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    },
+    {
+      "case_id": "zscore_basic",
+      "description": "basket_ratio_zscore window 10: bars 0-9 flat ratio give stdev=0 (missing, not 0); bar 10 z=-3 < -2 opens at bar 11 open; while held z rises to -1/3 then bar 19 is stdev=0 again (missing, so z > -0.3 cannot fire); bar 20 z=3 closes both legs at bar 21 open (signal_exit)",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 0,
+        "time_exit_bars": null,
+        "zscore_window": 10,
+        "entry_z": "2",
+        "exit_z": "0.3"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720000000,
+        "end_at": 1720316800
+      },
+      "expected_spec_hash": "832f5bd95079a244e2ca4cc7269b6ed1c2117f7808ce7e6d5adc5709a95f3c76",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_zscore",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_z",
+            "primitive": "rolling_zscore",
+            "primitive_version": "1",
+            "source_stream": "feature:ratio",
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal",
+            "params": {
+              "window_bars": 10
+            },
+            "required": true
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_z",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "-2"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_z",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "-0.3"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720100800,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720115200,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720129600,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720144000,
+            "open": "3000",
+            "high": "3000",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720158400,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720172800,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720187200,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720201600,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720216000,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720230400,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720244800,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720259200,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720273600,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720288000,
+            "open": "2940",
+            "high": "3000",
+            "low": "2940",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720302400,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720100800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720115200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720129600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720144000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720158400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720172800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720187200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720201600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720216000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720230400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720244800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720259200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720273600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720288000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720302400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720158400,
+            "closed_at": 1720302400,
+            "fee": "12.0588",
+            "slippage": "6.0294",
+            "pnl": "43.1118",
+            "exit_kind": "signal_exit",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "long",
+                "qty": "1.02",
+                "entry_price": "2940",
+                "exit_price": "3000",
+                "fee": "6.0588",
+                "slippage": "3.0294",
+                "pnl": "52.1118"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "short",
+                "qty": "0.05",
+                "entry_price": "60000",
+                "exit_price": "60000",
+                "fee": "6",
+                "slippage": "3",
+                "pnl": "-9"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720302400,
+            "equity": "10043.1118"
+          }
+        ],
+        "metrics": {
+          "total_return": "0.00431118",
+          "max_drawdown": "0",
+          "trade_count": 1,
+          "skipped_bars": 0
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720316800,
+            "kline_count": 22,
+            "checksum_algo": "sha256",
+            "checksum": "afb4b72c144604d0c30ae98432c60aacef4e7f9b2dad56eb6720918358c03d08"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720316800,
+            "kline_count": 22,
+            "checksum_algo": "sha256",
+            "checksum": "0c49859a75d6bcac3cd049e33855006707f12ea235b1577778eae2a0d5a24700"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    },
+    {
+      "case_id": "sums_exact",
+      "description": "leg a short / leg b long, leverage 2, margin 1234.5, fee_bps 7.5, slippage_bps 2.5: per-leg fee/slippage/pnl carry 8 decimals and the basket fee/slippage/pnl equal their exact Decimal sums",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "short",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "long",
+            "weight": "1"
+          }
+        ],
+        "leverage": 2,
+        "margin_per_leg": "1234.5",
+        "basket_stop_loss_pct": "0.2",
+        "basket_take_profit_pct": "0.3",
+        "cooldown_bars": 0,
+        "time_exit_bars": null,
+        "fast_window": 2,
+        "slow_window": 5
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "7.5",
+        "slippage_bps": "2.5",
+        "start_at": 1720000000,
+        "end_at": 1720129600
+      },
+      "expected_spec_hash": "6a393a2162d4487de912c6d53b2b402b0c04298c420cd1715f8008285637efb9",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_sma_cross",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "short",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "long",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_sma_fast",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "feature",
+                  "key": "ratio_sum_fast",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "literal",
+                  "value_type": "decimal",
+                  "value": "2"
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_sma_slow",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "feature",
+                  "key": "ratio_sum_slow",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "literal",
+                  "value_type": "decimal",
+                  "value": "5"
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_sum_fast",
+            "primitive": "rolling_sum",
+            "primitive_version": "1",
+            "source_stream": "feature:ratio",
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal",
+            "params": {
+              "window_bars": 2
+            },
+            "required": true
+          },
+          {
+            "key": "ratio_sum_slow",
+            "primitive": "rolling_sum",
+            "primitive_version": "1",
+            "source_stream": "feature:ratio",
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal",
+            "params": {
+              "window_bars": 5
+            },
+            "required": true
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "cross",
+            "op": "crosses_above",
+            "left": {
+              "node": "feature",
+              "key": "ratio_sma_fast",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "feature",
+              "key": "ratio_sma_slow",
+              "lag_bars": 0
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.2"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.3"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "cross",
+            "op": "crosses_below",
+            "left": {
+              "node": "feature",
+              "key": "ratio_sma_fast",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "feature",
+              "key": "ratio_sma_slow",
+              "lag_bars": 0
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1234.5"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "2"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "7.5",
+            "slippage_bps": "2.5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "3060",
+            "high": "3060",
+            "low": "3060",
+            "close": "3060",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "3071.37",
+            "high": "3090",
+            "low": "3071.37",
+            "close": "3090",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720100800,
+            "open": "3090",
+            "high": "3090",
+            "low": "2900",
+            "close": "2900",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720115200,
+            "open": "2911.07",
+            "high": "2911.07",
+            "low": "2911.07",
+            "close": "2911.07",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "50000",
+            "high": "50000",
+            "low": "50000",
+            "close": "50000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "50000",
+            "high": "50000",
+            "low": "50000",
+            "close": "50000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "50000",
+            "high": "50000",
+            "low": "50000",
+            "close": "50000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "50000",
+            "high": "50000",
+            "low": "50000",
+            "close": "50000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "50000",
+            "high": "50000",
+            "low": "50000",
+            "close": "50000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "50000",
+            "high": "50000",
+            "low": "50000",
+            "close": "50000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "49876.3",
+            "high": "50000",
+            "low": "49876.3",
+            "close": "50000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720100800,
+            "open": "50000",
+            "high": "50100",
+            "low": "50000",
+            "close": "50100",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720115200,
+            "open": "50123.9",
+            "high": "50123.9",
+            "low": "50123.9",
+            "close": "50123.9",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720086400,
+            "closed_at": 1720115200,
+            "fee": "7.27793184",
+            "slippage": "2.42597728",
+            "pnl": "131.14939088",
+            "exit_kind": "signal_exit",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "short",
+                "qty": "0.803",
+                "entry_price": "3071.37",
+                "exit_price": "2911.07",
+                "fee": "3.60292449",
+                "slippage": "1.20097483",
+                "pnl": "123.91700068"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "long",
+                "qty": "0.049",
+                "entry_price": "49876.3",
+                "exit_price": "50123.9",
+                "fee": "3.67500735",
+                "slippage": "1.22500245",
+                "pnl": "7.2323902"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720115200,
+            "equity": "10131.14939088"
+          }
+        ],
+        "metrics": {
+          "total_return": "0.013114939088",
+          "max_drawdown": "0",
+          "trade_count": 1,
+          "skipped_bars": 0
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720129600,
+            "kline_count": 9,
+            "checksum_algo": "sha256",
+            "checksum": "781ebf5581a40b791b3eb6fef55cb44bbfe18e08838c39d872f113984f9d07e9"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720129600,
+            "kline_count": 9,
+            "checksum_algo": "sha256",
+            "checksum": "6251f58b956fa873643b5471dc2e7af265862c38bd8c1548b0a1dbce76508ab7"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    },
+    {
+      "case_id": "exit_candidate_across_gap",
+      "description": "signal_exit candidate from closed bar 4 (ratio_roc < 0) survives leg b's missing bar 5: both legs close at the next aligned bar's open (bar 6), exit_kind signal_exit, skipped_bars=1",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 0,
+        "time_exit_bars": null,
+        "roc_window": 2,
+        "entry_threshold": "0.02",
+        "exit_threshold": "0"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720000000,
+        "end_at": 1720100800
+      },
+      "expected_spec_hash": "c925101c2dcd89fe1f65f537cfe50f19dd13cbf2a6282b99440e997d8aa492c1",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_roc",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_roc",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "arithmetic",
+                  "op": "sub",
+                  "args": [
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 0
+                    },
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 2
+                    }
+                  ]
+                },
+                {
+                  "node": "feature",
+                  "key": "ratio",
+                  "lag_bars": 2
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.02"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3000",
+            "high": "3030",
+            "low": "3000",
+            "close": "3030",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3030",
+            "high": "3030",
+            "low": "2970",
+            "close": "2970",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "2970",
+            "high": "2970",
+            "low": "2970",
+            "close": "2970",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "2985",
+            "high": "2985",
+            "low": "2985",
+            "close": "2985",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720043200,
+            "closed_at": 1720086400,
+            "fee": "11.985",
+            "slippage": "5.9925",
+            "pnl": "-32.9775",
+            "exit_kind": "signal_exit",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "long",
+                "qty": "1",
+                "entry_price": "3000",
+                "exit_price": "2985",
+                "fee": "5.985",
+                "slippage": "2.9925",
+                "pnl": "-23.9775"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "short",
+                "qty": "0.05",
+                "entry_price": "60000",
+                "exit_price": "60000",
+                "fee": "6",
+                "slippage": "3",
+                "pnl": "-9"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1720000000,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720086400,
+            "equity": "9967.0225"
+          }
+        ],
+        "metrics": {
+          "total_return": "-0.00329775",
+          "max_drawdown": "0.00329775",
+          "trade_count": 1,
+          "skipped_bars": 1
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720100800,
+            "kline_count": 7,
+            "checksum_algo": "sha256",
+            "checksum": "e5b794a3c87d4e1699cc4436a26081f8463c98591aa666873a13cdaf88f8475a"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720000000,
+            "end_at": 1720100800,
+            "kline_count": 6,
+            "checksum_algo": "sha256",
+            "checksum": "f6e37b2a0aa5f9b027b3eb35119ec16e730d23a9b22359a38cf155164e77b0a1"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    },
+    {
+      "case_id": "warmup_history",
+      "description": "start_at = bar 4: bars 0-3 are warmup (leg b lacks bar 1, not counted in skipped_bars); the entry true on warmup bar 3 is not evaluated, the first evaluated bar 4 reads ratio_roc lag history from warmup and fills at bar 5 open; end_of_data at bar 6 close; data_manifests count only bars 4-6",
+      "provider_params": {
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "weight": "1"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "weight": "1"
+          }
+        ],
+        "leverage": 3,
+        "margin_per_leg": "1000",
+        "basket_stop_loss_pct": "0.05",
+        "basket_take_profit_pct": "0.1",
+        "cooldown_bars": 0,
+        "time_exit_bars": null,
+        "roc_window": 2,
+        "entry_threshold": "0.02",
+        "exit_threshold": "0"
+      },
+      "envelope": {
+        "timeframe": "4h",
+        "fee_bps": "10",
+        "slippage_bps": "5",
+        "start_at": 1720057600,
+        "end_at": 1720100800
+      },
+      "expected_spec_hash": "c925101c2dcd89fe1f65f537cfe50f19dd13cbf2a6282b99440e997d8aa492c1",
+      "spec": {
+        "schema": "cutie.strategy_spec.v3",
+        "strategy_family": "basket_ratio_roc",
+        "market": {
+          "market_type": "futures",
+          "exchange": "binance",
+          "timeframe": "4h",
+          "legs": [
+            {
+              "leg_id": "a",
+              "symbol": "ETHUSDT",
+              "side": "long",
+              "weight": "1"
+            },
+            {
+              "leg_id": "b",
+              "symbol": "BTCUSDT",
+              "side": "short",
+              "weight": "1"
+            }
+          ]
+        },
+        "parameters": [],
+        "features": [
+          {
+            "key": "ratio",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "stream",
+                  "leg": "a",
+                  "field": "close",
+                  "lag_bars": 0
+                },
+                {
+                  "node": "stream",
+                  "leg": "b",
+                  "field": "close",
+                  "lag_bars": 0
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal"
+          },
+          {
+            "key": "ratio_roc",
+            "kind": "derived",
+            "expr": {
+              "node": "arithmetic",
+              "op": "div",
+              "args": [
+                {
+                  "node": "arithmetic",
+                  "op": "sub",
+                  "args": [
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 0
+                    },
+                    {
+                      "node": "feature",
+                      "key": "ratio",
+                      "lag_bars": 2
+                    }
+                  ]
+                },
+                {
+                  "node": "feature",
+                  "key": "ratio",
+                  "lag_bars": 2
+                }
+              ]
+            },
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal"
+          }
+        ],
+        "entry": {
+          "condition": {
+            "node": "compare",
+            "op": "gt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0.02"
+            }
+          },
+          "order_model": "next_bar_open",
+          "cooldown_bars": 0
+        },
+        "exit": {
+          "stop_loss": {
+            "model": "basket_pnl_pct",
+            "value": "0.05"
+          },
+          "take_profit": {
+            "model": "basket_pnl_pct",
+            "value": "0.1"
+          },
+          "time_exit_bars": null,
+          "signal_exit": {
+            "node": "compare",
+            "op": "lt",
+            "left": {
+              "node": "feature",
+              "key": "ratio_roc",
+              "lag_bars": 0
+            },
+            "right": {
+              "node": "literal",
+              "value_type": "decimal",
+              "value": "0"
+            }
+          }
+        },
+        "risk": {
+          "position_sizing": {
+            "model": "fixed_margin_per_leg",
+            "value": "1000"
+          },
+          "max_open_positions": 1,
+          "allow_pyramiding": false,
+          "leverage": "3"
+        },
+        "execution": {
+          "decision_clock": "closed_bar",
+          "signal_effective_at": "next_bar_open",
+          "intrabar_priority": [
+            "stop_loss",
+            "take_profit",
+            "time_exit",
+            "signal_exit"
+          ],
+          "position_mode": "one_way",
+          "cost_model": {
+            "schema": "cutie.execution_cost.v1",
+            "fee_bps": "10",
+            "slippage_bps": "5",
+            "funding": "excluded"
+          },
+          "missing_data_policy": "skip_unaligned_bar",
+          "kernel_api_version": "1"
+        }
+      },
+      "instrument_rules": {
+        "a": {
+          "symbol": "ETHUSDT",
+          "price_tick": "0.01",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        },
+        "b": {
+          "symbol": "BTCUSDT",
+          "price_tick": "0.1",
+          "qty_step": "0.001",
+          "min_qty": "0.001",
+          "min_notional": "5"
+        }
+      },
+      "klines": {
+        "a": [
+          {
+            "open_time": 1720000000,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720014400,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "2940",
+            "high": "2940",
+            "low": "2940",
+            "close": "2940",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "3000",
+            "high": "3000",
+            "low": "3000",
+            "close": "3000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "3000",
+            "high": "3030",
+            "low": "3000",
+            "close": "3030",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "3030",
+            "high": "3060",
+            "low": "3030",
+            "close": "3060",
+            "volume": "1"
+          }
+        ],
+        "b": [
+          {
+            "open_time": 1720000000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720028800,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720043200,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720057600,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720072000,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          },
+          {
+            "open_time": 1720086400,
+            "open": "60000",
+            "high": "60000",
+            "low": "60000",
+            "close": "60000",
+            "volume": "1"
+          }
+        ]
+      },
+      "initial_capital": "10000",
+      "expected_result": {
+        "schema_version": "cutie.backtest_result.v3",
+        "trades": [
+          {
+            "seq": 1,
+            "opened_at": 1720072000,
+            "closed_at": 1720100800,
+            "fee": "12.06",
+            "slippage": "6.03",
+            "pnl": "41.91",
+            "exit_kind": "end_of_data",
+            "legs": [
+              {
+                "leg_id": "a",
+                "symbol": "ETHUSDT",
+                "side": "long",
+                "qty": "1",
+                "entry_price": "3000",
+                "exit_price": "3060",
+                "fee": "6.06",
+                "slippage": "3.03",
+                "pnl": "50.91"
+              },
+              {
+                "leg_id": "b",
+                "symbol": "BTCUSDT",
+                "side": "short",
+                "qty": "0.05",
+                "entry_price": "60000",
+                "exit_price": "60000",
+                "fee": "6",
+                "slippage": "3",
+                "pnl": "-9"
+              }
+            ]
+          }
+        ],
+        "equity_curve": [
+          {
+            "ts": 1720057600,
+            "equity": "10000"
+          },
+          {
+            "ts": 1720100800,
+            "equity": "10041.91"
+          }
+        ],
+        "metrics": {
+          "total_return": "0.004191",
+          "max_drawdown": "0",
+          "trade_count": 1,
+          "skipped_bars": 0
+        },
+        "data_manifests": [
+          {
+            "leg_id": "a",
+            "source": "binance_futures",
+            "symbol": "ETHUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720057600,
+            "end_at": 1720100800,
+            "kline_count": 3,
+            "checksum_algo": "sha256",
+            "checksum": "6dc9c201d6691e122feed55d39a96465bbf8315818e0a29c74f26d21670a1fd7"
+          },
+          {
+            "leg_id": "b",
+            "source": "binance_futures",
+            "symbol": "BTCUSDT",
+            "market": "futures",
+            "timeframe": "4h",
+            "start_at": 1720057600,
+            "end_at": 1720100800,
+            "kline_count": 3,
+            "checksum_algo": "sha256",
+            "checksum": "432f798bdd9ae54933353585876a5ce3b8d5d5463e87d78b6c605e9bc950d604"
+          }
+        ]
+      },
+      "expected_diagnostics": []
+    }
+  ]
+}

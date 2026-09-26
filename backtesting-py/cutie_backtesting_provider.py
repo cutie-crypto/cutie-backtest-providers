@@ -38,10 +38,14 @@ from strategy_execution import (
     PaperCoverageInput,
     build_artifact_response,
     build_coverage_manifest,
+    build_data_manifests_v3,
     build_paper_tick_coverage_manifest,
+    build_result_v3,
+    data_manifests_hash,
     is_strategy_execution_intent,
     is_strategy_paper_tick_intent,
     max_primary_lag_frames,
+    strategy_spec_v3_evidence,
     validate_execution_request,
     validate_paper_tick_request,
 )
@@ -50,21 +54,27 @@ from strategy_kernel import (
     ERR_CAPABILITY_MISMATCH,
     ERR_COVERAGE_INCOMPLETE,
     ERR_SPEC_INVALID,
+    ERR_SPEC_UNSUPPORTED,
     KernelExecutionError,
     StrategyContractError,
     StrategyKernel,
+    StrategySpecV3Error,
     build_frames,
     capability_hash,
     capability_payload,
+    compile_strategy_v3,
     from_snapshot,
+    in_decimal128,
     initial_state,
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
     ohlcv_resample,
     simulate,
+    simulate_v3,
     snapshot_decimal_str,
     to_snapshot,
 )
+from strategy_spec_v3_builder import StrategySpecV3BuildError, build_strategy_spec_v3
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -279,11 +289,16 @@ def _enforce_reports_retention() -> None:
             logger.warning("Failed to delete old report %s: %s", oldest, e)
 
 
+# OHLCV 磁盘缓存格式版本，进缓存文件名。123 B2b（D5）：修复前中心行情分片在起点非网格时
+# 每个切点丢一根 bar，旧缓存可能就是缺根序列——升版本后旧文件名一律不再命中（按 LRU/TTL 自然清掉）。
+OHLCV_CACHE_VERSION = "v2"
+
+
 def _cache_key(exchange: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> str:
     # fully-qualified 输入（BTC/USDT:USDT）含 / 会让 key 变成子目录路径，_write_cache
     # 不建中间目录导致缓存写入被静默吞掉——文件名字符一律 sanitize
     safe_symbol = re.sub(r"[^A-Za-z0-9]", "-", symbol)
-    return f"{exchange}_{market}_{safe_symbol}_{timeframe}_{start_ms}_{end_ms}.json"
+    return f"{OHLCV_CACHE_VERSION}_{exchange}_{market}_{safe_symbol}_{timeframe}_{start_ms}_{end_ms}.json"
 
 
 def _timeframe_milliseconds(timeframe: str) -> int:
@@ -386,8 +401,12 @@ def _expected_bar_grid(timeframe: str, start_ms: int, end_ms: int) -> Optional[t
     effective_end = min(end_ms, int(time.time() * 1000))
     if effective_end <= start_ms:
         return None
-    first_open = -(-start_ms // step_ms) * step_ms  # ceil(start_ms / step_ms) * step_ms
-    last_open = ((effective_end - step_ms) // step_ms) * step_ms
+    # 123 B2b 返修：网格与分片切点同一份口径（周线按周一开盘），否则周线期望根数按周四
+    # 网格算会比真实少一根，中段真缺一根时 actual == expected 被放过。月线无固定网格按 0。
+    offset_ms = _timeframe_grid_offset_ms(timeframe) or 0
+    first_open = start_ms + (-(start_ms - offset_ms)) % step_ms  # >= start_ms 的首个网格点
+    last_close_bound = effective_end - step_ms
+    last_open = last_close_bound - (last_close_bound - offset_ms) % step_ms  # 最后一个已收盘网格点
     if last_open < first_open:
         return None
     return first_open, last_open, step_ms
@@ -488,6 +507,27 @@ def _bars_equal_split_chunks(
     return chunks
 
 
+# Binance 周线从周一 00:00 UTC 开盘；1970-01-01 是周四，周一网格相对 epoch 偏 4 天。
+_WEEK_GRID_OFFSET_MS = 4 * 24 * 60 * 60 * 1000
+
+
+def _timeframe_grid_offset_ms(timeframe: str) -> Optional[int]:
+    """K 线开盘网格相对 epoch 的偏移：开盘时间满足 (open - offset) % step == 0。
+
+    分钟/小时/日线是 epoch 整数倍（offset 0）；周线按 Binance 口径从周一开盘，
+    offset 为 4 天（不是 epoch 整数倍，按 epoch 切周线同样会丢跨切点那根）；
+    月线（M）步长不固定，没有固定网格，返回 None。"""
+    match = re.fullmatch(r"(\d+)([mhdwM])", str(timeframe or ""))
+    if not match:
+        return 0
+    unit = match.group(2)
+    if unit == "M":
+        return None
+    if unit == "w":
+        return _WEEK_GRID_OFFSET_MS
+    return 0
+
+
 def _split_central_range(
     start_ms: int, end_ms: int, timeframe: str, max_chunk_ms: int
 ) -> list[tuple[int, int]]:
@@ -498,8 +538,15 @@ def _split_central_range(
     缺失都会把整段判成 data_gap 回退 ccxt（生产 run 359532680989114368）。改为
     先定片数，再把 bar 数尽量均分到每片（余数分给靠前的分片，即"并入前一片"
     的等价实现），保证每片跨度接近总跨度/片数，不再有远小于其它分片的尾片。
-    分片边界按 timeframe 的 step 对齐（从 start_ms 起的整数倍 bar 数），不会把
-    一根 bar 切在两个分片的请求区间里。
+    分片切点对齐到 timeframe 的绝对 K 线网格（见 `_timeframe_grid_offset_ms`），
+    首片仍从原 start_ms 起、末片仍到原 end_ms 止。
+
+    123 B2b（D5）：此前切点是「从 start_ms 起整数倍 bar 数」，start_ms 不在网格上
+    时切点也不在网格上。中心 /klines 只返回 `start_ts <= open 且 open+step <= end_ts`
+    的 bar，跨切点的那根 bar 在前一片不算收盘、在后一片开盘早于起点，两片都不返回，
+    拼接后凭空少一根（本机真链路 4h 组合 run 丢 open=1786305600，逐腿 checksum 与
+    server 复核不一致）。切点落在网格上后，网格 bar 要么整根在前片、要么从后片起点开盘，
+    相邻分片不重不漏，拼接结果与一次性取全量逐根一致。
 
     P1 返修（亲审发现）：片数不能只按毫秒算 `ceil(总跨度/max_chunk_ms)`——服务端
     硬上限是「毫秒跨度 <= max_chunk_ms」，但分片是按 bar 数均分的，当 max_chunk_ms
@@ -529,20 +576,29 @@ def _split_central_range(
         # 数据本身决定的硬约束，不是分片算法能解的）。
         return _ms_equal_split_chunks(start_ms, end_ms, math.ceil(total_span / max_chunk_ms))
 
-    total_bars = total_span // step_ms
+    # 按网格起点 grid_start（<= start_ms 的最近网格点）算 bar 数与切点，再把首片起点
+    # 换回 start_ms：首片只会比按网格算的更短，其余片跨度不变，硬上限判断照旧成立。
+    grid_offset_ms = _timeframe_grid_offset_ms(timeframe)
+    if grid_offset_ms is None:
+        grid_start = start_ms  # 无固定网格（1M）：沿用从 start_ms 起按 bar 数切
+    else:
+        grid_start = start_ms - (start_ms - grid_offset_ms) % step_ms
+    aligned_span = end_ms - grid_start
+    total_bars = aligned_span // step_ms
     max_bars_per_chunk = max_chunk_ms // step_ms
     if total_bars < 1 or max_bars_per_chunk < 1:
         return _ms_equal_split_chunks(start_ms, end_ms, math.ceil(total_span / max_chunk_ms))
 
     num_chunks = max(
-        math.ceil(total_span / max_chunk_ms),
+        math.ceil(aligned_span / max_chunk_ms),
         math.ceil(total_bars / max_bars_per_chunk),
     )
 
     def _build(n: int) -> list[tuple[int, int]]:
         if total_bars < n:
             return _ms_equal_split_chunks(start_ms, end_ms, n)
-        return _bars_equal_split_chunks(start_ms, end_ms, step_ms, total_bars, n)
+        aligned = _bars_equal_split_chunks(grid_start, end_ms, step_ms, total_bars, n)
+        return [(start_ms, aligned[0][1])] + aligned[1:]
 
     chunks = _build(num_chunks)
     # 守卫：末片吸收的 < step_ms 毫秒余数理论上可能把它推过硬上限，命中就多切
@@ -853,9 +909,21 @@ def _normalize_ohlcv_symbol(symbol: str, market: str) -> str:
     return normalized_symbol
 
 
-def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
-                 start_sec: int, end_sec: int) -> pd.DataFrame:
-    """Fetch OHLCV from ccxt with local file cache."""
+def _fetch_ohlcv_raw(
+    exchange_id: str, market: str, symbol: str, timeframe: str,
+    start_sec: int, end_sec: int,
+) -> tuple[list, str, Optional[bool], bool]:
+    """Central-then-ccxt raw-candle fetch with local file cache, shared by
+    ``_fetch_ohlcv`` (which floats the result for backtesting.py) and the
+    basket ``kernel_v3`` path (123 B2), which keeps every OHLCV value a
+    canonical Decimal string and must never let a price cross a Python
+    float on the way into the decimal128 kernel (SPEC_组合策略v3契约 §2.6.1).
+
+    Returns ``(ohlcv, actual_data_source, central_market_data_used,
+    market_data_cache_hit)``; raises ``MarketDataFetchError`` /
+    ``ValueError("NO_DATA")`` / ``RuntimeError("RATE_LIMITED")`` exactly like
+    the original inlined ``_fetch_ohlcv`` body did.
+    """
     import ccxt
 
     start_ms = start_sec * 1000
@@ -975,6 +1043,16 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
             central_failure_reason=(None if cached is not None else central_failure_reason),
             central_attempted=cached is None and central_market_data_attempted,
         )
+
+    return ohlcv, actual_data_source, central_market_data_used, market_data_cache_hit
+
+
+def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
+                 start_sec: int, end_sec: int) -> pd.DataFrame:
+    """Fetch OHLCV from ccxt with local file cache."""
+    ohlcv, actual_data_source, central_market_data_used, market_data_cache_hit = _fetch_ohlcv_raw(
+        exchange_id, market, symbol, timeframe, start_sec, end_sec
+    )
 
     df = pd.DataFrame(ohlcv, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
@@ -2873,6 +2951,40 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
     }
 
 
+# 123 B2：三个组合模板 tool 共用的公共参数 schema（SPEC_组合策略v3契约 §6.1）。
+# _validate_params_against_schema 只理解 integer/number/string + min/max/enum，
+# 对 array/object 不做深校验（deferred to strategy_spec_v3_builder._build 与
+# compile_strategy_v3._validate_legs_v3）；这里仍按真实 JSON Schema 写全，供
+# connector/server 侧消费方按真实语义解读。
+_BASKET_LEG_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "minItems": 2,
+    "maxItems": 2,
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["leg_id", "symbol", "side", "weight"],
+        "properties": {
+            "leg_id": {"type": "string"},
+            "symbol": {"type": "string"},
+            "side": {"type": "string", "enum": ["long", "short"]},
+            "weight": {"type": "string"},
+        },
+    },
+}
+_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
+    "legs": _BASKET_LEG_SCHEMA,
+    "leverage": {"type": "integer", "minimum": 1, "maximum": 3},
+    # decimal 字面量必须是 canonical Decimal 字符串（§2.6.1「builder 输入」）；
+    # 运行时 schema 只查 str 类型，范围/canonical 校验交给 builder。
+    "margin_per_leg": {"type": "string"},
+    "basket_stop_loss_pct": {"type": "string"},
+    "basket_take_profit_pct": {"type": "string"},
+    "cooldown_bars": {"type": "integer", "minimum": 0},
+    "time_exit_bars": {"type": ["integer", "null"], "minimum": 1},
+}
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -3034,11 +3146,72 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    # 123 B2：三个组合（两腿比值）模板 tool。runner="kernel_v3" 让 run_backtest 在
+    # float 转换 / Strategy 类 / 单标的取数 / Backtest 之前分派到独立的 Decimal
+    # 内核路径（SPEC_组合策略v3契约 §6.1）；无 "build" 键——kernel_v3 分派点严格早
+    # 于 run_backtest 里唯一读取 tool_spec["build"] 的那一行，不会被访问到。
+    "local.backtesting_py.basket_ratio_sma_cross": {
+        "name": "Local Backtesting.py Basket Ratio SMA Cross",
+        "description": (
+            "Two-leg futures basket, trend-following on the leg-a/leg-b close "
+            "ratio: go long leg a + short leg b (per each leg's declared side) "
+            "when the fast SMA of the ratio crosses above the slow SMA, exit on "
+            "the opposite cross. Maps to KOL '组合比价 / 对冲配对'."
+        ),
+        "strategy_family": "basket_ratio_sma_cross",
+        "is_default": False,
+        "runner": "kernel_v3",
+        "param_schema_properties": {
+            "fast_window": {"type": "integer", "minimum": 2, "maximum": 50},
+            "slow_window": {"type": "integer", "minimum": 5, "maximum": 200},
+            **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
+        },
+    },
+    "local.backtesting_py.basket_ratio_roc": {
+        "name": "Local Backtesting.py Basket Ratio ROC",
+        "description": (
+            "Two-leg futures basket, momentum on the leg-a/leg-b close ratio: "
+            "hold the basket while the N-bar rate of change of the ratio is "
+            "above the entry threshold, exit while it falls below the exit "
+            "threshold. Maps to KOL '组合比价动量'."
+        ),
+        "strategy_family": "basket_ratio_roc",
+        "is_default": False,
+        "runner": "kernel_v3",
+        "param_schema_properties": {
+            "roc_window": {"type": "integer", "minimum": 2, "maximum": 100},
+            "entry_threshold": {"type": "string"},
+            "exit_threshold": {"type": "string"},
+            **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
+        },
+    },
+    "local.backtesting_py.basket_ratio_zscore": {
+        "name": "Local Backtesting.py Basket Ratio Z-Score",
+        "description": (
+            "Two-leg futures basket, mean-reversion on the leg-a/leg-b close "
+            "ratio: hold the basket while the rolling z-score of the ratio is "
+            "below -entry_z, exit while it rises above -exit_z. Maps to KOL "
+            "'组合比价回归'."
+        ),
+        "strategy_family": "basket_ratio_zscore",
+        "is_default": False,
+        "runner": "kernel_v3",
+        "param_schema_properties": {
+            "zscore_window": {"type": "integer", "minimum": 10, "maximum": 200},
+            "entry_z": {"type": "string"},
+            "exit_z": {"type": "string"},
+            **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
+        },
+    },
 }
 
 # A6 二层：固定止损/止盈/仓位对全部 9 个内置模板统一生效，直接合并进每个工具的
 # param_schema_properties（而不是逐个手写 9 遍），新工具接入 TOOL_SPECS 时自动带上。
+# runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
+# 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
 for _tool_spec in TOOL_SPECS.values():
+    if _tool_spec.get("runner") == "kernel_v3":
+        continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
         **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
@@ -3052,6 +3225,19 @@ assert sum(1 for s in TOOL_SPECS.values() if s.get("is_default")) == 1, (
     "exactly one TOOL_SPECS entry must have is_default=True"
 )
 assert DEFAULT_TOOL_ID in TOOL_SPECS, "DEFAULT_TOOL_ID must be a registered tool"
+
+# 123 B2 / SPEC_组合策略v3契约 §6.1：capability payload 与 catalog 输出不得出现
+# v3 result/spec schema 字符串（v3 首期不对外声明能力，只在 provider 内部编译）。
+_V3_SCHEMA_STRINGS = ("cutie.strategy_spec.v3", "cutie.backtest_result.v3")
+for _tool_id, _tool_spec_check in TOOL_SPECS.items():
+    _catalog_text = json.dumps(
+        {"description": _tool_spec_check.get("description", ""),
+         "param_schema_properties": _tool_spec_check.get("param_schema_properties", {})}
+    )
+    assert not any(token in _catalog_text for token in _V3_SCHEMA_STRINGS), (
+        f"{_tool_id}: catalog output must never mention v3 result/spec schema strings"
+    )
+del _tool_id, _tool_spec_check, _catalog_text
 
 
 def _validate_params_against_schema(
@@ -3109,7 +3295,10 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
             "coverage_hint": f"{', '.join(supported_symbols[:5])} {'/'.join(CATALOG_TIMEFRAMES_EXCHANGE)} from exchange public API",
             "external_unverified": True,
         },
-        "supported_symbols": supported_symbols,
+        # 123 B2 / SPEC §6.1：组合 tool 对 supported_symbols 不填——server 对
+        # execution_scope='portfolio_legs' 的 run 跳过这项比对，改按 legs[].symbol
+        # 各自校验中心行情覆盖。
+        "supported_symbols": [] if spec.get("runner") == "kernel_v3" else supported_symbols,
         "markets": ["spot", "futures"],
         "timeframes": list(CATALOG_TIMEFRAMES_EXCHANGE),
         "is_default": spec.get("is_default", False),
@@ -3472,6 +3661,418 @@ async def health():
         )
 
 
+# ---------------------------------------------------------------------------
+# 123 B2：组合模板 runner=kernel_v3（SPEC_组合策略v3契约 §2.6.1 / §6）
+# ---------------------------------------------------------------------------
+
+
+def _basket_condition_frame_offset(node: Any, feature_frame) -> int:
+    """Aligned-bar frame-index offset a ValueExpr/ConditionExpr node needs
+    below the frame it is evaluated at, before every feature it (transitively)
+    reads is first computable (§2.6.1 预热：预热根数由 provider 按编译后 plan
+    的最大回看计算).  ``cross`` additionally reads both operands at t-1 (same
+    +1 rule as v2's ``max_primary_lag_frames``); every other node just needs
+    the max of its children."""
+    if not isinstance(node, dict):
+        return 0
+    kind = node.get("node")
+    if kind == "feature":
+        return feature_frame(node["key"]) + int(node.get("lag_bars", 0) or 0)
+    if kind == "stream":
+        return int(node.get("lag_bars", 0) or 0)
+    if kind == "literal":
+        return 0
+    offset = 0
+    for side in ("left", "right"):
+        if side in node:
+            offset = max(offset, _basket_condition_frame_offset(node[side], feature_frame))
+    if isinstance(node.get("args"), list):
+        for arg in node["args"]:
+            offset = max(offset, _basket_condition_frame_offset(arg, feature_frame))
+    if kind == "cross":
+        offset += 1
+    return offset
+
+
+def _basket_warmup_bars(strategy_spec: dict[str, Any]) -> int:
+    """§2.6.1: provider-computed warmup depth (aligned bars strictly before
+    ``start_at``), derived from the compiled spec's own max lookback
+    (window/lag) -- v3 has no manifest/declared warmup_bars, so widening the
+    fetch is entirely the provider's responsibility."""
+    features_by_key = {feature["key"]: feature for feature in strategy_spec["features"]}
+    memo: dict[str, int] = {}
+
+    def feature_frame(key: str) -> int:
+        if key in memo:
+            return memo[key]
+        memo[key] = 0  # cycle guard; compile_strategy_v3 already rejects real cycles
+        feature = features_by_key[key]
+        if "primitive" in feature:
+            window = feature.get("params", {}).get("window_bars")
+            base = (window - 1) if isinstance(window, int) and not isinstance(window, bool) else 0
+            source = feature.get("source_stream", "")
+            if isinstance(source, str) and source.startswith("feature:"):
+                base += feature_frame(source.split(":", 1)[1])
+            value = base
+        else:
+            value = _basket_condition_frame_offset(feature["expr"], feature_frame)
+        memo[key] = value
+        return value
+
+    needed = _basket_condition_frame_offset(strategy_spec["entry"]["condition"], feature_frame)
+    signal_exit = strategy_spec["exit"].get("signal_exit")
+    if signal_exit is not None:
+        needed = max(needed, _basket_condition_frame_offset(signal_exit, feature_frame))
+    return needed
+
+
+# ccxt 回退路径的 K 线价格是 JSON float：repr 给出能往返的最短十进制表示，有效数字
+# 超过 15 位说明交易所的十进制报价已被 binary64 误差污染（如 0.30000000000000004），
+# 进 decimal128 内核只会把噪声当精度，整次回测按取数失败返回。中心行情是字符串，不受影响。
+_BASKET_FLOAT_PRICE_MAX_DIGITS = 15
+_BASKET_PRICE_FIELDS = (("open", 1), ("high", 2), ("low", 3), ("close", 4))
+
+
+def _basket_untrusted_float_price(ohlcv: list[Any], start_at: int, end_at: int) -> Optional[str]:
+    """First float price field in ``[start_at, end_at)`` whose shortest repr
+    carries more than 15 significant digits (or is non-finite), as a short
+    description; ``None`` when every float price is trustworthy."""
+    for candle in ohlcv:
+        if not isinstance(candle, (list, tuple)) or len(candle) < 6:
+            continue  # _canonical_kline_rows reports malformed rows
+        open_time = int(candle[0]) // 1000
+        if not start_at <= open_time < end_at:
+            continue
+        for name, index in _BASKET_PRICE_FIELDS:
+            value = candle[index]
+            if not isinstance(value, float):
+                continue
+            text = repr(value)
+            if not math.isfinite(value):
+                return f"{name}={text} at open_time={open_time}"
+            significant = "".join(str(d) for d in Decimal(text).as_tuple().digits).strip("0")
+            if len(significant) > _BASKET_FLOAT_PRICE_MAX_DIGITS:
+                return f"{name}={text} at open_time={open_time}"
+    return None
+
+
+def _fetch_basket_leg_klines(
+    exchange_id: str, market: str, symbol: str, timeframe: str, start_at: int, end_at: int,
+) -> tuple[list[dict[str, Any]], str, Optional[bool], bool]:
+    """One basket leg's canonical-Decimal K-lines for ``[start_at, end_at)``
+    (caller widens ``start_at`` for warmup before calling).  Reuses the same
+    central-then-ccxt fetch/cache as the legacy per-symbol path via
+    ``_fetch_ohlcv_raw`` so every OHLCV value stays a canonical Decimal
+    string -- never floated -- on its way into the decimal128 kernel
+    (§2.6.1 精度上下文).  Must run inside decimal128: ``canonical_decimal_str``
+    normalizes in the current context, so a 29–34 digit central price would
+    otherwise be re-rounded to the caller's precision."""
+    ohlcv, actual_data_source, central_market_data_used, market_data_cache_hit = _fetch_ohlcv_raw(
+        exchange_id, market, symbol, timeframe, start_at, end_at
+    )
+    untrusted = _basket_untrusted_float_price(ohlcv, start_at, end_at)
+    if untrusted is not None:
+        error = MarketDataFetchError(
+            "DATA_FETCH_FAILED",
+            f"Market data price precision is not trustworthy ({untrusted}); please retry later",
+            central_failure_reason=None,
+            central_attempted=False,
+        )
+        error.provenance["source"] = actual_data_source
+        raise error
+    rows = _canonical_kline_rows(ohlcv, start_at, end_at)
+    return rows, actual_data_source, central_market_data_used, market_data_cache_hit
+
+
+_PLAIN_DECIMAL_RE = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+
+
+@in_decimal128
+def _basket_cost_bps_str(name: str, raw: Any) -> str:
+    """信封 fee_bps/slippage_bps → v3 spec 里的 canonical Decimal 字符串。
+
+    必须与 server 重建 spec 的转换逐字一致：server 在 decimal128 里对 NUMERIC 列值取
+    ``canonical_decimal_str``（``StrategyBacktestService._rebuild_run_strategy_spec_v3``），
+    这里同一上下文、同一函数。信封是 v2 既有字段，可能是 JSON 数字：float 取 repr
+    最短表示；NaN/Infinity/指数形式/负数一律拒绝（调用方映射 INVALID_PARAMS）。"""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError(f"{name} must be a decimal number")
+    text = repr(raw) if isinstance(raw, float) else str(raw)
+    if not _PLAIN_DECIMAL_RE.fullmatch(text):
+        raise ValueError(f"{name} must be a plain decimal (no NaN/Infinity/exponent): {text!r}")
+    value = Decimal(text)
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return canonical_decimal_str(value)
+
+
+@in_decimal128
+def _basket_capital_str(raw: Any) -> str:
+    """信封 initial_capital → 传给 ``simulate_v3`` 的 canonical Decimal 字符串。
+
+    123 B2b（D4）：server 从 NUMERIC 列取 initial_capital，信封里形如
+    ``"10000.00000000"``；内核 ``$.initial_capital`` 只收 canonical 串（无多余尾零），
+    原样 ``str()`` 传进去会被拒成 INVALID_PARAMS。这里在入口规范化，内核严格校验不放宽。
+    与 ``_basket_cost_bps_str`` 同一套输入口径（float 取 repr、拒 NaN/Infinity/指数），
+    另要求 > 0，且规范化不得改变数值（超 decimal128 34 位有效数字的输入直接拒，
+    不静默舍入）。"""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError("initial_capital must be a decimal number")
+    text = repr(raw) if isinstance(raw, float) else str(raw)
+    if not _PLAIN_DECIMAL_RE.fullmatch(text):
+        raise ValueError(f"initial_capital must be a plain decimal (no NaN/Infinity/exponent): {text!r}")
+    value = Decimal(text)
+    if value <= 0:
+        raise ValueError("initial_capital must be positive")
+    canonical = canonical_decimal_str(value)
+    if Decimal(canonical) != value:
+        raise ValueError("initial_capital exceeds decimal128 precision (34 significant digits)")
+    return canonical
+
+
+def _bounded_basket_response(run_id: str, body: dict[str, Any]) -> JSONResponse:
+    """Same never-truncate-signed-evidence rule as ``_bounded_template_response``,
+    plus the two v3-specific wire limits (SPEC §4): ``data_manifests_json`` ≤
+    16384 bytes, ``strategy_spec_json`` ≤ 32768 bytes."""
+    manifests_len = len(
+        json.dumps(body.get("data_manifests"), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    if manifests_len > 16384:
+        return _business_failure(
+            run_id, "INVALID_PARAMS",
+            "Complete data_manifests evidence exceeds callback limit (16384 bytes); shorten the backtest range.",
+        )
+    spec_json_len = len(str(body.get("strategy_spec_json") or "").encode("utf-8"))
+    if spec_json_len > 32768:
+        return _business_failure(
+            run_id, "INVALID_PARAMS",
+            "strategy_spec_json exceeds callback limit (32768 bytes).",
+        )
+    return _bounded_template_response(run_id, body)
+
+
+@in_decimal128
+def _run_basket_backtest(
+    *,
+    run_id: str,
+    strategy_family: str,
+    params: dict[str, Any],
+    market: str,
+    timeframe: str,
+    start_at: int,
+    end_at: int,
+    initial_capital: Decimal,
+    kernel_initial_capital: str,
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+    envelope_cost_bps: dict[str, str],
+    instrument_rules: Any,
+) -> JSONResponse:
+    """SPEC_组合策略v3契约 §6.1/§6.2/§2.6.1/§3/§4: dispatched from run_backtest
+    before any float conversion / Strategy class / single-symbol fetch /
+    Backtest() -- an entirely independent Decimal path through
+    strategy_spec_v3_builder -> compile_strategy_v3 -> simulate_v3 ->
+    build_result_v3.  Runs wholly in decimal128 (prec=34) whatever the
+    caller's context; ``envelope_cost_bps`` is the canonical fee/slippage
+    pair already validated by ``_basket_cost_bps_str``; ``kernel_initial_capital``
+    is the canonical capital from ``_basket_capital_str``."""
+    if market != "futures":
+        return _validation_failure(
+            "INVALID_PARAMS", "basket strategies require market='futures' (market.market_type is fixed futures)"
+        )
+    if not isinstance(instrument_rules, dict):
+        return _validation_failure("INVALID_PARAMS", "instrument_rules is required for basket strategies")
+
+    envelope = {
+        "timeframe": timeframe,
+        "fee_bps": envelope_cost_bps["fee_bps"],
+        "slippage_bps": envelope_cost_bps["slippage_bps"],
+    }
+    try:
+        strategy_spec = build_strategy_spec_v3(strategy_family, params, envelope)
+    except StrategySpecV3BuildError as exc:
+        return _validation_failure("INVALID_PARAMS", f"{exc.path}: {exc.message}")
+    except Exception as exc:
+        logger.exception("basket strategy_spec_v3 build failed family=%s", strategy_family)
+        return _business_failure(run_id, "ENGINE_ERROR", f"basket spec build failed: {exc}")
+
+    try:
+        plan = compile_strategy_v3(strategy_spec)
+    except (StrategySpecV3Error, StrategyContractError) as exc:
+        # ERR_SPEC_INVALID/ERR_SPEC_UNSUPPORTED here means the assembled spec
+        # (built straight from the caller's own params) was rejected by the
+        # kernel -- from the dispatch envelope's point of view that is still
+        # "your params/legs didn't validate", mapped to the same existing
+        # INVALID_PARAMS code as a builder-level rejection (契约歧义，见回报).
+        return _validation_failure("INVALID_PARAMS", f"{exc.path}: {exc.message}")
+
+    step = _timeframe_milliseconds(timeframe) // 1000
+    warmup_bars = _basket_warmup_bars(strategy_spec)
+
+    def fetch_legs(fetch_start: int) -> Any:
+        """All legs over ``[fetch_start, end_at)``; a failure JSONResponse on
+        the first leg that cannot be fetched."""
+        leg_klines: dict[str, list[dict[str, Any]]] = {}
+        leg_provenance: dict[str, tuple[str, Optional[bool], bool]] = {}
+        for leg in plan.legs:
+            leg_id = leg["leg_id"]
+            leg_symbol = leg["symbol"]
+            try:
+                rows, data_source, central_used, cache_hit = _fetch_basket_leg_klines(
+                    CENTRAL_SUPPORTED_EXCHANGE, market, leg_symbol, timeframe, fetch_start, end_at
+                )
+            except MarketDataFetchError as e:
+                return _business_failure(
+                    run_id, e.error_type, f"leg {leg_id} ({leg_symbol}): {e.public_message}",
+                    reason=("data_missing" if e.error_type == "NO_DATA" else "market_data_fetch_failed"),
+                    market_data_provenance=e.provenance,
+                )
+            except StrategyContractError as e:
+                return _business_failure(
+                    run_id, "INSUFFICIENT_DATA", f"leg {leg_id} ({leg_symbol}): {e.path}: {e.message}",
+                    reason="data_missing",
+                )
+            except ValueError as e:
+                msg = str(e)
+                if msg == "NO_DATA":
+                    return _business_failure(
+                        run_id, "NO_DATA", f"leg {leg_id} ({leg_symbol}): no OHLCV data available",
+                        reason="data_missing",
+                    )
+                return _business_failure(run_id, "INVALID_PARAMS", f"leg {leg_id} ({leg_symbol}): {msg}")
+            except RuntimeError as e:
+                if "RATE_LIMITED" in str(e):
+                    return _business_failure(
+                        run_id, "RATE_LIMITED", "Exchange rate limit exceeded, please retry later",
+                        reason="rate_limited",
+                    )
+                return _business_failure(run_id, "ENGINE_ERROR", str(e))
+            except Exception as e:
+                logger.exception("basket leg OHLCV fetch unexpected error leg=%s", leg_id)
+                return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch leg {leg_id} market data: {e}")
+            leg_klines[leg_id] = rows
+            leg_provenance[leg_id] = (data_source, central_used, cache_hit)
+        return leg_klines, leg_provenance
+
+    def aligned_warmup_count(leg_klines: dict[str, list[dict[str, Any]]]) -> int:
+        times = [{row["open_time"] for row in rows if row["open_time"] < start_at} for rows in leg_klines.values()]
+        return len(set.intersection(*times)) if times else 0
+
+    # §2.6.1 预热：start_at 前要有「plan 最大回看」根两腿都有的对齐 bar。先前推
+    # 回看根数×周期；预热段有腿缺 bar 导致对齐根数不足时再前推到 4 倍回看跨度；仍不足
+    # 照常回测（特征缺值按 §2.6.1 不触发），不报错。manifest 只计 [start_at, end_at)。
+    fetched = fetch_legs(max(0, start_at - warmup_bars * step))
+    if isinstance(fetched, JSONResponse):
+        return fetched
+    leg_klines, leg_provenance = fetched
+    if warmup_bars > 0 and aligned_warmup_count(leg_klines) < warmup_bars:
+        widened = fetch_legs(max(0, start_at - 4 * warmup_bars * step))
+        # 放宽后的取数失败（如上市前区间）不影响已取到的首轮数据，照常回测。
+        if not isinstance(widened, JSONResponse):
+            leg_klines, leg_provenance = widened
+
+    try:
+        simulation = simulate_v3(
+            plan, leg_klines, instrument_rules, kernel_initial_capital,
+            start_at=start_at, end_at=end_at,
+        )
+    except (KernelExecutionError, StrategyContractError) as exc:
+        if exc.code == ERR_COVERAGE_INCOMPLETE:
+            return _business_failure(run_id, "INSUFFICIENT_DATA", f"{exc.path}: {exc.message}", reason="data_missing")
+        return _validation_failure("INVALID_PARAMS", f"{exc.path}: {exc.message}")
+    except Exception as exc:
+        logger.exception("basket simulate_v3 failed")
+        return _business_failure(run_id, "ENGINE_ERROR", f"Basket simulation failed: {exc}")
+
+    central_used_all = all(bool(prov[1]) for prov in leg_provenance.values())
+    manifest_source = (
+        _CENTRAL_MARKET_SOURCES.get(market, f"ccxt:{CENTRAL_SUPPORTED_EXCHANGE}")
+        if central_used_all
+        else f"ccxt:{CENTRAL_SUPPORTED_EXCHANGE}"
+    )
+    try:
+        data_manifests = build_data_manifests_v3(
+            legs=list(plan.legs),
+            leg_klines=leg_klines,
+            source=manifest_source,
+            market=market,
+            timeframe=timeframe,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        result_v3 = build_result_v3(simulation=simulation, data_manifests=data_manifests)
+    except StrategyContractError as exc:
+        logger.exception("basket result_v3 assembly failed")
+        return _business_failure(run_id, "ENGINE_ERROR", f"{exc.path}: {exc.message}")
+
+    manifests_hash = data_manifests_hash(data_manifests)
+    evidence = strategy_spec_v3_evidence(strategy_spec)
+
+    trade_count = result_v3["metrics"]["trade_count"]
+    provider_summary = (
+        f"basket {strategy_family} on {plan.basket_key} {timeframe} (futures), "
+        f"{manifest_source}, {trade_count} trades, total_return {result_v3['metrics']['total_return']}"
+    )
+    response_body = _json_safe({
+        "schema": RESPONSE_SCHEMA,
+        "result_status": "success",
+        "provider_name": PROVIDER_NAME,
+        "provider_revision": PROVIDER_REVISION,
+        "provider_run_id": f"bt_{run_id}",
+        "engine_name": ENGINE_NAME,
+        "engine_version": _engine_version(),
+        "data_source": "cutie_central_market_data" if central_used_all else DATA_SOURCE,
+        "central_market_data_used": central_used_all,
+        "central_market_data_auth_mode": _central_market_data_auth_mode(),
+        "market_data_cache_hit": all(prov[2] for prov in leg_provenance.values()),
+        "schema_version": result_v3["schema_version"],
+        "metrics": result_v3["metrics"],
+        "initial_capital": _decimal_str(initial_capital, places=2),
+        "equity_curve": result_v3["equity_curve"],
+        "trades": result_v3["trades"],
+        "data_manifests": result_v3["data_manifests"],
+        "data_manifests_hash": manifests_hash,
+        "strategy_spec_json": evidence["strategy_spec_json"],
+        "strategy_spec_hash": evidence["strategy_spec_hash"],
+        "assumptions": {
+            "fee_bps": _decimal_str(fee_bps, places=4),
+            "slippage_bps": _decimal_str(slippage_bps, places=4),
+            "exchange": CENTRAL_SUPPORTED_EXCHANGE,
+            "market": market,
+            "strategy_family": strategy_family,
+            "legs": [leg["symbol"] for leg in plan.legs],
+            "real_market_data": True,
+            "no_live_trading": True,
+            "funding_rate_included": False,
+            "funding_rate_note": (
+                "Futures basket backtest excludes perpetual funding rate costs; "
+                "PnL may be optimistic vs. live futures trading."
+            ),
+        },
+        "limitations": {
+            "verification": "external_unverified",
+            "verified_by_cutie": False,
+            "data_quality": "provider_reported",
+            "no_trades_executed": trade_count == 0,
+        },
+        "raw_report": {
+            "provider_summary": provider_summary,
+            "diagnostics": simulation.get("diagnostics", []),
+            "market_data_provenance": {
+                leg_id: {
+                    "provider_revision": PROVIDER_REVISION,
+                    "source": prov[0],
+                    "central_market_data_used": prov[1],
+                    "auth_mode": _central_market_data_auth_mode(),
+                    "cache_hit": prov[2],
+                }
+                for leg_id, prov in leg_provenance.items()
+            },
+        },
+    })
+    return _bounded_basket_response(run_id, response_body)
+
+
 @app.get("/catalog")
 async def catalog(authorization: Optional[str] = Header(default=None)):
     """Return provider tool catalog (IMPL §5.1 cutie.backtest_provider_catalog.v1)."""
@@ -3607,6 +4208,17 @@ async def run_backtest(
         initial_capital = Decimal(str(initial_capital_str))
         fee_bps = Decimal(str(fee_bps_str))
         slippage_bps = Decimal(str(slippage_bps_str))
+        # 123 B2：组合 tool 的 fee/slippage 要写进 v3 spec，在这里就 canonical 化，
+        # NaN/Infinity/指数/负数走 INVALID_PARAMS 而不是在内核路径里 500。
+        basket_cost_bps: Optional[dict[str, str]] = None
+        basket_capital: Optional[str] = None
+        if TOOL_SPECS.get(effective_tool_id, {}).get("runner") == "kernel_v3":
+            basket_cost_bps = {
+                "fee_bps": _basket_cost_bps_str("fee_bps", fee_bps_str),
+                "slippage_bps": _basket_cost_bps_str("slippage_bps", slippage_bps_str),
+            }
+            # 123 B2b（D4）：信封 capital 来自 NUMERIC 列（"10000.00000000"），进内核前规范化。
+            basket_capital = _basket_capital_str(initial_capital_str)
     except (InvalidOperation, TypeError, ValueError) as e:
         return _validation_failure("INVALID_PARAMS", f"Cannot parse decimal fields: {e}")
 
@@ -3622,6 +4234,27 @@ async def run_backtest(
     schema_err = _validate_params_against_schema(params, tool_spec["param_schema_properties"])
     if schema_err:  # F2: enforce catalog schema at runtime (unknown key / type / bounds)
         return _validation_failure("INVALID_PARAMS", schema_err)
+
+    # 123 B2 / SPEC §6.1: basket combo tools dispatch to an independent Decimal
+    # kernel_v3 path before any float conversion / Strategy class / single-
+    # symbol fetch / Backtest() below.
+    if tool_spec.get("runner") == "kernel_v3":
+        return _run_basket_backtest(
+            run_id=run_id,
+            strategy_family=tool_spec["strategy_family"],
+            params=params,
+            market=market,
+            timeframe=timeframe,
+            start_at=start_at,
+            end_at=end_at,
+            initial_capital=initial_capital,
+            kernel_initial_capital=basket_capital,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+            envelope_cost_bps=basket_cost_bps,
+            instrument_rules=bt_req.get("instrument_rules"),
+        )
+
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")

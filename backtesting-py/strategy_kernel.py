@@ -9,6 +9,7 @@ loop plus the explicit end-of-data close required by result.v2.
 from __future__ import annotations
 
 import copy
+import functools
 import re
 from dataclasses import dataclass, field
 from decimal import (
@@ -23,7 +24,7 @@ from decimal import (
     Underflow,
     localcontext,
 )
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, TypeVar
 
 from canonical_json import (
     CanonicalJsonError,
@@ -39,6 +40,9 @@ ARTIFACT_DIGEST_SCHEMA = "cutie.strategy_artifact_digest.v1"
 CAPABILITY_SCHEMA = "cutie.strategy_execution_capabilities.v1"
 RESULT_SCHEMA = "cutie.backtest_result.v2"
 COMPILER_TOOL_ID = "local.strategy_spec_v2.compiler"
+# 123 组合策略 (SPEC_组合策略v3契约): an independent schema compiled only by
+# ``compile_strategy_v3``; never advertised by ``capability_payload``.
+STRATEGY_SPEC_V3_SCHEMA = "cutie.strategy_spec.v3"
 
 ERR_SPEC_INVALID = "ERR_STRATEGY_SPEC_INVALID"
 ERR_SPEC_UNSUPPORTED = "ERR_STRATEGY_SPEC_UNSUPPORTED"
@@ -59,13 +63,68 @@ _DECIMAL_CONTEXT.traps[Overflow] = True
 _DECIMAL_CONTEXT.traps[Underflow] = True
 _JS_SAFE_INT = 2**53 - 1
 
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def in_decimal128(func: _F) -> _F:
+    """Run a v3 entry point wholly inside ``cutie.decimal128.v1``
+    (``_DECIMAL_CONTEXT``): every Decimal operation, comparison, normalize and
+    canonical serialization below it uses 34 digits whatever context the
+    caller has installed.  ``canonical_decimal_str`` normalizes in the
+    *current* context, so leaving any serialization outside would re-round a
+    29–34 digit value to the default 28."""
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with localcontext(_DECIMAL_CONTEXT):
+            return func(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
+
 # SPEC §5.5 (2026-07-17 增补, 62-2b Phase 1): kline-sourced feature namespace.
 _KLINE_PRIMARY_PREFIX = "kline.primary."
 _KLINE_PRIMARY_FIELDS = {"open", "high", "low", "close"}
 _KLINE_PRIMARY_COARSE_INTERVALS = {"4h", "1d"}
 _KLINE_PRIMARY_COARSE_BASE_TIMEFRAME = "1h"
 # The four feature primitives §5.5 registers; param shapes are frozen cross-provider.
-_KNOWN_PRIMITIVES = {"rolling_sum", "rolling_quantile", "rsi_wilder", "rolling_extreme"}
+# ``rolling_zscore`` is the 123 组合策略 v3 addition (SPEC_组合策略v3契约 §2.3): it
+# is compiled only by ``compile_strategy_v3`` and is deliberately absent from
+# ``capability_payload`` (v3 never enters the capability declaration), so a v2
+# spec naming it still fails the capability exact-set check.
+# SPEC_组合策略v3契约 §2.2 / §2.4 / §2.5 closed vocabularies.
+_STRATEGY_FAMILIES_V3 = {
+    "basket_ratio_sma_cross",
+    "basket_ratio_roc",
+    "basket_ratio_zscore",
+}
+_MARKET_KEYS_V3 = {"market_type", "exchange", "timeframe", "legs"}
+_LEG_KEYS_V3 = {"leg_id", "symbol", "side", "weight"}
+_LEG_IDS_V3 = ("a", "b")
+_LEG_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
+_BASKET_KEY_MAX_LEN = 30
+_TIMEFRAMES_V3 = {"1h", "4h", "1d"}
+_DERIVED_FEATURE_KEYS_V3 = {
+    "key",
+    "kind",
+    "expr",
+    "interval",
+    "value_kind",
+    "output_type",
+}
+_STREAM_FIELDS_V3 = {"open", "high", "low", "close", "volume"}
+# Primitive ``source_stream`` forms in v3: another feature's series, or one
+# leg's K-line price field read straight off that leg's aligned bars.
+_FEATURE_SOURCE_PREFIX_V3 = "feature:"
+_KLINE_LEG_PREFIX_V3 = "kline.leg."
+_KLINE_LEG_FIELDS_V3 = {"open", "high", "low", "close"}
+_KNOWN_PRIMITIVES = {
+    "rolling_sum",
+    "rolling_quantile",
+    "rsi_wilder",
+    "rolling_extreme",
+    "rolling_zscore",
+}
 
 _SPEC_KEYS = {
     "schema",
@@ -210,9 +269,14 @@ class FeatureFrame:
     symbol: str
     values: dict[str, Any]
     stream_revisions: dict[str, str]
+    # v3 basket frames only (``build_frames_v3``): per-leg canonical OHLCV of
+    # the legs present at this bar, and the §2.6 "bar 对齐" skip marker. v2
+    # frames keep ``legs=None`` and serialize exactly as before.
+    legs: Optional[dict[str, dict[str, str]]] = None
+    skipped: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "bar_open_at": self.bar_open_at,
             "bar_close_at": self.bar_close_at,
             "available_at": self.available_at,
@@ -220,6 +284,10 @@ class FeatureFrame:
             "values": copy.deepcopy(self.values),
             "stream_revisions": copy.deepcopy(self.stream_revisions),
         }
+        if self.legs is not None:
+            out["legs"] = copy.deepcopy(self.legs)
+            out["skipped"] = self.skipped
+        return out
 
 
 @dataclass
@@ -485,9 +553,33 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
     if not isinstance(obj["params"], dict):
         _raise(f"{path}.params", "must be an object")
     _canonical_scalar_tree(obj["params"], f"{path}.params")
-    primitive = obj["primitive"]
+    _validate_primitive_params(obj["primitive"], obj["params"], path)
+    source_stream = obj["source_stream"]
+    if source_stream.startswith(_KLINE_PRIMARY_PREFIX):
+        field = source_stream[len(_KLINE_PRIMARY_PREFIX) :]
+        if field not in _KLINE_PRIMARY_FIELDS:
+            _raise(
+                f"{path}.source_stream",
+                "kline.primary field must be open/high/low/close",
+                actual=source_stream,
+            )
+        if obj["value_kind"] != "price":
+            _raise(
+                f"{path}.value_kind",
+                "kline.primary source requires price value_kind",
+                actual=obj["value_kind"],
+            )
+    return key, obj["output_type"]
+
+
+def _validate_primitive_params(primitive: Any, raw_params: Any, path: str) -> None:
+    """Per-primitive ``params`` shape for the four §5.5 v2 primitives.
+
+    Unknown primitive names are left to the caller: v2 rejects them through
+    the capability exact-set, v3 through ``_validate_primitive_params_v3``.
+    """
     if primitive == "rolling_sum":
-        params = _exact(obj["params"], {"window_bars"}, f"{path}.params")
+        params = _exact(raw_params, {"window_bars"}, f"{path}.params")
         _safe_int(
             params["window_bars"],
             f"{path}.params.window_bars",
@@ -496,7 +588,7 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
         )
     elif primitive == "rolling_quantile":
         params = _exact(
-            obj["params"], {"window_bars", "quantile", "min_periods"}, f"{path}.params"
+            raw_params, {"window_bars", "quantile", "min_periods"}, f"{path}.params"
         )
         window_bars = _safe_int(
             params["window_bars"],
@@ -518,10 +610,10 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
             maximum=window_bars,
         )
     elif primitive == "rsi_wilder":
-        params = _exact(obj["params"], {"period"}, f"{path}.params")
+        params = _exact(raw_params, {"period"}, f"{path}.params")
         _safe_int(params["period"], f"{path}.params.period", minimum=2, maximum=1000)
     elif primitive == "rolling_extreme":
-        params = _exact(obj["params"], {"window_bars", "mode"}, f"{path}.params")
+        params = _exact(raw_params, {"window_bars", "mode"}, f"{path}.params")
         _safe_int(
             params["window_bars"],
             f"{path}.params.window_bars",
@@ -530,22 +622,27 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
         )
         if params["mode"] not in {"min", "max"}:
             _raise(f"{path}.params.mode", "must be min or max", actual=params["mode"])
-    source_stream = obj["source_stream"]
-    if source_stream.startswith(_KLINE_PRIMARY_PREFIX):
-        field = source_stream[len(_KLINE_PRIMARY_PREFIX) :]
-        if field not in _KLINE_PRIMARY_FIELDS:
-            _raise(
-                f"{path}.source_stream",
-                "kline.primary field must be open/high/low/close",
-                actual=source_stream,
-            )
-        if obj["value_kind"] != "price":
-            _raise(
-                f"{path}.value_kind",
-                "kline.primary source requires price value_kind",
-                actual=obj["value_kind"],
-            )
-    return key, obj["output_type"]
+
+
+def _validate_primitive_params_v3(primitive: Any, raw_params: Any, path: str) -> None:
+    """v3 primitive registry: the four v2 primitives plus ``rolling_zscore``
+    (SPEC_组合策略v3契约 §2.3, params exactly ``{"window_bars": <int>}``).
+
+    A one-bar window has population stdev 0 on every bar and could never
+    yield a value, so ``window_bars`` starts at 2.
+    """
+    if not _one_of(primitive, _KNOWN_PRIMITIVES):
+        _raise(f"{path}.primitive", "unknown primitive", actual=primitive)
+    if primitive == "rolling_zscore":
+        params = _exact(raw_params, {"window_bars"}, f"{path}.params")
+        _safe_int(
+            params["window_bars"],
+            f"{path}.params.window_bars",
+            minimum=2,
+            maximum=10000,
+        )
+        return
+    _validate_primitive_params(primitive, raw_params, path)
 
 
 def _operator(
@@ -566,10 +663,22 @@ def _infer_value(
     features: dict[str, str],
     operators: list[dict[str, Any]],
     path: str,
+    stream_legs: Optional[frozenset[str]] = None,
 ) -> str:
+    """``stream_legs`` is only passed for a v3 derived feature ``expr``; every
+    other caller (v2, and v3 entry/exit conditions) keeps ``stream`` an
+    unknown node (SPEC_组合策略v3契约 §2.4)."""
     if not isinstance(expr, dict):
         _raise(path, "must be a ValueExpr object")
     node = expr.get("node")
+    if node == "stream" and stream_legs is not None:
+        obj = _exact(expr, {"node", "leg", "field", "lag_bars"}, path)
+        if not _one_of(obj["leg"], stream_legs):
+            _raise(f"{path}.leg", "unknown market leg", actual=obj["leg"])
+        if not _one_of(obj["field"], _STREAM_FIELDS_V3):
+            _raise(f"{path}.field", "unknown stream field", actual=obj["field"])
+        _safe_int(obj["lag_bars"], f"{path}.lag_bars", maximum=10000)
+        return "decimal"
     if node == "literal":
         obj = _exact(expr, {"node", "value_type", "value"}, path)
         value_type = obj["value_type"]
@@ -610,7 +719,14 @@ def _infer_value(
         if not valid_arity:
             _raise(f"{path}.args", "invalid arithmetic arity")
         arg_types = [
-            _infer_value(arg, parameters, features, operators, f"{path}.args[{index}]")
+            _infer_value(
+                arg,
+                parameters,
+                features,
+                operators,
+                f"{path}.args[{index}]",
+                stream_legs,
+            )
             for index, arg in enumerate(args)
         ]
         if len(set(arg_types)) != 1 or arg_types[0] not in {"integer", "decimal"}:
@@ -1983,6 +2099,478 @@ def compile_strategy(
     )
 
 
+
+class StrategySpecV3Error(StrategyContractError):
+    """``StrategyContractError`` whose redaction-safe detail names the v3 schema."""
+
+    def detail(self) -> dict[str, Any]:
+        detail = super().detail()
+        detail["schema"] = STRATEGY_SPEC_V3_SCHEMA
+        return detail
+
+
+@dataclass(frozen=True)
+class CompiledPlanV3:
+    """``compile_strategy_v3`` output.  v3 has no artifact manifest and no
+    capability binding (SPEC_组合策略v3契约 §0.3); ``feature_order`` is the
+    compile-time topological evaluation order of ``features``."""
+
+    strategy_spec: dict[str, Any]
+    spec_hash: str
+    basket_key: str
+    legs: tuple[dict[str, str], ...]
+    feature_types: dict[str, str]
+    feature_order: tuple[str, ...]
+
+
+def _one_of(value: Any, allowed: Iterable[str]) -> bool:
+    """Closed-vocabulary membership that never hashes a non-string value."""
+    return isinstance(value, str) and value in allowed
+
+
+def _validate_legs_v3(legs: Any) -> tuple[list[dict[str, str]], str]:
+    path = "$.strategy_spec.market.legs"
+    if not isinstance(legs, list) or len(legs) != 2:
+        _raise(path, "must contain exactly 2 legs", required=2)
+    for index, leg in enumerate(legs):
+        leg_path = f"{path}[{index}]"
+        obj = _exact(leg, _LEG_KEYS_V3, leg_path)
+        if obj["leg_id"] != _LEG_IDS_V3[index]:
+            _raise(
+                f"{leg_path}.leg_id",
+                "legs must be exactly a, b sorted by leg_id",
+                required=_LEG_IDS_V3[index],
+                actual=obj["leg_id"],
+            )
+        symbol = obj["symbol"]
+        if not isinstance(symbol, str) or _LEG_SYMBOL_RE.fullmatch(symbol) is None:
+            _raise(
+                f"{leg_path}.symbol",
+                "must be a USDT-quoted symbol",
+                required=_LEG_SYMBOL_RE.pattern,
+                actual=symbol,
+            )
+        if not _one_of(obj["side"], {"long", "short"}):
+            _raise(f"{leg_path}.side", "must be long or short", actual=obj["side"])
+        if obj["weight"] != "1":
+            _raise(f"{leg_path}.weight", "must equal \"1\"", actual=obj["weight"])
+    if legs[0]["symbol"] == legs[1]["symbol"]:
+        _raise(path, "leg symbols must differ", actual=legs[0]["symbol"])
+    basket_key = f"{legs[0]['symbol']}~{legs[1]['symbol']}"
+    if len(basket_key) > _BASKET_KEY_MAX_LEN:
+        _raise(
+            path,
+            "basket key exceeds 30 characters",
+            required=_BASKET_KEY_MAX_LEN,
+            actual=basket_key,
+        )
+    return legs, basket_key
+
+
+def _validate_feature_common_v3(
+    obj: dict[str, Any], path: str, timeframe: str
+) -> str:
+    key = obj["key"]
+    if not isinstance(key, str) or _KEY_RE.fullmatch(key) is None:
+        _raise(f"{path}.key", "invalid feature key", actual=key)
+    if obj["interval"] != timeframe:
+        _raise(
+            f"{path}.interval",
+            "must equal market.timeframe",
+            required=timeframe,
+            actual=obj["interval"],
+        )
+    if not _one_of(obj["value_kind"], {"level", "flow", "event", "price"}):
+        _raise(f"{path}.value_kind", "unknown value kind", actual=obj["value_kind"])
+    if not _one_of(obj["output_type"], {"integer", "decimal"}):
+        _raise(
+            f"{path}.output_type",
+            "v3 features must be numeric",
+            actual=obj["output_type"],
+        )
+    return key
+
+
+def _primitive_source_v3(
+    obj: dict[str, Any], path: str
+) -> tuple[str, Optional[str], Optional[tuple[str, str]]]:
+    """Return ``(kind, feature_key, (leg_id, field))`` for a v3 primitive
+    ``source_stream``: ``feature:<key>`` or ``kline.leg.<leg_id>.<field>``."""
+    source_stream = obj["source_stream"]
+    if not isinstance(source_stream, str):
+        _raise(f"{path}.source_stream", "must be a string", actual=source_stream)
+    if source_stream.startswith(_FEATURE_SOURCE_PREFIX_V3):
+        ref = source_stream[len(_FEATURE_SOURCE_PREFIX_V3) :]
+        if _KEY_RE.fullmatch(ref) is None:
+            _raise(f"{path}.source_stream", "invalid feature reference", actual=ref)
+        return "feature", ref, None
+    if source_stream.startswith(_KLINE_LEG_PREFIX_V3):
+        parts = source_stream[len(_KLINE_LEG_PREFIX_V3) :].split(".")
+        if (
+            len(parts) != 2
+            or parts[0] not in _LEG_IDS_V3
+            or parts[1] not in _KLINE_LEG_FIELDS_V3
+        ):
+            _raise(
+                f"{path}.source_stream",
+                "kline.leg source must be kline.leg.<a|b>.<open|high|low|close>",
+                actual=source_stream,
+            )
+        if obj["value_kind"] != "price":
+            _raise(
+                f"{path}.value_kind",
+                "kline.leg source requires price value_kind",
+                actual=obj["value_kind"],
+            )
+        return "kline", None, (parts[0], parts[1])
+    _raise(
+        f"{path}.source_stream",
+        "v3 primitive source must be feature:<key> or kline.leg.<leg>.<field>",
+        actual=source_stream,
+    )
+
+
+def _collect_feature_refs(expr: Any, out: set[str]) -> None:
+    if isinstance(expr, dict):
+        if expr.get("node") == "feature" and isinstance(expr.get("key"), str):
+            out.add(expr["key"])
+        for child in expr.values():
+            _collect_feature_refs(child, out)
+    elif isinstance(expr, list):
+        for child in expr:
+            _collect_feature_refs(child, out)
+
+
+def _validate_features_v3(
+    features: Any, timeframe: str
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    path = "$.strategy_spec.features"
+    if not isinstance(features, list):
+        _raise(path, "must be an array")
+    keys: list[str] = []
+    declared: dict[str, str] = {}
+    primitive_refs: dict[str, Optional[str]] = {}
+    for index, item in enumerate(features):
+        item_path = f"{path}[{index}]"
+        if isinstance(item, dict) and "kind" in item:
+            obj = _exact(item, _DERIVED_FEATURE_KEYS_V3, item_path)
+            if obj["kind"] != "derived":
+                _raise(f"{item_path}.kind", "must equal derived", actual=obj["kind"])
+            key = _validate_feature_common_v3(obj, item_path, timeframe)
+        else:
+            obj = _exact(item, _FEATURE_KEYS, item_path)
+            key = _validate_feature_common_v3(obj, item_path, timeframe)
+            if not isinstance(obj["primitive_version"], str) or obj[
+                "primitive_version"
+            ] != "1":
+                _raise(
+                    f"{item_path}.primitive_version",
+                    "must equal \"1\"",
+                    actual=obj["primitive_version"],
+                )
+            if obj["required"] is not True:
+                _raise(
+                    f"{item_path}.required",
+                    "StrategySpec v3 only permits true",
+                    actual=obj["required"],
+                )
+            if obj["output_type"] != "decimal":
+                _raise(
+                    f"{item_path}.output_type",
+                    "primitive output_type must be decimal",
+                    actual=obj["output_type"],
+                )
+            if not isinstance(obj["params"], dict):
+                _raise(f"{item_path}.params", "must be an object")
+            _canonical_scalar_tree(obj["params"], f"{item_path}.params")
+            _validate_primitive_params_v3(obj["primitive"], obj["params"], item_path)
+            _kind, ref, _leg_field = _primitive_source_v3(obj, item_path)
+            if ref is not None and ref not in keys:
+                _raise(
+                    f"{item_path}.source_stream",
+                    "referenced feature must appear earlier in features",
+                    actual=ref,
+                )
+            primitive_refs[key] = ref
+        keys.append(key)
+        declared[key] = obj["output_type"]
+    if keys != sorted(set(keys), key=lambda x: x.encode("utf-16-be")):
+        _raise(path, "must be sorted and duplicate-free by key")
+    for key, ref in primitive_refs.items():
+        if ref is not None and declared[ref] not in {"integer", "decimal"}:
+            _raise(path, "primitive source feature must be numeric", actual=ref)
+
+    stream_legs = frozenset(_LEG_IDS_V3)
+    dependencies: dict[str, set[str]] = {}
+    for index, item in enumerate(features):
+        key = item["key"]
+        if "kind" not in item:
+            ref = primitive_refs[key]
+            dependencies[key] = {ref} if ref is not None else set()
+            continue
+        inferred = _infer_value(
+            item["expr"],
+            {},
+            declared,
+            [],
+            f"{path}[{index}].expr",
+            stream_legs,
+        )
+        if inferred != item["output_type"]:
+            _raise(
+                f"{path}[{index}].output_type",
+                "must equal the expression's inferred type",
+                required=inferred,
+                actual=item["output_type"],
+            )
+        refs: set[str] = set()
+        _collect_feature_refs(item["expr"], refs)
+        dependencies[key] = refs
+
+    order: list[str] = []
+    remaining = {key: set(deps) for key, deps in dependencies.items()}
+    while remaining:
+        ready = [key for key in keys if key in remaining and not remaining[key]]
+        if not ready:
+            _raise(
+                path,
+                "feature references must be acyclic",
+                actual=sorted(remaining),
+            )
+        for key in ready:
+            order.append(key)
+            del remaining[key]
+        for deps in remaining.values():
+            deps.difference_update(ready)
+    return declared, tuple(order)
+
+
+def _validate_spec_v3(
+    spec: Any,
+) -> tuple[list[dict[str, str]], str, dict[str, str], tuple[str, ...]]:
+    obj = _exact(spec, _SPEC_KEYS, "$.strategy_spec")
+    if obj["schema"] != STRATEGY_SPEC_V3_SCHEMA:
+        _raise(
+            "$.strategy_spec.schema",
+            "unsupported schema",
+            required=STRATEGY_SPEC_V3_SCHEMA,
+            actual=obj["schema"],
+        )
+    if not _one_of(obj["strategy_family"], _STRATEGY_FAMILIES_V3):
+        _raise(
+            "$.strategy_spec.strategy_family",
+            "unsupported strategy family",
+            required=sorted(_STRATEGY_FAMILIES_V3),
+            actual=obj["strategy_family"],
+        )
+    if obj["parameters"] != []:
+        _raise(
+            "$.strategy_spec.parameters",
+            "must be an empty array",
+            actual=obj["parameters"],
+        )
+
+    market = _exact(obj["market"], _MARKET_KEYS_V3, "$.strategy_spec.market")
+    if market["market_type"] != "futures":
+        _raise(
+            "$.strategy_spec.market.market_type",
+            "must be futures",
+            actual=market["market_type"],
+        )
+    if (
+        not isinstance(market["exchange"], str)
+        or _SCHEMA_KEY_RE.fullmatch(market["exchange"]) is None
+    ):
+        _raise("$.strategy_spec.market.exchange", "invalid exchange key")
+    if not _one_of(market["timeframe"], _TIMEFRAMES_V3):
+        _raise(
+            "$.strategy_spec.market.timeframe",
+            "must be 1h, 4h or 1d",
+            actual=market["timeframe"],
+        )
+    legs, basket_key = _validate_legs_v3(market["legs"])
+
+    feature_types, feature_order = _validate_features_v3(
+        obj["features"], market["timeframe"]
+    )
+    operators: list[dict[str, Any]] = []
+
+    entry = _exact(
+        obj["entry"],
+        {"condition", "order_model", "cooldown_bars"},
+        "$.strategy_spec.entry",
+    )
+    if entry["order_model"] != "next_bar_open":
+        _raise("$.strategy_spec.entry.order_model", "must be next_bar_open")
+    _safe_int(entry["cooldown_bars"], "$.strategy_spec.entry.cooldown_bars")
+    _validate_condition(
+        entry["condition"], {}, feature_types, operators, "$.strategy_spec.entry.condition"
+    )
+
+    exit_spec = _exact(
+        obj["exit"],
+        {"stop_loss", "take_profit", "time_exit_bars", "signal_exit"},
+        "$.strategy_spec.exit",
+    )
+    for field_name in ("stop_loss", "take_profit"):
+        rule_path = f"$.strategy_spec.exit.{field_name}"
+        rule = _exact(exit_spec[field_name], {"model", "value"}, rule_path)
+        if _one_of(rule["model"], {"fixed_percent", "r_multiple", "feature_expression"}):
+            _raise(
+                f"{rule_path}.model",
+                "v2 exit model is unsupported in v3",
+                code=ERR_SPEC_UNSUPPORTED,
+                required="basket_pnl_pct",
+                actual=rule["model"],
+            )
+        if rule["model"] != "basket_pnl_pct":
+            _raise(f"{rule_path}.model", "unsupported model", actual=rule["model"])
+        value = _canonical_decimal(rule["value"], f"{rule_path}.value", positive=True)
+        if value >= 1:
+            _raise(f"{rule_path}.value", "basket_pnl_pct must be less than 1")
+    if exit_spec["time_exit_bars"] is not None:
+        _safe_int(
+            exit_spec["time_exit_bars"], "$.strategy_spec.exit.time_exit_bars", minimum=1
+        )
+    if exit_spec["signal_exit"] is not None:
+        _validate_condition(
+            exit_spec["signal_exit"],
+            {},
+            feature_types,
+            operators,
+            "$.strategy_spec.exit.signal_exit",
+        )
+
+    risk = _exact(
+        obj["risk"],
+        {"position_sizing", "max_open_positions", "allow_pyramiding", "leverage"},
+        "$.strategy_spec.risk",
+    )
+    sizing = _exact(
+        risk["position_sizing"], {"model", "value"}, "$.strategy_spec.risk.position_sizing"
+    )
+    if sizing["model"] != "fixed_margin_per_leg":
+        _raise(
+            "$.strategy_spec.risk.position_sizing.model",
+            "must be fixed_margin_per_leg",
+            actual=sizing["model"],
+        )
+    _canonical_decimal(
+        sizing["value"], "$.strategy_spec.risk.position_sizing.value", positive=True
+    )
+    if type(risk["max_open_positions"]) is not int or risk["max_open_positions"] != 1:
+        _raise(
+            "$.strategy_spec.risk.max_open_positions",
+            "must equal 1",
+            actual=risk["max_open_positions"],
+        )
+    if risk["allow_pyramiding"] is not False:
+        _raise("$.strategy_spec.risk.allow_pyramiding", "must be false")
+    leverage = _canonical_decimal(
+        risk["leverage"], "$.strategy_spec.risk.leverage", positive=True
+    )
+    if leverage not in {Decimal(1), Decimal(2), Decimal(3)}:
+        _raise(
+            "$.strategy_spec.risk.leverage",
+            "must be an integer from 1 to 3",
+            actual=risk["leverage"],
+        )
+
+    execution = _exact(
+        obj["execution"],
+        {
+            "decision_clock",
+            "signal_effective_at",
+            "intrabar_priority",
+            "position_mode",
+            "cost_model",
+            "missing_data_policy",
+            "kernel_api_version",
+        },
+        "$.strategy_spec.execution",
+    )
+    if (
+        execution["decision_clock"] != "closed_bar"
+        or execution["signal_effective_at"] != "next_bar_open"
+    ):
+        _raise("$.strategy_spec.execution", "unsupported decision clock/effective time")
+    priority = execution["intrabar_priority"]
+    if (
+        not isinstance(priority, list)
+        or len(priority) != 4
+        or not all(isinstance(item, str) for item in priority)
+        or set(priority) != {"stop_loss", "take_profit", "time_exit", "signal_exit"}
+    ):
+        _raise(
+            "$.strategy_spec.execution.intrabar_priority",
+            "must be an exact permutation of four exits",
+        )
+    if execution["position_mode"] != "one_way":
+        _raise("$.strategy_spec.execution.position_mode", "must be one_way")
+    if execution["missing_data_policy"] != "skip_unaligned_bar":
+        _raise(
+            "$.strategy_spec.execution.missing_data_policy",
+            "must be skip_unaligned_bar",
+            actual=execution["missing_data_policy"],
+        )
+    if execution["kernel_api_version"] != "1":
+        _raise("$.strategy_spec.execution.kernel_api_version", "must equal 1")
+    cost = _exact(
+        execution["cost_model"],
+        {"schema", "fee_bps", "slippage_bps", "funding"},
+        "$.strategy_spec.execution.cost_model",
+    )
+    if cost["schema"] != "cutie.execution_cost.v1":
+        _raise("$.strategy_spec.execution.cost_model.schema", "unsupported cost schema")
+    for field_name in ("fee_bps", "slippage_bps"):
+        _canonical_decimal(
+            cost[field_name],
+            f"$.strategy_spec.execution.cost_model.{field_name}",
+            nonnegative=True,
+        )
+    if cost["funding"] != "excluded":
+        _raise(
+            "$.strategy_spec.execution.cost_model.funding",
+            "must be excluded",
+            code=(
+                ERR_SPEC_UNSUPPORTED if cost["funding"] == "included" else ERR_SPEC_INVALID
+            ),
+            required="excluded",
+            actual=cost["funding"],
+        )
+    return legs, basket_key, feature_types, feature_order
+
+
+@in_decimal128
+def compile_strategy_v3(strategy_spec: dict[str, Any]) -> CompiledPlanV3:
+    """Validate and type-check a ``cutie.strategy_spec.v3`` basket spec.
+
+    Independent of ``compile_strategy``: each entry rejects the other's schema
+    as unknown (SPEC_组合策略v3契约 §0.1).  No manifest and no capability
+    binding (§0.3); ``spec_hash = sha256(canonical_json(spec))`` (§2.7).
+    """
+    try:
+        try:
+            spec_hash = canonical_json_sha256(strategy_spec)
+        except CanonicalJsonError as exc:
+            raise StrategyContractError(ERR_SPEC_INVALID, "$", str(exc)) from exc
+        legs, basket_key, feature_types, feature_order = _validate_spec_v3(
+            strategy_spec
+        )
+    except StrategyContractError as exc:
+        raise StrategySpecV3Error(
+            exc.code, exc.path, exc.message, required=exc.required, actual=exc.actual
+        ) from exc
+    return CompiledPlanV3(
+        strategy_spec=copy.deepcopy(strategy_spec),
+        spec_hash=spec_hash,
+        basket_key=basket_key,
+        legs=tuple(copy.deepcopy(legs)),
+        feature_types=feature_types,
+        feature_order=feature_order,
+    )
+
+
 def _decimal(value: Any, path: str) -> Decimal:
     try:
         if isinstance(value, Decimal):
@@ -2179,7 +2767,7 @@ def _evaluate_windowed_primitive(
     error_path: str,
 ) -> Optional[tuple[Decimal, int]]:
     """Dispatch ``rolling_sum``/``rolling_extreme``/``rolling_quantile`` per
-    their frozen §5.5 semantics. ``rsi_wilder`` is precomputed separately (its
+    their frozen §5.5 semantics, plus v3 ``rolling_zscore``. ``rsi_wilder`` is precomputed separately (its
     recursive seed needs the stream's full fetched history, not a fixed
     window) — see ``_rsi_wilder_series``.
     """
@@ -2228,7 +2816,40 @@ def _evaluate_windowed_primitive(
             return None
         quantile = Decimal(params["quantile"])
         return _quantile_r7(sorted(values), quantile), ceiling
+    if primitive == "rolling_zscore":
+        window_bars = params["window_bars"]
+        result = _stream_lookback(
+            ordered_timestamps, rows_by_ts, anchor_ts, step, window_bars, error_path
+        )
+        if result is None:
+            return None
+        values, ceiling = result
+        if len(values) != window_bars:
+            return None
+        zscore = _rolling_zscore(values)
+        if zscore is None:
+            return None
+        return zscore, ceiling
     return None
+
+
+def _rolling_zscore(values: list[Decimal]) -> Optional[Decimal]:
+    """SPEC_组合策略v3契约 §2.3 ``rolling_zscore``: ``(x_t − mean) /
+    stdev_population`` over the window ending at ``x_t`` (``values[-1]``).
+    Population stdev 0 is a structured gap (``None``), never 0."""
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        count = Decimal(len(values))
+        mean = ctx.divide(sum(values, Decimal(0)), count)
+        variance = ctx.divide(
+            sum(
+                (ctx.multiply(ctx.subtract(v, mean), ctx.subtract(v, mean)) for v in values),
+                Decimal(0),
+            ),
+            count,
+        )
+        if variance == 0:
+            return None
+        return +ctx.divide(ctx.subtract(values[-1], mean), ctx.sqrt(variance))
 
 
 def _rsi_wilder_series(
@@ -2623,6 +3244,270 @@ def build_frames(
             code=ERR_COVERAGE_INCOMPLETE,
         )
     return frames
+
+
+@dataclass(frozen=True)
+class BasketFrameSet:
+    """``build_frames_v3`` output (SPEC_组合策略v3契约 §2.6 "bar 对齐").
+
+    ``frames`` covers every bar of the joint grid in order; a bar where any
+    leg lacks a K-line is kept with ``skipped=True`` (not evaluated, no
+    feature values) and listed in ``unaligned_bars`` as a coverage gap.
+    Feature lags and windows count aligned bars only.  A feature value that
+    cannot be produced is ``None`` in the frame and one ``feature_gaps``
+    record (never a fabricated 0).
+    """
+
+    frames: list[FeatureFrame]
+    unaligned_bars: list[dict[str, Any]]
+    feature_gaps: list[dict[str, Any]]
+    skipped_bars: int
+
+
+_KLINE_ROW_KEYS = {"open_time", "open", "high", "low", "close", "volume"}
+
+
+def _leg_rows_v3(
+    rows: Any, leg_id: str, step: int
+) -> dict[int, dict[str, str]]:
+    path = f"$.leg_klines.{leg_id}"
+    if not isinstance(rows, list) or not rows:
+        _raise(path, "leg K-line stream is empty", code=ERR_COVERAGE_INCOMPLETE)
+    out: dict[int, dict[str, str]] = {}
+    previous: Optional[int] = None
+    for row_index, row in enumerate(rows):
+        row_path = f"{path}[{row_index}]"
+        if not isinstance(row, dict) or set(row) != _KLINE_ROW_KEYS:
+            _raise(
+                row_path,
+                "K-line row has unknown/missing keys",
+                code=ERR_COVERAGE_INCOMPLETE,
+            )
+        open_at = _safe_int(row["open_time"], f"{row_path}.open_time")
+        if previous is not None and open_at <= previous:
+            _raise(
+                f"{row_path}.open_time",
+                "K-lines must be strictly ascending",
+                code=ERR_COVERAGE_INCOMPLETE,
+            )
+        previous = open_at
+        out[open_at] = {
+            field_name: canonical_decimal_str(
+                _decimal(row[field_name], f"{row_path}.{field_name}")
+            )
+            for field_name in ("open", "high", "low", "close", "volume")
+        }
+    return out
+
+
+def _eval_value_v3(
+    expr: dict[str, Any],
+    index: int,
+    leg_bars: list[dict[str, dict[str, str]]],
+    series: dict[str, list[tuple[Any, Optional[str]]]],
+) -> tuple[Any, Optional[str]]:
+    """Evaluate a compiled v3 derived ValueExpr on aligned bar ``index``.
+    Returns ``(value, None)`` or ``(None, gap_reason)``; an arithmetic
+    failure raises ``KernelExecutionError`` and is never a gap."""
+    node = expr["node"]
+    if node == "literal":
+        if expr["value_type"] == "integer":
+            return expr["value"], None
+        return Decimal(expr["value"]), None
+    if node in {"stream", "feature"}:
+        position = index - expr["lag_bars"]
+        if position < 0:
+            return None, "insufficient_history"
+        if node == "stream":
+            return Decimal(leg_bars[position][expr["leg"]][expr["field"]]), None
+        return series[expr["key"]][position]
+    args: list[Any] = []
+    for arg in expr["args"]:
+        value, reason = _eval_value_v3(arg, index, leg_bars, series)
+        if value is None:
+            return None, reason
+        args.append(value)
+    return _ctx_op(expr["op"], args), None
+
+
+def _primitive_series_v3(
+    feature: dict[str, Any],
+    source: list[tuple[Any, Optional[str]]],
+) -> list[tuple[Any, Optional[str]]]:
+    """Run a registered primitive over an aligned-bar source series, reusing
+    the v2 window/RSI implementations with the aligned index as timestamp."""
+    count = len(source)
+    rows_by_ts = {index: (value, 0, "") for index, (value, _reason) in enumerate(source)}
+    error_path = f"$.features.{feature['key']}"
+    primitive = feature["primitive"]
+    params = feature["params"]
+    out: list[tuple[Any, Optional[str]]] = []
+    if primitive == "rsi_wilder":
+        first = next(
+            (index for index, (value, _r) in enumerate(source) if value is not None),
+            count,
+        )
+        rsi = _rsi_wilder_series(
+            rows_by_ts, list(range(first, count)), params["period"], error_path
+        )
+        for index in range(count):
+            if index < first:
+                out.append((None, source[index][1]))
+                continue
+            value, _ceiling = rsi[index]
+            if value is not None:
+                out.append((value, None))
+                continue
+            broken = next(
+                (
+                    source[k][1]
+                    for k in range(first, index + 1)
+                    if source[k][0] is None
+                ),
+                None,
+            )
+            out.append((None, broken or "insufficient_history"))
+        return out
+    ordered = list(range(count))
+    window = params["window_bars"]
+    for index in range(count):
+        outcome = _evaluate_windowed_primitive(
+            feature, rows_by_ts, ordered, index, 1, error_path
+        )
+        if outcome is not None:
+            out.append((outcome[0], None))
+            continue
+        lower = max(0, index - window + 1)
+        missing = next(
+            (source[k][1] for k in range(lower, index + 1) if source[k][0] is None),
+            None,
+        )
+        if missing is not None:
+            out.append((None, missing))
+        elif primitive == "rolling_zscore" and index - window + 1 >= 0:
+            out.append((None, "zero_stdev"))
+        else:
+            out.append((None, "insufficient_history"))
+    return out
+
+
+@in_decimal128
+def build_frames_v3(
+    leg_klines: dict[str, list[dict[str, Any]]],
+    plan: CompiledPlanV3,
+    *,
+    check_bar: Optional[Callable[[FeatureFrame], None]] = None,
+) -> BasketFrameSet:
+    """Align both legs' K-lines on ``bar_open_at`` and evaluate v3 features.
+
+    ``leg_klines`` is keyed by ``leg_id``; rows use the v2 primary K-line
+    shape ``open_time/open/high/low/close/volume``.  Only data structures and
+    the skip marker are produced here — no decisions or fills.  ``check_bar``
+    runs on every aligned frame before any feature is evaluated, so a
+    coverage failure outranks a derived arithmetic failure on the same data.
+    A derived ``ValueExpr`` whose arithmetic fails (division by zero,
+    overflow) is a structured execution failure, as in v2 (62-2 §3.5), never
+    a feature gap.
+    """
+    leg_ids = [leg["leg_id"] for leg in plan.legs]
+    if not isinstance(leg_klines, dict) or set(leg_klines) != set(leg_ids):
+        _raise(
+            "$.leg_klines",
+            "must equal market.legs exact-set",
+            code=ERR_COVERAGE_INCOMPLETE,
+            required=leg_ids,
+            actual=sorted(leg_klines) if isinstance(leg_klines, dict) else None,
+        )
+    step = _interval_seconds(plan.strategy_spec["market"]["timeframe"])
+    rows = {leg_id: _leg_rows_v3(leg_klines[leg_id], leg_id, step) for leg_id in leg_ids}
+    grid_start = min(min(by_ts) for by_ts in rows.values())
+    grid_end = max(max(by_ts) for by_ts in rows.values())
+    for leg_id, by_ts in rows.items():
+        if any((open_at - grid_start) % step for open_at in by_ts):
+            _raise(
+                f"$.leg_klines.{leg_id}",
+                "leg bars are not on the shared timeframe grid",
+                code=ERR_COVERAGE_INCOMPLETE,
+            )
+
+    frames: list[FeatureFrame] = []
+    unaligned: list[dict[str, Any]] = []
+    aligned_positions: list[int] = []
+    leg_bars: list[dict[str, dict[str, str]]] = []
+    for open_at in range(grid_start, grid_end + step, step):
+        present = {leg_id: rows[leg_id][open_at] for leg_id in leg_ids if open_at in rows[leg_id]}
+        skipped = len(present) != len(leg_ids)
+        if skipped:
+            unaligned.append(
+                {
+                    "bar_open_at": open_at,
+                    "missing_legs": [leg_id for leg_id in leg_ids if leg_id not in present],
+                }
+            )
+        else:
+            aligned_positions.append(len(frames))
+            leg_bars.append(present)
+        frame = FeatureFrame(
+            open_at,
+            open_at + step,
+            open_at + step,
+            plan.basket_key,
+            {},
+            {},
+            legs=copy.deepcopy(present),
+            skipped=skipped,
+        )
+        if check_bar is not None and not skipped:
+            check_bar(frame)
+        frames.append(frame)
+
+    features = {item["key"]: item for item in plan.strategy_spec["features"]}
+    series: dict[str, list[tuple[Any, Optional[str]]]] = {}
+    count = len(leg_bars)
+    for key in plan.feature_order:
+        feature = features[key]
+        if feature.get("kind") == "derived":
+            values: list[tuple[Any, Optional[str]]] = []
+            for index in range(count):
+                try:
+                    values.append(
+                        _eval_value_v3(feature["expr"], index, leg_bars, series)
+                    )
+                except KernelExecutionError as exc:
+                    raise KernelExecutionError(
+                        ERR_SPEC_INVALID,
+                        f"$.features.{key}",
+                        "derived feature arithmetic failed",
+                        actual=frames[aligned_positions[index]].bar_open_at,
+                    ) from exc
+            series[key] = values
+            continue
+        source_stream = feature["source_stream"]
+        if source_stream.startswith(_FEATURE_SOURCE_PREFIX_V3):
+            source = series[source_stream[len(_FEATURE_SOURCE_PREFIX_V3) :]]
+        else:
+            leg_id, field_name = source_stream[len(_KLINE_LEG_PREFIX_V3) :].split(".")
+            source = [(Decimal(bars[leg_id][field_name]), None) for bars in leg_bars]
+        series[key] = _primitive_series_v3(feature, source)
+
+    feature_gaps: list[dict[str, Any]] = []
+    for index, position in enumerate(aligned_positions):
+        frame = frames[position]
+        for key in sorted(features, key=lambda item: item.encode("utf-16-be")):
+            value, reason = series[key][index]
+            if value is None:
+                frame.values[key] = None
+                feature_gaps.append(
+                    {"bar_open_at": frame.bar_open_at, "feature": key, "reason": reason}
+                )
+                continue
+            frame.values[key] = canonical_decimal_str(value)
+    return BasketFrameSet(
+        frames=frames,
+        unaligned_bars=unaligned,
+        feature_gaps=feature_gaps,
+        skipped_bars=len(unaligned),
+    )
 
 
 def _interval_seconds(interval: str) -> int:
@@ -3302,6 +4187,497 @@ def simulate(
     }
 
 
+# ---------------------------------------------------------------- v3 basket
+# SPEC_组合策略v3契约 §2.6 / §2.6.1: the single basket execution semantics
+# shared by historical replay and the future signal watcher.
+
+_INSTRUMENT_RULE_KEYS = {"symbol", "price_tick", "qty_step", "min_qty", "min_notional"}
+
+
+@dataclass(frozen=True)
+class BasketLegFill:
+    leg_id: str
+    symbol: str
+    side: str
+    qty: Decimal
+    entry_price: Decimal
+
+
+@dataclass
+class BasketPosition:
+    """One open basket: both legs filled on the same bar at their own open."""
+
+    legs: tuple[BasketLegFill, ...]
+    opened_at: int
+    bars_held: int = 1
+    pending_stop: bool = False
+    pending_take: bool = False
+    pending_signal_exit: bool = False
+
+
+class _MissingFeatureV3(Exception):
+    """A referenced feature is a structured gap (or before the first aligned
+    bar); the enclosing top-level condition does not fire."""
+
+
+def _value_v3(
+    expr: dict[str, Any],
+    aligned: list[FeatureFrame],
+    index: int,
+    feature_types: dict[str, str],
+) -> Any:
+    node = expr["node"]
+    if node == "literal":
+        return (
+            Decimal(expr["value"]) if expr["value_type"] == "decimal" else expr["value"]
+        )
+    if node == "feature":
+        target = index - expr["lag_bars"]
+        if target < 0:
+            raise _MissingFeatureV3
+        value = aligned[target].values.get(expr["key"])
+        if value is None:
+            raise _MissingFeatureV3
+        if feature_types[expr["key"]] == "decimal":
+            return Decimal(value)
+        return int(value)
+    if node == "arithmetic":
+        return _ctx_op(
+            expr["op"],
+            [_value_v3(item, aligned, index, feature_types) for item in expr["args"]],
+        )
+    raise KernelExecutionError(
+        ERR_SPEC_INVALID, "$.expression", "unknown compiled ValueExpr"
+    )
+
+
+def _condition_v3(
+    expr: dict[str, Any],
+    aligned: list[FeatureFrame],
+    index: int,
+    feature_types: dict[str, str],
+) -> bool:
+    node = expr["node"]
+    if node in {"compare", "cross"}:
+        left = _value_v3(expr["left"], aligned, index, feature_types)
+        right = _value_v3(expr["right"], aligned, index, feature_types)
+        if node == "cross":
+            if index == 0:
+                return False
+            previous_left = _value_v3(expr["left"], aligned, index - 1, feature_types)
+            previous_right = _value_v3(expr["right"], aligned, index - 1, feature_types)
+            if expr["op"] == "crosses_above":
+                return previous_left <= previous_right and left > right
+            return previous_left >= previous_right and left < right
+        return {
+            "gt": left > right,
+            "gte": left >= right,
+            "lt": left < right,
+            "lte": left <= right,
+            "eq": left == right,
+            "neq": left != right,
+        }[expr["op"]]
+    if node == "all":
+        return all(
+            _condition_v3(item, aligned, index, feature_types) for item in expr["args"]
+        )
+    if node == "any":
+        return any(
+            _condition_v3(item, aligned, index, feature_types) for item in expr["args"]
+        )
+    if node == "not":
+        return not _condition_v3(expr["arg"], aligned, index, feature_types)
+    raise KernelExecutionError(
+        ERR_SPEC_INVALID, "$.condition", "unknown compiled ConditionExpr"
+    )
+
+
+def _feature_refs_v3(
+    expr: dict[str, Any], index: int
+) -> Iterable[tuple[str, int]]:
+    """Every ``(feature key, aligned bar)`` a ConditionExpr reads on bar
+    ``index``, whichever branch ``any``/``all`` would visit first; a cross
+    also reads bar ``index - 1`` (from the second aligned bar on, matching
+    ``_condition_v3``'s ``index == 0`` rule)."""
+    node = expr["node"]
+    if node == "feature":
+        yield expr["key"], index - expr["lag_bars"]
+    elif node == "arithmetic":
+        for item in expr["args"]:
+            yield from _feature_refs_v3(item, index)
+    elif node in {"compare", "cross"}:
+        offsets = [0, 1] if node == "cross" and index > 0 else [0]
+        for offset in offsets:
+            yield from _feature_refs_v3(expr["left"], index - offset)
+            yield from _feature_refs_v3(expr["right"], index - offset)
+    elif node in {"all", "any"}:
+        for item in expr["args"]:
+            yield from _feature_refs_v3(item, index)
+    elif node == "not":
+        yield from _feature_refs_v3(expr["arg"], index)
+
+
+def _condition_hit_v3(
+    expr: dict[str, Any],
+    aligned: list[FeatureFrame],
+    index: int,
+    feature_types: dict[str, str],
+) -> bool:
+    """§2.6.1 缺值: if any feature referenced anywhere in the tree is a gap
+    on this bar, the whole top-level condition is "not hit" -- checked
+    before evaluation so ``any``/``all`` short-circuiting cannot skip a gap,
+    and ``not`` over a gap cannot fire either."""
+    for key, target in _feature_refs_v3(expr, index):
+        if target < 0 or aligned[target].values.get(key) is None:
+            return False
+    try:
+        return _condition_v3(expr, aligned, index, feature_types)
+    except _MissingFeatureV3:
+        return False
+
+
+def _validate_leg_rules_v3(
+    plan: CompiledPlanV3, instrument_rules_by_leg: Any
+) -> dict[str, dict[str, Decimal]]:
+    path = "$.instrument_rules"
+    leg_ids = [leg["leg_id"] for leg in plan.legs]
+    if not isinstance(instrument_rules_by_leg, dict) or set(
+        instrument_rules_by_leg
+    ) != set(leg_ids):
+        _raise(path, "must equal market.legs exact-set", required=leg_ids)
+    out: dict[str, dict[str, Decimal]] = {}
+    for leg in plan.legs:
+        leg_id = leg["leg_id"]
+        rules = _exact(
+            instrument_rules_by_leg[leg_id], _INSTRUMENT_RULE_KEYS, f"{path}.{leg_id}"
+        )
+        if rules["symbol"] != leg["symbol"]:
+            _raise(
+                f"{path}.{leg_id}.symbol",
+                "must equal the leg symbol",
+                required=leg["symbol"],
+                actual=rules["symbol"],
+            )
+        out[leg_id] = {
+            key: _canonical_decimal(rules[key], f"{path}.{leg_id}.{key}", positive=True)
+            for key in ("price_tick", "qty_step", "min_qty", "min_notional")
+        }
+    return out
+
+
+def _check_leg_prices_v3(
+    frame: FeatureFrame, rules: dict[str, dict[str, Decimal]]
+) -> None:
+    """v2 §3.11 trust boundary per leg: reference prices are positive,
+    on the leg's price_tick, and OHLC-ordered; otherwise coverage invalid."""
+    assert frame.legs is not None
+    for leg_id, bar in frame.legs.items():
+        prices = {}
+        for key in ("open", "high", "low", "close"):
+            price = Decimal(bar[key])
+            with localcontext(_DECIMAL_CONTEXT) as ctx:
+                remainder = ctx.remainder(price, rules[leg_id]["price_tick"])
+            if price <= 0 or remainder != 0:
+                raise KernelExecutionError(
+                    ERR_COVERAGE_INCOMPLETE,
+                    f"$.leg_klines.{leg_id}.{key}",
+                    "K-line reference price violates the trusted price_tick",
+                )
+            prices[key] = price
+        if not (
+            prices["low"]
+            <= min(prices["open"], prices["close"])
+            <= max(prices["open"], prices["close"])
+            <= prices["high"]
+        ):
+            raise KernelExecutionError(
+                ERR_COVERAGE_INCOMPLETE,
+                f"$.leg_klines.{leg_id}",
+                "K-line OHLC ordering is invalid",
+            )
+
+
+@in_decimal128
+def simulate_v3(
+    plan: CompiledPlanV3,
+    leg_klines: dict[str, list[dict[str, Any]]],
+    instrument_rules_by_leg: dict[str, dict[str, str]],
+    initial_capital: str,
+    *,
+    start_at: int,
+    end_at: int,
+) -> dict[str, Any]:
+    """Replay a compiled v3 basket over both legs' K-lines (§2.6 / §2.6.1).
+
+    Not a v2 ``simulate`` variant: bars are aligned by ``build_frames_v3``;
+    an unaligned bar is not evaluated at all, except that a pending entry
+    whose t+1 is unaligned is dropped as ``no_next_bar``.  K-lines before
+    ``start_at`` are warmup (§2.6.1 预热): aligned ones only feed feature
+    history -- no entry/exit evaluation, no ``skipped_bars``, no equity
+    point; evaluation starts at the first aligned bar with
+    ``bar_open_at >= start_at``.  Every bar must close by ``end_at``;
+    ``start_at``/``initial_capital`` is the equity curve origin.
+    """
+    capital = _canonical_decimal(
+        initial_capital, "$.initial_capital", positive=True
+    )
+    start_at = _safe_int(start_at, "$.start_at")
+    end_at = _safe_int(end_at, "$.end_at")
+    if end_at <= start_at:
+        _raise("$.end_at", "end_at must be greater than start_at")
+    rules = _validate_leg_rules_v3(plan, instrument_rules_by_leg)
+    frame_set = build_frames_v3(
+        leg_klines, plan, check_bar=lambda frame: _check_leg_prices_v3(frame, rules)
+    )
+    if frame_set.frames and frame_set.frames[-1].bar_close_at > end_at:
+        raise KernelExecutionError(
+            ERR_COVERAGE_INCOMPLETE,
+            "$.leg_klines",
+            "K-lines fall outside the execution window",
+        )
+
+    spec = plan.strategy_spec
+    legs_spec = {leg["leg_id"]: leg for leg in plan.legs}
+    leg_ids = [leg["leg_id"] for leg in plan.legs]
+    types = plan.feature_types
+    exit_spec = spec["exit"]
+    stop_value = Decimal(exit_spec["stop_loss"]["value"])
+    take_value = Decimal(exit_spec["take_profit"]["value"])
+    time_exit_bars = exit_spec["time_exit_bars"]
+    signal_exit = exit_spec["signal_exit"]
+    entry_condition = spec["entry"]["condition"]
+    cooldown = spec["entry"]["cooldown_bars"]
+    priority = spec["execution"]["intrabar_priority"]
+    margin_per_leg = Decimal(spec["risk"]["position_sizing"]["value"])
+    leverage = Decimal(spec["risk"]["leverage"])
+    fee_bps = Decimal(spec["execution"]["cost_model"]["fee_bps"])
+    slippage_bps = Decimal(spec["execution"]["cost_model"]["slippage_bps"])
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        margin_total = ctx.multiply(margin_per_leg, Decimal(len(leg_ids)))
+
+    aligned: list[FeatureFrame] = []
+    pending_entry: Optional[int] = None
+    position: Optional[BasketPosition] = None
+    last_exit_index: Optional[int] = None
+    trades: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+
+    def open_basket(frame: FeatureFrame) -> None:
+        nonlocal position
+        assert frame.legs is not None
+        fills: list[BasketLegFill] = []
+        rejected: list[str] = []
+        try:
+            with localcontext(_DECIMAL_CONTEXT) as ctx:
+                for leg_id in leg_ids:
+                    entry_price = Decimal(frame.legs[leg_id]["open"])
+                    leg_rules = rules[leg_id]
+                    raw_qty = ctx.divide(
+                        ctx.multiply(margin_per_leg, leverage), entry_price
+                    )
+                    step = leg_rules["qty_step"]
+                    qty = ctx.multiply(
+                        ctx.divide(raw_qty, step).to_integral_value(
+                            rounding=ROUND_FLOOR
+                        ),
+                        step,
+                    )
+                    notional = ctx.multiply(qty, entry_price)
+                    if qty < leg_rules["min_qty"] or notional < leg_rules["min_notional"]:
+                        rejected.append(leg_id)
+                    fills.append(
+                        BasketLegFill(
+                            leg_id=leg_id,
+                            symbol=legs_spec[leg_id]["symbol"],
+                            side=legs_spec[leg_id]["side"],
+                            qty=+qty,
+                            entry_price=entry_price,
+                        )
+                    )
+        except ArithmeticError as exc:
+            raise KernelExecutionError(
+                ERR_SPEC_INVALID,
+                "$.strategy_spec.risk.position_sizing",
+                "decimal sizing operation failed",
+            ) from exc
+        if rejected:
+            diagnostics.append(
+                {
+                    "bar_open_at": frame.bar_open_at,
+                    "kind": "leg_min_order",
+                    "legs": rejected,
+                }
+            )
+            return
+        position = BasketPosition(legs=tuple(fills), opened_at=frame.bar_open_at)
+
+    def close_basket(
+        frame: FeatureFrame, index: int, exit_kind: str, price_key: str
+    ) -> None:
+        nonlocal position, last_exit_index
+        assert position is not None and frame.legs is not None
+        legs_out: list[dict[str, Any]] = []
+        try:
+            with localcontext(_DECIMAL_CONTEXT) as ctx:
+                fee_total = Decimal(0)
+                slippage_total = Decimal(0)
+                pnl_total = Decimal(0)
+                for fill in position.legs:
+                    exit_price = Decimal(frame.legs[fill.leg_id][price_key])
+                    notional_sum = ctx.multiply(
+                        ctx.add(fill.entry_price, exit_price), fill.qty
+                    )
+                    fee = ctx.divide(ctx.multiply(notional_sum, fee_bps), Decimal(10000))
+                    slippage = ctx.divide(
+                        ctx.multiply(notional_sum, slippage_bps), Decimal(10000)
+                    )
+                    delta = (
+                        ctx.subtract(exit_price, fill.entry_price)
+                        if fill.side == "long"
+                        else ctx.subtract(fill.entry_price, exit_price)
+                    )
+                    gross = ctx.multiply(delta, fill.qty)
+                    pnl = ctx.subtract(ctx.subtract(gross, fee), slippage)
+                    fee_total = ctx.add(fee_total, fee)
+                    slippage_total = ctx.add(slippage_total, slippage)
+                    pnl_total = ctx.add(pnl_total, pnl)
+                    legs_out.append(
+                        {
+                            "leg_id": fill.leg_id,
+                            "symbol": fill.symbol,
+                            "side": fill.side,
+                            "qty": canonical_decimal_str(fill.qty),
+                            "entry_price": canonical_decimal_str(fill.entry_price),
+                            "exit_price": canonical_decimal_str(exit_price),
+                            "fee": canonical_decimal_str(fee),
+                            "slippage": canonical_decimal_str(slippage),
+                            "pnl": canonical_decimal_str(pnl),
+                        }
+                    )
+        except ArithmeticError as exc:
+            raise KernelExecutionError(
+                ERR_SPEC_INVALID, "$.execution.cost", "decimal cost operation failed"
+            ) from exc
+        trades.append(
+            {
+                "seq": len(trades) + 1,
+                "opened_at": position.opened_at,
+                "closed_at": (
+                    frame.bar_close_at
+                    if exit_kind in {"time_exit", "end_of_data"}
+                    else frame.bar_open_at
+                ),
+                "fee": canonical_decimal_str(fee_total),
+                "slippage": canonical_decimal_str(slippage_total),
+                "pnl": canonical_decimal_str(pnl_total),
+                "exit_kind": exit_kind,
+                "legs": legs_out,
+            }
+        )
+        position = None
+        last_exit_index = index
+
+    def basket_pnl_pct(frame: FeatureFrame) -> Decimal:
+        assert position is not None and frame.legs is not None
+        with localcontext(_DECIMAL_CONTEXT) as ctx:
+            unrealized = Decimal(0)
+            for fill in position.legs:
+                close = Decimal(frame.legs[fill.leg_id]["close"])
+                delta = (
+                    ctx.subtract(close, fill.entry_price)
+                    if fill.side == "long"
+                    else ctx.subtract(fill.entry_price, close)
+                )
+                unrealized = ctx.add(unrealized, ctx.multiply(delta, fill.qty))
+            return ctx.divide(unrealized, margin_total)
+
+    skipped_bars = 0
+    for frame in frame_set.frames:
+        warmup = frame.bar_open_at < start_at
+        if frame.skipped:
+            # §2.6 bar 对齐: not evaluated; only a pending entry whose t+1
+            # is this bar is dropped.  A held basket carries over untouched.
+            # A warmup gap is feature history only and is not counted.
+            if not warmup:
+                skipped_bars += 1
+            if pending_entry is not None:
+                diagnostics.append(
+                    {"bar_open_at": aligned[pending_entry].bar_open_at, "kind": "no_next_bar"}
+                )
+                pending_entry = None
+            continue
+        aligned.append(frame)
+        if warmup:
+            continue
+        index = len(aligned) - 1
+        held_from_previous_bar = position is not None
+        if pending_entry is not None:
+            pending_entry = None
+            open_basket(frame)
+        if held_from_previous_bar and position is not None:
+            position.bars_held += 1
+        if position is not None:
+            candidates: dict[str, str] = {}
+            if position.pending_stop:
+                candidates["stop_loss"] = "open"
+            if position.pending_take:
+                candidates["take_profit"] = "open"
+            if time_exit_bars is not None and position.bars_held >= time_exit_bars:
+                candidates["time_exit"] = "close"
+            if position.pending_signal_exit:
+                candidates["signal_exit"] = "open"
+            for exit_kind in priority:
+                if exit_kind in candidates:
+                    close_basket(frame, index, exit_kind, candidates[exit_kind])
+                    break
+        if position is not None:
+            pct = basket_pnl_pct(frame)
+            position.pending_stop = pct <= -stop_value
+            position.pending_take = pct >= take_value
+            position.pending_signal_exit = signal_exit is not None and _condition_hit_v3(
+                signal_exit, aligned, index, types
+            )
+        if position is None and pending_entry is None:
+            eligible = last_exit_index is None or index - last_exit_index >= cooldown
+            if eligible and _condition_hit_v3(entry_condition, aligned, index, types):
+                pending_entry = index
+
+    if pending_entry is not None:
+        diagnostics.append(
+            {"bar_open_at": aligned[pending_entry].bar_open_at, "kind": "no_next_bar"}
+        )
+    if position is not None:
+        close_basket(aligned[-1], len(aligned) - 1, "end_of_data", "close")
+
+    curve = [{"ts": start_at, "equity": canonical_decimal_str(capital)}]
+    running = capital
+    try:
+        with localcontext(_DECIMAL_CONTEXT) as ctx:
+            for trade in trades:
+                running = ctx.add(running, Decimal(trade["pnl"]))
+                curve.append(
+                    {"ts": trade["closed_at"], "equity": canonical_decimal_str(running)}
+                )
+            total_return = ctx.divide(ctx.subtract(running, capital), capital)
+    except ArithmeticError as exc:
+        raise KernelExecutionError(
+            ERR_SPEC_INVALID, "$.metrics", "decimal metric operation failed"
+        ) from exc
+    return {
+        "trades": trades,
+        "equity_curve": curve,
+        "metrics": {
+            "total_return": canonical_decimal_str(total_return),
+            "max_drawdown": canonical_decimal_str(_max_drawdown(curve)),
+            "trade_count": len(trades),
+            "skipped_bars": skipped_bars,
+        },
+        "diagnostics": diagnostics,
+        "unaligned_bars": copy.deepcopy(frame_set.unaligned_bars),
+        "feature_gaps": copy.deepcopy(frame_set.feature_gaps),
+    }
+
+
 def paper_tick(
     kernel: StrategyKernel, state: KernelState, frame: FeatureFrame
 ) -> dict[str, Any]:
@@ -3575,7 +4951,11 @@ def from_snapshot(
 __all__ = [
     "ARTIFACT_DIGEST_SCHEMA",
     "ARTIFACT_MANIFEST_SCHEMA",
+    "BasketFrameSet",
+    "BasketLegFill",
+    "BasketPosition",
     "CAPABILITY_SCHEMA",
+    "CompiledPlanV3",
     "COMPILER_TOOL_ID",
     "ERR_BINDING_MISMATCH",
     "ERR_CAPABILITY_MISMATCH",
@@ -3586,12 +4966,17 @@ __all__ = [
     "KERNEL_STATE_SNAPSHOT_SCHEMA",
     "KernelExecutionError",
     "KernelState",
+    "STRATEGY_SPEC_V3_SCHEMA",
     "StrategyContractError",
+    "StrategySpecV3Error",
     "StrategyKernel",
     "build_frames",
+    "build_frames_v3",
     "capability_hash",
     "capability_payload",
     "compile_strategy",
+    "compile_strategy_v3",
+    "in_decimal128",
     "from_snapshot",
     "initial_state",
     "kline_primary_bucket_required_end",
@@ -3599,6 +4984,7 @@ __all__ = [
     "ohlcv_resample",
     "paper_tick",
     "simulate",
+    "simulate_v3",
     "snapshot_decimal_str",
     "to_snapshot",
 ]
