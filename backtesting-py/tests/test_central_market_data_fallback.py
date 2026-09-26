@@ -982,3 +982,78 @@ def test_unaligned_start_1w_split_cuts_on_monday_grid():
         assert (prev_end // 1000 - _WEEK_OFFSET_SEC) % (7 * 86400) == 0
     concatenated = [o for a, b in chunks for o in _server_grid_opens(a // 1000, b // 1000, "1w")]
     assert concatenated == _server_grid_opens(start_ts, end_ts, "1w")
+
+
+def test_weekly_mid_chunk_missing_bar_is_data_gap_through_full_fetch(central_configured, monkeypatch):
+    """123 B2b 返修：周线缺口期望按周一网格算。起点 1_700_000_123、200 天分 3 片，
+    第 2 片真实有 9 根周线；按旧的 epoch（周四）网格期望只有 8 根，中段缺一根时
+    actual == expected 会被放过。现在期望 9 根、缺中段一根，必须判 data_gap。"""
+    start_ts = 1_700_000_123
+    end_ts = start_ts + 200 * 86400
+    chunks = provider._split_central_range(start_ts * 1000, end_ts * 1000, "1w", provider.CENTRAL_MAX_CHUNK_MS)
+    assert len(chunks) == 3
+    mid_start, mid_end = chunks[1][0] // 1000, chunks[1][1] // 1000
+    mid_opens = _server_grid_opens(mid_start, mid_end, "1w")
+    assert len(mid_opens) == 9
+    dropped = mid_opens[4]
+
+    requested: list[tuple[int, int]] = []
+
+    def fake_urlopen(req, timeout=None):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        s, e = int(qs["start_ts"][0]), int(qs["end_ts"][0])
+        requested.append((s, e))
+        items = [
+            {"open_time": o, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}
+            for o in _server_grid_opens(s, e, "1w")
+            if o != dropped
+        ]
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": len(items), "items": items}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+
+    rows, reason, attempted = provider._fetch_from_central_with_reason(
+        "binance", "futures", "BTCUSDT", "1w", start_ts * 1000, end_ts * 1000
+    )
+    assert attempted is True
+    assert rows is None
+    assert reason == provider.CENTRAL_REASON_DATA_GAP
+    assert len(requested) == 2  # 第 1 片完整通过，第 2 片判缺口即整体中止
+
+
+def test_weekly_complete_unaligned_range_passes_gap_check(central_configured, monkeypatch):
+    """周线完整数据、起点非网格：按周一网格期望，不再被误判 data_gap 回退 ccxt。"""
+    start_ts = 1_700_000_123
+    end_ts = start_ts + 60 * 86400
+    _install_grid_server(monkeypatch, "1w", [])
+    rows = provider._fetch_from_central("binance", "futures", "BTCUSDT", "1w", start_ts * 1000, end_ts * 1000)
+    assert rows is not None
+    assert [row[0] // 1000 for row in rows] == _server_grid_opens(start_ts, end_ts, "1w")
+
+
+def test_pre_fix_cache_file_is_not_reused(central_configured, monkeypatch):
+    """123 B2b 返修：D5 修复前的缓存（无版本前缀的旧文件名）可能是缺根序列，
+    不得命中；必须重新走中心取数并写入带版本的新键。"""
+    start_ts = 1_782_323_503
+    end_ts = start_ts + 92 * 86400
+    start_ms, end_ms = start_ts * 1000, end_ts * 1000
+    legacy_key = f"binance_futures_BTCUSDT_4h_{start_ms}_{end_ms}.json"
+    assert provider._cache_key("binance", "futures", "BTCUSDT", "4h", start_ms, end_ms) != legacy_key
+    provider.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    stale = [[o * 1000, "1", "1", "1", "1", "1"] for o in _server_grid_opens(start_ts, end_ts, "4h")[:-5]]
+    (provider.CACHE_DIR / legacy_key).write_text(
+        json.dumps({"ohlcv": stale, "source": "cutie_central_market_data", "central_market_data_used": True})
+    )
+
+    requested: list[tuple[int, int]] = []
+    _install_grid_server(monkeypatch, "4h", requested)
+    ohlcv, _source, central_used, cache_hit = provider._fetch_ohlcv_raw(
+        "binance", "futures", "BTCUSDT", "4h", start_ts, end_ts
+    )
+
+    assert cache_hit is False
+    assert central_used is True
+    assert requested, "旧缓存不得命中，必须真的发中心请求"
+    assert [row[0] // 1000 for row in ohlcv] == _server_grid_opens(start_ts, end_ts, "4h")
+    new_key = provider._cache_key("binance", "futures", "BTCUSDT", "4h", start_ms, end_ms)
+    assert (provider.CACHE_DIR / new_key).exists()
