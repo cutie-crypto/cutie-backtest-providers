@@ -1,5 +1,5 @@
 {
-  "_note": "来源：生产实跑 run_id=<prod-run-id>（2026-09-26，基础组合策略 basket_ratio_sma_cross，ETHUSDT 多/BTCUSDT 空，4h，账号为内部测试账号 Fan MetaMask 走助理任务产出）。K 线取自生产中心行情缓存导出的 600 根原样副本，按生产实际抓数口径丢弃末尾 1 根未闭合于 end_at 的 bar（_fetch_ohlcv_raw 内部 `end_ms = min(end_sec*1000, int(time.time()*1000))` 把 end 钳到抓数时的墙钟 now，production 抓数时那根 4h bar 尚未收盘；本 fixture 的 tests 直接 monkeypatch provider._fetch_ohlcv_raw，不复用这条钳制逻辑，所以显式裁到与生产同样的 599 根/腿，让窗口内 [start_at, end_at) 落在 539 根，与生产 data_manifests 的 kline_count 对齐）。trades_json/metrics_json/integrity_evidence 均为生产 run 记录原样副本，未做任何修改。instrument_rules 用币安 USDT 永续默认规则（生产 记录未落库该字段，取自 tests/fixtures/strategy_kernel_conformance_v3.json 里同两个 symbol 的既有 case，本地复现与生产逐笔一致，反证这组规则与生产一致）。",
+  "_note": "来源：生产实跑 run_id=<prod-run-id>（2026-09-26，基础组合策略 basket_ratio_sma_cross，ETHUSDT 多/BTCUSDT 空，4h，账号为内部测试账号 Fan MetaMask 走助理任务产出）。K 线取自生产中心行情缓存导出的 600 根原样副本，按生产实际抓数口径丢弃末尾 1 根未闭合于 end_at 的 bar（_fetch_ohlcv_raw 内部 `end_ms = min(end_sec*1000, int(time.time()*1000))` 把 end 钳到抓数时的墙钟 now，production 抓数时那根 4h bar 尚未收盘；本 fixture 的 tests 直接 monkeypatch provider._fetch_ohlcv_raw，不复用这条钳制逻辑，所以显式裁到与生产同样的 599 根/腿，让窗口内 [start_at, end_at) 落在 539 根，与生产 data_manifests 的 kline_count 对齐）。trades_json/metrics_json/integrity_evidence 均为生产 run 记录原样副本，未做任何修改。instrument_rules 用币安 USDT 永续默认规则（生产 记录未落库该字段，取自 tests/fixtures/strategy_kernel_conformance_v3.json 里同两个 symbol 的既有 case，本地复现与生产逐笔一致，反证这组规则与生产一致）。\n\n2026-09-29 §2.6 每腿数量改为名义锚定后，expected 由新内核重生成，本 fixture 从「复现生产 run」变为「生产真实 K 线下的内核回归 golden」；改前生产 run 为 17 笔、净 pnl 25.588076780，改后 17 笔、净 pnl 4.418384620。",
   "run_id": <prod-run-id>,
   "klines": {
     "a": [
@@ -9649,572 +9649,572 @@
   "expected": {
     "trade_count": 17,
     "metrics": {
+      "total_return": "0.000441838462",
+      "max_drawdown": "0.001368671525326637369340978841188186",
       "trade_count": 17,
-      "max_drawdown": "0.001479691523578941174596441585504068",
-      "skipped_bars": 0,
-      "total_return": "0.002558807678"
+      "skipped_bars": 0
     },
     "trades": [
       {
-        "fee": "0.7945634",
-        "pnl": "15.0334349",
         "seq": 1,
-        "legs": [
-          {
-            "fee": "0.4256405",
-            "pnl": "27.80191925",
-            "qty": "0.127",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.21282025",
-            "exit_price": "1787.72",
-            "entry_price": "1563.78"
-          },
-          {
-            "fee": "0.3689229",
-            "pnl": "-12.76848435",
-            "qty": "0.003",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.18446145",
-            "exit_price": "63523",
-            "entry_price": "59451.3"
-          }
-        ],
-        "slippage": "0.3972817",
+        "opened_at": 1782676800,
         "closed_at": 1783353600,
+        "fee": "0.7509939",
+        "slippage": "0.37549695",
+        "pnl": "12.18756915",
         "exit_kind": "signal_exit",
-        "opened_at": 1782676800
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.114",
+            "entry_price": "1563.78",
+            "exit_price": "1787.72",
+            "fee": "0.382071",
+            "slippage": "0.1910355",
+            "pnl": "24.9560535"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.003",
+            "entry_price": "59451.3",
+            "exit_price": "63523",
+            "fee": "0.3689229",
+            "slippage": "0.18446145",
+            "pnl": "-12.76848435"
+          }
+        ]
       },
       {
-        "fee": "0.78181302",
-        "pnl": "6.09280047",
         "seq": 2,
-        "legs": [
-          {
-            "fee": "0.40173342",
-            "pnl": "3.34011987",
-            "qty": "0.111",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.20086671",
-            "exit_price": "1827.37",
-            "entry_price": "1791.85"
-          },
-          {
-            "fee": "0.3800796",
-            "pnl": "2.7526806",
-            "qty": "0.003",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1900398",
-            "exit_price": "62792.8",
-            "entry_price": "63900.4"
-          }
-        ],
-        "slippage": "0.39090651",
+        "opened_at": 1783713600,
         "closed_at": 1784275200,
+        "fee": "0.76371692",
+        "slippage": "0.38185846",
+        "pnl": "5.94234462",
         "exit_kind": "signal_exit",
-        "opened_at": 1783713600
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.106",
+            "entry_price": "1791.85",
+            "exit_price": "1827.37",
+            "fee": "0.38363732",
+            "slippage": "0.19181866",
+            "pnl": "3.18966402"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.003",
+            "entry_price": "63900.4",
+            "exit_price": "62792.8",
+            "fee": "0.3800796",
+            "slippage": "0.1900398",
+            "pnl": "2.7526806"
+          }
+        ]
       },
       {
-        "fee": "0.79270916",
-        "pnl": "-0.11618374",
         "seq": 3,
-        "legs": [
-          {
-            "fee": "0.40118456",
-            "pnl": "3.82690316",
-            "qty": "0.106",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.20059228",
-            "exit_price": "1913.27",
-            "entry_price": "1871.49"
-          },
-          {
-            "fee": "0.3915246",
-            "pnl": "-3.9430869",
-            "qty": "0.003",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1957623",
-            "exit_price": "65813.4",
-            "entry_price": "64694.8"
-          }
-        ],
-        "slippage": "0.39635458",
+        "opened_at": 1784505600,
         "closed_at": 1784707200,
+        "fee": "0.78135488",
+        "slippage": "0.39067744",
+        "pnl": "-0.22449232",
         "exit_kind": "signal_exit",
-        "opened_at": 1784505600
-      },
-      {
-        "fee": "0.78494822",
-        "pnl": "-3.48932233",
-        "seq": 4,
         "legs": [
           {
-            "fee": "0.39179552",
-            "pnl": "-5.63469328",
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
             "qty": "0.103",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.19589776",
-            "exit_price": "1877.42",
-            "entry_price": "1926.42"
+            "entry_price": "1871.49",
+            "exit_price": "1913.27",
+            "fee": "0.38983028",
+            "slippage": "0.19491514",
+            "pnl": "3.71859458"
           },
           {
-            "fee": "0.3931527",
-            "pnl": "2.14537095",
-            "qty": "0.003",
-            "side": "short",
             "leg_id": "b",
             "symbol": "BTCUSDT",
-            "slippage": "0.19657635",
-            "exit_price": "65069.6",
-            "entry_price": "65981.3"
+            "side": "short",
+            "qty": "0.003",
+            "entry_price": "64694.8",
+            "exit_price": "65813.4",
+            "fee": "0.3915246",
+            "slippage": "0.1957623",
+            "pnl": "-3.9430869"
           }
-        ],
-        "slippage": "0.39247411",
+        ]
+      },
+      {
+        "seq": 4,
+        "opened_at": 1784721600,
         "closed_at": 1784851200,
+        "fee": "0.78114438",
+        "slippage": "0.39057219",
+        "pnl": "-3.43461657",
         "exit_kind": "signal_exit",
-        "opened_at": 1784721600
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.102",
+            "entry_price": "1926.42",
+            "exit_price": "1877.42",
+            "fee": "0.38799168",
+            "slippage": "0.19399584",
+            "pnl": "-5.57998752"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.003",
+            "entry_price": "65981.3",
+            "exit_price": "65069.6",
+            "fee": "0.3931527",
+            "slippage": "0.19657635",
+            "pnl": "2.14537095"
+          }
+        ]
       },
       {
-        "fee": "0.78393096",
-        "pnl": "1.84070356",
         "seq": 5,
-        "legs": [
-          {
-            "fee": "0.39909636",
-            "pnl": "1.22455546",
-            "qty": "0.106",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.19954818",
-            "exit_price": "1891.13",
-            "entry_price": "1873.93"
-          },
-          {
-            "fee": "0.3848346",
-            "pnl": "0.6161481",
-            "qty": "0.003",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1924173",
-            "exit_price": "63940.2",
-            "entry_price": "64338"
-          }
-        ],
-        "slippage": "0.39196548",
+        "opened_at": 1785024000,
         "closed_at": 1785340800,
+        "fee": "0.76887072",
+        "slippage": "0.38443536",
+        "pnl": "1.79449392",
         "exit_kind": "signal_exit",
-        "opened_at": 1785024000
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.102",
+            "entry_price": "1873.93",
+            "exit_price": "1891.13",
+            "fee": "0.38403612",
+            "slippage": "0.19201806",
+            "pnl": "1.17834582"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.003",
+            "entry_price": "64338",
+            "exit_price": "63940.2",
+            "fee": "0.3848346",
+            "slippage": "0.1924173",
+            "pnl": "0.6161481"
+          }
+        ]
       },
       {
-        "fee": "0.7887363",
-        "pnl": "-0.58580445",
         "seq": 6,
-        "legs": [
-          {
-            "fee": "0.4004616",
-            "pnl": "1.2935076",
-            "qty": "0.105",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.2002308",
-            "exit_price": "1915.98",
-            "entry_price": "1897.94"
-          },
-          {
-            "fee": "0.3882747",
-            "pnl": "-1.87931205",
-            "qty": "0.003",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.19413735",
-            "exit_price": "64928.6",
-            "entry_price": "64496.3"
-          }
-        ],
-        "slippage": "0.39436815",
+        "opened_at": 1785988800,
         "closed_at": 1786233600,
+        "fee": "0.77348062",
+        "slippage": "0.38674031",
+        "pnl": "-0.63508093",
         "exit_kind": "signal_exit",
-        "opened_at": 1785988800
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.101",
+            "entry_price": "1897.94",
+            "exit_price": "1915.98",
+            "fee": "0.38520592",
+            "slippage": "0.19260296",
+            "pnl": "1.24423112"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.003",
+            "entry_price": "64496.3",
+            "exit_price": "64928.6",
+            "fee": "0.3882747",
+            "slippage": "0.19413735",
+            "pnl": "-1.87931205"
+          }
+        ]
       },
       {
-        "fee": "0.78643258",
-        "pnl": "-1.87034887",
         "seq": 7,
-        "legs": [
-          {
-            "fee": "0.39755248",
-            "pnl": "-0.96032872",
-            "qty": "0.104",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.19877624",
-            "exit_price": "1909.56",
-            "entry_price": "1913.06"
-          },
-          {
-            "fee": "0.3888801",
-            "pnl": "-0.91002015",
-            "qty": "0.003",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.19444005",
-            "exit_price": "64867.8",
-            "entry_price": "64758.9"
-          }
-        ],
-        "slippage": "0.39321629",
+        "opened_at": 1786248000,
         "closed_at": 1786320000,
+        "fee": "0.77496472",
+        "slippage": "0.38748236",
+        "pnl": "-1.84264708",
         "exit_kind": "signal_exit",
-        "opened_at": 1786248000
-      },
-      {
-        "fee": "0.78754936",
-        "pnl": "-0.43768404",
-        "seq": 8,
         "legs": [
           {
-            "fee": "0.40263676",
-            "pnl": "2.25168486",
-            "qty": "0.106",
-            "side": "long",
             "leg_id": "a",
             "symbol": "ETHUSDT",
-            "slippage": "0.20131838",
-            "exit_price": "1912.7",
-            "entry_price": "1885.76"
+            "side": "long",
+            "qty": "0.101",
+            "entry_price": "1913.06",
+            "exit_price": "1909.56",
+            "fee": "0.38608462",
+            "slippage": "0.19304231",
+            "pnl": "-0.93262693"
           },
           {
-            "fee": "0.3849126",
-            "pnl": "-2.6893689",
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
             "qty": "0.003",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1924563",
-            "exit_price": "64504.1",
-            "entry_price": "63800.1"
+            "entry_price": "64758.9",
+            "exit_price": "64867.8",
+            "fee": "0.3888801",
+            "slippage": "0.19444005",
+            "pnl": "-0.91002015"
           }
-        ],
-        "slippage": "0.39377468",
+        ]
+      },
+      {
+        "seq": 8,
+        "opened_at": 1786507200,
         "closed_at": 1787011200,
+        "fee": "0.76855706",
+        "slippage": "0.38427853",
+        "pnl": "-0.54389559",
         "exit_kind": "signal_exit",
-        "opened_at": 1786507200
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.101",
+            "entry_price": "1885.76",
+            "exit_price": "1912.7",
+            "fee": "0.38364446",
+            "slippage": "0.19182223",
+            "pnl": "2.14547331"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.003",
+            "entry_price": "63800.1",
+            "exit_price": "64504.1",
+            "fee": "0.3849126",
+            "slippage": "0.1924563",
+            "pnl": "-2.6893689"
+          }
+        ]
       },
       {
-        "fee": "0.73077295",
-        "pnl": "20.261890575",
         "seq": 9,
+        "opened_at": 1787155200,
+        "closed_at": 1787428800,
+        "fee": "0.5859091",
+        "slippage": "0.29295455",
+        "pnl": "4.27153635",
+        "exit_kind": "signal_exit",
         "legs": [
           {
-            "fee": "0.43710735",
-            "pnl": "40.273188975",
-            "qty": "0.095",
-            "side": "long",
             "leg_id": "a",
             "symbol": "ETHUSDT",
-            "slippage": "0.218553675",
-            "exit_price": "2515.98",
-            "entry_price": "2085.15"
+            "side": "long",
+            "qty": "0.065",
+            "entry_price": "2085.15",
+            "exit_price": "2438.19",
+            "fee": "0.2940171",
+            "slippage": "0.14700855",
+            "pnl": "22.50657435"
           },
           {
-            "fee": "0.2936656",
-            "pnl": "-20.0112984",
-            "qty": "0.002",
-            "side": "short",
             "leg_id": "b",
             "symbol": "BTCUSDT",
-            "slippage": "0.1468328",
-            "exit_price": "78309.1",
-            "entry_price": "68523.7"
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "68523.7",
+            "exit_price": "77422.3",
+            "fee": "0.291892",
+            "slippage": "0.145946",
+            "pnl": "-18.235038"
           }
-        ],
-        "slippage": "0.365386475",
-        "closed_at": 1787356800,
-        "exit_kind": "take_profit",
-        "opened_at": 1787155200
+        ]
       },
       {
-        "fee": "0.71815775",
-        "pnl": "-3.689466625",
         "seq": 10,
-        "legs": [
-          {
-            "fee": "0.40180455",
-            "pnl": "2.262263175",
-            "qty": "0.081",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.200902275",
-            "exit_price": "2497.96",
-            "entry_price": "2462.59"
-          },
-          {
-            "fee": "0.3163532",
-            "pnl": "-5.9517298",
-            "qty": "0.002",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1581766",
-            "exit_price": "80457.6",
-            "entry_price": "77719"
-          }
-        ],
-        "slippage": "0.359078875",
+        "opened_at": 1787529600,
         "closed_at": 1787630400,
+        "fee": "0.62886785",
+        "slippage": "0.314433925",
+        "pnl": "-4.192191775",
         "exit_kind": "signal_exit",
-        "opened_at": 1787529600
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.063",
+            "entry_price": "2462.59",
+            "exit_price": "2497.96",
+            "fee": "0.31251465",
+            "slippage": "0.156257325",
+            "pnl": "1.759538025"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "77719",
+            "exit_price": "80457.6",
+            "fee": "0.3163532",
+            "slippage": "0.1581766",
+            "pnl": "-5.9517298"
+          }
+        ]
       },
       {
-        "fee": "0.71209194",
-        "pnl": "-4.00367791",
         "seq": 11,
-        "legs": [
-          {
-            "fee": "0.39454654",
-            "pnl": "-1.93955981",
-            "qty": "0.079",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.19727327",
-            "exit_price": "2488.6",
-            "entry_price": "2505.66"
-          },
-          {
-            "fee": "0.3175454",
-            "pnl": "-2.0641181",
-            "qty": "0.002",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1587727",
-            "exit_price": "79783.3",
-            "entry_price": "78989.4"
-          }
-        ],
-        "slippage": "0.35604597",
+        "opened_at": 1787788800,
         "closed_at": 1787889600,
+        "fee": "0.63218378",
+        "slippage": "0.31609189",
+        "pnl": "-3.61085567",
         "exit_kind": "signal_exit",
-        "opened_at": 1787788800
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.063",
+            "entry_price": "2505.66",
+            "exit_price": "2488.6",
+            "fee": "0.31463838",
+            "slippage": "0.15731919",
+            "pnl": "-1.54673757"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "78989.4",
+            "exit_price": "79783.3",
+            "fee": "0.3175454",
+            "slippage": "0.1587727",
+            "pnl": "-2.0641181"
+          }
+        ]
       },
       {
-        "fee": "0.709502",
-        "pnl": "-1.062373",
         "seq": 12,
-        "legs": [
-          {
-            "fee": "0.3992826",
-            "pnl": "-0.5628439",
-            "qty": "0.082",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.1996413",
-            "exit_price": "2434.87",
-            "entry_price": "2434.43"
-          },
-          {
-            "fee": "0.3102194",
-            "pnl": "-0.4995291",
-            "qty": "0.002",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1551097",
-            "exit_price": "77563.4",
-            "entry_price": "77546.3"
-          }
-        ],
-        "slippage": "0.354751",
+        "opened_at": 1787947200,
         "closed_at": 1788004800,
+        "fee": "0.6169853",
+        "slippage": "0.30849265",
+        "pnl": "-0.93195795",
         "exit_kind": "signal_exit",
-        "opened_at": 1787947200
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.063",
+            "entry_price": "2434.43",
+            "exit_price": "2434.87",
+            "fee": "0.3067659",
+            "slippage": "0.15338295",
+            "pnl": "-0.43242885"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "77546.3",
+            "exit_price": "77563.4",
+            "fee": "0.3102194",
+            "slippage": "0.1551097",
+            "pnl": "-0.4995291"
+          }
+        ]
       },
       {
-        "fee": "0.70642514",
-        "pnl": "-3.12207771",
         "seq": 13,
-        "legs": [
-          {
-            "fee": "0.39480534",
-            "pnl": "-3.36564801",
-            "qty": "0.081",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.19740267",
-            "exit_price": "2419.95",
-            "entry_price": "2454.19"
-          },
-          {
-            "fee": "0.3116198",
-            "pnl": "0.2435703",
-            "qty": "0.002",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1558099",
-            "exit_price": "77727.2",
-            "entry_price": "78082.7"
-          }
-        ],
-        "slippage": "0.35321257",
+        "opened_at": 1788076800,
         "closed_at": 1788148800,
+        "fee": "0.61869062",
+        "slippage": "0.30934531",
+        "pnl": "-2.37415593",
         "exit_kind": "signal_exit",
-        "opened_at": 1788076800
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.063",
+            "entry_price": "2454.19",
+            "exit_price": "2419.95",
+            "fee": "0.30707082",
+            "slippage": "0.15353541",
+            "pnl": "-2.61772623"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "78082.7",
+            "exit_price": "77727.2",
+            "fee": "0.3116198",
+            "slippage": "0.1558099",
+            "pnl": "0.2435703"
+          }
+        ]
       },
       {
-        "fee": "0.7031122",
-        "pnl": "-2.9736683",
         "seq": 14,
-        "legs": [
-          {
-            "fee": "0.3911112",
-            "pnl": "-4.9058668",
-            "qty": "0.08",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.1955556",
-            "exit_price": "2417.45",
-            "entry_price": "2471.44"
-          },
-          {
-            "fee": "0.312001",
-            "pnl": "1.9321985",
-            "qty": "0.002",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1560005",
-            "exit_price": "77400.2",
-            "entry_price": "78600.3"
-          }
-        ],
-        "slippage": "0.3515561",
+        "opened_at": 1788249600,
         "closed_at": 1788307200,
+        "fee": "0.62000107",
+        "slippage": "0.310000535",
+        "pnl": "-1.931171605",
         "exit_kind": "signal_exit",
-        "opened_at": 1788249600
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.063",
+            "entry_price": "2471.44",
+            "exit_price": "2417.45",
+            "fee": "0.30800007",
+            "slippage": "0.154000035",
+            "pnl": "-3.863370105"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "78600.3",
+            "exit_price": "77400.2",
+            "fee": "0.312001",
+            "slippage": "0.1560005",
+            "pnl": "1.9321985"
+          }
+        ]
       },
       {
-        "fee": "0.7095792",
-        "pnl": "4.6260312",
         "seq": 15,
-        "legs": [
-          {
-            "fee": "0.3963736",
-            "pnl": "-0.8897604",
-            "qty": "0.08",
-            "side": "long",
-            "leg_id": "a",
-            "symbol": "ETHUSDT",
-            "slippage": "0.1981868",
-            "exit_price": "2475.49",
-            "entry_price": "2479.18"
-          },
-          {
-            "fee": "0.3132056",
-            "pnl": "5.5157916",
-            "qty": "0.002",
-            "side": "short",
-            "leg_id": "b",
-            "symbol": "BTCUSDT",
-            "slippage": "0.1566028",
-            "exit_price": "76805",
-            "entry_price": "79797.8"
-          }
-        ],
-        "slippage": "0.3547896",
+        "opened_at": 1788652800,
         "closed_at": 1789344000,
+        "fee": "0.63030448",
+        "slippage": "0.31515224",
+        "pnl": "4.80398328",
         "exit_kind": "signal_exit",
-        "opened_at": 1788652800
+        "legs": [
+          {
+            "leg_id": "a",
+            "symbol": "ETHUSDT",
+            "side": "long",
+            "qty": "0.064",
+            "entry_price": "2479.18",
+            "exit_price": "2475.49",
+            "fee": "0.31709888",
+            "slippage": "0.15854944",
+            "pnl": "-0.71180832"
+          },
+          {
+            "leg_id": "b",
+            "symbol": "BTCUSDT",
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "79797.8",
+            "exit_price": "76805",
+            "fee": "0.3132056",
+            "slippage": "0.1566028",
+            "pnl": "5.5157916"
+          }
+        ]
       },
       {
-        "fee": "0.7217384",
-        "pnl": "2.0549924",
         "seq": 16,
+        "opened_at": 1789660800,
+        "closed_at": 1789920000,
+        "fee": "0.6302777",
+        "slippage": "0.31513885",
+        "pnl": "-0.36759655",
+        "exit_kind": "signal_exit",
         "legs": [
           {
-            "fee": "0.406492",
-            "pnl": "10.767062",
-            "qty": "0.08",
-            "side": "long",
             "leg_id": "a",
             "symbol": "ETHUSDT",
-            "slippage": "0.203246",
+            "side": "long",
+            "qty": "0.062",
+            "entry_price": "2469.47",
             "exit_price": "2611.68",
-            "entry_price": "2469.47"
+            "fee": "0.3150313",
+            "slippage": "0.15751565",
+            "pnl": "8.34447305"
           },
           {
-            "fee": "0.3152464",
-            "pnl": "-8.7120696",
-            "qty": "0.002",
-            "side": "short",
             "leg_id": "b",
             "symbol": "BTCUSDT",
-            "slippage": "0.1576232",
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "76751.8",
             "exit_price": "80871.4",
-            "entry_price": "76751.8"
+            "fee": "0.3152464",
+            "slippage": "0.1576232",
+            "pnl": "-8.7120696"
           }
-        ],
-        "slippage": "0.3608692",
-        "closed_at": 1789920000,
-        "exit_kind": "signal_exit",
-        "opened_at": 1789660800
+        ]
       },
       {
-        "fee": "0.7405129",
-        "pnl": "-2.97116935",
         "seq": 17,
+        "opened_at": 1789948800,
+        "closed_at": 1790020800,
+        "fee": "0.66485382",
+        "slippage": "0.33242691",
+        "pnl": "-4.49288073",
+        "exit_kind": "signal_exit",
         "legs": [
           {
-            "fee": "0.4053165",
-            "pnl": "8.15202525",
-            "qty": "0.075",
-            "side": "long",
             "leg_id": "a",
             "symbol": "ETHUSDT",
-            "slippage": "0.20265825",
+            "side": "long",
+            "qty": "0.061",
+            "entry_price": "2643.71",
             "exit_price": "2760.51",
-            "entry_price": "2643.71"
+            "fee": "0.32965742",
+            "slippage": "0.16482871",
+            "pnl": "6.63031387"
           },
           {
-            "fee": "0.3351964",
-            "pnl": "-11.1231946",
-            "qty": "0.002",
-            "side": "short",
             "leg_id": "b",
             "symbol": "BTCUSDT",
-            "slippage": "0.1675982",
+            "side": "short",
+            "qty": "0.002",
+            "entry_price": "81144",
             "exit_price": "86454.2",
-            "entry_price": "81144"
+            "fee": "0.3351964",
+            "slippage": "0.1675982",
+            "pnl": "-11.1231946"
           }
-        ],
-        "slippage": "0.37025645",
-        "closed_at": 1790020800,
-        "exit_kind": "signal_exit",
-        "opened_at": 1789948800
+        ]
       }
     ],
     "data_manifests": [
