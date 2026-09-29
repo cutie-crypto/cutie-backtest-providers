@@ -4483,9 +4483,11 @@ def simulate_v3(
                         step,
                     )
                 # 名义锚定：以各腿第一遍下取后名义的最小值为锚，再逐腿按锚定名义下取
+                # 第一遍数量为 0 的腿直接判拒，不参与锚定名义的 min
+                positive = [leg_id for leg_id in leg_ids if first_pass[leg_id] > 0]
                 anchor = min(
-                    ctx.multiply(first_pass[leg_id], entries[leg_id])
-                    for leg_id in leg_ids
+                    (ctx.multiply(first_pass[leg_id], entries[leg_id]) for leg_id in positive),
+                    default=Decimal(0),
                 )
                 for leg_id in leg_ids:
                     entry_price = entries[leg_id]
@@ -4498,7 +4500,11 @@ def simulate_v3(
                         step,
                     )
                     notional = ctx.multiply(qty, entry_price)
-                    if qty < leg_rules["min_qty"] or notional < leg_rules["min_notional"]:
+                    if (
+                        first_pass[leg_id] <= 0
+                        or qty < leg_rules["min_qty"]
+                        or notional < leg_rules["min_notional"]
+                    ):
                         rejected.append(leg_id)
                     fills.append(
                         BasketLegFill(
