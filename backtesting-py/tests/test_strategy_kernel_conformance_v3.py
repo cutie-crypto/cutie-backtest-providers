@@ -12,7 +12,9 @@ with the hand calculation; the fixture must agree with it, so a regenerated
 fixture cannot silently drift from the hand-checked values.  Unless noted,
 bar i opens at ``T + i*14400`` (T = 1720000000), leg a = ETHUSDT long,
 leg b = BTCUSDT short, leverage 3, margin_per_leg 1000 (margin_total 2000),
-fee_bps 10, slippage_bps 5, so ``qty_a = 3000/E_a``, ``qty_b = 3000/E_b``,
+fee_bps 10, slippage_bps 5.  Sizing is notional-anchored (§2.6): q0_leg =
+floor(3000/E_leg, step), N* = min(q0_leg*E_leg), qty_leg = floor(N*/E_leg, step)
+(exact when both legs divide evenly), so
 ``fee_leg = (E+X)*qty*10/10000``, ``slippage_leg = (E+X)*qty*5/10000``.
 """
 
@@ -180,74 +182,76 @@ HAND = {
     },
     # roc_basic (window 3, entry > 0.05, exit < 0.01):
     #   bar 3 ratio 3100/58000 vs bar 0 0.05: roc 0.0690 -> fill bar 4 open
-    #   a 3100 b 58000: qty_a = floor(3000/3100 = 0.9677) = 0.967,
-    #   qty_b = floor(3000/58000 = 0.05172) = 0.051.
+    #   a 3100 b 58000: q0_a = 0.967 (2997.7), q0_b = 0.051 (2958) -> N* = 2958,
+    #   qty_a = floor(2958/3100 = 0.9542) = 0.954, qty_b = 0.051.
     #   bar 4 roc 0.0957, bar 5 roc 0.0796 (>= 0.01); pnl 0.0369 / 0.0148.
     #   bar 6 ratio 3100/58400 vs bar 3 3100/58000: roc -0.0068 < 0.01 ->
-    #   signal; pnl (58000-58400)*0.051/2000 = -0.0102.  bar 7 open a 3090 b 58500:
-    #   a gross -10*0.967=-9.67, fee 6190*0.967/1000=5.98573,
-    #     slip 2.992865, pnl -18.648595;
+    #   signal; pnl (58000-58400)*0.051/2000 = -0.0102 (b leg unchanged).  bar 7 open a 3090 b 58500:
+    #   a gross -10*0.954=-9.54, fee 6190*0.954/1000=5.90526,
+    #     slip 2.95263, pnl -18.39789;
     #   b gross -500*0.051=-25.5, fee 116500*0.051/1000=5.9415,
-    #     slip 2.97075, pnl -34.41225; basket fee 11.92723,
-    #     slip 5.963615, pnl -53.060845.
+    #     slip 2.97075, pnl -34.41225; basket fee 11.84676,
+    #     slip 5.92338, pnl -52.81014.
     "roc_basic": {
         "skipped_bars": 0,
         "diagnostics": [],
         "trades": [
-            (T + 4 * H4, T + 7 * H4, "signal_exit", "11.92723", "5.963615", "-53.060845")
+            (T + 4 * H4, T + 7 * H4, "signal_exit", "11.84676", "5.92338", "-52.81014")
         ],
         "legs": [
-            ("0.967", "5.98573", "2.992865", "-18.648595"),
+            ("0.954", "5.90526", "2.95263", "-18.39789"),
             ("0.051", "5.9415", "2.97075", "-34.41225"),
         ],
-        "equity_curve": [(T, "10000"), (T + 7 * H4, "9946.939155")],
+        "equity_curve": [(T, "10000"), (T + 7 * H4, "9947.18986")],
     },
     # zscore_basic (window 10, entry z < -2, exit z > -0.3), b flat 60000:
     #   bars 0-9 ratio 0.05 -> bar 9 stdev 0 -> missing (not 0).
     #   bar 10 ratio 0.049 (d=0.001): mean 0.0499, pop var
     #     (9*0.0001^2+0.0009^2)/10 = 9e-8, stdev 0.0003, z = -0.0009/0.0003 = -3
-    #     < -2 -> fill bar 11 open a 2940: qty_a = floor(1.0204) = 1.02.
+    #     < -2 -> fill bar 11 open a 2940: q0_a = 1.020 (2998.8), q0_b = 0.05 (3000)
+    #     -> N* = 2998.8, qty_a = 1.02, qty_b = floor(2998.8/60000) = 0.049.
     #   bars 11-18 z = -2, -1.53, -1.22, -1, -0.82, -0.65, -0.5, -1/3 (none > -0.3).
     #   bar 19: window all 0.049 -> stdev 0 -> missing: signal_exit cannot
     #     fire (had it been 0, 0 > -0.3 would exit at bar 20 open 2940).
     #   bar 20 ratio 0.05: z = +3 > -0.3 -> exit bar 21 open a 3000:
     #   a gross 60*1.02=61.2, fee 5940*1.02/1000=6.0588, slip 3.0294,
-    #     pnl 52.1118; b pnl -9; basket 43.1118.
+    #     pnl 52.1118; b gross 0 (60000 flat), fee 120000*0.049/1000=5.88,
+    #     slip 2.94, pnl -8.82; basket fee 11.9388, slip 5.9694, pnl 43.2918.
     "zscore_basic": {
         "skipped_bars": 0,
         "diagnostics": [],
-        "trades": [(T + 11 * H4, T + 21 * H4, "signal_exit", "12.0588", "6.0294", "43.1118")],
-        "legs": [("1.02", "6.0588", "3.0294", "52.1118"), ("0.05", "6", "3", "-9")],
-        "equity_curve": [(T, "10000"), (T + 21 * H4, "10043.1118")],
+        "trades": [(T + 11 * H4, T + 21 * H4, "signal_exit", "11.9388", "5.9694", "43.2918")],
+        "legs": [("1.02", "6.0588", "3.0294", "52.1118"), ("0.049", "5.88", "2.94", "-8.82")],
+        "equity_curve": [(T, "10000"), (T + 21 * H4, "10043.2918")],
     },
     # sums_exact (sma 2/5, a short / b long, leverage 2, margin 1234.5,
     #   fee_bps 7.5, slippage_bps 2.5, stop 0.2, take 0.3):
     #   bars 0-4 ratio 3000/50000=0.06; bar 5 a 3060 -> 0.0612: fast 0.0606 >
     #   slow 0.06024 -> crosses_above; fill bar 6 open a 3071.37 b 49876.3:
-    #   qty_a = floor(2469/3071.37=0.8039) = 0.803,
-    #   qty_b = floor(2469/49876.3=0.04950) = 0.049.
+    #   q0_a = 0.803 (2466.3), q0_b = 0.049 (2443.9) -> N* = 2443.9 (b anchors),
+    #   qty_a = floor(2443.9/3071.37=0.79570) = 0.795, qty_b = 0.049.
     #   bar 7 a 2900 b 50100: fast 0.059842 < slow 0.0601768 -> crosses_below
     #   (pnl +0.0602 < take 0.3); bar 8 open a 2911.07 b 50123.9:
-    #   a gross (3071.37-2911.07)*0.803 = 128.7209,
-    #     fee 5982.44*0.803*7.5/10000 = 3.60292449, slip 1.20097483,
-    #     pnl 123.91700068;
+    #   a gross (3071.37-2911.07)*0.795 = 127.4385,
+    #     fee 5982.44*0.795*7.5/10000 = 3.56702985, slip 1.18900995,
+    #     pnl 122.6824602;
     #   b gross (50123.9-49876.3)*0.049 = 12.1324,
     #     fee 100000.2*0.049*7.5/10000 = 3.67500735, slip 1.22500245,
     #     pnl 7.2323902;
-    #   basket fee 3.60292449+3.67500735 = 7.27793184,
-    #     slip 1.20097483+1.22500245 = 2.42597728,
-    #     pnl 123.91700068+7.2323902 = 131.14939088 (exact Decimal sums).
+    #   basket fee 3.56702985+3.67500735 = 7.2420372,
+    #     slip 1.18900995+1.22500245 = 2.4140124,
+    #     pnl 122.6824602+7.2323902 = 129.9148504 (exact Decimal sums).
     "sums_exact": {
         "skipped_bars": 0,
         "diagnostics": [],
         "trades": [
-            (T + 6 * H4, T + 8 * H4, "signal_exit", "7.27793184", "2.42597728", "131.14939088")
+            (T + 6 * H4, T + 8 * H4, "signal_exit", "7.2420372", "2.4140124", "129.9148504")
         ],
         "legs": [
-            ("0.803", "3.60292449", "1.20097483", "123.91700068"),
+            ("0.795", "3.56702985", "1.18900995", "122.6824602"),
             ("0.049", "3.67500735", "1.22500245", "7.2323902"),
         ],
-        "equity_curve": [(T, "10000"), (T + 8 * H4, "10131.14939088")],
+        "equity_curve": [(T, "10000"), (T + 8 * H4, "10129.9148504")],
     },
     # exit_candidate_across_gap (roc window 2, exit roc < 0; b missing bar 5):
     #   bar 2 signal -> fill bar 3 open a 3000; bar 4 close 2970: roc vs bar 2
