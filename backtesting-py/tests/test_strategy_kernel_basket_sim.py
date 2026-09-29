@@ -398,6 +398,16 @@ def test_anchor_leg_below_min_notional_rejects_the_whole_basket():
     ]
 
 
+def test_zero_first_pass_leg_is_rejected_alone_without_zeroing_the_anchor():
+    a_rows = leg(["3000"] * 4, {0: "10"})
+    b_rows = leg(["100000000"] * 4)
+    result = run(signal_spec(), a_rows, b_rows)
+    assert result["trades"] == []
+    assert result["diagnostics"] == [
+        {"bar_open_at": T0 + H4, "kind": "leg_min_order", "legs": ["b"]}
+    ]
+
+
 def test_basket_totals_equal_the_exact_sum_of_legs():
     # Awkward prices, notional-anchored: q0 a = 0.9 (2999.997), q0 b = 0.045
     # (2944.4445) -> N* = 2944.4445; qty a = floor(N*/3333.33, 0.001) = 0.883.
