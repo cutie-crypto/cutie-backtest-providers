@@ -375,21 +375,44 @@ def test_leg_below_min_order_rejects_the_whole_basket():
     ]
 
 
+def test_leg_quantities_are_anchored_to_the_smaller_notional():
+    a_rows = leg(["3000"] * 4, {0: "10"})
+    b_rows = leg(["65000"] * 4)
+    [trade] = run(signal_spec(), a_rows, b_rows)["trades"]
+    leg_a, leg_b = trade["legs"]
+    # B = 1000 * 3 = 3000; q0 b = 0.046 (2990) is the anchor N*.
+    assert (leg_a["qty"], leg_b["qty"]) == ("0.996", "0.046")
+    notional_a = Decimal(leg_a["qty"]) * 3000
+    notional_b = Decimal(leg_b["qty"]) * 65000
+    assert (notional_a, notional_b) == (Decimal("2988"), Decimal("2990"))
+    assert abs(notional_a - notional_b) <= Decimal("0.001") * 3000
+
+
+def test_anchor_leg_below_min_notional_rejects_the_whole_basket():
+    a_rows = leg(["3000"] * 4, {0: "10"})
+    b_rows = leg(["65000"] * 4)
+    result = run(signal_spec(), a_rows, b_rows, rules(b={"min_notional": "3000"}))
+    assert result["trades"] == []
+    assert result["diagnostics"] == [
+        {"bar_open_at": T0 + H4, "kind": "leg_min_order", "legs": ["b"]}
+    ]
+
+
 def test_basket_totals_equal_the_exact_sum_of_legs():
-    # Awkward prices: qty a = floor(3000/3333.33, 0.001) = 0.9;
-    # qty b = floor(3000/65432.1, 0.001) = 0.045.
+    # Awkward prices, notional-anchored: q0 a = 0.9 (2999.997), q0 b = 0.045
+    # (2944.4445) -> N* = 2944.4445; qty a = floor(N*/3333.33, 0.001) = 0.883.
     a_rows = leg(["3333.33", "3333.33", "3333.33", ("3210.01", "3210.01")], {0: "10"})
     b_rows = leg(["65432.1", "65432.1", "65432.1", ("61234.57", "61234.57")], {2: "10"})
     [trade] = run(signal_spec(), a_rows, b_rows)["trades"]
     leg_a, leg_b = trade["legs"]
-    assert (leg_a["qty"], leg_b["qty"]) == ("0.9", "0.045")
+    assert (leg_a["qty"], leg_b["qty"]) == ("0.883", "0.045")
     for key in ("fee", "slippage", "pnl"):
         assert Decimal(trade[key]) == Decimal(leg_a[key]) + Decimal(leg_b[key])
     # Leg a by the v2 formula: (E+X)*qty*bps/10000, long gross (X-E)*qty.
-    notional = (Decimal("3333.33") + Decimal("3210.01")) * Decimal("0.9")
+    notional = (Decimal("3333.33") + Decimal("3210.01")) * Decimal("0.883")
     fee = notional * 10 / 10000
     slippage = notional * 5 / 10000
-    pnl = (Decimal("3210.01") - Decimal("3333.33")) * Decimal("0.9") - fee - slippage
+    pnl = (Decimal("3210.01") - Decimal("3333.33")) * Decimal("0.883") - fee - slippage
     assert (Decimal(leg_a["fee"]), Decimal(leg_a["slippage"]), Decimal(leg_a["pnl"])) == (
         fee,
         slippage,
