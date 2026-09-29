@@ -4469,21 +4469,42 @@ def simulate_v3(
         rejected: list[str] = []
         try:
             with localcontext(_DECIMAL_CONTEXT) as ctx:
+                budget = ctx.multiply(margin_per_leg, leverage)
+                entries: dict[str, Decimal] = {}
+                first_pass: dict[str, Decimal] = {}
                 for leg_id in leg_ids:
                     entry_price = Decimal(frame.legs[leg_id]["open"])
-                    leg_rules = rules[leg_id]
-                    raw_qty = ctx.divide(
-                        ctx.multiply(margin_per_leg, leverage), entry_price
+                    step = rules[leg_id]["qty_step"]
+                    entries[leg_id] = entry_price
+                    first_pass[leg_id] = ctx.multiply(
+                        ctx.divide(
+                            ctx.divide(budget, entry_price), step
+                        ).to_integral_value(rounding=ROUND_FLOOR),
+                        step,
                     )
+                # 名义锚定：以各腿第一遍下取后名义的最小值为锚，再逐腿按锚定名义下取
+                # 第一遍数量为 0 的腿直接判拒，不参与锚定名义的 min
+                positive = [leg_id for leg_id in leg_ids if first_pass[leg_id] > 0]
+                anchor = min(
+                    (ctx.multiply(first_pass[leg_id], entries[leg_id]) for leg_id in positive),
+                    default=Decimal(0),
+                )
+                for leg_id in leg_ids:
+                    entry_price = entries[leg_id]
+                    leg_rules = rules[leg_id]
                     step = leg_rules["qty_step"]
                     qty = ctx.multiply(
-                        ctx.divide(raw_qty, step).to_integral_value(
-                            rounding=ROUND_FLOOR
-                        ),
+                        ctx.divide(
+                            ctx.divide(anchor, entry_price), step
+                        ).to_integral_value(rounding=ROUND_FLOOR),
                         step,
                     )
                     notional = ctx.multiply(qty, entry_price)
-                    if qty < leg_rules["min_qty"] or notional < leg_rules["min_notional"]:
+                    if (
+                        first_pass[leg_id] <= 0
+                        or qty < leg_rules["min_qty"]
+                        or notional < leg_rules["min_notional"]
+                    ):
                         rejected.append(leg_id)
                     fills.append(
                         BasketLegFill(

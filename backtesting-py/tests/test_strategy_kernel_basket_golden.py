@@ -6,6 +6,9 @@
 指标。数据与裁窗规则的来源见 ``tests/fixtures/basket_sma_cross_prod_golden_0926.json``
 顶部 ``_note``。
 
+2026-09-29 §2.6 每腿数量改为名义锚定后，expected 由新内核重生成：本文件从「复现生产 run」
+变为「生产真实 K 线下的内核回归 golden」（笔数仍 17，净 pnl 不再等于生产 run）。
+
 本文件只做「真实数据能否复现生产结果」这一件事，不测组合内核语义本身（语义已由
 ``test_strategy_kernel_conformance_v3.py``/``test_basket_signal_http.py`` 的手算
 fixture 覆盖）。
