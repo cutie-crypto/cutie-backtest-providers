@@ -24,6 +24,7 @@ from decimal import (
     Underflow,
     localcontext,
 )
+from fractions import Fraction
 from typing import Any, Callable, Iterable, Optional, TypeVar
 
 from canonical_json import (
@@ -4174,7 +4175,59 @@ def _equity_curve_with_mtm(
     curve.extend(
         {"ts": ts, "equity": by_ts[ts]} for ts in sorted(by_ts) if ts > start_at
     )
+    curve = sample_equity_curve(curve, {trade["closed_at"] for trade in trades})
     return curve, prefix[-1]
+
+
+MTM_POINT_LIMIT = 3000
+
+
+def sample_equity_curve(
+    curve: list[dict[str, Any]],
+    closed_ts: set[int],
+    limit: int = MTM_POINT_LIMIT,
+) -> list[dict[str, Any]]:
+    """按市值点超过 ``limit`` 时按段等距采样（0930 拍板，v2 与 v3 共用）。
+
+    起点（下标 0）与 ts 在 ``closed_ts`` 里的 closed_at 点全保留；其余按市值点不超过
+    ``limit`` 时原样返回。超过时把按市值点按下标等分成 ``(limit - 2) // 2`` 段，每段
+    保留局部最低点和最高点（取值相同取最早那一个），另外保留全量曲线上最大回撤那一对
+    峰点和谷点，按原顺序放回，按市值点总数不超过 ``limit``。
+
+    只留每段 max/min 不能保证回撤不变：峰和谷落在同一段、且该段最高点在最低点之后时，
+    那一对会丢。补回全量回撤对以后，采样曲线是全量曲线的子集且含这一对，按运行峰值
+    ``(peak - equity) / peak`` 算的最大回撤与全量曲线严格相等。回撤对用 Fraction
+    精确比较选取，峰值语义与 ``_max_drawdown`` / v2 ``_result_v2_max_drawdown`` 一致
+    （后来者严格更高才换峰，峰值为 0 不计）。
+    """
+    mtm_indexes = [
+        index for index in range(1, len(curve)) if curve[index]["ts"] not in closed_ts
+    ]
+    if len(mtm_indexes) <= limit:
+        return curve
+    values = [Decimal(point["equity"]) for point in curve]
+    keep = set(range(len(curve))).difference(mtm_indexes)
+    peak_index: Optional[int] = None
+    best = Fraction(0)
+    pair: Optional[tuple[int, int]] = None
+    for index, value in enumerate(values):
+        if peak_index is None or value > values[peak_index]:
+            peak_index = index
+        peak = values[peak_index]
+        if peak:
+            drawdown = (Fraction(peak) - Fraction(value)) / Fraction(peak)
+            if drawdown > best:
+                best, pair = drawdown, (peak_index, index)
+    if pair is not None:
+        keep.update(pair)
+    segments = max(1, (limit - 2) // 2)
+    count = len(mtm_indexes)
+    for segment in range(segments):
+        chunk = mtm_indexes[segment * count // segments : (segment + 1) * count // segments]
+        if chunk:
+            keep.add(min(chunk, key=values.__getitem__))
+            keep.add(max(chunk, key=values.__getitem__))
+    return [curve[index] for index in sorted(keep)]
 
 
 def _max_drawdown(curve: list[dict[str, Any]]) -> Decimal:
@@ -5097,6 +5150,7 @@ __all__ = [
     "kline_primary_bucket_required_start",
     "ohlcv_resample",
     "paper_tick",
+    "sample_equity_curve",
     "simulate",
     "simulate_v3",
     "snapshot_decimal_str",
