@@ -5,7 +5,7 @@
    cutie-server/tests/test_strategy_backtest_validation.py 的自洽金额数据集
    （entry=100/exit=110/qty=0.5/fee_bps=10/slippage_bps=5 →
    fee=0.105/slippage=0.0525/pnl=4.8425）逐分逐厘核对，跨仓交叉验证公式一致。
-2. equity_curve 起点 + 逐笔累计 + 无交易保留初始点。
+2. equity_curve 起点 + 逐笔累计 + 无交易保留初始点；0930 起持仓 bar 收盘加按市值点。
 3. max_drawdown 峰谷比例。
 4. K 线 checksum 输入的规范化 + 区间过滤 + 可独立复算。
 5. data_manifest.source 命名（中心命中 binance_us/binance_futures，ccxt 回退老实标注）。
@@ -240,6 +240,130 @@ def test_max_drawdown_zero_when_never_below_peak():
 
 
 # ---------------------------------------------------------------------------
+# 0930 按市值口径：持仓期间每根 bar 收盘加一个按市值点
+# ---------------------------------------------------------------------------
+
+H = 3600
+
+
+def _mtm_scenario():
+    """1h K 线 8 根（bar i 开盘 START_AT+i*H），fee_bps 10 / slippage_bps 5，qty 缩放 1。
+
+    trade 1 long 1 份：bar 1 开盘 100 入场，bar 1/2 收盘 95/90（浮亏），bar 4 开盘 110
+    出场（最终盈利）。trade 2 short 2 份：bar 5 开盘 110 入场，bar 5 收盘 112，bar 7
+    开盘 105 出场。bar 0、bar 4 空仓。
+    """
+    df = _make_kline_df(START_AT, 8)
+    df["Close"] = [100.0, 95.0, 90.0, 104.0, 109.0, 112.0, 106.0, 104.0]
+    stats_trades = pd.DataFrame([
+        _fake_trade_row(100.0, 110.0, 1, START_AT + 1 * H, START_AT + 4 * H),
+        _fake_trade_row(110.0, 105.0, -2, START_AT + 5 * H, START_AT + 7 * H),
+    ])
+    return provider._build_result_v2(
+        stats_trades=stats_trades,
+        equity_scale_dec=Decimal("1"),
+        fee_bps=Decimal("10"),
+        slippage_bps=Decimal("5"),
+        initial_capital=Decimal("10000"),
+        start_at=START_AT,
+        end_at=START_AT + 7 * H,
+        symbol="BTCUSDT",
+        market="spot",
+        timeframe="1h",
+        exchange_id="binance",
+        df=df,
+    )
+
+
+def test_mark_to_market_curve_matches_hand_calculation():
+    """手算：开仓侧成本只扣 E*qty*15/10000，平仓侧随 closed_at 点计入。
+
+    trade 1 开仓成本 100*1*0.0015 = 0.15：
+      bar 1 收盘（ts S+2H）10000 + (95-100) - 0.15 = 9994.85
+      bar 2 收盘（ts S+3H）10000 + (90-100) - 0.15 = 9989.85
+      bar 3 收盘 ts S+4H 与 closed_at 同 ts，保留 closed_at 点：
+      pnl = 10 - 210*0.0015 = 9.685 -> 10009.685
+    bar 4 空仓不加点（收盘 ts S+5H）。
+    trade 2 开仓成本 110*2*0.0015 = 0.33：
+      bar 5 收盘（ts S+6H）10009.685 + (110-112)*2 - 0.33 = 10005.355
+      bar 6 收盘 ts S+7H 与 closed_at 同 ts：pnl = 10 - 215*2*0.0015 = 9.355 -> 10019.04
+    max_drawdown = (10000 - 9989.85) / 10000 = 0.001015（只看已实现点时为 0）。
+    """
+    result = _mtm_scenario()
+    assert result["equity_curve"] == [
+        {"ts": START_AT, "equity": "10000"},
+        {"ts": START_AT + 2 * H, "equity": "9994.85"},
+        {"ts": START_AT + 3 * H, "equity": "9989.85"},
+        {"ts": START_AT + 4 * H, "equity": "10009.685"},
+        {"ts": START_AT + 6 * H, "equity": "10005.355"},
+        {"ts": START_AT + 7 * H, "equity": "10019.04"},
+    ]
+    assert result["metrics"] == {
+        "total_return": "0.001904",
+        "max_drawdown": "0.001015",
+        "trade_count": 2,
+    }
+    realized_only = [result["equity_curve"][0]] + [
+        p for p in result["equity_curve"] if p["ts"] in {t["closed_at"] for t in result["trades"]}
+    ]
+    assert provider._result_v2_max_drawdown(realized_only) == Decimal("0")
+
+
+def test_mark_to_market_closed_points_equal_realized_cumulative():
+    result = _mtm_scenario()
+    by_ts = {p["ts"]: Decimal(p["equity"]) for p in result["equity_curve"]}
+    running = Decimal("10000")
+    for trade in result["trades"]:
+        running += Decimal(trade["pnl"])
+        assert by_ts[trade["closed_at"]] == running
+    assert Decimal(result["metrics"]["total_return"]) == (running - Decimal("10000")) / Decimal("10000")
+
+
+def test_mark_to_market_ts_strictly_increasing_and_flat_bars_have_no_point():
+    result = _mtm_scenario()
+    ts_list = [p["ts"] for p in result["equity_curve"]]
+    assert ts_list == sorted(set(ts_list))
+    trades = result["trades"]
+    for point in result["equity_curve"][1:]:
+        assert any(t["opened_at"] < point["ts"] <= t["closed_at"] for t in trades), point
+    # bar 0 收盘（S+H）与 bar 4 收盘（S+5H）都空仓
+    assert START_AT + H not in ts_list and START_AT + 5 * H not in ts_list
+
+
+def test_mark_to_market_same_ts_keeps_closed_point_and_last_cumulative():
+    """两笔同一 ts 平仓只留一点（取最后一笔的累计）；与该 ts 撞上的按市值点被覆盖。"""
+    bars = [
+        (START_AT, START_AT + H, Decimal("100")),
+        (START_AT + H, START_AT + 2 * H, Decimal("80")),
+        (START_AT + 2 * H, START_AT + 3 * H, Decimal("90")),
+    ]
+    trades_v2 = [
+        {"closed_at": START_AT + 2 * H, "opened_at": START_AT, "side": "long",
+         "qty": "1", "entry_price": "100", "pnl": "-5"},
+        {"closed_at": START_AT + 2 * H, "opened_at": START_AT, "side": "short",
+         "qty": "1", "entry_price": "100", "pnl": "3"},
+    ]
+    curve = provider._build_result_v2_equity_curve(trades_v2, Decimal("1000"), START_AT, bars=bars)
+    # bar 0 收盘 S+H：两笔都持仓，long (100-100) + short (100-100) = 0（成本 bps 0）
+    assert curve == [
+        {"ts": START_AT, "equity": "1000"},
+        {"ts": START_AT + H, "equity": "1000"},
+        {"ts": START_AT + 2 * H, "equity": "998"},
+    ]
+
+
+def test_bar_closes_uses_next_open_when_earlier_than_timeframe():
+    df = _make_kline_df(START_AT, 3)
+    bars = provider._result_v2_bar_closes(df, "1h")
+    assert [(o, c) for o, c, _ in bars] == [
+        (START_AT, START_AT + H), (START_AT + H, START_AT + 2 * H), (START_AT + 2 * H, START_AT + 3 * H),
+    ]
+    assert bars[0][2] == Decimal("101")
+    monthly = provider._result_v2_bar_closes(_make_kline_df(START_AT, 2, step_sec=28 * 86400), "1M")
+    assert monthly[0][1] == START_AT + 28 * 86400
+
+
+# ---------------------------------------------------------------------------
 # K 线 checksum 输入
 # ---------------------------------------------------------------------------
 
@@ -405,13 +529,16 @@ def test_backtest_result_v2_end_to_end_structure_and_checksum(client, monkeypatc
             gross = (entry - exit_) * qty
         assert Decimal(trade["pnl"]) == gross - expected_fee - expected_slippage
 
-    # equity_curve：起点 = start_at/initial_capital，逐笔累计
+    # equity_curve：起点 = start_at/initial_capital；每笔 closed_at 点 = 已实现逐笔累计
+    # （0930 起持仓 bar 收盘另有按市值点，按 ts 查 closed_at 点），ts 严格递增。
     assert body["equity_curve"][0] == {"ts": START_AT, "equity": "10000"}
+    ts_list = [p["ts"] for p in body["equity_curve"]]
+    assert ts_list == sorted(set(ts_list))
+    by_ts = {p["ts"]: Decimal(p["equity"]) for p in body["equity_curve"]}
     running = Decimal("10000")
-    for point, trade in zip(body["equity_curve"][1:], body["trades"]):
+    for trade in body["trades"]:
         running += Decimal(trade["pnl"])
-        assert point["ts"] == trade["closed_at"]
-        assert Decimal(point["equity"]) == running
+        assert by_ts[trade["closed_at"]] == running
 
     # metrics.total_return 与 equity_curve 尾点一致
     final_equity = Decimal(body["equity_curve"][-1]["equity"])
