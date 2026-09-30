@@ -70,6 +70,7 @@ from strategy_kernel import (
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
     ohlcv_resample,
+    sample_equity_curve,
     simulate,
     simulate_v3,
     snapshot_decimal_str,
@@ -3539,6 +3540,8 @@ def _build_result_v2_equity_curve(
     - 同一 ts 只留一点，closed_at 点优先（同 ts 多笔平仓取最后一笔的累计）；非起点的
       点 ts 必须 > start_at；ts 严格递增；空仓 bar 不加点。
     - bars=None 时不加按市值点（只剩起点 + closed_at 点）。
+    - 按市值点超过 3000 时经 strategy_kernel.sample_equity_curve 按段采样（与 v3 共用），
+      max_drawdown 按采样后的曲线算，与全量曲线严格相等。
     """
     prefix = [initial_capital]
     for t in trades_v2:
@@ -3567,7 +3570,7 @@ def _build_result_v2_equity_curve(
         by_ts[t["closed_at"]] = canonical_decimal_str(prefix[index])
     curve = [{"ts": start_at, "equity": canonical_decimal_str(initial_capital)}]
     curve.extend({"ts": ts, "equity": by_ts[ts]} for ts in sorted(by_ts) if ts > start_at)
-    return curve
+    return sample_equity_curve(curve, {t["closed_at"] for t in trades_v2})
 
 
 def _result_v2_max_drawdown(equity_curve: list[dict[str, Any]]) -> Decimal:
