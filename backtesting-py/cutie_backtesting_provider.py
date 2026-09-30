@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import logging
@@ -69,6 +70,7 @@ from strategy_kernel import (
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
     ohlcv_resample,
+    sample_equity_curve,
     simulate,
     simulate_v3,
     snapshot_decimal_str,
@@ -3497,20 +3499,78 @@ def _build_result_v2_trades(
     return trades
 
 
+def _result_v2_bar_closes(df: pd.DataFrame, timeframe: str) -> list[tuple[int, int, Decimal]]:
+    """按市值点的 bar 序列：(open_time, close_time, close)，open_time 升序。
+
+    close_time = open_time + 周期；下一根更早开盘时（如 1M 周期按 30 天估算偏长）取
+    下一根的 open_time，保证 close_time 不越过下一根。close 按项目惯例 str(float)
+    最短往返转 Decimal。
+    """
+    tf_seconds = _timeframe_milliseconds(timeframe) // 1000
+    opens = [int(idx.value // 10**9) for idx in df.index]
+    closes = [Decimal(str(float(value))) for value in df["Close"]]
+    bars: list[tuple[int, int, Decimal]] = []
+    for i, open_time in enumerate(opens):
+        close_time = open_time + tf_seconds
+        if i + 1 < len(opens) and opens[i + 1] < close_time:
+            close_time = opens[i + 1]
+        bars.append((open_time, close_time, closes[i]))
+    return bars
+
+
 def _build_result_v2_equity_curve(
     trades_v2: list[dict[str, Any]],
     initial_capital: Decimal,
     start_at: int,
+    *,
+    bars: Optional[list[tuple[int, int, Decimal]]] = None,
+    fee_bps: Decimal = Decimal(0),
+    slippage_bps: Decimal = Decimal(0),
 ) -> list[dict[str, Any]]:
-    """result.v2 equity_curve（SPEC §2）：以 start_at/initial_capital 起点开头，每笔
+    """result.v2 equity_curve（SPEC §2，0930 按市值口径）：以 start_at/initial_capital
+    起点开头；持仓期间每根 bar 收盘（ts = 该 bar close_time）加一个按市值点；每笔
     trade 的 closed_at 追加计入该笔净 pnl 后的点；无交易时仍保留初始点。
+
+    - closed_at 点：起点 + 截至该笔的已实现净 pnl 逐笔累计（与改前逐字相同）。
+    - 按市值点：已实现累计（closed_at 早于该 ts 的笔）+ 各未平仓笔按该 bar 收盘价的
+      浮动净盈亏。费用/滑点只在成交时计入：持仓期间只扣已成交的开仓侧
+      entry_price*qty*bps（平仓 pnl 公式 (E+X)*qty*bps 的 E 那一半），平仓侧随
+      closed_at 点计入。一笔在 opened_at <= open_time 且 close_time < closed_at 的
+      bar 上算持仓（出场那根及之后不算）。
+    - 同一 ts 只留一点，closed_at 点优先（同 ts 多笔平仓取最后一笔的累计）；非起点的
+      点 ts 必须 > start_at；ts 严格递增；空仓 bar 不加点。
+    - bars=None 时不加按市值点（只剩起点 + closed_at 点）。
+    - 按市值点超过 3000 时经 strategy_kernel.sample_equity_curve 按段采样（与 v3 共用），
+      max_drawdown 按采样后的曲线算，与全量曲线严格相等。
     """
-    curve = [{"ts": start_at, "equity": canonical_decimal_str(initial_capital)}]
-    running = initial_capital
+    prefix = [initial_capital]
     for t in trades_v2:
-        running = running + Decimal(t["pnl"])
-        curve.append({"ts": t["closed_at"], "equity": canonical_decimal_str(running)})
-    return curve
+        prefix.append(prefix[-1] + Decimal(t["pnl"]))
+    by_ts: dict[int, str] = {}
+    if bars:
+        cost_bps = fee_bps + slippage_bps
+        bar_opens = [bar[0] for bar in bars]
+        unrealized_by_ts: dict[int, Decimal] = {}
+        for t in trades_v2:
+            qty = Decimal(t["qty"])
+            entry_price = Decimal(t["entry_price"])
+            entry_cost = entry_price * qty * cost_bps / Decimal(10000)
+            for open_time, close_time, close in bars[bisect.bisect_left(bar_opens, t["opened_at"]):]:
+                if close_time >= t["closed_at"]:
+                    break
+                delta = close - entry_price if t["side"] == "long" else entry_price - close
+                unrealized_by_ts[close_time] = (
+                    unrealized_by_ts.get(close_time, Decimal(0)) + delta * qty - entry_cost
+                )
+        closed_ats = [t["closed_at"] for t in trades_v2]
+        for ts, unrealized in unrealized_by_ts.items():
+            realized_count = bisect.bisect_left(closed_ats, ts)
+            by_ts[ts] = canonical_decimal_str(prefix[realized_count] + unrealized)
+    for index, t in enumerate(trades_v2, start=1):
+        by_ts[t["closed_at"]] = canonical_decimal_str(prefix[index])
+    curve = [{"ts": start_at, "equity": canonical_decimal_str(initial_capital)}]
+    curve.extend({"ts": ts, "equity": by_ts[ts]} for ts in sorted(by_ts) if ts > start_at)
+    return sample_equity_curve(curve, {t["closed_at"] for t in trades_v2})
 
 
 def _result_v2_max_drawdown(equity_curve: list[dict[str, Any]]) -> Decimal:
@@ -3548,8 +3608,18 @@ def _build_result_v2(
     端 _validate_result_v2 对多余键判 evidence_mismatch，不得在此加展示性字段。
     """
     trades_v2 = _build_result_v2_trades(stats_trades, equity_scale_dec, fee_bps, slippage_bps)
-    equity_curve_v2 = _build_result_v2_equity_curve(trades_v2, initial_capital, start_at)
-    final_equity = Decimal(equity_curve_v2[-1]["equity"])
+    equity_curve_v2 = _build_result_v2_equity_curve(
+        trades_v2,
+        initial_capital,
+        start_at,
+        bars=_result_v2_bar_closes(df, timeframe),
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+    )
+    # total_return 仍按已实现口径（与改前同序逐笔累加），不取曲线尾点。
+    final_equity = initial_capital
+    for t in trades_v2:
+        final_equity = final_equity + Decimal(t["pnl"])
     total_return = (final_equity - initial_capital) / initial_capital
     max_drawdown = _result_v2_max_drawdown(equity_curve_v2)
 

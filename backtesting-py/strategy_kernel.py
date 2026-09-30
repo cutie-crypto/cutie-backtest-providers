@@ -24,6 +24,7 @@ from decimal import (
     Underflow,
     localcontext,
 )
+from fractions import Fraction
 from typing import Any, Callable, Iterable, Optional, TypeVar
 
 from canonical_json import (
@@ -4120,6 +4121,115 @@ class StrategyKernel:
             )
 
 
+def _open_leg_mtm(
+    ctx: Any,
+    side: str,
+    qty: Decimal,
+    entry_price: Decimal,
+    mark_price: Decimal,
+    cost_bps: Decimal,
+) -> Decimal:
+    """按市值：一条未平仓腿在 ``mark_price`` 处的浮动净盈亏。
+
+    与平仓 pnl 同一口径：毛盈亏 = 价差 * qty（杠杆已体现在 qty 的名义里）；费用/滑点
+    只在成交时计入，持仓期间只扣已成交的开仓那一侧（``entry_price * qty * bps``，
+    即平仓公式 ``(E+X) * qty * bps`` 的 E 那一半），平仓侧在 closed_at 点随已实现
+    pnl 一起计入。
+    """
+    delta = (
+        ctx.subtract(mark_price, entry_price)
+        if side == "long"
+        else ctx.subtract(entry_price, mark_price)
+    )
+    gross = ctx.multiply(delta, qty)
+    entry_cost = ctx.divide(
+        ctx.multiply(ctx.multiply(entry_price, qty), cost_bps), Decimal(10000)
+    )
+    return ctx.subtract(gross, entry_cost)
+
+
+def _equity_curve_with_mtm(
+    start_at: int,
+    initial_capital: Decimal,
+    trades: list[dict[str, Any]],
+    mtm_points: list[tuple[int, int, Decimal]],
+) -> tuple[list[dict[str, Any]], Decimal]:
+    """equity_curve = 起点 + 持仓 bar 收盘的按市值点 + 每笔 closed_at 点。
+
+    ``mtm_points`` 是 ``(ts, realized_count, unrealized)``：该 bar 收盘时已平仓的
+    笔数与未平仓头寸的浮动净盈亏。closed_at 点的权益仍是起点 + 截至该笔的已实现
+    净 pnl 逐笔累加（与改前逐字相同）；按市值点复用同一组前缀和再加浮动盈亏。
+    同一 ts 只留一点，closed_at 点优先（同 ts 多笔平仓取最后一笔的累计）；非起点的
+    点不早于/等于 start_at；ts 严格递增。返回 (curve, 最终已实现权益)。
+    """
+    prefix = [initial_capital]
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        for trade in trades:
+            prefix.append(ctx.add(prefix[-1], Decimal(trade["pnl"])))
+        by_ts: dict[int, str] = {}
+        for ts, realized_count, unrealized in mtm_points:
+            by_ts[ts] = canonical_decimal_str(ctx.add(prefix[realized_count], unrealized))
+    for index, trade in enumerate(trades, start=1):
+        by_ts[trade["closed_at"]] = canonical_decimal_str(prefix[index])
+    curve = [{"ts": start_at, "equity": canonical_decimal_str(initial_capital)}]
+    curve.extend(
+        {"ts": ts, "equity": by_ts[ts]} for ts in sorted(by_ts) if ts > start_at
+    )
+    curve = sample_equity_curve(curve, {trade["closed_at"] for trade in trades})
+    return curve, prefix[-1]
+
+
+MTM_POINT_LIMIT = 3000
+
+
+def sample_equity_curve(
+    curve: list[dict[str, Any]],
+    closed_ts: set[int],
+    limit: int = MTM_POINT_LIMIT,
+) -> list[dict[str, Any]]:
+    """按市值点超过 ``limit`` 时按段等距采样（0930 拍板，v2 与 v3 共用）。
+
+    起点（下标 0）与 ts 在 ``closed_ts`` 里的 closed_at 点全保留；其余按市值点不超过
+    ``limit`` 时原样返回。超过时把按市值点按下标等分成 ``(limit - 2) // 2`` 段，每段
+    保留局部最低点和最高点（取值相同取最早那一个），另外保留全量曲线上最大回撤那一对
+    峰点和谷点，按原顺序放回，按市值点总数不超过 ``limit``。
+
+    只留每段 max/min 不能保证回撤不变：峰和谷落在同一段、且该段最高点在最低点之后时，
+    那一对会丢。补回全量回撤对以后，采样曲线是全量曲线的子集且含这一对，按运行峰值
+    ``(peak - equity) / peak`` 算的最大回撤与全量曲线严格相等。回撤对用 Fraction
+    精确比较选取，峰值语义与 ``_max_drawdown`` / v2 ``_result_v2_max_drawdown`` 一致
+    （后来者严格更高才换峰，峰值为 0 不计）。
+    """
+    mtm_indexes = [
+        index for index in range(1, len(curve)) if curve[index]["ts"] not in closed_ts
+    ]
+    if len(mtm_indexes) <= limit:
+        return curve
+    values = [Decimal(point["equity"]) for point in curve]
+    keep = set(range(len(curve))).difference(mtm_indexes)
+    peak_index: Optional[int] = None
+    best = Fraction(0)
+    pair: Optional[tuple[int, int]] = None
+    for index, value in enumerate(values):
+        if peak_index is None or value > values[peak_index]:
+            peak_index = index
+        peak = values[peak_index]
+        if peak:
+            drawdown = (Fraction(peak) - Fraction(value)) / Fraction(peak)
+            if drawdown > best:
+                best, pair = drawdown, (peak_index, index)
+    if pair is not None:
+        keep.update(pair)
+    segments = max(1, (limit - 2) // 2)
+    count = len(mtm_indexes)
+    for segment in range(segments):
+        chunk = mtm_indexes[segment * count // segments : (segment + 1) * count // segments]
+        if chunk:
+            keep.add(min(chunk, key=values.__getitem__))
+            keep.add(max(chunk, key=values.__getitem__))
+    return [curve[index] for index in sorted(keep)]
+
+
 def _max_drawdown(curve: list[dict[str, Any]]) -> Decimal:
     peak: Optional[Decimal] = None
     maximum = Decimal(0)
@@ -4144,26 +4254,39 @@ def simulate(
     plan: CompiledPlan, frames: list[FeatureFrame], state: KernelState
 ) -> dict[str, Any]:
     kernel = StrategyKernel(plan)
+    cost_model = plan.strategy_spec["execution"]["cost_model"]
+    cost_bps = Decimal(cost_model["fee_bps"]) + Decimal(cost_model["slippage_bps"])
+    # 按市值点：持仓跨过的每根 bar 收盘记一点（只在 replay 里记，不进 KernelState，
+    # paper_tick/快照不受影响）。
+    mtm_points: list[tuple[int, int, Decimal]] = []
     for frame in frames:
         kernel.evaluate(state, frame)
-    kernel.finalize(state)
-    curve = [
-        {
-            "ts": state.execution_start_at,
-            "equity": canonical_decimal_str(state.initial_capital),
-        }
-    ]
-    running = state.initial_capital
-    try:
-        with localcontext(_DECIMAL_CONTEXT) as ctx:
-            for trade in state.trades:
-                running = ctx.add(running, Decimal(trade["pnl"]))
-                curve.append(
-                    {
-                        "ts": trade["closed_at"],
-                        "equity": canonical_decimal_str(running),
-                    }
+        position = state.position
+        if position is None:
+            continue
+        try:
+            with localcontext(_DECIMAL_CONTEXT) as ctx:
+                unrealized = _open_leg_mtm(
+                    ctx,
+                    position.side,
+                    position.qty,
+                    position.entry_price,
+                    Decimal(frame.values["close"]),
+                    cost_bps,
                 )
+        except ArithmeticError as exc:
+            raise KernelExecutionError(
+                ERR_SPEC_INVALID,
+                "$.equity_curve",
+                "decimal mark-to-market operation failed",
+            ) from exc
+        mtm_points.append((frame.bar_close_at, len(state.trades), unrealized))
+    kernel.finalize(state)
+    try:
+        curve, running = _equity_curve_with_mtm(
+            state.execution_start_at, state.initial_capital, state.trades, mtm_points
+        )
+        with localcontext(_DECIMAL_CONTEXT) as ctx:
             total_return = ctx.divide(
                 ctx.subtract(running, state.initial_capital), state.initial_capital
             )
@@ -4612,6 +4735,34 @@ def simulate_v3(
                 unrealized = ctx.add(unrealized, ctx.multiply(delta, fill.qty))
             return ctx.divide(unrealized, margin_total)
 
+    def basket_mtm(frame: FeatureFrame) -> Decimal:
+        assert position is not None and frame.legs is not None
+        try:
+            with localcontext(_DECIMAL_CONTEXT) as ctx:
+                total = Decimal(0)
+                for fill in position.legs:
+                    total = ctx.add(
+                        total,
+                        _open_leg_mtm(
+                            ctx,
+                            fill.side,
+                            fill.qty,
+                            fill.entry_price,
+                            Decimal(frame.legs[fill.leg_id]["close"]),
+                            cost_bps,
+                        ),
+                    )
+                return total
+        except ArithmeticError as exc:
+            raise KernelExecutionError(
+                ERR_SPEC_INVALID,
+                "$.equity_curve",
+                "decimal mark-to-market operation failed",
+            ) from exc
+
+    # 按市值点：篮子持仓跨过的每根已对齐 bar 收盘记一点（未对齐 bar 不评估、不记点）。
+    mtm_points: list[tuple[int, int, Decimal]] = []
+    cost_bps = fee_bps + slippage_bps
     skipped_bars = 0
     for frame in frame_set.frames:
         warmup = frame.bar_open_at < start_at
@@ -4658,6 +4809,7 @@ def simulate_v3(
             position.pending_signal_exit = signal_exit is not None and _condition_hit_v3(
                 signal_exit, aligned, index, types
             )
+            mtm_points.append((frame.bar_close_at, len(trades), basket_mtm(frame)))
         if position is None and pending_entry is None:
             eligible = last_exit_index is None or index - last_exit_index >= cooldown
             if eligible and _condition_hit_v3(entry_condition, aligned, index, types):
@@ -4670,15 +4822,9 @@ def simulate_v3(
     if position is not None:
         close_basket(aligned[-1], len(aligned) - 1, "end_of_data", "close")
 
-    curve = [{"ts": start_at, "equity": canonical_decimal_str(capital)}]
-    running = capital
     try:
+        curve, running = _equity_curve_with_mtm(start_at, capital, trades, mtm_points)
         with localcontext(_DECIMAL_CONTEXT) as ctx:
-            for trade in trades:
-                running = ctx.add(running, Decimal(trade["pnl"]))
-                curve.append(
-                    {"ts": trade["closed_at"], "equity": canonical_decimal_str(running)}
-                )
             total_return = ctx.divide(ctx.subtract(running, capital), capital)
     except ArithmeticError as exc:
         raise KernelExecutionError(
@@ -5004,6 +5150,7 @@ __all__ = [
     "kline_primary_bucket_required_start",
     "ohlcv_resample",
     "paper_tick",
+    "sample_equity_curve",
     "simulate",
     "simulate_v3",
     "snapshot_decimal_str",
