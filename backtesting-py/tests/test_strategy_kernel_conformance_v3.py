@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import sys
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 
 import pytest
@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from canonical_json import canonical_json, canonical_json_sha256  # noqa: E402
 from strategy_execution import build_data_manifests_v3, build_result_v3  # noqa: E402
-from strategy_kernel import compile_strategy_v3, simulate_v3  # noqa: E402
+from strategy_kernel import _DECIMAL_CONTEXT, compile_strategy_v3, simulate_v3  # noqa: E402
 from strategy_spec_v3_builder import build_strategy_spec_v3  # noqa: E402
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "strategy_kernel_conformance_v3.json"
@@ -89,7 +89,10 @@ T = 1720000000
 
 # Per case: pinned semantics.  ``trades`` lists (opened_at, closed_at,
 # exit_kind, fee, slippage, pnl); ``legs`` is the first trade's per-leg
-# (qty, fee, slippage, pnl).
+# (qty, fee, slippage, pnl).  ``equity_curve`` is the realized part of the
+# curve (origin + one point per closed_at); the fixture curve additionally
+# carries a mark-to-market point at every held bar close (0930), checked in
+# full by ``MTM_HAND`` and structurally by ``test_equity_curve_mark_to_market_invariants``.
 HAND = {
     # sma_cross_basic (§2.7 spec, §3 example; bar i opens 1720000000+(i-21)*H4,
     # b close 60000 until bar 23).  ratio = a_close/60000:
@@ -286,6 +289,44 @@ HAND = {
 }
 
 
+# 0930 按市值口径 hand calculation.  At a held bar close the equity is
+# capital + realized pnl + sum over legs of (price delta * qty) minus the
+# entry-side cost only (E * qty * (10 + 5) / 10000); the exit-side cost lands
+# with the realized pnl at closed_at.  A point at the same ts as closed_at is
+# replaced by the closed_at point.
+MTM_HAND = {
+    # sma_cross_basic: entry cost a 3000*1*15/10000 = 4.5, b 60000*0.05*15/10000
+    #   = 4.5.  bar 21 close a 3000 / b 60000 -> gross 0 -> 9991 (ts bar 21
+    #   close = 1720014400).  bar 22 close (a 2970) is at ts 1720028800 ==
+    #   closed_at of the bar-23-open exit, so the closed point wins.
+    #   max_drawdown = 9/10000.
+    "sma_cross_basic": {
+        "equity_curve": [
+            (1719000000, "10000"),
+            (1720014400, "9991"),
+            (1720028800, "10101.91"),
+        ],
+        "max_drawdown": "0.0009",
+    },
+    # unaligned_bar_skipped (floating loss mid-trade, profitable close):
+    #   entry cost 9 as above, b stays 60000.  bar 3 close a 3060 -> 60-9 ->
+    #   10051; bar 4 skipped -> no point; bar 5 close a 3030 -> 30-9 -> 10021;
+    #   bar 6 close a 3060 -> 10051; bar 7 time_exit at close -> closed point
+    #   10011.955 (> 10000, so the realized-only curve had drawdown 0).
+    #   max_drawdown = (10051 - 10011.955) / 10051 = 39.045 / 10051.
+    "unaligned_bar_skipped": {
+        "equity_curve": [
+            (T, "10000"),
+            (T + 4 * H4, "10051"),
+            (T + 6 * H4, "10021"),
+            (T + 7 * H4, "10051"),
+            (T + 8 * H4, "10011.955"),
+        ],
+        "max_drawdown": str(_DECIMAL_CONTEXT.divide(Decimal("39.045"), Decimal("10051"))),
+    },
+}
+
+
 def _family(params: dict) -> str:
     return FAMILY_BY_PARAM_KEYS[frozenset(set(params) - COMMON_PARAM_KEYS)]
 
@@ -397,7 +438,11 @@ def test_fixture_agrees_with_hand_calculation(case_id):
             (leg["qty"], leg["fee"], leg["slippage"], leg["pnl"])
             for leg in expected["trades"][0]["legs"]
         ] == hand["legs"]
-    assert [(p["ts"], p["equity"]) for p in expected["equity_curve"]] == hand["equity_curve"]
+    closed = {t["closed_at"] for t in expected["trades"]}
+    realized_part = [expected["equity_curve"][0]] + [
+        p for p in expected["equity_curve"][1:] if p["ts"] in closed
+    ]
+    assert [(p["ts"], p["equity"]) for p in realized_part] == hand["equity_curve"]
     for trade in expected["trades"]:
         for key in ("fee", "slippage", "pnl"):
             assert Decimal(trade[key]) == sum(
@@ -412,3 +457,49 @@ def test_warmup_history_manifests_cover_the_evaluation_window_only():
     assert [m["kline_count"] for m in manifests] == [3, 3]
     assert all(m["start_at"] == start_at for m in manifests)
     assert any(row["open_time"] < start_at for row in case["klines"]["a"])
+
+
+@pytest.mark.parametrize("case_id", sorted(MTM_HAND))
+def test_mark_to_market_curve_agrees_with_hand_calculation(case_id):
+    expected = CASES[case_id]["expected_result"]
+    hand = MTM_HAND[case_id]
+    assert [(p["ts"], p["equity"]) for p in expected["equity_curve"]] == hand["equity_curve"]
+    assert expected["metrics"]["max_drawdown"] == hand["max_drawdown"]
+
+
+def test_floating_loss_before_profitable_close_now_counts_in_drawdown():
+    # Realized-only curve of unaligned_bar_skipped: 10000 -> 10011.955, drawdown
+    # 0; the mark-to-market curve dips below its intra-trade peak.
+    expected = CASES["unaligned_bar_skipped"]["expected_result"]
+    assert Decimal(expected["trades"][-1]["pnl"]) > 0
+    assert Decimal(expected["metrics"]["max_drawdown"]) > 0
+
+
+@pytest.mark.parametrize("case_id", REQUIRED_CASES)
+def test_equity_curve_mark_to_market_invariants(case_id):
+    case = CASES[case_id]
+    expected = case["expected_result"]
+    curve = expected["equity_curve"]
+    trades = expected["trades"]
+    capital = Decimal(case["initial_capital"])
+    start_at = case["envelope"]["start_at"]
+    assert curve[0] == {"ts": start_at, "equity": case["initial_capital"]}
+    ts_list = [p["ts"] for p in curve]
+    assert ts_list == sorted(set(ts_list))  # strictly increasing, no duplicate ts
+    by_ts = {p["ts"]: p["equity"] for p in curve}
+    running = capital
+    for trade in trades:  # every closed_at point == origin + realized cumulative pnl
+        running += Decimal(trade["pnl"])
+        assert Decimal(by_ts[trade["closed_at"]]) == running
+    for point in curve[1:]:  # no point while flat: each lies inside a held window
+        assert any(t["opened_at"] < point["ts"] <= t["closed_at"] for t in trades), point
+    peak, max_dd = None, Decimal(0)
+    with localcontext(_DECIMAL_CONTEXT):
+        for point in curve:
+            equity = Decimal(point["equity"])
+            peak = equity if peak is None or equity > peak else peak
+            max_dd = max(max_dd, (peak - equity) / peak)
+        final = Decimal(curve[-1]["equity"]) if trades else capital
+        total_return = (final - capital) / capital
+    assert Decimal(expected["metrics"]["max_drawdown"]) == max_dd
+    assert Decimal(expected["metrics"]["total_return"]) == total_return

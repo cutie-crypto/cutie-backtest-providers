@@ -204,13 +204,17 @@ def test_section_3_example_is_reproduced_field_by_field():
     ]
     assert result["schema_version"] == "cutie.backtest_result.v3" == RESULT_V3_SCHEMA
     assert result["trades"] == [SECTION_3_TRADE]
+    # 0930 按市值：bar 21 收盘（1720014400）持仓两腿浮盈 0，只扣开仓侧成本
+    # 3000*1*15/10000 + 60000*0.05*15/10000 = 9 -> 9991；bar 22 收盘与 bar 23 开盘
+    # 平仓同一 ts，保留 closed_at 点。回撤 9/10000。
     assert result["equity_curve"] == [
         {"ts": 1719000000, "equity": "10000"},
+        {"ts": 1720014400, "equity": "9991"},
         {"ts": 1720028800, "equity": "10101.91"},
     ]
     assert result["metrics"] == {
         "total_return": "0.010191",
-        "max_drawdown": "0",
+        "max_drawdown": "0.0009",
         "trade_count": 1,
         "skipped_bars": 0,
     }
