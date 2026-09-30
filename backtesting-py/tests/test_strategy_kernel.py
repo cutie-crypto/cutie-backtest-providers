@@ -613,6 +613,39 @@ def test_short_gap_take_uses_open_and_non_negative_costs():
     assert result["trace_trades"][0]["exit_kind"] == "take_profit"
 
 
+def test_equity_curve_marks_open_position_to_market_at_each_held_bar_close():
+    """0930 按市值口径：short 10 份于 frame 1 开盘 100 入场，frame 1 收盘 103 浮亏，
+    frame 3 开盘 94 止盈（最终盈利 57.09）。
+
+    开仓侧成本 100*10*(10+5)/10000 = 1.5：frame 1 收盘（ts 7200）
+    10000 + (100-103)*10 - 1.5 = 9968.5；frame 2 收盘 ts 10800 与 closed_at
+    （frame 3 开盘）同 ts，保留 closed_at 点 10057.09。max_drawdown = 31.5/10000，
+    只看已实现点时为 0。
+    """
+    plan = compile_spec(make_spec(side="short"))
+    params = execution_params()
+    params["end_at"] = 4 * 3600
+    state = initial_state(plan, params)
+    result = simulate(
+        plan,
+        [
+            frame(0),
+            frame(1, high="104", low="96", close="103"),
+            frame(2, open_="102", high="104", low="99", close="101"),
+            frame(3, open_="94", high="95", low="93", close="94"),
+        ],
+        state,
+    )
+    assert [(t["closed_at"], t["pnl"]) for t in result["trades"]] == [(10800, "57.09")]
+    assert result["equity_curve"] == [
+        {"ts": state.execution_start_at, "equity": "10000"},
+        {"ts": 7200, "equity": "9968.5"},
+        {"ts": 10800, "equity": "10057.09"},
+    ]
+    assert result["metrics"]["max_drawdown"] == "0.00315"
+    assert result["metrics"]["total_return"] == "0.005709"
+
+
 @pytest.mark.parametrize(
     ("side", "high", "low", "expected_kind", "expected_price"),
     [
