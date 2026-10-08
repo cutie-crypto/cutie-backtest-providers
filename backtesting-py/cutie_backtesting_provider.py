@@ -2937,6 +2937,82 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
     }
 
 
+def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """R1-T4：EMA 趋势过滤 + RSI 回调（Jessie #3）。只做多。
+
+    状态位 dipped：任一根（含持仓中）RSI < rsi_entry 即置 True；空仓时 dipped 且
+    本根 RSI > rsi_entry 且 Close > EMA 才入场并清 dipped。出场：RSI > rsi_exit 或
+    Close < EMA。EMA 用 ewm(span, adjust=False)，RSI 用 _rsi_series（与 ema_trend_rsi 同算法）。
+    """
+    risk = _parse_fixed_risk_params(params)
+    try:
+        ema_period = int(params.get("ema_period", 200))
+        rsi_period = int(params.get("rsi_period", 14))
+        rsi_entry = float(params.get("rsi_entry", 40))
+        rsi_exit = float(params.get("rsi_exit", 70))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:ema_period/rsi_period/rsi_entry/rsi_exit must be numbers")
+    if ema_period < 2:
+        raise ValueError(f"INVALID_PARAMS:ema_period must be >= 2 (got {ema_period})")
+    if rsi_period < 2:
+        raise ValueError(f"INVALID_PARAMS:rsi_period must be >= 2 (got {rsi_period})")
+    if rsi_entry >= rsi_exit:
+        raise ValueError("INVALID_PARAMS:rsi_entry must be less than rsi_exit")
+
+    from backtesting import Strategy
+
+    min_bars = max(ema_period, rsi_period + 1)
+
+    class EmaRsiPullbackStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            close = self.data.Close
+            self.ema = self.I(
+                self._warm(lambda x: pd.Series(x).ewm(span=ema_period, adjust=False).mean(), "Close"),
+                close,
+                name=f"EMA({ema_period})",
+            )
+            self.rsi = self.I(
+                self._warm(lambda x: _rsi_series(x, rsi_period), "Close"),
+                close,
+                name=f"RSI({rsi_period})",
+            )
+            self._dipped = False
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            # Warm-up guard: no position can exist before it; it also keeps the
+            # dipped flag from latching on under-warmed (NaN->50 filled) RSI.
+            if self._warmup_bars + len(self.data) < min_bars:
+                return
+            ema = self.ema[-1]
+            rsi = self.rsi[-1]
+            if not (math.isfinite(ema) and math.isfinite(rsi)):
+                return
+            close = self.data.Close[-1]
+            if rsi < rsi_entry:
+                self._dipped = True
+            if self.position:
+                if rsi > rsi_exit or close < ema:
+                    self.position.close()
+            elif self._dipped and rsi > rsi_entry and close > ema:
+                self._risk_buy()
+                self._dipped = False
+
+    return {
+        "strategy": EmaRsiPullbackStrategy,
+        "executed_name": (
+            f"EMA Pullback+RSI (EMA{ema_period}, RSI{rsi_period} "
+            f"dip<{rsi_entry:g}/exit>{rsi_exit:g})"
+        ),
+        "min_bars": min_bars,
+    }
+
+
 def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3256,6 +3332,25 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "cci_overbought": {"type": "number", "default": 100, "minimum": 0, "maximum": 500},
             "rsi_oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
             "rsi_overbought": {"type": "number", "default": 70, "minimum": 51, "maximum": 99},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.ema_rsi_pullback": {
+        "name": "Local Backtesting.py EMA Trend + RSI Pullback",
+        "description": (
+            "Trend pullback, long only: after RSI dips below the entry level, go long "
+            "once RSI recovers above it while price is above the EMA; exit when RSI "
+            "rises above the exit level or price closes below the EMA. Maps to KOL "
+            "'EMA200 过滤 + RSI 回调'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_ema_rsi_pullback,
+        "param_schema_properties": {
+            "ema_period": {"type": "integer", "default": 200, "minimum": 50, "maximum": 300},
+            "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
+            "rsi_entry": {"type": "number", "default": 40, "minimum": 20, "maximum": 50},
+            "rsi_exit": {"type": "number", "default": 70, "minimum": 55, "maximum": 85},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
