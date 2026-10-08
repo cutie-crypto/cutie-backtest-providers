@@ -84,6 +84,7 @@ from scale_in_out_ledger import (
     LedgerInvariantError,
     result_v2_equity_curve as _scale_in_out_curve_v2,
     result_v2_trades as _scale_in_out_trades_v2,
+    round_cash,
     run_scale_in_out,
     threshold_signal,
 )
@@ -2723,8 +2724,9 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
         # Forced liquidation and stop losses have distinct timestamps, so only
         # trades closed on successful sell_lot fills contribute cell profit.
         pnls = [t["pnl"] for t in ledger.trades if t["closed_at"] in stats["sell_lot_ts"]]
+        # 平均值按账本现金精度（1e-8，ROUND_HALF_UP）量化后输出，不把 80 位中间值带进结果页。
         with localcontext(Context(prec=80)):
-            avg = canonical_decimal_str(sum(pnls, Decimal(0)) / Decimal(len(pnls))) if pnls else None
+            avg = canonical_decimal_str(round_cash(sum(pnls, Decimal(0)) / Decimal(len(pnls)))) if pnls else None
         return {
             "position_mode": "grid",
             "grid_fills": stats["grid_fills"],

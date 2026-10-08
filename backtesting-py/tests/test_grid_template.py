@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as provider
-from scale_in_out_ledger import LedgerBar, run_scale_in_out
+from scale_in_out_ledger import LedgerBar, round_cash, run_scale_in_out
 
 D = Decimal
 TOOL = 'local.backtesting_py.grid'
@@ -153,8 +153,11 @@ def test_hand_counted_golden_and_next_open_fills(case):
     cell_times = {START+i*DAY for i, action in expected_fills if action == 'sell_lot'}
     pnls = [t['pnl'] for t in result.trades if t['closed_at'] in cell_times]
     with localcontext(Context(prec=80)):
-        expected_avg = sum(pnls)/len(pnls) if pnls else None
+        expected_avg = round_cash(sum(pnls)/len(pnls)) if pnls else None
     assert (D(a['grid_cell_profit_avg']) if pnls else a['grid_cell_profit_avg']) == expected_avg
+    if case['name'] == 'arithmetic':
+        # 7 笔整批卖出 pnl 合计 57.81，÷7 = 8.258571428…，按 1e-8 量化输出
+        assert a['grid_cell_profit_avg'] == '8.25857143'
     assert a['position_mode'] == 'grid'
 
 
