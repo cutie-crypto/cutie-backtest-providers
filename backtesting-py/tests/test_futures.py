@@ -249,9 +249,11 @@ def test_backtest_futures_happy_path(client, monkeypatch, tmp_path):
     }
 
     # ccxt was asked for the unified linear-perpetual-swap market, not spot.
-    assert len(constructed) == 1
-    assert constructed[0].options.get("options") == {"defaultType": "swap"}
-    assert constructed[0].last_symbol == "BTC/USDT:USDT"
+    # 两次：主区间 + 1008 指标预热段（start_at 之前 min_bars 根，单独取）。
+    assert len(constructed) == 2
+    for exchange in constructed:
+        assert exchange.options.get("options") == {"defaultType": "swap"}
+        assert exchange.last_symbol == "BTC/USDT:USDT"
 
     assert body["assumptions"]["market"] == "futures"
     assert body["limitations"]["funding_rate_included"] is False

@@ -40,7 +40,8 @@ def test_http_signal_report_uses_independent_observation_replay(
             (df.index >= pd.to_datetime(start, unit="s", utc=True))
             & (df.index < pd.to_datetime(end, unit="s", utc=True))
         ].copy()
-        return result.iloc[:-1] if missing_observation and len(calls) == 3 else result
+        # 第 4 次是观察周期取数（前三次：主区间、1008 指标预热段、指标历史）。
+        return result.iloc[:-1] if missing_observation and len(calls) == 4 else result
 
     monkeypatch.setattr(provider, "_fetch_ohlcv", fetch)
     monkeypatch.setattr(provider, "REPORTS_DIR", tmp_path)
@@ -102,7 +103,7 @@ def test_http_signal_report_uses_independent_observation_replay(
     assert report["sha256"] == canonical_json_sha256(
         {k: v for k, v in report.items() if k != "sha256"}
     )
-    assert calls == [("5m", 1200, 15000), ("5m", 0, 15000), ("5m", 1200, 15000)]
+    assert calls == [("5m", 1200, 15000), ("5m", 0, 1200), ("5m", 0, 15000), ("5m", 1200, 15000)]
     assert report["intents"][0]["at"] == 1530
     settlements = report["replay"]["settlements"]
     if outcome == "unfilled":
