@@ -1086,6 +1086,8 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
 
 
 _WARMUP_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
+# 非对齐since会被交易所向上取桶，完整收盘筛选还可能少一根；先对齐再留余量，最终仍tail(bars)。
+_TEMPLATE_WARMUP_FETCH_EXTRA_BARS = 2
 
 
 def _fetch_template_warmup(
@@ -1104,10 +1106,12 @@ def _fetch_template_warmup(
     if bars <= 0 or main_df.empty:
         return empty
     step_sec = max(1, _timeframe_milliseconds(timeframe) // 1000)
+    aligned_start = (int(start_sec) // step_sec) * step_sec
+    since = max(0, aligned_start - (bars + _TEMPLATE_WARMUP_FETCH_EXTRA_BARS) * step_sec)
     try:
         warm = _fetch_ohlcv(
             exchange_id, market, symbol, timeframe,
-            max(0, int(start_sec) - bars * step_sec), int(start_sec),
+            since, int(start_sec),
         )
         warm = warm.loc[warm.index < main_df.index[0], list(_WARMUP_COLUMNS)].astype("float64")
         warm = warm[np.isfinite(warm.to_numpy()).all(axis=1)]
