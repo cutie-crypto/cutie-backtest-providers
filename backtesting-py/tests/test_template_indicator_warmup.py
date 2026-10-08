@@ -182,6 +182,7 @@ def test_range_ignoring_fetch_never_reuses_main_rows_as_warmup(client, monkeypat
         ("local.backtesting_py.cci_rsi", {"cci_period": 10, "rsi_period": 10}),
         ("local.backtesting_py.roc", {"roc_period": 12, "entry_threshold": 1, "exit_threshold": 0}),
         ("local.backtesting_py.ema_trend_rsi", {"ema_fast": 5, "ema_slow": 20, "rsi_period": 14}),
+        ("local.backtesting_py.ema_pullback", {"ema_fast": 5, "ema_slow": 30}),
     ],
 )
 def test_warmup_results_cover_main_range_only(client, monkeypatch, tool_id, params):
