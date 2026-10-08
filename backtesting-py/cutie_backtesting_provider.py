@@ -4283,18 +4283,23 @@ def _run_scale_in_out_backtest(
         )
 
     try:
-        closes = np.concatenate([
-            warmup_df["Close"].to_numpy(dtype="float64"),
-            df["Close"].to_numpy(dtype="float64"),
-        ])
-        values = np.asarray(config["indicator"](closes), dtype="float64")[-len(df):]
-        signal = threshold_signal(
-            values, buy_below=config["buy_below"], sell_above=config["sell_above"]
-        )
         bars = [
             LedgerBar(open_time=open_time, close_time=close_time, open=Decimal(str(float(open_))), close=close)
             for (open_time, close_time, close), open_ in zip(_result_v2_bar_closes(df, timeframe), df["Open"])
         ]
+        if "signal_factory" in config:
+            # R3 分批账本模板（网格 / DCA）：信号与成交回调由模板自带，策略状态只在其闭包里。
+            signal, on_fill = config["signal_factory"](bars)
+        else:
+            closes = np.concatenate([
+                warmup_df["Close"].to_numpy(dtype="float64"),
+                df["Close"].to_numpy(dtype="float64"),
+            ])
+            values = np.asarray(config["indicator"](closes), dtype="float64")[-len(df):]
+            signal = threshold_signal(
+                values, buy_below=config["buy_below"], sell_above=config["sell_above"]
+            )
+            on_fill = None
         ledger = run_scale_in_out(
             bars,
             signal,
@@ -4305,6 +4310,8 @@ def _run_scale_in_out_backtest(
             slippage_bps=slippage_bps,
             start_at=start_at,
             end_at=end_at,
+            lot_order=config.get("lot_order", "fifo"),
+            on_fill=on_fill,
         )
     except LedgerInvariantError as e:
         logger.exception("scale-in/out ledger invariant violated run_id=%s", run_id)
@@ -4376,6 +4383,8 @@ def _run_scale_in_out_backtest(
         strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
             body, executed_name,
         )
+        # 模板自报的统计（网格成交次数、DCA 平均成本等）排在固定字段之后，可覆盖 position_mode。
+        template_assumptions = config["extra_assumptions"](ledger) if "extra_assumptions" in config else {}
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
@@ -4411,6 +4420,7 @@ def _run_scale_in_out_backtest(
                 "indicator_warmup_bars": indicator_warmup_bars,
                 "real_market_data": True,
                 "no_live_trading": True,
+                **template_assumptions,
             },
             "limitations": {
                 "verification": "external_unverified",
