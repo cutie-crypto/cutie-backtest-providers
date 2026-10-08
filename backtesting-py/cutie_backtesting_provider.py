@@ -84,6 +84,7 @@ from scale_in_out_ledger import (
     LedgerInvariantError,
     result_v2_equity_curve as _scale_in_out_curve_v2,
     result_v2_trades as _scale_in_out_trades_v2,
+    round_cash,
     run_scale_in_out,
     threshold_signal,
 )
@@ -2614,6 +2615,145 @@ def _build_rsi_scale_in_out(params: dict[str, Any], *, initial_capital: float = 
     }
 
 
+def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Close-based grid; references advance on signals, lots only on actual fills."""
+    from decimal import Context, localcontext
+
+    prices: dict[str, Decimal] = {}
+    for key in ("lower_price", "upper_price", "amount_per_grid"):
+        raw = params.get(key)
+        if raw is None or isinstance(raw, bool):
+            raise ValueError(f"INVALID_PARAMS:{key} is required")
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"INVALID_PARAMS:{key} must be a number")
+        if not value.is_finite() or value <= 0:
+            raise ValueError(f"INVALID_PARAMS:{key} must be > 0")
+        prices[key] = value
+    lower, upper, amount = (prices[k] for k in ("lower_price", "upper_price", "amount_per_grid"))
+    if lower >= upper:
+        raise ValueError("INVALID_PARAMS:require lower_price < upper_price")
+    try:
+        raw_count = params.get("grid_count", 20)
+        count_value = Decimal(str(raw_count))
+        if isinstance(raw_count, bool) or not count_value.is_finite() or count_value != count_value.to_integral_value():
+            raise ValueError
+        n = int(count_value)
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:grid_count must be an integer")
+    if not 5 <= n <= 100:
+        raise ValueError("INVALID_PARAMS:grid_count must be in [5, 100]")
+    mode = params.get("grid_mode", "arithmetic")
+    below = params.get("below_lower_action", "pause")
+    if mode not in ("arithmetic", "geometric"):
+        raise ValueError("INVALID_PARAMS:grid_mode must be arithmetic or geometric")
+    if below not in ("pause", "stop_loss"):
+        raise ValueError("INVALID_PARAMS:below_lower_action must be pause or stop_loss")
+
+    # Grid lines can be recurring/irrational. Round only their construction at an
+    # explicit 80 significant Decimal digits (including fractional powers), never
+    # via float. Endpoints stay exact; ledger money arithmetic retains Inexact traps.
+    with localcontext(Context(prec=80)) as ctx:
+        lines = [lower]
+        for i in range(1, n):
+            if mode == "arithmetic":
+                lines.append(lower + (upper - lower) * Decimal(i) / Decimal(n))
+            else:
+                lines.append(lower * ctx.power(upper / lower, Decimal(i) / Decimal(n)))
+        lines.append(upper)
+
+    def level(close):
+        if close < lower:
+            return -1
+        if close > upper:
+            return n + 1
+        return max(i for i, line in enumerate(lines) if line <= close)
+
+    stats = {"grid_fills": 0, "stop_loss_triggered": 0, "sell_lot_ts": set()}
+
+    def signal_factory(bars):
+        ref_level = level(bars[0].close) if bars else 0
+        holdings = 0
+        reset_pending = False
+        stats.update(grid_fills=0, stop_loss_triggered=0, sell_lot_ts=set())
+
+        def signal(index):
+            nonlocal ref_level, reset_pending
+            if index == 0:
+                return "hold"
+            lv = level(bars[index].close)
+            if lv == -1:
+                if below == "stop_loss" and not reset_pending:
+                    reset_pending = True
+                    if holdings > 0:
+                        return "sell_all"
+                return "hold"
+            if reset_pending and 0 <= lv <= n:
+                ref_level = lv
+                reset_pending = False
+                return "hold"
+            if 0 <= lv <= n and lv < ref_level:
+                ref_level -= 1  # Advance even if the next-open buy lacks cash.
+                return ("buy", amount)
+            if lv > ref_level:
+                if holdings > 0:
+                    ref_level += 1
+                    return ("sell_lot",)
+                ref_level = min(lv, n)
+            return "hold"
+
+        def on_fill(index, action, filled, price):
+            nonlocal holdings
+            if not filled:
+                return
+            if action == "buy":
+                holdings += 1
+                stats["grid_fills"] += 1
+            elif action == "sell_lot":
+                holdings -= 1
+                stats["grid_fills"] += 1
+                stats["sell_lot_ts"].add(bars[index].open_time)
+            elif action == "sell_all":
+                holdings = 0
+                stats["stop_loss_triggered"] += 1
+
+        return signal, on_fill
+
+    def extra_assumptions(ledger):
+        # Forced liquidation and stop losses have distinct timestamps, so only
+        # trades closed on successful sell_lot fills contribute cell profit.
+        pnls = [t["pnl"] for t in ledger.trades if t["closed_at"] in stats["sell_lot_ts"]]
+        # 平均值按账本现金精度（1e-8，ROUND_HALF_UP）量化后输出，不把 80 位中间值带进结果页。
+        with localcontext(Context(prec=80)):
+            avg = canonical_decimal_str(round_cash(sum(pnls, Decimal(0)) / Decimal(len(pnls)))) if pnls else None
+        return {
+            "position_mode": "grid",
+            "grid_fills": stats["grid_fills"],
+            "grid_cell_profit_avg": avg,
+            "max_unrealized_loss": canonical_decimal_str(ledger.max_unrealized_loss),
+            "lower_price": canonical_decimal_str(lower),
+            "upper_price": canonical_decimal_str(upper),
+            "grid_count": n,
+            "grid_mode": mode,
+            "below_lower_action": below,
+            "stop_loss_triggered": stats["stop_loss_triggered"],
+        }
+
+    return {
+        "strategy": None,
+        "executed_name": f"Grid ({lower}/{upper}, {n} {mode}, {amount})",
+        "min_bars": 1,
+        "scale_in_out": {
+            "buy_notional": amount,
+            "sell_notional": amount,
+            "lot_order": "lifo",
+            "signal_factory": signal_factory,
+            "extra_assumptions": extra_assumptions,
+        },
+    }
+
+
 def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3639,6 +3779,30 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "overbought": {"type": "number", "default": 70, "minimum": 51, "maximum": 99},
             "buy_notional": {"type": "number", "minimum": 0},
             "sell_notional": {"type": "number", "minimum": 0},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.grid": {
+        "name": "Local Spot Grid",
+        "description": (
+            "Spot long-only arithmetic or geometric grid: buy one fixed-notional lot "
+            "per downward level and sell the newest whole lot per upward level, at "
+            "most one action per bar. Above the upper bound no buys; below the lower "
+            "bound pause or liquidate once until re-entry. Fills use the next bar open, "
+            "not grid-line or trigger prices — maps to KOL '区间网格'"
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "runner": SCALE_IN_OUT_RUNNER,
+        "markets": ["spot"],
+        "build": _build_grid,
+        "param_schema_properties": {
+            "lower_price": {"type": "number", "minimum": 0},
+            "upper_price": {"type": "number", "minimum": 0},
+            "grid_count": {"type": "integer", "default": 20, "minimum": 5, "maximum": 100},
+            "grid_mode": {"type": "string", "default": "arithmetic", "enum": ["arithmetic", "geometric"]},
+            "amount_per_grid": {"type": "number", "minimum": 0},
+            "below_lower_action": {"type": "string", "default": "pause", "enum": ["pause", "stop_loss"]},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
