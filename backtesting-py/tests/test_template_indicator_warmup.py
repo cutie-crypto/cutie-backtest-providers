@@ -178,6 +178,7 @@ def test_range_ignoring_fetch_never_reuses_main_rows_as_warmup(client, monkeypat
         ("local.backtesting_py.bollinger_reversal", {"bb_period": 20, "bb_std": 2.0}),
         ("local.backtesting_py.bollinger_breakout", {"bb_period": 20, "bb_std": 2.0}),
         ("local.backtesting_py.breakout", {"lookback": 20, "exit_lookback": 10}),
+        ("local.backtesting_py.volume_breakout", {"lookback": 20, "volume_multiple": 2, "volume_avg_period": 20, "exit_ema": 20}),
         ("local.backtesting_py.macd", {"fast": 5, "slow": 10, "signal": 4}),
         ("local.backtesting_py.cci_rsi", {"cci_period": 10, "rsi_period": 10}),
         ("local.backtesting_py.roc", {"roc_period": 12, "entry_threshold": 1, "exit_threshold": 0}),
