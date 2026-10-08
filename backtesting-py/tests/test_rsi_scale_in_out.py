@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -652,3 +653,42 @@ def test_arithmetic_beyond_precision_raises_instead_of_rounding():
     bars = _bars(["1.2345678901234567E-5"] * 3, ["1.2345678901234567E-5"] * 3)
     with pytest.raises(LedgerInvariantError, match="inexact"):
         _run(bars, ["buy", "hold", "hold"], capital="1E40", buy="1E40", fee="0", slip="0")
+
+
+# ---------------------------------------------------------------------------
+# 四轮（Codex c511282 增量复核）：费用量化前不得被精度陷阱误杀；卖出费用不得超过成交额
+# ---------------------------------------------------------------------------
+
+def _half_up_cash(value: Fraction) -> D:
+    """独立参照：Fraction 精确值按 1e-8 四舍五入（非负）。"""
+    units = value * 10**8
+    whole = units.numerator // units.denominator
+    if (units - whole) * 2 >= 1:
+        whole += 1
+    return D(whole).scaleb(-8)
+
+
+def test_fee_on_big_capital_low_price_fractional_bps_is_exact():
+    price = D("1.2345678901234567E-9")
+    bars = _bars([price] * 3, [price] * 3)
+    result = _run(bars, ["buy", "hold", "hold"], capital="1E17", buy="1E16", fee="0.12345678", slip="0")
+    assert result.buy_fills == 1
+    qty = floor_qty(D("1E16"), price)
+    gross = Fraction(qty) * Fraction(price)
+    fee = _half_up_cash(gross * Fraction("0.12345678") / 10000)
+    assert fee == D("123456780000.00000000")
+    assert result.snapshots[0].cash == D("1E17")
+    assert Fraction(result.snapshots[1].cash) == Fraction(D("1E17")) - gross - Fraction(fee)
+
+
+def test_exit_costs_never_exceed_exit_gross():
+    """各 4999 bps、期末价 1.01e-8：两项各量化成 1e-8 会超过成交额 1.01e-8；fee 先取、滑点取剩余。"""
+    bars = _bars([1, 1, 1], [1, 1, D("1.01E-8")])
+    result = _run(bars, ["buy", "hold", "hold"], capital="1.9998", buy="1", fee="4999", slip="4999")
+    assert result.buy_fills == 1 and result.snapshots[1].cash == 0
+    (trade,) = result.trades
+    assert trade["exit_price"] == D("1.01E-8") and trade["qty"] == 1
+    # 卖出侧：fee = R(1.01e-8 × 0.4999) = 1e-8；滑点 = min(1e-8, 1.01e-8 − 1e-8) = 1e-10
+    assert trade["fee"] == D("0.4999") + D("1E-8")
+    assert trade["slippage"] == D("0.4999") + D("1E-10")
+    assert result.final_cash == 0
