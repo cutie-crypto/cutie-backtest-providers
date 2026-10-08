@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cutie_backtesting_provider as provider  # noqa: E402
 from scale_in_out_ledger import (  # noqa: E402
-    INVARIANT_TOLERANCE,
     LedgerBar,
     LedgerInvariantError,
     ScaleInOutLedger,
@@ -334,10 +333,12 @@ def test_five_invariants_hold_on_every_bar(seed):
     assert result.buy_fills > 5 and result.sell_fills > 5
     for snap in result.snapshots:
         # ① 现金 + Σ批次数量 × 当根价格 = 权益（按已实现 + 浮动净值独立算）
-        assert abs(snap.cash + snap.lot_qty_sum * snap.price - snap.equity_by_pnl) <= INVARIANT_TOLERANCE
-        assert abs(snap.equity_by_cash - snap.equity_by_pnl) <= INVARIANT_TOLERANCE
+        assert abs(snap.cash + snap.lot_qty_sum * snap.price - snap.equity_by_pnl) <= snap.money_tolerance
+        assert abs(snap.equity_by_cash - snap.equity_by_pnl) <= snap.money_tolerance
         # ② 批次数量和 = 累计买入 − 累计卖出
-        assert abs(snap.lot_qty_sum - (snap.cum_bought - snap.cum_sold)) <= INVARIANT_TOLERANCE
+        assert abs(snap.lot_qty_sum - (snap.cum_bought - snap.cum_sold)) <= snap.qty_tolerance
+        # 误差界随规模给，但远小于一分钱 / 一份最小数量，不会吞掉真实错账
+        assert snap.money_tolerance < D("1e-10") and snap.qty_tolerance < D("1e-12")
         # ④ 现金永不为负
         assert snap.cash >= 0
         # ⑤ 同根不得既买又卖
@@ -457,3 +458,45 @@ def test_catalog_entry_is_spot_only_without_fixed_risk_fields():
                                  provider.TOOL_SPECS["local.backtesting_py.rsi_reversal"], ["BTCUSDT"])
     assert old["markets"] == ["spot", "futures"]
     assert set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) <= set(old["param_schema"]["properties"])
+
+
+# ---------------------------------------------------------------------------
+# Decimal 边界回归（Codex review 四条 P2）
+# ---------------------------------------------------------------------------
+
+def test_fifo_boundary_residual_does_not_spawn_dust_trade():
+    """价恒 3：买两笔 100、卖两笔 50，第二次卖出恰好卖光第一批，不得为 1e-26 尾数跨到第二批。"""
+    bars = _bars([3] * 5, [3, 3, 3, 3, 4])
+    result = _run(bars, ["buy", "buy", "sell", "sell", "hold"], capital="1000", sell="50")
+    lot = D("100") / D("3")
+    first = D("50") / D("3")
+    assert [(t["opened_at"], t["closed_at"], t["qty"]) for t in result.trades] == [
+        (bars[1].open_time, bars[3].open_time, first),
+        (bars[1].open_time, bars[4].open_time, lot - first),
+        (bars[2].open_time, bars[4].close_time, lot),
+    ]
+    wins = sum(1 for t in result.trades if t["pnl"] > 0)
+    assert (wins, len(result.trades)) == (1, 3)  # 胜率 33.33%，不是 25%
+
+
+def test_exact_cash_for_one_buy_is_not_treated_as_insufficient():
+    bars = _bars([26134.51] * 7, [26134.51] * 7)
+    result = _run(bars, ["buy"] * 6 + ["hold"], capital="540.58", buy="540.58", fee="0", slip="0")
+    assert (result.buy_fills, result.skipped_buys_insufficient_cash) == (1, 5)
+    assert result.snapshots[1].cash == 0
+    assert len(result.trades) == 1
+
+
+def test_tiny_notional_partial_sell_is_not_turned_into_full_exit():
+    bars = _bars([100000] * 3, [100000] * 3)
+    result = _run(bars, ["buy", "sell", "hold"], capital="1", buy="0.00000005", sell="0.00000001",
+                  fee="0", slip="0")
+    assert [t["qty"] for t in result.trades] == [D("1E-13"), D("4E-13")]
+    assert result.trades[1]["closed_at"] == bars[-1].close_time
+
+
+def test_huge_notional_does_not_trip_scaled_invariants():
+    bars = _bars([3.14, 3.14, 2.97, 2.97], [3.14, 3.14, 2.97, 2.97])
+    result = _run(bars, ["buy", "sell", "hold", "hold"], capital="1E17", buy="1E17", fee="0", slip="0")
+    assert result.trades[0]["qty"] == D("100") / D("2.97")
+    assert len(result.trades) == 2

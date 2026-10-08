@@ -36,9 +36,11 @@ SELL = "sell"
 HOLD = "hold"
 _SIGNALS = frozenset({BUY, SELL, HOLD})
 _BPS = Decimal(10000)
-# 账本走 Decimal 默认上下文（28 位有效数字，与 result.v2 旧路径同一上下文），
-# 拆批与累加会有 1e-20 量级舍入；不变量 ①② 用这个容差，量级远小于任何一笔真实错账。
-INVARIANT_TOLERANCE = Decimal("1e-12")
+# 账本走 Decimal 默认上下文（28 位有效数字，与 result.v2 旧路径同一上下文），单次运算相对
+# 舍入误差约 5e-28。误差界一律按**相对量**给：交易判断（拆批边界、是否清仓）乘本次目标数量，
+# 不变量 ① 乘金额规模、② 乘数量规模，各自留约 1e9 倍余量给累积舍入；不用固定绝对容差
+# （大额会误报、小额会把真实差额吞掉，见 Codex review 四条 P2）。
+RELATIVE_ERROR_BOUND = Decimal("1e-18")
 
 SignalFn = Callable[[int], str]
 
@@ -75,6 +77,8 @@ class BarSnapshot:
     cum_sold: Decimal
     equity_by_cash: Decimal
     equity_by_pnl: Decimal
+    money_tolerance: Decimal
+    qty_tolerance: Decimal
     buys_this_bar: int
     sells_this_bar: int
 
@@ -145,6 +149,7 @@ class ScaleInOutLedger:
         self.realized_pnl = Decimal(0)
         self.cum_bought = Decimal(0)
         self.cum_sold = Decimal(0)
+        self.cum_traded_value = Decimal(0)  # 累计成交额（金额规模，供 ① 的误差界）
         self.buy_fills = 0
         self.sell_fills = 0
         self.skipped_buys = 0
@@ -172,13 +177,16 @@ class ScaleInOutLedger:
         self.sells_this_bar = 0
 
     def buy(self, ts: int, price: Decimal) -> bool:
-        qty = self.buy_notional / price
-        gross = price * qty
-        charge = gross + gross * self.fee_rate + gross * self.slippage_rate
+        # 现金门槛与扣款按原始金额算；数量独立算，不用除法舍入后的数量反推（否则恰好足额会被
+        # price*(notional/price) 的 1e-25 尾数判成不足）。
+        notional = self.buy_notional
+        charge = notional + notional * self.fee_rate + notional * self.slippage_rate
         if self.cash < charge:
             self.skipped_buys += 1
             return False
+        qty = notional / price
         self.cash -= charge
+        self.cum_traded_value += notional
         self.lots.append(_Lot(opened_at=ts, entry_price=price, qty=qty))
         self.cum_bought += qty
         self.buy_fills += 1
@@ -190,18 +198,19 @@ class ScaleInOutLedger:
         if holding <= 0:
             return False
         target = self.sell_notional / price
-        # 持仓不足一笔（含只差 Decimal 舍入尾数）就整批全部平掉，不靠减法凑零，免得留尾数批次。
-        remaining: Optional[Decimal] = (
-            None if (sell_all or holding <= target + INVARIANT_TOLERANCE) else target
-        )
+        # 本次运算误差界（数量量纲，按目标数量相对给）：只吸收 Decimal 舍入尾数，不改变交易决策。
+        eps = target * RELATIVE_ERROR_BOUND
+        # 持仓不足一笔就整批全部平掉，不靠减法凑零。
+        remaining: Optional[Decimal] = None if (sell_all or holding <= target + eps) else target
         while self.lots:
             lot = self.lots[0]
             if remaining is None:
                 portion = lot.qty
             else:
-                if remaining <= 0:
+                if remaining <= eps:
                     break
-                portion = lot.qty if lot.qty <= remaining else remaining
+                # 拆批边界：批次与剩余目标在误差界内相等就整批归入当前批，不为尾数跨到下一批。
+                portion = lot.qty if lot.qty <= remaining + eps else remaining
                 remaining -= portion
             self._close_portion(lot, portion, ts, price)
             self.cum_sold += portion
@@ -226,6 +235,7 @@ class ScaleInOutLedger:
         pnl = (price - entry) * qty - fee - slippage
         exit_gross = price * qty
         self.cash += exit_gross - exit_gross * self.fee_rate - exit_gross * self.slippage_rate
+        self.cum_traded_value += exit_gross
         self.realized_pnl += pnl
         self.trades.append({
             "opened_at": lot.opened_at,
@@ -240,13 +250,22 @@ class ScaleInOutLedger:
         })
 
     # -- 不变量 ------------------------------------------------------------
+    def money_tolerance(self, price: Decimal) -> Decimal:
+        """① 的误差界：本金 + 累计成交额 + 当前持仓市值，乘相对误差界。"""
+        scale = self.initial_capital + self.cum_traded_value + self.lot_qty_sum() * price
+        return scale * RELATIVE_ERROR_BOUND
+
+    def qty_tolerance(self) -> Decimal:
+        """② 的误差界：累计买入数量乘相对误差界。"""
+        return self.cum_bought * RELATIVE_ERROR_BOUND
+
     def check_invariants(self, price: Decimal, where: str) -> None:
         by_cash = self.equity_by_cash(price)
         by_pnl = self.equity_by_pnl(price)
-        if abs(by_cash - by_pnl) > INVARIANT_TOLERANCE:
+        if abs(by_cash - by_pnl) > self.money_tolerance(price):
             raise LedgerInvariantError(f"{where}: cash+holdings {by_cash} != equity {by_pnl}")
         lot_sum = self.lot_qty_sum()
-        if abs(lot_sum - (self.cum_bought - self.cum_sold)) > INVARIANT_TOLERANCE:
+        if abs(lot_sum - (self.cum_bought - self.cum_sold)) > self.qty_tolerance():
             raise LedgerInvariantError(
                 f"{where}: lot qty {lot_sum} != bought {self.cum_bought} - sold {self.cum_sold}"
             )
@@ -304,6 +323,8 @@ def run_scale_in_out(
             cum_sold=ledger.cum_sold,
             equity_by_cash=ledger.equity_by_cash(bar.close),
             equity_by_pnl=ledger.equity_by_pnl(bar.close),
+            money_tolerance=ledger.money_tolerance(bar.close),
+            qty_tolerance=ledger.qty_tolerance(),
             buys_this_bar=ledger.buys_this_bar,
             sells_this_bar=ledger.sells_this_bar,
         ))
