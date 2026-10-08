@@ -131,12 +131,14 @@ def _script(signals: list[str]):
     return lambda i: signals[i]
 
 
-def _run(bars, signals, *, capital="10000", buy="100", sell="100", fee="10", slip="5", end_at=None):
+def _run(bars, signals, *, capital="10000", buy="100", sell="100", fee="10", slip="5", end_at=None,
+         lot_order="fifo"):
     return run_scale_in_out(
         bars, _script(signals) if isinstance(signals, list) else signals,
         initial_capital=D(capital), buy_notional=D(buy), sell_notional=D(sell),
         fee_bps=D(fee), slippage_bps=D(slip),
         start_at=bars[0].open_time, end_at=bars[-1].close_time if end_at is None else end_at,
+        lot_order=lot_order,
     )
 
 
@@ -336,14 +338,16 @@ def test_end_at_on_last_open_skips_fill_that_would_collide_with_liquidation():
 # 五条不变量：逐根断言 + 注入违规必须报错
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("lot_order", ["fifo", "lifo"])
 @pytest.mark.parametrize("seed", [3, 5])
-def test_five_invariants_hold_on_every_bar(seed):
+def test_five_invariants_hold_on_every_bar(seed, lot_order):
     rng = np.random.RandomState(seed)
     closes = list(np.round(50 * np.cumprod(1 + rng.normal(0, 0.04, 300)), 6))
     opens = [closes[0]] + closes[:-1]
     rsi = provider._rsi_series(closes, 6)
     bars = _bars(opens, closes)
-    result = _run(bars, threshold_signal(rsi, buy_below=45, sell_above=55), capital="800", sell="130")
+    result = _run(bars, threshold_signal(rsi, buy_below=45, sell_above=55), capital="800", sell="130",
+                  lot_order=lot_order)
     assert result.buy_fills > 5 and result.sell_fills > 5
     for snap in result.snapshots:
         # ① 现金 + Σ批次数量 × 当根价格 = 权益（按已实现 + 浮动净值独立算），精确相等
@@ -354,9 +358,18 @@ def test_five_invariants_hold_on_every_bar(seed):
         assert snap.cash >= 0
         # ⑤ 同根不得既买又卖
         assert not (snap.buys_this_bar and snap.sells_this_bar)
-    # ③ FIFO：按成交生成顺序，被卖出批次的 opened_at 单调不降
     opened = [t["opened_at"] for t in result.trades]
-    assert opened == sorted(opened)
+    if lot_order == "fifo":
+        # ③ FIFO：按成交生成顺序，被卖出批次的 opened_at 单调不降
+        assert opened == sorted(opened)
+    else:
+        # ③ LIFO：同一次卖出（同一 closed_at）拆的批次 opened_at 单调不增，且确实跨批拆过
+        by_sell: dict[int, list[int]] = {}
+        for t in result.trades:
+            by_sell.setdefault(t["closed_at"], []).append(t["opened_at"])
+        assert all(v == sorted(v, reverse=True) for v in by_sell.values())
+        assert any(len(v) > 1 for v in by_sell.values())
+        assert opened != sorted(opened)
 
 
 def _ledger() -> ScaleInOutLedger:
@@ -692,3 +705,61 @@ def test_exit_costs_never_exceed_exit_gross():
     assert trade["fee"] == D("0.4999") + D("1E-8")
     assert trade["slippage"] == D("0.4999") + D("1E-10")
     assert result.final_cash == 0
+
+
+# ---------------------------------------------------------------------------
+# R3-T1 账本泛化前的结果基线：端到端 payload 的 canonical 哈希逐字节钉住
+# ---------------------------------------------------------------------------
+
+HASH_PIN_MAIN = 320
+
+
+def _hash_pin_frame() -> pd.DataFrame:
+    rng = np.random.RandomState(20261009)
+    n = WARM + HASH_PIN_MAIN
+    closes = [float(c) for c in np.round(100 * np.cumprod(1 + rng.normal(0, 0.03, n)), 4)]
+    opens = [round(c * (1 + rng.normal(0, 0.005)), 4) for c in [closes[0]] + closes[:-1]]
+    first = START_AT - WARM * DAY
+    idx = pd.DatetimeIndex([pd.to_datetime((first + i * DAY) * 1000, unit="ms") for i in range(n)])
+    return pd.DataFrame(
+        {
+            "Open": opens,
+            "High": [max(o, c) + 1 for o, c in zip(opens, closes)],
+            "Low": [max(min(o, c) - 1, 0.0001) for o, c in zip(opens, closes)],
+            "Close": closes,
+            "Volume": [10.0] * n,
+        },
+        index=idx,
+    )
+
+
+def test_rsi_scale_in_out_canonical_hash_pinned_before_ledger_generalization(client, monkeypatch):
+    from canonical_json import canonical_json_sha256
+
+    full = _hash_pin_frame()
+    end_at = START_AT + HASH_PIN_MAIN * DAY
+    monkeypatch.setattr(provider, "_fetch_ohlcv", _range_fetch(full))
+    params = {"rsi_period": 14, "oversold": 45, "overbought": 55, "buy_notional": 100, "sell_notional": 150}
+    body = _post(client, params, extra={"end_at": end_at, "initial_capital": "1500"})
+    assert body["result_status"] == "success", body
+
+    a = body["assumptions"]
+    trades = body["trades"]
+    # 造数不得退化：多次买入、跨批次拆分的部分卖出、现金不足跳过、期末强平都要出现
+    assert (a["buy_fills"], a["sell_fills"], a["skipped_buys_insufficient_cash"]) == (68, 43, 96)
+    assert any(t["closed_at"] == end_at for t in trades)
+    closed_by_ts: dict[int, set[int]] = {}
+    for t in trades:
+        closed_by_ts.setdefault(t["closed_at"], set()).add(t["opened_at"])
+    assert any(len(v) > 1 for ts, v in closed_by_ts.items() if ts != end_at)
+
+    pinned = {
+        "trades": trades,
+        "equity_curve": body["equity_curve"],
+        "metrics": body["metrics"],
+        "assumptions": {k: a[k] for k in (
+            "position_mode", "buy_fills", "sell_fills", "skipped_buys_insufficient_cash",
+            "indicator_warmup_bars",
+        )},
+    }
+    assert canonical_json_sha256(pinned) == "b1af9dc607b4708d2df212d12190bc82191d29dc23d7cffdf95deb00e574631c"
