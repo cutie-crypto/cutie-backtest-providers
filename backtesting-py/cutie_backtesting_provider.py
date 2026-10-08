@@ -3065,6 +3065,106 @@ def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     }
 
 
+def _supertrend_arrays(high: Any, low: Any, close: Any, atr_period: int, multiplier: float) -> dict[str, Any]:
+    """Supertrend：Wilder ATR(RMA, ewm alpha=1/n adjust=False) + 带沿用/重置的 final 上下轨 + trend(+1 up/-1 down)。
+
+    trend[0] = down；上一根 up 时 Close < final_lb ⇒ down；上一根 down 时 Close > final_ub ⇒ up。
+    """
+    h = np.asarray(high, dtype="float64")
+    low_ = np.asarray(low, dtype="float64")
+    c = np.asarray(close, dtype="float64")
+    n = len(c)
+    tr = np.empty(n, dtype="float64")
+    if n:
+        tr[0] = h[0] - low_[0]
+        if n > 1:
+            prev = c[:-1]
+            tr[1:] = np.maximum(h[1:] - low_[1:], np.maximum(np.abs(h[1:] - prev), np.abs(low_[1:] - prev)))
+    atr = pd.Series(tr).ewm(alpha=1 / atr_period, adjust=False).mean().to_numpy()
+    hl2 = (h + low_) / 2
+    basic_ub = hl2 + multiplier * atr
+    basic_lb = hl2 - multiplier * atr
+    fub = np.empty(n, dtype="float64")
+    flb = np.empty(n, dtype="float64")
+    trend = np.empty(n, dtype="float64")
+    for i in range(n):
+        if i == 0:
+            fub[i] = basic_ub[i]
+            flb[i] = basic_lb[i]
+            trend[i] = -1.0
+            continue
+        fub[i] = basic_ub[i] if (basic_ub[i] < fub[i - 1] or c[i - 1] > fub[i - 1]) else fub[i - 1]
+        flb[i] = basic_lb[i] if (basic_lb[i] > flb[i - 1] or c[i - 1] < flb[i - 1]) else flb[i - 1]
+        if trend[i - 1] > 0:
+            trend[i] = -1.0 if c[i] < flb[i] else 1.0
+        else:
+            trend[i] = 1.0 if c[i] > fub[i] else -1.0
+    return {"atr": atr, "final_ub": fub, "final_lb": flb, "trend": trend}
+
+
+def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """R1-T2：Supertrend 翻转，本批只做多。down→up 翻转那一根收盘确认、下一根开盘买入；
+    up→down 翻转那一根收盘确认、下一根开盘平仓。"""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        atr_period = int(params.get("atr_period", 10))
+        multiplier = float(params.get("multiplier", 3))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:atr_period/multiplier must be numbers")
+    if atr_period < 5 or atr_period > 30:
+        raise ValueError(f"INVALID_PARAMS:atr_period must be within 5-30 (got {atr_period})")
+    if not math.isfinite(multiplier) or multiplier < 1 or multiplier > 6:
+        raise ValueError(f"INVALID_PARAMS:multiplier must be within 1-6 (got {multiplier})")
+
+    from backtesting import Strategy
+
+    min_bars = atr_period + 1
+
+    def _make(key: str) -> Any:
+        return lambda high, low, close: _supertrend_arrays(high, low, close, atr_period, multiplier)[key]
+
+    class SupertrendStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            hlc = (self.data.High, self.data.Low, self.data.Close)
+            self.trend = self.I(
+                self._warm(_make("trend"), "High", "Low", "Close"), *hlc,
+                name=f"Supertrend({atr_period},{multiplier:g})", overlay=False,
+            )
+            self.final_ub = self.I(
+                self._warm(_make("final_ub"), "High", "Low", "Close"), *hlc, name="ST upper",
+            )
+            self.final_lb = self.I(
+                self._warm(_make("final_lb"), "High", "Low", "Close"), *hlc, name="ST lower",
+            )
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            cur = self.trend[-1]
+            prev = self.trend[-2]
+            if not (math.isfinite(cur) and math.isfinite(prev)):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if prev < 0 and cur > 0:
+                    self._risk_buy()
+            elif prev > 0 and cur < 0:
+                self.position.close()
+
+    return {
+        "strategy": SupertrendStrategy,
+        "executed_name": f"Supertrend ({atr_period}, x{multiplier:g})",
+        "min_bars": min_bars,
+    }
+
+
 def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """108 顺序 5a-P：两条件 AND（EMA 趋势过滤 + RSI 入场）。契约唯一权威见 TokenBeep 仓
     docs/features/108_策略自动发信号执行器扩容/IMPL_顺序5a_两条件AND回测.md §2/§3。
@@ -3373,6 +3473,22 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "roc_period": {"type": "integer", "default": 12, "minimum": 2, "maximum": 200},
             "entry_threshold": {"type": "number", "default": 5, "minimum": -100, "maximum": 100},
             "exit_threshold": {"type": "number", "default": 0, "minimum": -100, "maximum": 100},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.supertrend": {
+        "name": "Local Backtesting.py Supertrend Flip",
+        "description": (
+            "Trend-following: go long when the Supertrend (Wilder ATR bands) flips from "
+            "down to up, exit when it flips back to down. Long only. Suits trending "
+            "markets — maps to KOL 'Supertrend / 超级趋势'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_supertrend,
+        "param_schema_properties": {
+            "atr_period": {"type": "integer", "default": 10, "minimum": 5, "maximum": 30},
+            "multiplier": {"type": "number", "default": 3, "minimum": 1, "maximum": 6},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
