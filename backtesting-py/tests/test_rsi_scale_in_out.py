@@ -22,6 +22,8 @@ from scale_in_out_ledger import (  # noqa: E402
     LedgerBar,
     LedgerInvariantError,
     ScaleInOutLedger,
+    floor_qty,
+    round_cash,
     run_scale_in_out,
     threshold_signal,
 )
@@ -159,14 +161,24 @@ def test_jessie_shape_three_bars_hand_computed(client, monkeypatch):
     assert [t["seq"] for t in trades] == list(range(1, 9))
     assert all(set(t) == {"seq", "opened_at", "closed_at", "side", "qty", "entry_price",
                           "exit_price", "fee", "slippage", "pnl"} for t in trades)
-    # 手算第 1 根（设计段第 11 根开盘 125 卖 100 美元 = 0.8 个，FIFO 拆第一批 1.25 个）：
-    # fee = (80+125)*0.8*0.001 = 0.164，slippage = 0.082，pnl = 45*0.8 - 0.246 = 35.754
+    # 定点口径（数量 12 位、金额 8 位）：本段成交价都让数量与费用恰好落在格点上，所以量化不改值。
+    # 买入：开盘 80 → 数量 1.250000000000，成交额 100，开仓费 0.10000000、滑点 0.05000000，
+    #   现金 10000 → 9899.85000000；开盘 100 → 1.000000000000，现金 9799.70000000；
+    #   开盘 125 → 0.800000000000，现金 9699.55000000。
+    # 手算第 1 根（设计段第 11 根开盘 125 卖 100 美元 = 0.800000000000 个，FIFO 拆第一批 1.25 个）：
+    #   分摊开仓费 round(80*0.8*0.001)=0.06400000、平仓费 round(125*0.8*0.001)=0.10000000 → fee 0.164；
+    #   滑点 0.03200000 + 0.05000000 = 0.082；pnl = 45*0.8 - 0.246 = 35.754；
+    #   现金 + 100 - 0.15 = 9799.40000000。
     assert trades[0] == {
         "seq": 1, "opened_at": _open_ts(PAD + 4), "closed_at": _open_ts(PAD + 11), "side": "long",
         "qty": "0.8", "entry_price": "80", "exit_price": "125",
         "fee": "0.164", "slippage": "0.082", "pnl": "35.754",
     }
-    # 手算第 2 根（设计段第 12 根开盘 200 卖 0.5 个：第一批剩 0.45 + 第二批 0.05）
+    # 手算第 2 根（设计段第 12 根开盘 200 卖 0.500000000000 个：第一批剩 0.45 + 第二批 0.05）
+    #   第一批最后一部分拿走剩余开仓费 0.1-0.064=0.03600000、滑点 0.05-0.032=0.01800000；
+    #   平仓费 round(200*0.45*0.001)=0.09000000、滑点 0.04500000 → fee 0.126、slippage 0.063；
+    #   第二批 0.05：开仓分摊 0.00500000 / 0.00250000，平仓 0.01000000 / 0.00500000；
+    #   现金 + 100 - 0.15 = 9899.25000000。
     assert trades[1] == {
         "seq": 2, "opened_at": _open_ts(PAD + 4), "closed_at": _open_ts(PAD + 12), "side": "long",
         "qty": "0.45", "entry_price": "80", "exit_price": "200",
@@ -260,8 +272,9 @@ def test_ledger_matches_naive_reference(seed):
         assert got["closed_at"] == (end_at if ci == len(bars) else bars[ci].open_time)
         assert float(got["qty"]) == pytest.approx(q, rel=1e-9)
         assert (float(got["entry_price"]), float(got["exit_price"])) == (e, x)
-    assert float(D("1500") + result.realized_pnl) == pytest.approx(cash, rel=1e-12)
-    assert float(result.final_cash) == pytest.approx(cash, rel=1e-12)
+    # 参照实现是不量化的 float：数量差不到 1e-12、费用每侧差不到 0.5e-8，现金按 1e-9 相对误差对
+    assert float(D("1500") + result.realized_pnl) == pytest.approx(cash, rel=1e-9)
+    assert result.final_cash == D("1500") + result.realized_pnl
 
 
 # ---------------------------------------------------------------------------
@@ -332,13 +345,10 @@ def test_five_invariants_hold_on_every_bar(seed):
     result = _run(bars, threshold_signal(rsi, buy_below=45, sell_above=55), capital="800", sell="130")
     assert result.buy_fills > 5 and result.sell_fills > 5
     for snap in result.snapshots:
-        # ① 现金 + Σ批次数量 × 当根价格 = 权益（按已实现 + 浮动净值独立算）
-        assert abs(snap.cash + snap.lot_qty_sum * snap.price - snap.equity_by_pnl) <= snap.money_tolerance
-        assert abs(snap.equity_by_cash - snap.equity_by_pnl) <= snap.money_tolerance
-        # ② 批次数量和 = 累计买入 − 累计卖出
-        assert abs(snap.lot_qty_sum - (snap.cum_bought - snap.cum_sold)) <= snap.qty_tolerance
-        # 误差界随规模给，但远小于一分钱 / 一份最小数量，不会吞掉真实错账
-        assert snap.money_tolerance < D("1e-10") and snap.qty_tolerance < D("1e-12")
+        # ① 现金 + Σ批次数量 × 当根价格 = 权益（按已实现 + 浮动净值独立算），精确相等
+        assert snap.cash + snap.lot_qty_sum * snap.price == snap.equity_by_pnl == snap.equity_by_cash
+        # ② 批次数量和 = 累计买入 − 累计卖出，精确相等
+        assert snap.lot_qty_sum == snap.cum_bought - snap.cum_sold
         # ④ 现金永不为负
         assert snap.cash >= 0
         # ⑤ 同根不得既买又卖
@@ -464,41 +474,53 @@ def test_catalog_entry_is_spot_only_without_fixed_risk_fields():
 # Decimal 边界回归（Codex review 四条 P2）
 # ---------------------------------------------------------------------------
 
-def test_fifo_boundary_residual_does_not_spawn_dust_trade():
-    """价恒 3：买两笔 100、卖两笔 50，第二次卖出恰好卖光第一批，不得为 1e-26 尾数跨到第二批。"""
+def test_fifo_boundary_is_exact_under_quantization():
+    """价恒 3：买两笔 100、卖两笔 50（一轮 Codex 反例）。定点口径下每批 33.333333333333、每次卖
+    16.666666666666，两次合计比整批少一个数量最小单位，首批精确剩 0.000000000001，期末强平成
+    一条——这是真实持仓（量化余量），不是舍入尾数；没有任何一次卖出跨到第二批。"""
     bars = _bars([3] * 5, [3, 3, 3, 3, 4])
     result = _run(bars, ["buy", "buy", "sell", "sell", "hold"], capital="1000", sell="50")
-    lot = D("100") / D("3")
-    first = D("50") / D("3")
+    lot = D("33.333333333333")
+    half = D("16.666666666666")
     assert [(t["opened_at"], t["closed_at"], t["qty"]) for t in result.trades] == [
-        (bars[1].open_time, bars[3].open_time, first),
-        (bars[1].open_time, bars[4].open_time, lot - first),
+        (bars[1].open_time, bars[3].open_time, half),
+        (bars[1].open_time, bars[4].open_time, half),
+        (bars[1].open_time, bars[4].close_time, lot - 2 * half),
         (bars[2].open_time, bars[4].close_time, lot),
     ]
-    wins = sum(1 for t in result.trades if t["pnl"] > 0)
-    assert (wins, len(result.trades)) == (1, 3)  # 胜率 33.33%，不是 25%
+    assert lot - 2 * half == D("0.000000000001")
+    # 开仓费用分摊之和精确等于该批实付（0.09999999999999 → 0.1 / 0.05）
+    first_lot = [t for t in result.trades if t["opened_at"] == bars[1].open_time]
+    exit_fees = [round_cash(t["exit_price"] * t["qty"] * D("0.001")) for t in first_lot]
+    assert sum(t["fee"] for t in first_lot) - sum(exit_fees) == D("0.1")
 
 
 def test_exact_cash_for_one_buy_is_not_treated_as_insufficient():
     bars = _bars([26134.51] * 7, [26134.51] * 7)
     result = _run(bars, ["buy"] * 6 + ["hold"], capital="540.58", buy="540.58", fee="0", slip="0")
     assert (result.buy_fills, result.skipped_buys_insufficient_cash) == (1, 5)
-    assert result.snapshots[1].cash == 0
+    qty = floor_qty(D("540.58"), D("26134.51"))
+    assert qty == D("0.020684527852")
+    # 实际成交额 = 数量 × 价格，比参数金额少不到 价格 × 1e-12；剩余现金精确
+    assert result.snapshots[1].cash == D("540.58") - qty * D("26134.51")
+    assert 0 <= result.snapshots[1].cash < D("26134.51") * D("1e-12")
     assert len(result.trades) == 1
 
 
 def test_tiny_notional_partial_sell_is_not_turned_into_full_exit():
+    """一轮反例原数字（买 5e-13 个）低于数量最小单位、不成交，见 test_quantized_qty_and_cash_rules；
+    这里在最小单位上重述：持 5e-12、卖 1e-12，只卖 1e-12。"""
     bars = _bars([100000] * 3, [100000] * 3)
-    result = _run(bars, ["buy", "sell", "hold"], capital="1", buy="0.00000005", sell="0.00000001",
+    result = _run(bars, ["buy", "sell", "hold"], capital="1", buy="0.0000005", sell="0.0000001",
                   fee="0", slip="0")
-    assert [t["qty"] for t in result.trades] == [D("1E-13"), D("4E-13")]
+    assert [t["qty"] for t in result.trades] == [D("1E-12"), D("4E-12")]
     assert result.trades[1]["closed_at"] == bars[-1].close_time
 
 
 def test_huge_notional_does_not_trip_scaled_invariants():
     bars = _bars([3.14, 3.14, 2.97, 2.97], [3.14, 3.14, 2.97, 2.97])
     result = _run(bars, ["buy", "sell", "hold", "hold"], capital="1E17", buy="1E17", fee="0", slip="0")
-    assert result.trades[0]["qty"] == D("100") / D("2.97")
+    assert result.trades[0]["qty"] == floor_qty(D("100"), D("2.97")) == D("33.670033670033")
     assert len(result.trades) == 2
 
 
@@ -543,4 +565,90 @@ def test_scaled_tolerance_still_catches_cent_level_errors_at_1e17():
     ledger.cum_bought += D("0.01")
     with pytest.raises(LedgerInvariantError, match="lot qty"):
         ledger.check_invariants(D("1"), "inject")
-    assert _big_ledger().money_tolerance(D("1")) < D("1E-8")
+
+
+# ---------------------------------------------------------------------------
+# 定点量化（统领三轮定：数量 1e-12 向下取整、金额 1e-8、精度 60、比较全部精确）
+# ---------------------------------------------------------------------------
+
+def test_zero_fee_small_sell_out_of_huge_holding_is_exact():
+    bars = _bars([1] * 4, [1] * 4)
+    result = _run(bars, ["buy", "sell", "hold", "hold"], capital="1E25", buy="1E25", sell="0.01",
+                  fee="0", slip="0")
+    assert [(t["closed_at"], t["qty"]) for t in result.trades] == [
+        (bars[2].open_time, D("0.01")), (bars[-1].close_time, D("1E25") - D("0.01")),
+    ]
+
+
+def test_hundred_unit_sells_consume_first_lot_exactly():
+    """价恒 3、每批买 300（数量 100）、连卖 100 笔各 3 美元（数量 1）：首批恰好卖光。"""
+    sig = ["buy", "buy"] + ["sell"] * 100 + ["hold"]
+    bars = _bars([3] * len(sig), [3] * len(sig))
+    result = _run(bars, sig, capital="1000", buy="300", sell="3")
+    assert len(result.trades) == 101
+    first = [t for t in result.trades if t["opened_at"] == bars[1].open_time]
+    assert len(first) == 100 and all(t["qty"] == 1 for t in first)
+    assert D(100) - sum(t["qty"] for t in first) == 0  # 首批余量精确为 0
+    assert [(t["qty"], t["closed_at"]) for t in result.trades[100:]] == [(D(100), bars[-1].close_time)]
+
+
+def test_hundred_notional_sells_leave_exact_quantum_residual():
+    """价恒 3、每批买 100、连卖 100 笔各 1 美元：每批 33.333333333333、每笔 0.333333333333，
+    首批精确剩 0.000000000033（量化余量，是真实持仓），期末强平成一条，不是舍入尾数。"""
+    sig = ["buy", "buy"] + ["sell"] * 100 + ["hold"]
+    bars = _bars([3] * len(sig), [3] * len(sig))
+    result = _run(bars, sig, capital="1000", buy="100", sell="1")
+    first = [t for t in result.trades if t["opened_at"] == bars[1].open_time]
+    assert [t["qty"] for t in first[:100]] == [D("0.333333333333")] * 100
+    assert [(t["qty"], t["closed_at"]) for t in first[100:]] == [(D("0.000000000033"), bars[-1].close_time)]
+    assert len(result.trades) == 102
+
+
+def test_exact_invariants_catch_tiny_errors_after_100k_bars():
+    ledger = ScaleInOutLedger(initial_capital=D("1E17"), buy_notional=D("1E17"), sell_notional=D("1E17"),
+                              fee_bps=D("0"), slippage_bps=D("0"))
+    ts = START_AT
+    for _ in range(25000):  # 买、卖、hold、hold
+        for action in ("buy", "sell", "hold", "hold"):
+            ledger.begin_bar()
+            if action == "buy":
+                assert ledger.buy(ts, D("1"))
+            elif action == "sell":
+                assert ledger.sell(ts, D("1"))
+            ledger.check_invariants(D("1"), "loop")
+            ts += DAY
+    assert (ledger.buy_fills, ledger.sell_fills) == (25000, 25000)
+    ledger.cum_bought += D("0.01")
+    with pytest.raises(LedgerInvariantError, match="lot qty"):
+        ledger.check_invariants(D("1"), "inject")
+    ledger.cum_bought -= D("0.01")
+    ledger.check_invariants(D("1"), "restored")
+    ledger.cash += D("0.00001")
+    with pytest.raises(LedgerInvariantError, match="cash\\+holdings"):
+        ledger.check_invariants(D("1"), "inject")
+
+
+def test_extreme_price_1e_minus_9():
+    bars = _bars(["1E-9"] * 4, ["1E-9", "1E-9", "2E-9", "2E-9"])
+    result = _run(bars, ["buy", "sell", "hold", "hold"], buy="100", sell="50")
+    assert [(t["qty"], t["exit_price"]) for t in result.trades] == [
+        (D("5E10"), D("1E-9")), (D("5E10"), D("2E-9")),
+    ]
+    assert result.final_cash == D("10000") + result.realized_pnl
+
+
+def test_quantized_qty_and_cash_rules():
+    assert floor_qty(D("100"), D("3")) == D("33.333333333333")
+    assert floor_qty(D("0.00000005"), D("100000")) == 0  # 低于数量最小单位，不成交
+    assert round_cash(D("0.000000005")) == D("0.00000001")  # 金额四舍五入（ROUND_HALF_UP）
+    bars = _bars([100000] * 3, [100000] * 3)
+    result = _run(bars, ["buy", "sell", "hold"], capital="1", buy="0.00000005", sell="0.00000001",
+                  fee="0", slip="0")
+    assert (result.buy_fills, result.skipped_buys_insufficient_cash, result.trades) == (0, 0, [])
+
+
+def test_arithmetic_beyond_precision_raises_instead_of_rounding():
+    """精确上下文把 Inexact 设为陷阱：超出 60 位精度的乘法不悄悄舍入，转成 LedgerInvariantError。"""
+    bars = _bars(["1.2345678901234567E-5"] * 3, ["1.2345678901234567E-5"] * 3)
+    with pytest.raises(LedgerInvariantError, match="inexact"):
+        _run(bars, ["buy", "hold", "hold"], capital="1E40", buy="1E40", fee="0", slip="0")
