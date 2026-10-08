@@ -33,6 +33,14 @@ def _decimal(value):
         return format(number.normalize(), 'f')
 
 
+def _cash_decimal(value):
+    """Independent positive average-cost half-up rounding to eight places."""
+    if value is None:
+        return None
+    units = (value*10**8+Fraction(1,2)).__floor__()
+    return _decimal(Fraction(units,10**8))
+
+
 def _times(case):
     return case.get('open_times', [case['start_at']+i*case['step'] for i in range(len(case['closes']))])
 
@@ -99,7 +107,7 @@ def _reference(case):
                 rounds += 1
             attempts.append((i,kind,filled,price))
             if filled:
-                fills.append(dict(bar=i,action=kind,avg_cost=_decimal(notional/qty if qty else last_avg)))
+                fills.append(dict(bar=i,action=kind,avg_cost=_cash_decimal(notional/qty if qty else last_avg)))
         unrealized = sum((q*(close-entry)-costs for _,entry,q,costs in lots), Fraction(0))
         snapshots.append((cash,qty,unrealized))
         pending = None
@@ -118,7 +126,7 @@ def _reference(case):
     avg = notional/qty if qty else last_avg
     liquidate(len(times),Fraction(str(case['closes'][-1])))
     return dict(actions=actions,fills=fills,attempts=attempts,trades=trades,snapshots=snapshots,
-                skipped=skipped,rounds=rounds,dip_fills=dip_fills,avg_cost=_decimal(avg),
+                skipped=skipped,rounds=rounds,dip_fills=dip_fills,avg_cost=_cash_decimal(avg),
                 total_invested=invested,max_loss=min([Fraction(0),*(x[2] for x in snapshots)]),cash=cash)
 
 
@@ -177,11 +185,29 @@ def test_hand_counted_golden_and_next_open_fills(case):
     assert Fraction(result.final_cash)==expected['cash']
     assert a['position_mode']=='dca'
     assert a['avg_cost']==expected['avg_cost']
+    if case['name']!='cash_skips':
+        assert case['opens']==[case['closes'][0],*case['closes'][:-1]]
+        assert a['avg_cost']==case['expected_final_avg_cost']
+        assert Fraction(a['total_invested'])==Fraction(case['expected_total_invested'])
+        first_close=result.trades[0]['closed_at']
+        first=[t for t in result.trades if t['closed_at']==first_close]
+        assert len(first)==4 and all(t['pnl']>0 for t in first)
+        assert any(left['entry_price']!=right['entry_price'] for left,right in zip(first,first[1:]))
+        assert [dict(opened_at=t['opened_at'],closed_at=t['closed_at'],qty=_decimal(Fraction(t['qty'])),
+                     entry=_decimal(Fraction(t['entry_price'])),exit=_decimal(Fraction(t['exit_price'])),
+                     pnl=_decimal(Fraction(t['pnl']))) for t in first]==case['expected_first_profit_trades']
+        if case['name']=='daily':
+            # An exact 10% single-lot exit, dip/calendar collision, and profit/calendar collision.
+            assert case['closes'][26]==110
+            assert next(x for x in actions if x['bar']==26)['action']=='sell_all'
+            assert next(x for x in actions if x['bar']==73)==dict(bar=73,action='buy',amount='150')
+            assert next(x for x in actions if x['bar']==97)['action']=='sell_all'
+            assert all(datetime.fromtimestamp(times[i],timezone.utc).hour==23 for i in (73,97))
     assert a['rounds_completed']==expected['rounds']
     assert a['dip_adds_total']==expected['dip_fills']
     assert Fraction(a['total_invested'])==expected['total_invested']
     assert Fraction(a['max_unrealized_loss'])==expected['max_loss']
-    assert all(t['closed_at']==times[-1]+case['step'] for t in result.trades[-(4 if case['name']!='cash_skips' else 1):])
+    assert all(t['closed_at']==times[-1]+case['step'] for t in result.trades[-case.get('expected_final_lots',4 if case['name']!='cash_skips' else 1):])
 
 
 @pytest.fixture()
@@ -242,7 +268,7 @@ def test_two_parameter_changes_change_trade_counts(client,monkeypatch):
         body=_post(client,case,params=params)
         assert body['result_status']=='success',body
         counts.append(body['metrics']['trade_count'])
-    assert counts==[12,6,4]
+    assert counts==[13,7,5]
 
 
 def _case(closes,*,opens=None,params=None,capital='10000',times=None,start=START,step=HOUR):
@@ -312,8 +338,16 @@ def test_weighted_average_uses_quantized_filled_qty_without_fees():
     case=_case([100,100,95,80,80,80],opens=[100,100,100,75,100,100],params={'max_dip_adds':1})
     result,a,_,fills,_=_run(case)
     expected=_reference(case)
-    assert a['avg_cost']==_decimal(Fraction(250,3))==expected['avg_cost']
+    assert a['avg_cost']=='83.33333333'==expected['avg_cost']
     assert fills[-1]['avg_cost']==a['avg_cost']
+    # 91.666666665 exceeds the rounded display target 83.33333333 * 1.1,
+    # but remains below the true 250/3 * 1.1: it must not trigger profit taking.
+    rounding_case=_case([100,100,95,80,91.666666665,80],opens=[100,100,100,75,100,100],
+                        params={'max_dip_adds':1})
+    _,rounded_a,rounding_actions,_,_=_run(rounding_case)
+    assert rounded_a['avg_cost']=='83.33333333'
+    assert [x['action'] for x in rounding_actions]==['buy','buy']
+    assert rounded_a['rounds_completed']==0
     assert a['total_invested']=='250'
     assert result.trades[0]['entry_price']==D(100) and result.trades[1]['entry_price']==D(75)
     case=_case([100,100,95,80,80,80],opens=[100,100,100,79,100,100],params={'max_dip_adds':1})
