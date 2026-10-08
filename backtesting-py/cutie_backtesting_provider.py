@@ -3754,8 +3754,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
-# A6 二层：固定止损/止盈/仓位对全部 9 个内置模板统一生效，直接合并进每个工具的
-# param_schema_properties（而不是逐个手写 9 遍），新工具接入 TOOL_SPECS 时自动带上。
+# A6 二层：固定止损/止盈/仓位对全部 13 个内置模板统一生效，直接合并进每个工具的
+# param_schema_properties（而不是逐个手写 13 遍），新工具接入 TOOL_SPECS 时自动带上。
 # runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
 # 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
 # 132：定额分批（runner=scale_in_out_ledger）同样不合并——账本不消费固定止损止盈/仓位，
