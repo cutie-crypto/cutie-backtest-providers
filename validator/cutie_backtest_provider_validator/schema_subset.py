@@ -13,6 +13,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, List
 
+# "null" 只允许出现在列表形式的联合类型里，如 ["integer", "null"]；单独 "null" 不支持。
 ALLOWED_TYPES = frozenset(
     {"object", "string", "number", "integer", "boolean", "array"}
 )
@@ -80,7 +81,7 @@ def validate_param_schema(schema: Any, path: str = "param_schema") -> List[str]:
     if schema_type is not None:
         if isinstance(schema_type, list):
             for t in schema_type:
-                if t not in ALLOWED_TYPES:
+                if t not in ALLOWED_TYPES and t != "null":
                     errors.append(f"{path}.type contains unsupported type {t!r}")
         elif schema_type not in ALLOWED_TYPES:
             errors.append(f"{path}.type {schema_type!r} is not supported")
