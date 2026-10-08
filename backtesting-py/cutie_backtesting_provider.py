@@ -3332,6 +3332,76 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
     }
 
 
+def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Long-only EMA pullback; rearm only on a later flat bar above the zone."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        ema_fast = int(params.get("ema_fast", 20))
+        ema_slow = int(params.get("ema_slow", 60))
+        tolerance = float(params.get("pullback_tolerance_pct", 0.2))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:ema_fast/ema_slow/pullback_tolerance_pct must be numbers")
+    if not 5 <= ema_fast <= 50:
+        raise ValueError("INVALID_PARAMS:ema_fast must be within 5-50")
+    if not 30 <= ema_slow <= 200:
+        raise ValueError("INVALID_PARAMS:ema_slow must be within 30-200")
+    if ema_fast >= ema_slow:
+        raise ValueError("INVALID_PARAMS:ema_fast must be less than ema_slow")
+    if not 0 <= tolerance <= 1:
+        raise ValueError("INVALID_PARAMS:pullback_tolerance_pct must be within 0-1")
+
+    from backtesting import Strategy
+
+    min_bars = ema_slow
+
+    class EmaPullbackStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            self.ema_fast = self.I(
+                self._warm(lambda x: pd.Series(x).ewm(span=ema_fast, adjust=False).mean(), "Close"),
+                self.data.Close,
+                name=f"EMA({ema_fast})",
+            )
+            self.ema_slow = self.I(
+                self._warm(lambda x: pd.Series(x).ewm(span=ema_slow, adjust=False).mean(), "Close"),
+                self.data.Close,
+                name=f"EMA({ema_slow})",
+            )
+            self.armed = True
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            fast = self.ema_fast[-1]
+            slow = self.ema_slow[-1]
+            close = self.data.Close[-1]
+            if self.position:
+                if close < slow:
+                    self.position.close()
+                return
+            if self._warmup_bars + len(self.data) < min_bars:
+                return
+            if not (math.isfinite(fast) and math.isfinite(slow)):
+                return
+            zone = fast * (1 + tolerance / 100)
+            if self.armed and fast > slow and self.data.Low[-1] <= zone and close > fast:
+                self._risk_buy()
+                self.armed = False
+                # Orders fill next bar: do not rearm on this still-flat signal bar.
+                return
+            if close > zone:
+                self.armed = True
+
+    return {
+        "strategy": EmaPullbackStrategy,
+        "executed_name": f"EMA Pullback ({ema_fast}/{ema_slow}, tolerance={tolerance:g}%)",
+        "min_bars": min_bars,
+    }
+
+
 # 123 B2：三个组合模板 tool 共用的公共参数 schema（SPEC_组合策略v3契约 §6.1）。
 # _validate_params_against_schema 只理解 integer/number/string + min/max/enum，
 # 对 array/object 不做深校验（deferred to strategy_spec_v3_builder._build 与
@@ -3607,6 +3677,24 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    "local.backtesting_py.ema_pullback": {
+        "name": "Local Backtesting.py EMA Pullback",
+        "description": (
+            "Long-only trend pullback: fast EMA above slow EMA, low touches the "
+            "tolerance zone and close recovers above fast EMA. Exit below slow EMA; "
+            "rearm only while flat after a close above the zone — maps to KOL "
+            "'趋势回踩 / 回踩均线'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_ema_pullback,
+        "param_schema_properties": {
+            "ema_fast": {"type": "integer", "default": 20, "minimum": 5, "maximum": 50},
+            "ema_slow": {"type": "integer", "default": 60, "minimum": 30, "maximum": 200},
+            "pullback_tolerance_pct": {"type": "number", "default": 0.2, "minimum": 0, "maximum": 1},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     # 123 B2：三个组合（两腿比值）模板 tool。runner="kernel_v3" 让 run_backtest 在
     # float 转换 / Strategy 类 / 单标的取数 / Backtest 之前分派到独立的 Decimal
     # 内核路径（SPEC_组合策略v3契约 §6.1）；无 "build" 键——kernel_v3 分派点严格早
@@ -3666,8 +3754,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
-# A6 二层：固定止损/止盈/仓位对全部 9 个内置模板统一生效，直接合并进每个工具的
-# param_schema_properties（而不是逐个手写 9 遍），新工具接入 TOOL_SPECS 时自动带上。
+# A6 二层：固定止损/止盈/仓位对全部 13 个内置模板统一生效，直接合并进每个工具的
+# param_schema_properties（而不是逐个手写 13 遍），新工具接入 TOOL_SPECS 时自动带上。
 # runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
 # 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
 # 132：定额分批（runner=scale_in_out_ledger）同样不合并——账本不消费固定止损止盈/仓位，
