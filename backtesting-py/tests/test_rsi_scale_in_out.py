@@ -763,3 +763,62 @@ def test_rsi_scale_in_out_canonical_hash_pinned_before_ledger_generalization(cli
         )},
     }
     assert canonical_json_sha256(pinned) == "b1af9dc607b4708d2df212d12190bc82191d29dc23d7cffdf95deb00e574631c"
+
+
+# ---------------------------------------------------------------------------
+# R3 runner 钩子：build 返回 signal_factory / lot_order / extra_assumptions 时由模板自带信号
+# （网格 / DCA 用）；不带时走 RSI 阈值（上面的哈希钉证明 rsi 结果不变）。
+# ---------------------------------------------------------------------------
+
+def _hooked_build(script: dict, calls: list, lot_order: str):
+    def build(params, *, initial_capital=10000.0):
+        built = provider._build_rsi_scale_in_out(params, initial_capital=initial_capital)
+        config = dict(built["scale_in_out"])
+
+        def factory(bars):
+            assert len(bars) == MAIN_COUNT and bars[0].open_time == START_AT
+
+            def signal(index):
+                return script.get(index, "hold")
+
+            def on_fill(index, action, filled, price):
+                calls.append((index, action, filled, price))
+
+            return signal, on_fill
+
+        config.update(
+            signal_factory=factory,
+            lot_order=lot_order,
+            extra_assumptions=lambda result: {
+                "position_mode": "hook_test",
+                "hook_total_invested": str(result.total_invested),
+            },
+        )
+        return {**built, "scale_in_out": config}
+
+    return build
+
+
+@pytest.mark.parametrize("lot_order, sold_main_index", [("lifo", PAD + 5), ("fifo", PAD + 4)])
+def test_runner_hook_uses_template_signal_lot_order_and_assumptions(client, monkeypatch, lot_order, sold_main_index):
+    monkeypatch.setattr(provider, "_fetch_ohlcv", _range_fetch(_jessie_frame()))
+    calls: list = []
+    # 第 PAD+3 根收盘买 200（PAD+4 开盘 80 成交，2.5 个）、PAD+4 收盘买默认 100（PAD+5 开盘 100，1 个）、
+    # PAD+10 收盘整批卖一批（PAD+11 开盘 125）：lifo 卖 PAD+5 那批，fifo 卖 PAD+4 那批。
+    script = {PAD + 3: ("buy", D("200")), PAD + 4: "buy", PAD + 10: ("sell_lot",)}
+    monkeypatch.setitem(provider.TOOL_SPECS[TOOL], "build", _hooked_build(script, calls, lot_order))
+    body = _post(client)
+    assert body["result_status"] == "success", body
+
+    assert calls == [
+        (PAD + 4, "buy", True, D("80")),
+        (PAD + 5, "buy", True, D("100")),
+        (PAD + 11, "sell_lot", True, D("125")),
+    ]
+    a = body["assumptions"]
+    assert a["position_mode"] == "hook_test"  # 模板字段排在固定字段之后，可覆盖
+    assert (a["buy_fills"], a["sell_fills"]) == (2, 1)
+    assert D(a["hook_total_invested"]) == D("300")
+    sold = [t for t in body["trades"] if t["closed_at"] == _open_ts(PAD + 11)]
+    assert [t["opened_at"] for t in sold] == [_open_ts(sold_main_index)]
+    assert len(body["trades"]) == 2  # 一批整批卖出 + 剩下一批期末强平
