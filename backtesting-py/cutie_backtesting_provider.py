@@ -2788,6 +2788,86 @@ def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0)
     }
 
 
+def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    try:
+        lookback = int(params.get("lookback", 20))
+        volume_avg_period = int(params.get("volume_avg_period", 20))
+        exit_ema = int(params.get("exit_ema", 20))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:lookback/volume_avg_period/exit_ema must be integers")
+    try:
+        volume_multiple = float(params.get("volume_multiple", 2))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:volume_multiple must be a number")
+    if lookback < 2:
+        raise ValueError(f"INVALID_PARAMS:lookback must be >= 2 (got {lookback})")
+    if volume_avg_period < 2:
+        raise ValueError(f"INVALID_PARAMS:volume_avg_period must be >= 2 (got {volume_avg_period})")
+    if exit_ema < 2:
+        raise ValueError(f"INVALID_PARAMS:exit_ema must be >= 2 (got {exit_ema})")
+    if not math.isfinite(volume_multiple) or volume_multiple <= 0:
+        raise ValueError(f"INVALID_PARAMS:volume_multiple must be > 0 (got {volume_multiple})")
+
+    from backtesting import Strategy
+
+    min_bars = max(lookback + 1, volume_avg_period + 1, exit_ema)
+
+    class VolumeBreakoutStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            # shift(1): prior-bar high / volume average only, no look-ahead on the current bar.
+            self.prior_high = self.I(
+                self._warm(
+                    lambda x: pd.Series(x, dtype="float64").rolling(lookback).max().shift(1).to_numpy(), "High"
+                ),
+                self.data.High,
+                name=f"PriorHigh({lookback})",
+            )
+            self.vol_avg = self.I(
+                self._warm(
+                    lambda x: pd.Series(x, dtype="float64").rolling(volume_avg_period).mean().shift(1).to_numpy(),
+                    "Volume",
+                ),
+                self.data.Volume,
+                name=f"VolAvg({volume_avg_period})",
+            )
+            self.exit_ema_line = self.I(
+                self._warm(lambda x: pd.Series(x).ewm(span=exit_ema, adjust=False).mean(), "Close"),
+                self.data.Close,
+                name=f"EMA({exit_ema})",
+            )
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            close = self.data.Close[-1]
+            if self.position:
+                ema = self.exit_ema_line[-1]
+                if math.isfinite(ema) and close < ema:
+                    self.position.close()
+                return
+            prior_high = self.prior_high[-1]
+            vol_avg = self.vol_avg[-1]
+            if not (math.isfinite(prior_high) and math.isfinite(vol_avg)):
+                return
+            # Warm-up guard: the EMA is finite from bar 1, so isfinite alone cannot
+            # reject an under-warmed entry.
+            if self._warmup_bars + len(self.data) < min_bars:
+                return
+            if close > prior_high and self.data.Volume[-1] > vol_avg * volume_multiple:
+                self._risk_buy()
+
+    return {
+        "strategy": VolumeBreakoutStrategy,
+        "executed_name": f"Volume Breakout ({lookback}, vol>{volume_multiple:g}x{volume_avg_period}, EMA{exit_ema} exit)",
+        "min_bars": min_bars,
+    }
+
+
 def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3218,6 +3298,25 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "direction": {"type": "string", "enum": ["long", "short"], "default": "long"},
             "lookback": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
             "exit_lookback": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.volume_breakout": {
+        "name": "Local Backtesting.py Volume Breakout",
+        "description": (
+            "Volume breakout: buy when the close breaks above the prior N-bar high and the bar's "
+            "volume exceeds the prior average volume times a multiple; exit when the close falls "
+            "below an EMA. Prior high and average volume exclude the current bar (no look-ahead). "
+            "Maps to KOL '放量突破 / 量价突破'."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "build": _build_volume_breakout,
+        "param_schema_properties": {
+            "lookback": {"type": "integer", "default": 20, "minimum": 10, "maximum": 100},
+            "volume_multiple": {"type": "number", "default": 2, "minimum": 1.2, "maximum": 5},
+            "volume_avg_period": {"type": "integer", "default": 20, "minimum": 5, "maximum": 100},
+            "exit_ema": {"type": "integer", "default": 20, "minimum": 5, "maximum": 100},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
