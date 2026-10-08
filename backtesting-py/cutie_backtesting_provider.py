@@ -15,6 +15,7 @@ import bisect
 import hashlib
 import json
 import logging
+import functools
 import math
 import os
 import re
@@ -28,6 +29,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
 import pandas as pd
 from canonical_json import canonical_decimal_str, canonical_json_sha256
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -1073,6 +1075,41 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
     df.attrs["cutie_market_data_cache_hit"] = market_data_cache_hit
 
     return df
+
+
+_WARMUP_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
+
+
+def _fetch_template_warmup(
+    exchange_id: str, market: str, symbol: str, timeframe: str,
+    start_sec: int, bars: int, main_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Best-effort fetch of up to ``bars`` candles strictly before the main range.
+
+    内置模板的指标预热段（1008）：与服务端实盘监听 required_warmup_bars 口径对齐，
+    让主区间第一根就有收敛的指标。只做尽力而为——取数失败、新币历史不足、行情缺口
+    都退化成「拿到多少用多少 / 不预热」，绝不让本来能跑的回测因此失败；主区间的取数
+    与错误处理不经过这里。只保留早于主区间第一根的行，防止取数源不按区间裁剪时把
+    主区间数据当成预热。
+    """
+    empty = pd.DataFrame(columns=list(_WARMUP_COLUMNS), dtype="float64")
+    if bars <= 0 or main_df.empty:
+        return empty
+    step_sec = max(1, _timeframe_milliseconds(timeframe) // 1000)
+    try:
+        warm = _fetch_ohlcv(
+            exchange_id, market, symbol, timeframe,
+            max(0, int(start_sec) - bars * step_sec), int(start_sec),
+        )
+        warm = warm.loc[warm.index < main_df.index[0], list(_WARMUP_COLUMNS)].astype("float64")
+        warm = warm[np.isfinite(warm.to_numpy()).all(axis=1)]
+        return warm.tail(bars)
+    except Exception as e:  # noqa: BLE001 -- warmup must never fail the backtest
+        logger.warning(
+            "template warmup fetch skipped symbol=%s timeframe=%s bars=%s: %s",
+            symbol, timeframe, bars, e,
+        )
+        return empty
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -2330,6 +2367,29 @@ class _FixedRiskMixin:
     _risk: dict[str, float] = {}
     _initial_capital: float = 10000.0
     _start_equity: float = 0.0
+    # 1008 指标预热：run_backtest 把 start_at 之前取到的 K 线（列名 -> float 数组）挂在
+    # 策略类上。指标在「预热段 + 主区间」上算，只把尾部与 self.data 等长的一段交给
+    # backtesting.py；Backtest() 收到的 df 仍只有主区间，stats/trades/权益曲线不受影响。
+    # 预热为空时 _warm() 原样返回 func，守卫里 + 0，与改动前逐字节一致。
+    _warmup_bars: int = 0
+    _warmup_cols: dict[str, Any] = {}
+
+    def _warm(self, func: Any, *columns: str) -> Any:
+        """Wrap an indicator func so it sees ``warmup prefix + main range`` per column."""
+        if not self._warmup_bars:
+            return func
+        prefixes = [self._warmup_cols[column] for column in columns]
+
+        @functools.wraps(func)
+        def wrapped(*arrays: Any) -> Any:
+            n = len(arrays[0])
+            full = [
+                np.concatenate([prefix, np.asarray(array, dtype="float64")])
+                for prefix, array in zip(prefixes, arrays)
+            ]
+            return np.asarray(func(*full), dtype="float64")[-n:]
+
+        return wrapped
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
@@ -2407,12 +2467,12 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
         def init(self):
             close = self.data.Close
             self.fast_ema = self.I(
-                lambda x: pd.Series(x).ewm(span=self._ema_fast, adjust=False).mean(),
+                self._warm(lambda x: pd.Series(x).ewm(span=self._ema_fast, adjust=False).mean(), "Close"),
                 close,
                 name=f"EMA({self._ema_fast})",
             )
             self.slow_ema = self.I(
-                lambda x: pd.Series(x).ewm(span=self._ema_slow, adjust=False).mean(),
+                self._warm(lambda x: pd.Series(x).ewm(span=self._ema_slow, adjust=False).mean(), "Close"),
                 close,
                 name=f"EMA({self._ema_slow})",
             )
@@ -2423,7 +2483,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
                 return
             # Warm-up guard: EMA(ewm) produces finite values from bar 0, so the
             # crossover check below cannot reject an under-warmed signal.
-            if len(self.data) < min_bars:
+            if self._warmup_bars + len(self.data) < min_bars:
                 return
             if crossover(self.fast_ema, self.slow_ema):
                 self._risk_buy()
@@ -2464,7 +2524,7 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
 
         def init(self):
             self.rsi = self.I(
-                lambda x: _rsi_series(x, self._period),
+                self._warm(lambda x: _rsi_series(x, self._period), "Close"),
                 self.data.Close,
                 name=f"RSI({self._period})",
             )
@@ -2475,7 +2535,7 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
                 return
             # Warm-up guard: Wilder EWM RSI is NaN-filled to 50.0 from bar 0, so
             # the threshold check below cannot reject an under-warmed signal.
-            if len(self.data) < min_bars:
+            if self._warmup_bars + len(self.data) < min_bars:
                 return
             if not self.position and self.rsi[-1] < self._oversold:
                 self._risk_buy()
@@ -2519,11 +2579,11 @@ def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float 
         def init(self):
             close = self.data.Close
             self.mid = self.I(
-                lambda x: pd.Series(x, dtype="float64").rolling(self._period).mean().to_numpy(),
+                self._warm(lambda x: pd.Series(x, dtype="float64").rolling(self._period).mean().to_numpy(), "Close"),
                 close,
                 name=f"BB-mid({self._period})",
             )
-            self.lower = self.I(_lower_band, close, name="BB-lower")
+            self.lower = self.I(self._warm(_lower_band, "Close"), close, name="BB-lower")
             self._risk_init()
 
         def next(self):
@@ -2571,11 +2631,11 @@ def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float 
         def init(self):
             close = self.data.Close
             self.mid = self.I(
-                lambda x: pd.Series(x, dtype="float64").rolling(self._period).mean().to_numpy(),
+                self._warm(lambda x: pd.Series(x, dtype="float64").rolling(self._period).mean().to_numpy(), "Close"),
                 close,
                 name=f"BB-mid({self._period})",
             )
-            self.upper = self.I(_upper_band, close, name="BB-upper")
+            self.upper = self.I(self._warm(_upper_band, "Close"), close, name="BB-upper")
             self._risk_init()
 
         def next(self):
@@ -2621,23 +2681,23 @@ def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0)
         def init(self):
             # shift(1): the channel uses prior bars only, no look-ahead on the current bar.
             self.hh = self.I(
-                lambda x: pd.Series(x, dtype="float64").rolling(self._lb).max().shift(1).to_numpy(),
+                self._warm(lambda x: pd.Series(x, dtype="float64").rolling(self._lb).max().shift(1).to_numpy(), "High"),
                 self.data.High,
                 name=f"Donchian-HH({self._lb})",
             )
             self.ll = self.I(
-                lambda x: pd.Series(x, dtype="float64").rolling(self._xlb).min().shift(1).to_numpy(),
+                self._warm(lambda x: pd.Series(x, dtype="float64").rolling(self._xlb).min().shift(1).to_numpy(), "Low"),
                 self.data.Low,
                 name=f"Donchian-LL({self._xlb})",
             )
 
             if direction == "short":
                 self.entry_low = self.I(
-                    lambda x: pd.Series(x, dtype="float64").rolling(self._lb).min().shift(1).to_numpy(),
+                    self._warm(lambda x: pd.Series(x, dtype="float64").rolling(self._lb).min().shift(1).to_numpy(), "Low"),
                     self.data.Low, name=f"Donchian-Entry-LL({self._lb})",
                 )
                 self.exit_high = self.I(
-                    lambda x: pd.Series(x, dtype="float64").rolling(self._xlb).max().shift(1).to_numpy(),
+                    self._warm(lambda x: pd.Series(x, dtype="float64").rolling(self._xlb).max().shift(1).to_numpy(), "High"),
                     self.data.High, name=f"Donchian-Exit-HH({self._xlb})",
                 )
             self._risk_init()
@@ -2695,9 +2755,9 @@ def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
 
         def init(self):
             close = self.data.Close
-            self.macd = self.I(lambda x: _macd_line(x).to_numpy(), close, name="MACD")
+            self.macd = self.I(self._warm(lambda x: _macd_line(x).to_numpy(), "Close"), close, name="MACD")
             self.signal = self.I(
-                lambda x: _macd_line(x).ewm(span=signal_period, adjust=False).mean().to_numpy(),
+                self._warm(lambda x: _macd_line(x).ewm(span=signal_period, adjust=False).mean().to_numpy(), "Close"),
                 close,
                 name="Signal",
             )
@@ -2708,7 +2768,7 @@ def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 return
             # Warm-up guard: MACD/signal are EWMA (infinite-response), finite from
             # bar 0, so the crossover check below cannot reject an under-warmed signal.
-            if len(self.data) < min_bars:
+            if self._warmup_bars + len(self.data) < min_bars:
                 return
             if crossover(self.macd, self.signal):
                 self._risk_buy()
@@ -2768,14 +2828,14 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
 
         def init(self):
             self.cci = self.I(
-                lambda h, l, c: _cci_series(h, l, c, cci_period),
+                self._warm(lambda h, l, c: _cci_series(h, l, c, cci_period), "High", "Low", "Close"),
                 self.data.High,
                 self.data.Low,
                 self.data.Close,
                 name=f"CCI({cci_period})",
             )
             self.rsi = self.I(
-                lambda c: _rsi_series(c, rsi_period),
+                self._warm(lambda c: _rsi_series(c, rsi_period), "Close"),
                 self.data.Close,
                 name=f"RSI({rsi_period})",
             )
@@ -2788,7 +2848,7 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
             # Warm-up guard: RSI leg is NaN-filled to 50.0 from bar 0 (Wilder EWM),
             # so isfinite() below only rejects the CCI leg's rolling-window NaN,
             # not an under-warmed RSI leg when rsi_period > cci_period.
-            if len(self.data) < min_bars:
+            if self._warmup_bars + len(self.data) < min_bars:
                 return
             cci = self.cci[-1]
             rsi = self.rsi[-1]
@@ -2839,7 +2899,7 @@ def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
 
         def init(self):
             close = self.data.Close
-            self.roc = self.I(_roc_series, close, name=f"ROC({roc_period})")
+            self.roc = self.I(self._warm(_roc_series, "Close"), close, name=f"ROC({roc_period})")
             self._risk_init()
 
         def next(self):
@@ -2907,17 +2967,17 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
         def init(self):
             close = self.data.Close
             self.ema_fast = self.I(
-                lambda x: pd.Series(x).ewm(span=ema_fast, adjust=False).mean(),
+                self._warm(lambda x: pd.Series(x).ewm(span=ema_fast, adjust=False).mean(), "Close"),
                 close,
                 name=f"EMA({ema_fast})",
             )
             self.ema_slow = self.I(
-                lambda x: pd.Series(x).ewm(span=ema_slow, adjust=False).mean(),
+                self._warm(lambda x: pd.Series(x).ewm(span=ema_slow, adjust=False).mean(), "Close"),
                 close,
                 name=f"EMA({ema_slow})",
             )
             self.rsi = self.I(
-                lambda x: _rsi_series(x, rsi_period),
+                self._warm(lambda x: _rsi_series(x, rsi_period), "Close"),
                 close,
                 name=f"RSI({rsi_period})",
             )
@@ -2936,7 +2996,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
                 # Warm-up guard: EMA(ewm) and RSI (NaN filled to 50) both produce
                 # finite values before min_bars bars have accumulated, so the
                 # isfinite check above cannot reject an under-warmed signal.
-                if len(self.data) < min_bars:
+                if self._warmup_bars + len(self.data) < min_bars:
                     return
                 if fast > slow and rsi < rsi_entry_below:
                     self._risk_buy()
@@ -4394,6 +4454,16 @@ async def run_backtest(
             reason="insufficient_data",
         )
 
+    # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
+    # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
+    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, min_bars, df)
+    indicator_warmup_bars = len(warmup_df)
+    if indicator_warmup_bars:
+        strategy_class._warmup_bars = indicator_warmup_bars
+        strategy_class._warmup_cols = {
+            column: warmup_df[column].to_numpy(dtype="float64") for column in _WARMUP_COLUMNS
+        }
+
     # --- Run backtest ---
     try:
         from backtesting import Backtest
@@ -4547,6 +4617,7 @@ async def run_backtest(
                 "exchange": exchange_id,
                 "market": market,
                 **strategy_assumptions,
+                "indicator_warmup_bars": indicator_warmup_bars,
                 "real_market_data": True,
                 "no_live_trading": True,
             },
