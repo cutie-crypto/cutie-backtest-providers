@@ -3542,6 +3542,151 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
     }
 
 
+def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Calendar buys, bounded dip attempts and whole-round profit taking."""
+    from datetime import datetime, timezone
+    from decimal import Context, DivisionByZero, Inexact, Overflow, localcontext
+    from scale_in_out_ledger import PREC, floor_qty, round_cash, round_cash_product
+
+    values: dict[str, Decimal] = {}
+    for key, default, minimum, maximum in (
+        ("amount", None, None, None),
+        ("dip_pct", 5, 1, 20),
+        ("dip_multiplier", 1.5, 1, 3),
+        ("profit_target_pct", 10, 1, 100),
+    ):
+        raw = params.get(key, default)
+        if raw is None or isinstance(raw, bool):
+            raise ValueError(f"INVALID_PARAMS:{key} is required")
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"INVALID_PARAMS:{key} must be a number")
+        if not value.is_finite() or value <= 0:
+            raise ValueError(f"INVALID_PARAMS:{key} must be > 0")
+        if minimum is not None and not Decimal(minimum) <= value <= Decimal(maximum):
+            raise ValueError(f"INVALID_PARAMS:{key} must be in [{minimum}, {maximum}]")
+        values[key] = value
+    interval = params.get("interval", "daily")
+    if interval not in ("daily", "weekly"):
+        raise ValueError("INVALID_PARAMS:interval must be daily or weekly")
+    try:
+        raw_max = params.get("max_dip_adds", 3)
+        max_value = Decimal(str(raw_max))
+        if isinstance(raw_max, bool) or not max_value.is_finite() or max_value != max_value.to_integral_value():
+            raise ValueError
+        max_adds = int(max_value)
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:max_dip_adds must be an integer")
+    if not 0 <= max_adds <= 10:
+        raise ValueError("INVALID_PARAMS:max_dip_adds must be in [0, 10]")
+    amount, dip, multiplier, profit = (values[k] for k in ("amount", "dip_pct", "dip_multiplier", "profit_target_pct"))
+    exact = Context(prec=PREC, traps=[InvalidOperation, DivisionByZero, Overflow, Inexact])
+    with localcontext(exact):
+        dip_factor = Decimal(1) - dip / Decimal(100)
+        profit_factor = Decimal(1) + profit / Decimal(100)
+        try:
+            dip_amount = amount * multiplier
+        except Inexact:
+            # Only a product exceeding ledger precision is quantized; use the
+            # ledger's exact-integer product and eight-place half-up cash rule.
+            dip_amount = round_cash_product(amount, multiplier)
+    if dip_amount <= 0:
+        raise ValueError("INVALID_PARAMS:dip amount must remain positive after cash quantization")
+
+    def period(ts):
+        day = datetime.fromtimestamp(ts, timezone.utc)
+        return day.date() if interval == "daily" else day.isocalendar()[:2]
+
+    # Reporting mirror only. Trading state belongs to each signal/on_fill closure.
+    stats = {"avg_cost": None, "rounds_completed": 0, "dip_adds_total": 0}
+
+    def signal_factory(bars):
+        round_notional = Decimal(0)
+        round_qty = Decimal(0)
+        last_buy_price = None
+        dip_adds_this_round = 0
+        last_round_avg_cost = None
+        pending_amount = amount
+        pending_dip = False
+        stats.update(avg_cost=None, rounds_completed=0, dip_adds_total=0)
+
+        def avg_cost():
+            # Display uses the ledger cash scale (1e-8, half-up). Signal
+            # comparisons below cross-multiply and never use the rounded cost.
+            with localcontext(Context(prec=PREC)):
+                return canonical_decimal_str(round_cash(round_notional / round_qty)) if round_qty else None
+
+        def signal(index):
+            nonlocal dip_adds_this_round, pending_amount, pending_dip
+            pending_dip = False
+            if index + 1 >= len(bars):
+                return "hold"
+            close = bars[index].close
+            with localcontext(exact):
+                if round_qty and close * round_qty >= round_notional * profit_factor:
+                    return "sell_all"
+                if round_qty and dip_adds_this_round < max_adds and close <= last_buy_price * dip_factor:
+                    dip_adds_this_round += 1  # A skipped buy still consumes this attempt.
+                    pending_amount, pending_dip = dip_amount, True
+                    return ("buy", pending_amount)
+            if period(bars[index + 1].open_time) != period(bars[index].open_time):
+                pending_amount = amount
+                return ("buy", pending_amount)
+            return "hold"
+
+        def on_fill(index, action, filled, price):
+            nonlocal round_notional, round_qty, last_buy_price, dip_adds_this_round, last_round_avg_cost
+            if not filled:
+                return
+            with localcontext(exact):
+                if action == "buy":
+                    qty = floor_qty(pending_amount, price)
+                    round_notional += qty * price
+                    round_qty += qty
+                    last_buy_price = price
+                    if pending_dip:
+                        stats["dip_adds_total"] += 1
+                elif action == "sell_all":
+                    last_round_avg_cost = avg_cost()
+                    round_notional = Decimal(0)
+                    round_qty = Decimal(0)
+                    last_buy_price = None
+                    dip_adds_this_round = 0
+                    stats["rounds_completed"] += 1
+            stats["avg_cost"] = avg_cost() if round_qty else last_round_avg_cost
+
+        return signal, on_fill
+
+    def extra_assumptions(ledger):
+        # End liquidation does not call on_fill, retaining its pre-liquidation cost.
+        with localcontext(exact):
+            return {
+                "position_mode": "dca",
+                **stats,
+                "total_invested": canonical_decimal_str(ledger.total_invested),
+                "max_unrealized_loss": canonical_decimal_str(ledger.max_unrealized_loss),
+                "interval": interval,
+                "dip_pct": canonical_decimal_str(dip),
+                "dip_multiplier": canonical_decimal_str(multiplier),
+                "max_dip_adds": max_adds,
+                "profit_target_pct": canonical_decimal_str(profit),
+            }
+
+    return {
+        "strategy": None,
+        "executed_name": f"DCA ({interval}, {amount}, dip {dip}% x{multiplier}, profit {profit}%)",
+        "min_bars": 2,
+        "scale_in_out": {
+            "buy_notional": amount,
+            "sell_notional": amount,
+            "lot_order": "fifo",
+            "signal_factory": signal_factory,
+            "extra_assumptions": extra_assumptions,
+        },
+    }
+
+
 # 123 B2：三个组合模板 tool 共用的公共参数 schema（SPEC_组合策略v3契约 §6.1）。
 # _validate_params_against_schema 只理解 integer/number/string + min/max/enum，
 # 对 array/object 不做深校验（deferred to strategy_spec_v3_builder._build 与
@@ -3856,6 +4001,32 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "ema_fast": {"type": "integer", "default": 20, "minimum": 5, "maximum": 50},
             "ema_slow": {"type": "integer", "default": 60, "minimum": 30, "maximum": 200},
             "pullback_tolerance_pct": {"type": "number", "default": 0.2, "minimum": 0, "maximum": 1},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.dca": {
+        "name": "Local Spot DCA with Dip Adds",
+        "description": (
+            "Spot long-only daily or UTC ISO-week DCA with bounded fixed-multiplier "
+            "dip buys and whole-round profit taking on the fee-exclusive average cost. "
+            "Profit exits override dip buys, which override scheduled buys. Fills use "
+            "the next bar open, not trigger prices. There is no buy at the first bar "
+            "open: the first scheduled fill is at the first calendar boundary in the "
+            "data. On 1w candles daily DCA degenerates to one buy per bar when no "
+            "higher-priority action applies — maps to KOL '定投 + 跌幅加码'"
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "runner": SCALE_IN_OUT_RUNNER,
+        "markets": ["spot"],
+        "build": _build_dca,
+        "param_schema_properties": {
+            "interval": {"type": "string", "default": "daily", "enum": ["daily", "weekly"]},
+            "amount": {"type": "number", "minimum": 0},
+            "dip_pct": {"type": "number", "default": 5, "minimum": 1, "maximum": 20},
+            "dip_multiplier": {"type": "number", "default": 1.5, "minimum": 1, "maximum": 3},
+            "max_dip_adds": {"type": "integer", "default": 3, "minimum": 0, "maximum": 10},
+            "profit_target_pct": {"type": "number", "default": 10, "minimum": 1, "maximum": 100},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
