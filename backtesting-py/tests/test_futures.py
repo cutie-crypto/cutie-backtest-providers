@@ -78,9 +78,13 @@ def test_catalog_declares_futures_market(client):
     assert resp.status_code == 200
     body = resp.json()
     for tool in body["tools"]:
+        assert "MARKET_UNSUPPORTED" in tool["failure_codes"]
+        if tool["tool_id"] == "local.backtesting_py.rsi_scale_in_out":
+            # 132 定额分批只做现货（IMPL §3.1），服务端按单个 tool 的 markets 拒绝合约。
+            assert tool["markets"] == ["spot"]
+            continue
         assert "spot" in tool["markets"]
         assert "futures" in tool["markets"]
-        assert "MARKET_UNSUPPORTED" in tool["failure_codes"]
 
 
 def test_catalog_widened_tunable_ranges(client):

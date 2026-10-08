@@ -4,4 +4,4 @@ pydantic>=2.0
 ccxt
 pandas
 numpy
-backtesting
+backtesting==0.6.5
