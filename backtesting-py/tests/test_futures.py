@@ -79,8 +79,8 @@ def test_catalog_declares_futures_market(client):
     body = resp.json()
     for tool in body["tools"]:
         assert "MARKET_UNSUPPORTED" in tool["failure_codes"]
-        if tool["tool_id"] == "local.backtesting_py.rsi_scale_in_out":
-            # 132 定额分批只做现货（IMPL §3.1），服务端按单个 tool 的 markets 拒绝合约。
+        if provider.TOOL_SPECS[tool["tool_id"]].get("runner") == provider.SCALE_IN_OUT_RUNNER:
+            # 分批账本模板（132 RSI 定额分批、R3 网格 / DCA）只做现货，服务端按单个 tool 的 markets 拒绝合约
             assert tool["markets"] == ["spot"]
             continue
         assert "spot" in tool["markets"]
