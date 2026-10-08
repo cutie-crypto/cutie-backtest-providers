@@ -116,6 +116,7 @@ def make_provider(
     require_auth: bool = True,
     result_status: str = "success",
     failed_body: Optional[Dict[str, Any]] = None,
+    tool_count: int = 1,
 ) -> FastAPI:
     app = FastAPI()
     tool = copy.deepcopy(CONFORMING_TOOL)
@@ -152,7 +153,10 @@ def make_provider(
                     "provider_name": "Mock Provider",
                     "provider_version": "1.0.0",
                 },
-                "tools": [tool],
+                "tools": [
+                    {**tool, **({} if i == 0 else {"tool_id": f"{tool['tool_id']}.{i}", "is_default": False})}
+                    for i in range(tool_count)
+                ],
             }
         )
 
@@ -216,6 +220,25 @@ def test_conforming_provider_passes_all_checks():
     assert report.ok, [e for e in report.errors]
     for c in report.checks:
         assert c.passed, (c.check_id, c.errors)
+
+
+def test_tool_count_limit_is_20():
+    ok = run_validator(make_provider(tool_count=13))
+    assert check_by_id(ok, 3).passed, check_by_id(ok, 3).errors
+    bad = run_validator(make_provider(tool_count=21))
+    assert not check_by_id(bad, 3).passed
+
+
+def _schema_with_type(t):
+    return {"type": "object", "properties": {"x": {"type": t}}}
+
+
+def test_nullable_union_type_allowed_but_bare_null_rejected():
+    from cutie_backtest_provider_validator.schema_subset import validate_param_schema
+
+    assert validate_param_schema(_schema_with_type(["integer", "null"])) == []
+    assert validate_param_schema(_schema_with_type("null")) != []
+    assert validate_param_schema(_schema_with_type(["integer", "foo"])) != []
 
 
 # -- check 2: auth -------------------------------------------------------

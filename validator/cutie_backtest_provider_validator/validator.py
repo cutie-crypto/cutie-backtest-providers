@@ -53,7 +53,8 @@ MONEY_ASSUMPTION_FIELDS = ("fee_bps", "slippage_bps")
 # §6.2: ratio/percentage metrics MAY be JSON numbers but not NaN/Infinity.
 RATIO_METRIC_FIELDS = ("total_return_pct", "win_rate_pct", "max_drawdown_pct", "buy_hold_return_pct")
 
-MAX_TOOLS = 10
+# 与 cutie-server / connector 的 BACKTEST_TOOL_CATALOG_MAX_TOOLS 对齐
+MAX_TOOLS = 20
 MAX_PROVIDER_ID_LEN = 128
 MAX_TOOL_ID_LEN = 128
 
