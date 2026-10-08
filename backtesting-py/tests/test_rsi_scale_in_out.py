@@ -500,3 +500,47 @@ def test_huge_notional_does_not_trip_scaled_invariants():
     result = _run(bars, ["buy", "sell", "hold", "hold"], capital="1E17", buy="1E17", fee="0", slip="0")
     assert result.trades[0]["qty"] == D("100") / D("2.97")
     assert len(result.trades) == 2
+
+
+# ---------------------------------------------------------------------------
+# 容差按 ulp 推导（Codex 二轮复核两条 P2）：可精确表示的真实差额不得被吞掉
+# ---------------------------------------------------------------------------
+
+def test_decision_tolerance_keeps_exactly_representable_remainder():
+    big = D("1E18")
+    bars = _bars([1, 1, 1, 2], [1, 1, 1, 2])
+    result = _run(bars, ["buy", "sell", "hold", "hold"], capital=str(big + 1), buy=str(big + 1),
+                  sell=str(big), fee="0", slip="0")
+    assert [(t["qty"], t["exit_price"]) for t in result.trades] == [(big, D("1")), (D("1"), D("2"))]
+    assert sum(1 for t in result.trades if t["pnl"] > 0) == 1
+
+
+def test_split_boundary_sells_exact_target_across_lots():
+    big = D("1E18")
+    bars = _bars([1] * 5, [1] * 5)
+    result = _run(bars, ["buy", "buy", "sell", "hold", "hold"], capital=str(2 * big), buy=str(big - 1),
+                  sell=str(big), fee="0", slip="0")
+    sold = [t for t in result.trades if t["closed_at"] == bars[3].open_time]
+    assert [t["qty"] for t in sold] == [big - 1, D("1")]
+    assert result.trades[-1]["qty"] == big - 2
+
+
+def _big_ledger() -> ScaleInOutLedger:
+    ledger = ScaleInOutLedger(initial_capital=D("1E17"), buy_notional=D("1E17"), sell_notional=D("100"),
+                              fee_bps=D("0"), slippage_bps=D("0"))
+    ledger.begin_bar()
+    ledger.buy(START_AT, D("1"))
+    ledger.check_invariants(D("1"), "setup")
+    return ledger
+
+
+def test_scaled_tolerance_still_catches_cent_level_errors_at_1e17():
+    ledger = _big_ledger()
+    ledger.cash += D("0.01")
+    with pytest.raises(LedgerInvariantError, match="cash\\+holdings"):
+        ledger.check_invariants(D("1"), "inject")
+    ledger = _big_ledger()
+    ledger.cum_bought += D("0.01")
+    with pytest.raises(LedgerInvariantError, match="lot qty"):
+        ledger.check_invariants(D("1"), "inject")
+    assert _big_ledger().money_tolerance(D("1")) < D("1E-8")

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, getcontext
 from typing import Any, Callable, Optional, Sequence
 
 from canonical_json import canonical_decimal_str
@@ -36,11 +36,19 @@ SELL = "sell"
 HOLD = "hold"
 _SIGNALS = frozenset({BUY, SELL, HOLD})
 _BPS = Decimal(10000)
-# 账本走 Decimal 默认上下文（28 位有效数字，与 result.v2 旧路径同一上下文），单次运算相对
-# 舍入误差约 5e-28。误差界一律按**相对量**给：交易判断（拆批边界、是否清仓）乘本次目标数量，
-# 不变量 ① 乘金额规模、② 乘数量规模，各自留约 1e9 倍余量给累积舍入；不用固定绝对容差
-# （大额会误报、小额会把真实差额吞掉，见 Codex review 四条 P2）。
-RELATIVE_ERROR_BOUND = Decimal("1e-18")
+# 账本走 Decimal 默认上下文（与 result.v2 旧路径同一上下文）。容差一律按该上下文的真实舍入
+# 粒度 ulp 推导，不用固定绝对值或固定相对值（大额会吞掉可精确表示的真实差额，小额会误判）。
+# 交易决策（是否清仓、拆批边界）的容差 = DECISION_ULPS × max(ulp(目标), ulp(持仓))：目标来自一次
+# 除法（≤0.5 ulp），持仓是各批数量之和、每批来自一次除法与至多若干次精确或 0.5 ulp 的减法，
+# 合计约 2 ulp，取 4 留一倍余量。
+DECISION_ULPS = 4
+
+
+def ulp(value: Decimal) -> Decimal:
+    """当前 Decimal 上下文下 ``value`` 末位的单位：10^(adjusted − (prec − 1))；0 的 ulp 记 0。"""
+    if not value:
+        return Decimal(0)
+    return Decimal(1).scaleb(value.adjusted() - (getcontext().prec - 1))
 
 SignalFn = Callable[[int], str]
 
@@ -122,7 +130,13 @@ def threshold_signal(values: Sequence[float], *, buy_below: float, sell_above: f
 
 
 class ScaleInOutLedger:
-    """逐根推进的定额分批账本；一般经 ``run_scale_in_out`` 使用。"""
+    """逐根推进的定额分批账本；一般经 ``run_scale_in_out`` 使用。
+
+    舍入误差按 ulp 记账（见模块顶部 ``ulp``）：每次金额运算把「参与量与结果中绝对值最大者」
+    的 1 ulp 记进 ``money_err``，数量运算同理记进 ``qty_err``。IEEE/Decimal 单次舍入误差
+    不超过结果的 0.5 ulp，取最大参与量的 1 ulp 是带一倍余量的上界。不变量 ①② 的容差 =
+    累计误差 + 本次核对时求值本身的误差，两种量纲分开算。
+    """
 
     def __init__(
         self,
@@ -149,7 +163,8 @@ class ScaleInOutLedger:
         self.realized_pnl = Decimal(0)
         self.cum_bought = Decimal(0)
         self.cum_sold = Decimal(0)
-        self.cum_traded_value = Decimal(0)  # 累计成交额（金额规模，供 ① 的误差界）
+        self.money_err = Decimal(0)
+        self.qty_err = Decimal(0)
         self.buy_fills = 0
         self.sell_fills = 0
         self.skipped_buys = 0
@@ -176,6 +191,11 @@ class ScaleInOutLedger:
         self.buys_this_bar = 0
         self.sells_this_bar = 0
 
+    def _qty_rounding_in_money(self, entry_price: Decimal, qty: Decimal) -> Decimal:
+        """数量舍入 δ 对 ① 的影响：cash+Σq·P 与按 pnl 算的权益之差 = cash − 本金 − 已实现
+        + Σ E·q·(1+费率)，当前价 P 两边抵消，所以 δ 只经 E·(1+费率)·δ 进入，与之后价格无关。"""
+        return entry_price * (1 + self.cost_rate) * ulp(qty) + ulp(entry_price * qty)
+
     def buy(self, ts: int, price: Decimal) -> bool:
         # 现金门槛与扣款按原始金额算；数量独立算，不用除法舍入后的数量反推（否则恰好足额会被
         # price*(notional/price) 的 1e-25 尾数判成不足）。
@@ -185,10 +205,13 @@ class ScaleInOutLedger:
             self.skipped_buys += 1
             return False
         qty = notional / price
+        cash_before = self.cash
         self.cash -= charge
-        self.cum_traded_value += notional
+        self.money_err += 4 * ulp(charge) + ulp(max(cash_before, charge))
+        self.money_err += self._qty_rounding_in_money(price, qty) + ulp(notional)
         self.lots.append(_Lot(opened_at=ts, entry_price=price, qty=qty))
         self.cum_bought += qty
+        self.qty_err += ulp(self.cum_bought)
         self.buy_fills += 1
         self.buys_this_bar += 1
         return True
@@ -198,8 +221,8 @@ class ScaleInOutLedger:
         if holding <= 0:
             return False
         target = self.sell_notional / price
-        # 本次运算误差界（数量量纲，按目标数量相对给）：只吸收 Decimal 舍入尾数，不改变交易决策。
-        eps = target * RELATIVE_ERROR_BOUND
+        # 交易决策的边界容差：DECISION_ULPS × max(ulp(目标), ulp(持仓))，只吸收舍入尾数。
+        eps = DECISION_ULPS * max(ulp(target), ulp(holding))
         # 持仓不足一笔就整批全部平掉，不靠减法凑零。
         remaining: Optional[Decimal] = None if (sell_all or holding <= target + eps) else target
         while self.lots:
@@ -209,14 +232,17 @@ class ScaleInOutLedger:
             else:
                 if remaining <= eps:
                     break
-                # 拆批边界：批次与剩余目标在误差界内相等就整批归入当前批，不为尾数跨到下一批。
+                # 拆批边界：批次与剩余目标在容差内相等就整批归入当前批，不为尾数跨到下一批。
                 portion = lot.qty if lot.qty <= remaining + eps else remaining
                 remaining -= portion
             self._close_portion(lot, portion, ts, price)
             self.cum_sold += portion
+            self.qty_err += ulp(self.cum_sold)
             if portion == lot.qty:
                 self.lots.pop(0)
             else:
+                self.qty_err += ulp(lot.qty)
+                self.money_err += self._qty_rounding_in_money(lot.entry_price, lot.qty)
                 lot.qty -= portion
         if not sell_all:
             self.sell_fills += 1
@@ -234,9 +260,15 @@ class ScaleInOutLedger:
         slippage = (entry + price) * qty * self.slippage_rate
         pnl = (price - entry) * qty - fee - slippage
         exit_gross = price * qty
-        self.cash += exit_gross - exit_gross * self.fee_rate - exit_gross * self.slippage_rate
-        self.cum_traded_value += exit_gross
+        proceeds = exit_gross - exit_gross * self.fee_rate - exit_gross * self.slippage_rate
+        cash_before = self.cash
+        self.cash += proceeds
+        realized_before = self.realized_pnl
         self.realized_pnl += pnl
+        scale = (entry + price) * qty
+        # fee/slippage/pnl 共 10 次运算，proceeds 5 次，再加现金与已实现各 1 次累加。
+        self.money_err += 15 * ulp(scale) + ulp(max(abs(cash_before), abs(self.cash), scale))
+        self.money_err += ulp(max(abs(realized_before), abs(self.realized_pnl), abs(pnl)))
         self.trades.append({
             "opened_at": lot.opened_at,
             "closed_at": ts,
@@ -251,13 +283,15 @@ class ScaleInOutLedger:
 
     # -- 不变量 ------------------------------------------------------------
     def money_tolerance(self, price: Decimal) -> Decimal:
-        """① 的误差界：本金 + 累计成交额 + 当前持仓市值，乘相对误差界。"""
-        scale = self.initial_capital + self.cum_traded_value + self.lot_qty_sum() * price
-        return scale * RELATIVE_ERROR_BOUND
+        """① 的容差：累计金额舍入 + 本次两条权益求值的舍入（每批约 8 次运算，外加 4 次汇总）。"""
+        held = sum(((price + lot.entry_price) * lot.qty for lot in self.lots), Decimal(0))
+        scale = max(abs(self.cash), abs(self.initial_capital), abs(self.realized_pnl), held)
+        return self.money_err + (8 * len(self.lots) + 4) * ulp(scale)
 
     def qty_tolerance(self) -> Decimal:
-        """② 的误差界：累计买入数量乘相对误差界。"""
-        return self.cum_bought * RELATIVE_ERROR_BOUND
+        """② 的容差：累计数量舍入 + 批次求和与一次相减的舍入。"""
+        scale = max(self.cum_bought, self.cum_sold)
+        return self.qty_err + (len(self.lots) + 1) * ulp(scale)
 
     def check_invariants(self, price: Decimal, where: str) -> None:
         by_cash = self.equity_by_cash(price)
