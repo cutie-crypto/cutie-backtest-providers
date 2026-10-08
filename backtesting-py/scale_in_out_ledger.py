@@ -41,8 +41,19 @@ slippageᵢ = aᵢ(滑点) + min(R(Xᵢ·qᵢ·r_s), Xᵢ·qᵢ − 本笔卖出
 
 五条不变量在每次成交后与每根收盘后**精确相等**断言，违反抛 ``LedgerInvariantError``：
 ① 现金 + Σ批次数量 × 当根价格 = 本金 + 已实现 + Σ[(当根价 − 入场价) × 数量 − 未分摊开仓费用]；
-② 批次数量和 = 累计买入 − 累计卖出；③ FIFO：被卖出批次的 opened_at 单调不降；
-④ 现金永不为负；⑤ 同根不得既买又卖（D11）。
+② 批次数量和 = 累计买入 − 累计卖出；③ 批次顺序：fifo 被卖出批次的 opened_at 全程单调不降；
+lifo 自上一次买入成交起被卖出批次的 opened_at 单调不增（每次买入后重新起算：lifo 卖完最新批次后
+再买，新批次必然更新，全程单调不增在合法序列上也会被打破）；④ 现金永不为负；⑤ 同根不得既买又卖（D11）。
+
+泛化（R3-T1，为网格 / DCA 铺路；``rsi_scale_in_out`` 走全部默认值，结果逐字节不变）：
+- ``buy(..., notional=)`` 按指定金额成交（默认沿用构造的 buy_notional）。
+- ``lot_order``：``"fifo"``（默认）/ ``"lifo"``，决定 ``sell`` 拆批与 ``sell_lot`` 取批的方向。
+- ``sell_lot``：卖出按 lot_order 排在最前的那一整批的全部数量。
+- 信号除 ``"buy" / "sell" / "hold"`` 外还可返回 ``"sell_all"`` / ``("sell_all",)``（下一根开盘清掉
+  全部批次，计一次卖出成交；无持仓视同不成交）、``("buy", Decimal 金额)``、``("sell_lot",)``；
+  ``on_fill`` 回调在每次尝试成交挂单后收到 (bar 序号, 动作, 是否成交, 成交价)。账本不保存任何策略状态。
+- ``BarSnapshot.unrealized_pnl`` 与 ``LedgerResult.total_invested / max_unrealized_loss``
+  只给后续模板用，``rsi_scale_in_out`` 的 payload 不输出它们。
 """
 from __future__ import annotations
 
@@ -68,7 +79,12 @@ from canonical_json import canonical_decimal_str
 BUY = "buy"
 SELL = "sell"
 HOLD = "hold"
-_SIGNALS = frozenset({BUY, SELL, HOLD})
+SELL_LOT = "sell_lot"
+SELL_ALL = "sell_all"
+_SIGNALS = frozenset({BUY, SELL, HOLD, SELL_ALL})
+FIFO = "fifo"
+LIFO = "lifo"
+_LOT_ORDERS = frozenset({FIFO, LIFO})
 _BPS = Decimal(10000)
 
 PREC = 60
@@ -80,7 +96,8 @@ _EXACT = Context(
     traps=[InvalidOperation, DivisionByZero, Overflow, Inexact],
 )
 
-SignalFn = Callable[[int], str]
+SignalFn = Callable[[int], Any]  # "buy" | "sell" | "hold" | "sell_all" | ("buy", Decimal) | ("sell_lot",) | ("sell_all",)
+FillFn = Callable[[int, str, bool, Decimal], None]
 
 
 class LedgerInvariantError(RuntimeError):
@@ -168,6 +185,7 @@ class BarSnapshot:
     equity_by_pnl: Decimal
     buys_this_bar: int
     sells_this_bar: int
+    unrealized_pnl: Decimal
 
 
 @dataclass(frozen=True)
@@ -181,6 +199,8 @@ class LedgerResult:
     skipped_buys_insufficient_cash: int
     final_cash: Decimal
     realized_pnl: Decimal
+    total_invested: Decimal
+    max_unrealized_loss: Decimal
 
 
 def threshold_signal(values: Sequence[float], *, buy_below: float, sell_above: float) -> SignalFn:
@@ -220,7 +240,10 @@ class ScaleInOutLedger:
         sell_notional: Decimal,
         fee_bps: Decimal,
         slippage_bps: Decimal,
+        lot_order: str = FIFO,
     ) -> None:
+        if lot_order not in _LOT_ORDERS:
+            raise ValueError(f"lot_order must be 'fifo' or 'lifo', got {lot_order!r}")
         if initial_capital <= 0 or buy_notional <= 0 or sell_notional <= 0:
             raise ValueError("initial_capital / buy_notional / sell_notional must be positive")
         if fee_bps < 0 or slippage_bps < 0 or fee_bps + slippage_bps >= _BPS:
@@ -230,12 +253,15 @@ class ScaleInOutLedger:
         self.sell_notional = sell_notional
         self.fee_rate = fee_bps / _BPS  # 有限小数除以 10^4，精确
         self.slippage_rate = slippage_bps / _BPS
+        self.lot_order = lot_order
+        self._head = 0 if lot_order == FIFO else -1  # 卖出取批次的位置：fifo 最早、lifo 最新
         self.cash = initial_capital
         self.lots: list[_Lot] = []
         self.trades: list[dict[str, Any]] = []
         self.realized_pnl = Decimal(0)
         self.cum_bought = Decimal(0)
         self.cum_sold = Decimal(0)
+        self.total_invested = Decimal(0)
         self.buy_fills = 0
         self.sell_fills = 0
         self.skipped_buys = 0
@@ -253,12 +279,21 @@ class ScaleInOutLedger:
         return self.cash + sum((lot.qty * price for lot in self.lots), Decimal(0))
 
     @_exact
-    def equity_by_pnl(self, price: Decimal) -> Decimal:
-        """本金 + 已实现 + 各批次浮动净值（扣未分摊的开仓费用），与现金无关的另一条算法。"""
+    def unrealized_pnl(self, price: Decimal) -> Decimal:
+        """Σ批次 [(价格 − 入场价) × 数量 − 未分摊开仓手续费 − 未分摊开仓滑点]。
+
+        成本口径取更保守的一侧：入场价之外再扣该批次尚未分摊的开仓费用（与不变量 ① 同一口径），
+        所以价格回到入场价时浮动盈亏为负、不为 0。
+        """
         unrealized = Decimal(0)
         for lot in self.lots:
             unrealized += (price - lot.entry_price) * lot.qty - lot.fee_left - lot.slippage_left
-        return self.initial_capital + self.realized_pnl + unrealized
+        return unrealized
+
+    @_exact
+    def equity_by_pnl(self, price: Decimal) -> Decimal:
+        """本金 + 已实现 + 各批次浮动净值（扣未分摊的开仓费用），与现金无关的另一条算法。"""
+        return self.initial_capital + self.realized_pnl + self.unrealized_pnl(price)
 
     # -- 成交 --------------------------------------------------------------
     def begin_bar(self) -> None:
@@ -266,8 +301,13 @@ class ScaleInOutLedger:
         self.sells_this_bar = 0
 
     @_exact
-    def buy(self, ts: int, price: Decimal) -> bool:
-        qty = floor_qty(self.buy_notional, price)
+    def buy(self, ts: int, price: Decimal, *, notional: Optional[Decimal] = None) -> bool:
+        """按 notional（默认构造的 buy_notional）买一批；现金不足整笔跳过并计数。"""
+        if notional is None:
+            notional = self.buy_notional
+        elif not isinstance(notional, Decimal) or not notional.is_finite() or notional <= 0:
+            raise ValueError(f"buy notional must be a positive finite Decimal, got {notional!r}")
+        qty = floor_qty(notional, price)
         if qty == 0:
             return False
         gross = qty * price
@@ -279,6 +319,9 @@ class ScaleInOutLedger:
         self.cash -= gross + fee + slippage
         self.lots.append(_Lot(opened_at=ts, entry_price=price, qty=qty, fee_left=fee, slippage_left=slippage))
         self.cum_bought += qty
+        self.total_invested += gross
+        if self.lot_order == LIFO:
+            self.last_sold_opened_at = None  # lifo 的 ③ 按买入分段起算（见模块说明）
         self.buy_fills += 1
         self.buys_this_bar += 1
         return True
@@ -292,13 +335,13 @@ class ScaleInOutLedger:
         if remaining == 0:
             return False
         while remaining > 0:
-            lot = self.lots[0]
+            lot = self.lots[self._head]
             portion = min(lot.qty, remaining)
             self._close_portion(lot, portion, ts, price)
             remaining -= portion
             self.cum_sold += portion
             if portion == lot.qty:
-                self.lots.pop(0)
+                self.lots.pop(self._head)
             else:
                 lot.qty -= portion
         if not sell_all:
@@ -306,10 +349,29 @@ class ScaleInOutLedger:
             self.sells_this_bar += 1
         return True
 
+    @_exact
+    def sell_lot(self, ts: int, price: Decimal) -> bool:
+        """卖出按 lot_order 排在最前的那一整批的全部数量（lifo = 最新一批）；无持仓返回 False。"""
+        if not self.lots:
+            return False
+        lot = self.lots[self._head]
+        qty = lot.qty
+        self._close_portion(lot, qty, ts, price)
+        self.cum_sold += qty
+        self.lots.pop(self._head)
+        self.sell_fills += 1
+        self.sells_this_bar += 1
+        return True
+
     def _close_portion(self, lot: _Lot, qty: Decimal, ts: int, price: Decimal) -> None:
-        if self.last_sold_opened_at is not None and lot.opened_at < self.last_sold_opened_at:
+        last = self.last_sold_opened_at
+        if self.lot_order == FIFO and last is not None and lot.opened_at < last:
             raise LedgerInvariantError(
-                f"FIFO broken: sold lot opened_at={lot.opened_at} after {self.last_sold_opened_at}"
+                f"FIFO broken: sold lot opened_at={lot.opened_at} after {last}"
+            )
+        if self.lot_order == LIFO and last is not None and lot.opened_at > last:
+            raise LedgerInvariantError(
+                f"LIFO broken: sold lot opened_at={lot.opened_at} after {last}"
             )
         self.last_sold_opened_at = lot.opened_at
         entry = lot.entry_price
@@ -360,6 +422,23 @@ class ScaleInOutLedger:
         # ③ 在每次拆批时（_close_portion）已即时断言。
 
 
+def _parse_signal(index: int, raw: Any) -> tuple[str, Optional[Decimal]]:
+    """信号返回值 → (动作, 买入金额)；不认识的返回值是策略实现缺陷，抛 LedgerInvariantError。"""
+    if isinstance(raw, str) and raw in _SIGNALS:
+        return raw, None
+    if isinstance(raw, tuple):
+        if raw == (SELL_LOT,):
+            return SELL_LOT, None
+        if raw == (SELL_ALL,):
+            return SELL_ALL, None
+        if (
+            len(raw) == 2 and raw[0] == BUY and isinstance(raw[1], Decimal)
+            and raw[1].is_finite() and raw[1] > 0
+        ):
+            return BUY, raw[1]
+    raise LedgerInvariantError(f"bar {index}: unknown signal {raw!r}")
+
+
 @_exact
 def run_scale_in_out(
     bars: Sequence[LedgerBar],
@@ -372,6 +451,8 @@ def run_scale_in_out(
     slippage_bps: Decimal,
     start_at: int,
     end_at: int,
+    lot_order: str = FIFO,
+    on_fill: Optional[FillFn] = None,
 ) -> LedgerResult:
     ledger = ScaleInOutLedger(
         initial_capital=initial_capital,
@@ -379,24 +460,35 @@ def run_scale_in_out(
         sell_notional=sell_notional,
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
+        lot_order=lot_order,
     )
     points: dict[int, Decimal] = {}
     fill_ts: set[int] = set()
     snapshots: list[BarSnapshot] = []
-    pending = HOLD
+    pending: tuple[str, Optional[Decimal]] = (HOLD, None)
     last = len(bars) - 1
     for index, bar in enumerate(bars):
         ledger.begin_bar()
         filled = False
-        if pending == BUY:
-            filled = ledger.buy(bar.open_time, bar.open)
-        elif pending == SELL:
+        action, notional = pending
+        if action == BUY:
+            filled = ledger.buy(bar.open_time, bar.open, notional=notional)
+        elif action == SELL:
             filled = ledger.sell(bar.open_time, bar.open)
+        elif action == SELL_LOT:
+            filled = ledger.sell_lot(bar.open_time, bar.open)
+        elif action == SELL_ALL:
+            filled = ledger.sell(bar.open_time, bar.open, sell_all=True)
+            if filled:  # 信号清仓是一次卖出成交（计入 ⑤ 同根冲突判定）；期末强平不计
+                ledger.sell_fills += 1
+                ledger.sells_this_bar += 1
         if filled:
             ledger.check_invariants(bar.open, f"bar {index} fill")
             fill_ts.add(bar.open_time)
             if bar.open_time > start_at:
                 points[bar.open_time] = ledger.equity_by_cash(bar.open)
+        if on_fill is not None and action != HOLD:
+            on_fill(index, action, filled, bar.open)
         ledger.check_invariants(bar.close, f"bar {index} close")
         snapshots.append(BarSnapshot(
             index=index,
@@ -410,15 +502,14 @@ def run_scale_in_out(
             equity_by_pnl=ledger.equity_by_pnl(bar.close),
             buys_this_bar=ledger.buys_this_bar,
             sells_this_bar=ledger.sells_this_bar,
+            unrealized_pnl=ledger.unrealized_pnl(bar.close),
         ))
         if ledger.lots and start_at < bar.close_time < end_at:
             points[bar.close_time] = ledger.equity_by_cash(bar.close)
         if index < last and bars[index + 1].open_time < end_at:
-            pending = signal(index)
-            if pending not in _SIGNALS:
-                raise LedgerInvariantError(f"bar {index}: unknown signal {pending!r}")
+            pending = _parse_signal(index, signal(index))
         else:
-            pending = HOLD  # D5：最后一根（及成交会落在 end_at 上的那根）不判新信号
+            pending = (HOLD, None)  # D5：最后一根（及成交会落在 end_at 上的那根）不判新信号
 
     if ledger.lots and bars:
         ledger.sell(end_at, bars[-1].close, sell_all=True)
@@ -440,6 +531,8 @@ def run_scale_in_out(
         skipped_buys_insufficient_cash=ledger.skipped_buys,
         final_cash=ledger.cash,
         realized_pnl=ledger.realized_pnl,
+        total_invested=ledger.total_invested,
+        max_unrealized_loss=min([Decimal(0), *(snap.unrealized_pnl for snap in snapshots)]),
     )
 
 
