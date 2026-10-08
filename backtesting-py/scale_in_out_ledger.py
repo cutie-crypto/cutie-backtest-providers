@@ -23,10 +23,21 @@
   最小数量的正常口径（D9 的金额参数与规则句一致性不受影响）。数量取整为 0（金额不足成交价的
   1e-12）时不成交、不计入现金不足跳过数。卖出目标数量同样向下取整，卖 min(目标, 持仓)。
 - 金额：成交额 = 数量 × 成交价（有限位相乘，精确）；手续费、滑点各自按 ``CASH_SCALE``
-  四舍五入（ROUND_HALF_UP）。买入时整批的开仓费用一次付清；批次被拆卖时，被卖部分分摊的开仓
-  费用按同一规则量化、不超过该批剩余未分摊额，批次最后一部分拿走剩余全部，分摊之和精确等于
-  实付。trade 的 fee / slippage = 分摊的开仓侧 + 本次卖出侧，pnl = (出场价 − 入场价) × 数量
-  − fee − slippage。与旧模板公式 (E+X)·qty·bps/10000 的差别只在每侧 ≤ 0.5 × CASH_SCALE 的量化。
+  四舍五入（ROUND_HALF_UP）。费用乘积用整数系数精确相乘后再量化（``round_cash_product``），
+  不在 60 位上下文里先算乘积，免得合法费用在量化前被精度陷阱误杀。
+- 卖出侧上界（统领 2026-10-08 定，是上界不是容差）：单笔卖出 fee + slippage 不得超过该笔
+  成交额；fee 先取、slippage 取剩余，即 exit_fee = min(R(X·q·r_f), X·q)，
+  exit_slippage = min(R(X·q·r_s), X·q − exit_fee)，所以现金永不为负。
+- 开仓费用：买入时整批一次付清；批次被拆卖时按成交顺序分摊，**末笔承接全部未分摊额**（含此前
+  各笔量化的累计差额），所以单笔分摊额与 E·qᵢ·r 的差可以超过半个 CASH_SCALE，但同批分摊之和
+  精确等于实付。trade 的 fee / slippage = 分摊的开仓侧 + 本次卖出侧，pnl = (出场价 − 入场价)
+  × 数量 − fee − slippage。
+
+服务端复算公式（Codex 给出，与本实现逐项一致）：同一买入批次按成交顺序，R = ROUND_HALF_UP 到
+1e-8，r = bps / 10000，E = 入场价，Q = Σqᵢ（该批买入数量），初始未分摊额 A = R(E·Q·r)；
+非末笔 aᵢ = min(R(E·qᵢ·r), A)，末笔 aᵢ = A，每笔之后 A −= aᵢ；
+feeᵢ = aᵢ(手续费) + min(R(Xᵢ·qᵢ·r_f), Xᵢ·qᵢ)；
+slippageᵢ = aᵢ(滑点) + min(R(Xᵢ·qᵢ·r_s), Xᵢ·qᵢ − 本笔卖出侧手续费)。
 
 五条不变量在每次成交后与每根收盘后**精确相等**断言，违反抛 ``LedgerInvariantError``：
 ① 现金 + Σ批次数量 × 当根价格 = 本金 + 已实现 + Σ[(当根价 − 入场价) × 数量 − 未分摊开仓费用]；
@@ -95,9 +106,34 @@ def floor_qty(amount: Decimal, price: Decimal) -> Decimal:
         return (amount / price).quantize(QTY_SCALE, rounding=ROUND_DOWN)
 
 
+def round_cash_product(*factors: Decimal) -> Decimal:
+    """∏factors 按 CASH_SCALE 四舍五入（ROUND_HALF_UP）。
+
+    用整数系数相乘（Python int 无精度上限），只在最后量化这一步舍入一次，结果用字符串构造
+    （不经上下文），所以不受 PREC 限制、也不会触发精确上下文的 Inexact 陷阱。
+    """
+    coefficient = 1
+    exponent = 0
+    for factor in factors:
+        if not factor.is_finite():
+            raise ValueError("cash factors must be finite")
+        sign, digits, exp = factor.as_tuple()
+        value = int("".join(map(str, digits))) if digits else 0
+        coefficient *= -value if sign else value
+        exponent += exp
+    shift = exponent - CASH_SCALE.as_tuple().exponent  # 以 1e-8 为单位的十进制位移
+    if shift >= 0:
+        units = coefficient * 10**shift
+    else:
+        divisor = 10 ** (-shift)
+        whole, rest = divmod(abs(coefficient), divisor)
+        whole += 1 if 2 * rest >= divisor else 0
+        units = whole if coefficient >= 0 else -whole
+    return Decimal(f"{units}E{CASH_SCALE.as_tuple().exponent}")
+
+
 def round_cash(amount: Decimal) -> Decimal:
-    with localcontext(Context(prec=PREC)):
-        return amount.quantize(CASH_SCALE, rounding=ROUND_HALF_UP)
+    return round_cash_product(amount)
 
 
 @dataclass(frozen=True)
@@ -235,8 +271,8 @@ class ScaleInOutLedger:
         if qty == 0:
             return False
         gross = qty * price
-        fee = round_cash(gross * self.fee_rate)
-        slippage = round_cash(gross * self.slippage_rate)
+        fee = round_cash_product(qty, price, self.fee_rate)
+        slippage = round_cash_product(qty, price, self.slippage_rate)
         if gross + fee + slippage > self.cash:
             self.skipped_buys += 1
             return False
@@ -280,13 +316,14 @@ class ScaleInOutLedger:
         if qty == lot.qty:
             entry_fee, entry_slippage = lot.fee_left, lot.slippage_left
         else:
-            entry_fee = min(round_cash(entry * qty * self.fee_rate), lot.fee_left)
-            entry_slippage = min(round_cash(entry * qty * self.slippage_rate), lot.slippage_left)
+            entry_fee = min(round_cash_product(entry, qty, self.fee_rate), lot.fee_left)
+            entry_slippage = min(round_cash_product(entry, qty, self.slippage_rate), lot.slippage_left)
         lot.fee_left -= entry_fee
         lot.slippage_left -= entry_slippage
         exit_gross = price * qty
-        exit_fee = round_cash(exit_gross * self.fee_rate)
-        exit_slippage = round_cash(exit_gross * self.slippage_rate)
+        # 卖出侧上界：fee + slippage 不超过成交额，fee 先取、slippage 取剩余（现金永不为负）。
+        exit_fee = min(round_cash_product(price, qty, self.fee_rate), exit_gross)
+        exit_slippage = min(round_cash_product(price, qty, self.slippage_rate), exit_gross - exit_fee)
         self.cash += exit_gross - exit_fee - exit_slippage
         fee = entry_fee + exit_fee
         slippage = entry_slippage + exit_slippage
