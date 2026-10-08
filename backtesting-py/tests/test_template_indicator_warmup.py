@@ -118,8 +118,8 @@ def test_rsi_with_warmup_trades_in_first_bars_without_warmup_does_not(client, mo
 
     min_bars = 3 * 14 + 1
     assert warm["assumptions"]["indicator_warmup_bars"] == min_bars
-    # 预热段单独取：[start_at - min_bars*step, start_at)
-    assert (START_AT - min_bars * DAY, START_AT) in calls
+    # 预热段单独取，取数留两根余量；实际指标仍只使用最后min_bars根。
+    assert (START_AT - (min_bars + provider._TEMPLATE_WARMUP_FETCH_EXTRA_BARS) * DAY, START_AT) in calls
     assert warm["trades"], "主区间开头 RSI<30，有预热时应在第一段就开仓"
     first_open = _to_epoch(warm["trades"][0]["opened_at"])
     assert START_AT <= first_open < START_AT + 6 * DAY
@@ -248,3 +248,41 @@ def test_warm_is_identity_without_warmup():
     assert strategy_class._warmup_bars == 0
     func = lambda x: x  # noqa: E731
     assert strategy_class._warm(strategy_class, func, "Close") is func
+
+
+def _fetch_daily_warmup_at_exchange_boundaries(monkeypatch, start_sec):
+    """交易所按since向上取桶，中心数据只含end前完整收盘的K线。"""
+    full, calls = _full_df(), []
+    fetch = _range_fetch(full, calls)
+
+    def closed_fetch(exchange, market, symbol, timeframe, since, end):
+        rows = fetch(exchange, market, symbol, timeframe, since, end)
+        return rows.loc[rows.index + pd.Timedelta(seconds=DAY) <= pd.to_datetime(end, unit="s")]
+
+    monkeypatch.setattr(provider, "_fetch_ohlcv", closed_fetch)
+    first = pd.to_datetime(((start_sec + DAY - 1) // DAY) * DAY, unit="s")
+    main_df = full.loc[full.index >= first]
+    warm = provider._fetch_template_warmup("binance", "spot", "BTCUSDT", "1d", start_sec, 43, main_df)
+    return warm, main_df, calls
+
+
+def test_unaligned_daily_start_fetches_all_43_warmup_candles(monkeypatch):
+    """不对齐2722秒时也足43根，且所有预热行严格早于主区间首根。"""
+    warm, main, _ = _fetch_daily_warmup_at_exchange_boundaries(monkeypatch, START_AT + 2722)
+    assert len(warm) == 43
+    assert (warm.index < main.index[0]).all()
+
+
+def test_aligned_daily_start_keeps_exact_warmup_count(monkeypatch):
+    """对齐起点取数即使有余量也只保留43根，不把主区间K线混进预热。"""
+    warm, main, _ = _fetch_daily_warmup_at_exchange_boundaries(monkeypatch, START_AT)
+    assert len(warm) == 43
+    assert (warm.index < main.index[0]).all()
+
+
+@pytest.mark.parametrize("offset", [0, 2722])
+def test_warmup_since_is_no_later_than_aligned_bucket_minus_requested_bars(monkeypatch, offset):
+    """取数起点必须不晚于对齐桶减43周期，不能仅靠tail裁剪补根数。"""
+    _, _, calls = _fetch_daily_warmup_at_exchange_boundaries(monkeypatch, START_AT + offset)
+    assert len(calls) == 1
+    assert calls[0][0] <= START_AT - 43 * DAY
