@@ -79,6 +79,14 @@ from strategy_kernel import (
     to_snapshot,
 )
 from strategy_spec_v3_builder import StrategySpecV3BuildError, build_strategy_spec_v3
+from scale_in_out_ledger import (
+    LedgerBar,
+    LedgerInvariantError,
+    result_v2_equity_curve as _scale_in_out_curve_v2,
+    result_v2_trades as _scale_in_out_trades_v2,
+    run_scale_in_out,
+    threshold_signal,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -2551,6 +2559,57 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
     }
 
 
+SCALE_IN_OUT_RUNNER = "scale_in_out_ledger"
+
+
+def _build_rsi_scale_in_out(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """132 RSI 定额分批：参数校验 + 指标函数，不产出 backtesting.py Strategy。
+
+    账本（scale_in_out_ledger）与指标无关；这里只登记 RSI 这一种阈值信号：RSI 低于
+    oversold 买 buy_notional，高于 overbought 卖 sell_notional。金额无默认值，缺了直接
+    INVALID_PARAMS（D9：金额必须由调用方显式给出，不悄悄补 100）。
+    """
+    try:
+        period = int(params.get("rsi_period", 14))
+        oversold = float(params.get("oversold", 30))
+        overbought = float(params.get("overbought", 70))
+    except (ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:rsi_period/oversold/overbought must be numbers")
+    if period < 2:
+        raise ValueError(f"INVALID_PARAMS:rsi_period must be >= 2 (got {period})")
+    # D11：买卖条件不得同时成立。
+    if not (0 < oversold < overbought < 100):
+        raise ValueError("INVALID_PARAMS:require 0 < oversold < overbought < 100")
+    notionals: dict[str, Decimal] = {}
+    for key in ("buy_notional", "sell_notional"):
+        raw = params.get(key)
+        if raw is None or isinstance(raw, bool):
+            raise ValueError(f"INVALID_PARAMS:{key} is required")
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"INVALID_PARAMS:{key} must be a number")
+        if not value.is_finite() or value <= 0:
+            raise ValueError(f"INVALID_PARAMS:{key} must be > 0")
+        notionals[key] = value
+    return {
+        "strategy": None,
+        "executed_name": (
+            f"RSI Scale In/Out ({period}, {oversold:g}/{overbought:g}, "
+            f"buy {notionals['buy_notional']} / sell {notionals['sell_notional']})"
+        ),
+        # 与 rsi_reversal 同一收敛口径（F4）；新模板要求预热取满这么多根（D10）。
+        "min_bars": 3 * period + 1,
+        "scale_in_out": {
+            "indicator": lambda closes: _rsi_series(closes, period),
+            "buy_below": oversold,
+            "sell_above": overbought,
+            "buy_notional": notionals["buy_notional"],
+            "sell_notional": notionals["sell_notional"],
+        },
+    }
+
+
 def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3082,6 +3141,32 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    # 132（IMPL §3.1）：RSI 定额分批。runner=scale_in_out_ledger 让 run_backtest 在取数
+    # 之后、旧模板的预热挂载与 Backtest() 之前分派到专用 Decimal 现货账本；只做多、只现货，
+    # 不带固定风控字段（下方合并循环排除），金额参数无默认值。
+    "local.backtesting_py.rsi_scale_in_out": {
+        "name": "Local RSI Scale In/Out (fixed notional)",
+        "description": (
+            "Spot long-only fixed-notional scale in/out on RSI levels: each bar close "
+            "with RSI below oversold buys buy_notional USD at the next bar open; each "
+            "bar close with RSI above overbought sells sell_notional USD (FIFO lots, "
+            "sells the rest when less than one sell remains). Several lots can be "
+            "held at once. Maps to KOL 'RSI 低于 30 每天买 100、高于 70 每天卖 100'."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "runner": SCALE_IN_OUT_RUNNER,
+        "markets": ["spot"],
+        "build": _build_rsi_scale_in_out,
+        "param_schema_properties": {
+            "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
+            "oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
+            "overbought": {"type": "number", "default": 70, "minimum": 51, "maximum": 99},
+            "buy_notional": {"type": "number", "minimum": 0},
+            "sell_notional": {"type": "number", "minimum": 0},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.bollinger_reversal": {
         "name": "Local Backtesting.py Bollinger Reversal",
         "description": (
@@ -3271,8 +3356,10 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 # param_schema_properties（而不是逐个手写 9 遍），新工具接入 TOOL_SPECS 时自动带上。
 # runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
 # 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
+# 132：定额分批（runner=scale_in_out_ledger）同样不合并——账本不消费固定止损止盈/仓位，
+# 带这些参数的请求直接 INVALID_PARAMS（IMPL §3.1）。
 for _tool_spec in TOOL_SPECS.values():
-    if _tool_spec.get("runner") == "kernel_v3":
+    if _tool_spec.get("runner") in ("kernel_v3", SCALE_IN_OUT_RUNNER):
         continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
@@ -3361,7 +3448,7 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
         # execution_scope='portfolio_legs' 的 run 跳过这项比对，改按 legs[].symbol
         # 各自校验中心行情覆盖。
         "supported_symbols": [] if spec.get("runner") == "kernel_v3" else supported_symbols,
-        "markets": ["spot", "futures"],
+        "markets": list(spec.get("markets", ["spot", "futures"])),
         "timeframes": list(CATALOG_TIMEFRAMES_EXCHANGE),
         "is_default": spec.get("is_default", False),
         "execution": {
@@ -3707,6 +3794,247 @@ def _build_result_v2(
             "checksum": checksum,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# 132 定额分批（runner=scale_in_out_ledger）：专用 Decimal 现货账本，不走 Backtest()
+# ---------------------------------------------------------------------------
+
+def _scale_in_out_rejection(params: dict[str, Any], bt_req: dict[str, Any], market: str) -> Optional[str]:
+    """IMPL §3.1 拒绝条件（schema 校验之前判，报错信息比「unknown parameter」直白）。"""
+    if market != "spot":
+        return "scale-in/out template supports spot market only"
+    risk_keys = sorted(key for key in params if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    if risk_keys:
+        return (
+            "scale-in/out template does not support fixed risk parameters: "
+            + ", ".join(risk_keys)
+        )
+    if bt_req.get("risk_policy") is not None:
+        return "scale-in/out template does not support risk_policy"
+    if bt_req.get("signal_execution") is not None:
+        return "scale-in/out template does not support signal_execution"
+    return None
+
+
+def _write_scale_in_out_report(run_id: str, executed_name: str, trades_v2: list[dict[str, Any]]) -> str:
+    """极简 HTML 报告（逐批成交表），保持 report_url 契约；不画图。"""
+    import html
+
+    rows = "".join(
+        "<tr>" + "".join(
+            f"<td>{html.escape(str(trade[key]))}</td>"
+            for key in ("seq", "opened_at", "closed_at", "qty", "entry_price", "exit_price", "pnl")
+        ) + "</tr>"
+        for trade in trades_v2
+    )
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_filename = f"{run_id}.html"
+    (REPORTS_DIR / report_filename).write_text(
+        "<!doctype html><meta charset=\"utf-8\">"
+        f"<title>{html.escape(executed_name)}</title><h1>{html.escape(executed_name)}</h1>"
+        "<table border=\"1\"><tr><th>seq</th><th>opened_at</th><th>closed_at</th><th>qty</th>"
+        f"<th>entry_price</th><th>exit_price</th><th>pnl</th></tr>{rows}</table>",
+        encoding="utf-8",
+    )
+    _enforce_reports_retention()
+    return report_filename
+
+
+def _run_scale_in_out_backtest(
+    *,
+    body: dict[str, Any],
+    run_id: str,
+    built: dict[str, Any],
+    df: pd.DataFrame,
+    symbol: str,
+    market: str,
+    timeframe: str,
+    start_at: int,
+    end_at: int,
+    initial_capital: Decimal,
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+    exchange_id: str,
+) -> JSONResponse:
+    """132 定额分批：预热取满 → 指标 → 账本逐根推进 → result.v2（十键 trades 不变）。
+
+    D10：预热取不满 min_bars 根直接失败，不退回无预热（同一数据哈希不得产出不同交易）。
+    D12：total_return 按 initial_capital（期末全部平仓后的已实现权益），max_drawdown 按
+    D8 盯市曲线，trade_count = 批次条数；胜率按批次条数算。
+    """
+    config = built["scale_in_out"]
+    executed_name = str(built["executed_name"])
+    min_bars = int(built["min_bars"])
+    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, min_bars, df)
+    indicator_warmup_bars = len(warmup_df)
+    if indicator_warmup_bars < min_bars:
+        return _business_failure(
+            run_id,
+            "INSUFFICIENT_DATA",
+            (
+                f"Indicator warmup unavailable: got {indicator_warmup_bars} of {min_bars} "
+                f"candles before start_at for {executed_name}; this template does not run "
+                "without a full warmup"
+            ),
+            reason="indicator_warmup_unavailable",
+        )
+
+    try:
+        closes = np.concatenate([
+            warmup_df["Close"].to_numpy(dtype="float64"),
+            df["Close"].to_numpy(dtype="float64"),
+        ])
+        values = np.asarray(config["indicator"](closes), dtype="float64")[-len(df):]
+        signal = threshold_signal(
+            values, buy_below=config["buy_below"], sell_above=config["sell_above"]
+        )
+        bars = [
+            LedgerBar(open_time=open_time, close_time=close_time, open=Decimal(str(float(open_))), close=close)
+            for (open_time, close_time, close), open_ in zip(_result_v2_bar_closes(df, timeframe), df["Open"])
+        ]
+        ledger = run_scale_in_out(
+            bars,
+            signal,
+            initial_capital=initial_capital,
+            buy_notional=config["buy_notional"],
+            sell_notional=config["sell_notional"],
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+            start_at=start_at,
+            end_at=end_at,
+        )
+    except LedgerInvariantError as e:
+        logger.exception("scale-in/out ledger invariant violated run_id=%s", run_id)
+        return _business_failure(run_id, "ENGINE_ERROR", f"Scale-in/out ledger invariant violated: {e}")
+    except ValueError as e:
+        return _business_failure(run_id, "INVALID_PARAMS", str(e))
+    except Exception as e:
+        logger.exception("scale-in/out ledger failed")
+        return _business_failure(run_id, "ENGINE_ERROR", f"Backtest execution failed: {e}")
+
+    try:
+        trades_v2 = _scale_in_out_trades_v2(ledger.trades)
+        equity_curve_v2 = sample_equity_curve(
+            _scale_in_out_curve_v2(ledger.equity_points), set(ledger.fill_ts)
+        )
+        final_equity = initial_capital
+        for trade in trades_v2:
+            final_equity = final_equity + Decimal(trade["pnl"])
+        total_return = (final_equity - initial_capital) / initial_capital
+        max_drawdown = _result_v2_max_drawdown(equity_curve_v2)
+        kline_rows = _kline_rows_to_canonical(df, start_at, end_at)
+        result_v2 = {
+            "schema_version": RESULT_V2_SCHEMA,
+            "trades": trades_v2,
+            "equity_curve": equity_curve_v2,
+            "metrics": {
+                "total_return": canonical_decimal_str(total_return),
+                "max_drawdown": canonical_decimal_str(max_drawdown),
+                "trade_count": len(trades_v2),
+            },
+            "data_manifest": {
+                "source": _data_manifest_source(market, exchange_id, df),
+                "symbol": symbol,
+                "market": market,
+                "timeframe": timeframe,
+                "start_at": start_at,
+                "end_at": end_at,
+                "kline_count": len(kline_rows),
+                "checksum_algo": "sha256",
+                "checksum": canonical_json_sha256(kline_rows),
+            },
+        }
+
+        trade_count = len(trades_v2)
+        wins = sum(1 for trade in trades_v2 if Decimal(trade["pnl"]) > 0)
+        first_close = float(df["Close"].iloc[0])
+        last_close = float(df["Close"].iloc[-1])
+        total_return_pct = float(total_return * 100)
+        legacy_metrics = {
+            "total_return_pct": round(total_return_pct, 2),
+            "win_rate_pct": round(wins / trade_count * 100, 2) if trade_count else 0.0,
+            "max_drawdown_pct": round(float(max_drawdown * 100), 2),
+            "trade_count": trade_count,
+            "buy_hold_return_pct": round((last_close - first_close) / first_close * 100, 2)
+            if first_close else 0.0,
+        }
+        legacy_metrics_json = json.dumps(legacy_metrics, sort_keys=True)
+        result_hash = f"sha256:{hashlib.sha256(legacy_metrics_json.encode()).hexdigest()}"
+
+        candle_count = len(df)
+        sample_size = "small" if candle_count < 100 else ("medium" if candle_count < 1000 else "large")
+        report_filename = _write_scale_in_out_report(run_id, executed_name, trades_v2)
+        provider_summary = (
+            f"{executed_name} on {symbol} {timeframe} ({market}), "
+            f"{df.attrs.get('cutie_data_source', DATA_SOURCE)}, {candle_count} candles, "
+            f"{trade_count} trade lots ({ledger.buy_fills} buys / {ledger.sell_fills} sells), "
+            f"return {total_return_pct:.2f}%"
+        )
+        strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
+            body, executed_name,
+        )
+        response_body = _json_safe({
+            "schema": RESPONSE_SCHEMA,
+            "result_status": "success",
+            "provider_name": PROVIDER_NAME,
+            "provider_revision": PROVIDER_REVISION,
+            "provider_run_id": f"bt_{run_id}",
+            "engine_name": ENGINE_NAME,
+            "engine_version": _engine_version(),
+            "data_source": df.attrs.get("cutie_data_source", DATA_SOURCE),
+            "central_market_data_used": df.attrs.get("cutie_central_market_data_used"),
+            "central_market_data_auth_mode": _central_market_data_auth_mode(),
+            "market_data_cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
+            "result_hash": result_hash,
+            "report_url": f"reports/{report_filename}",
+            "report_url_scope": "local_machine_only",
+            "schema_version": result_v2["schema_version"],
+            "metrics": result_v2["metrics"],
+            "initial_capital": _decimal_str(initial_capital, places=2),
+            "equity_curve": result_v2["equity_curve"],
+            "trades": result_v2["trades"],
+            "data_manifest": result_v2["data_manifest"],
+            "assumptions": {
+                "fee_bps": _decimal_str(fee_bps, places=4),
+                "slippage_bps": _decimal_str(slippage_bps, places=4),
+                "exchange": exchange_id,
+                "market": market,
+                **strategy_assumptions,
+                # 132 §3.1：仅展示，不作证据（证据只认 trades / equity_curve / metrics）。
+                "position_mode": "scale_in_out",
+                "buy_fills": ledger.buy_fills,
+                "sell_fills": ledger.sell_fills,
+                "skipped_buys_insufficient_cash": ledger.skipped_buys_insufficient_cash,
+                "indicator_warmup_bars": indicator_warmup_bars,
+                "real_market_data": True,
+                "no_live_trading": True,
+            },
+            "limitations": {
+                "verification": "external_unverified",
+                "verified_by_cutie": False,
+                **strategy_limitations,
+                "sample_size": sample_size,
+                "data_quality": "provider_reported",
+                "no_trades_executed": trade_count == 0,
+            },
+            "raw_report": {
+                "provider_summary": provider_summary,
+                "strategy_semantics": strategy_raw_report,
+                "legacy_metrics": legacy_metrics,
+                "market_data_provenance": {
+                    "provider_revision": PROVIDER_REVISION,
+                    "source": df.attrs.get("cutie_data_source", DATA_SOURCE),
+                    "central_market_data_used": df.attrs.get("cutie_central_market_data_used"),
+                    "auth_mode": _central_market_data_auth_mode(),
+                    "cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
+                },
+            },
+        })
+        return _bounded_template_response(run_id, response_body)
+    except Exception as e:
+        logger.exception("Scale-in/out result post-processing failed")
+        return _business_failure(run_id, "ENGINE_ERROR", f"Result processing failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -4361,6 +4689,10 @@ async def run_backtest(
     if not isinstance(params, dict):  # F5: non-dict -> INVALID_PARAMS, not a 500
         return _validation_failure("INVALID_PARAMS", "provider_params must be an object")
     tool_spec = TOOL_SPECS[effective_tool_id]
+    if tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
+        rejection = _scale_in_out_rejection(params, bt_req, market)
+        if rejection:
+            return _validation_failure("INVALID_PARAMS", rejection)
     schema_err = _validate_params_against_schema(params, tool_spec["param_schema_properties"])
     if schema_err:  # F2: enforce catalog schema at runtime (unknown key / type / bounds)
         return _validation_failure("INVALID_PARAMS", schema_err)
@@ -4452,6 +4784,23 @@ async def run_backtest(
                 f"need at least {min_bars} for {executed_name}"
             ),
             reason="insufficient_data",
+        )
+
+    if tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
+        return _run_scale_in_out_backtest(
+            body=body,
+            run_id=run_id,
+            built=built,
+            df=df,
+            symbol=symbol,
+            market=market,
+            timeframe=timeframe,
+            start_at=start_at,
+            end_at=end_at,
+            initial_capital=initial_capital,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+            exchange_id=exchange_id,
         )
 
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
