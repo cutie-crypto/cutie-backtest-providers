@@ -3406,7 +3406,7 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     """Calendar buys, bounded dip attempts and whole-round profit taking."""
     from datetime import datetime, timezone
     from decimal import Context, DivisionByZero, Inexact, Overflow, localcontext
-    from scale_in_out_ledger import PREC, floor_qty, round_cash_product
+    from scale_in_out_ledger import PREC, floor_qty, round_cash, round_cash_product
 
     values: dict[str, Decimal] = {}
     for key, default, minimum, maximum in (
@@ -3472,10 +3472,10 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
         stats.update(avg_cost=None, rounds_completed=0, dip_adds_total=0)
 
         def avg_cost():
-            # A cost ratio can recur; only the display division rounds at PREC.
-            # Signal comparisons below cross-multiply, preserving exact equality.
+            # Display uses the ledger cash scale (1e-8, half-up). Signal
+            # comparisons below cross-multiply and never use the rounded cost.
             with localcontext(Context(prec=PREC)):
-                return canonical_decimal_str(round_notional / round_qty) if round_qty else None
+                return canonical_decimal_str(round_cash(round_notional / round_qty)) if round_qty else None
 
         def signal(index):
             nonlocal dip_adds_this_round, pending_amount, pending_dip
