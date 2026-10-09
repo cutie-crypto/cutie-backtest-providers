@@ -83,6 +83,10 @@ def test_catalog_declares_futures_market(client):
             # 分批账本模板（132 RSI 定额分批、R3 网格 / DCA）只做现货，服务端按单个 tool 的 markets 拒绝合约
             assert tool["markets"] == ["spot"]
             continue
+        if tool["tool_id"] in {'local.backtesting_py.double_top', 'local.backtesting_py.head_shoulders'}:
+            # SHORT-PAT-1 is short-only: spot must not be advertised.
+            assert tool["markets"] == ["futures"]
+            continue
         assert "spot" in tool["markets"]
         assert "futures" in tool["markets"]
 
