@@ -5339,7 +5339,8 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
 
 def _build_range_breakout(params, profile, initial_capital):
     config = RangeConfig.parse(params, profile)
-    risk = _parse_fixed_risk_params(params)
+    # 10-B2d: the frozen opposite range side is the template's own stop (user stop keys are rejected).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     return dict(strategy=make_strategy(_FixedRiskMixin, config, risk, initial_capital),
                 executed_name="Opening Range Breakout" if profile == "orb" else "Asia Range Breakout",
                 min_bars=2, range_config=config)
@@ -5372,7 +5373,9 @@ def _build_calendar_schedule(params, *, initial_capital=10000.0):
         effective.setdefault("stop_loss_pct", 3)
     elif "stop_loss_pct" in params:
         raise ValueError("INVALID_PARAMS:stop_loss_pct conflicts with calendar_stop_enabled=false")
-    risk = _parse_fixed_risk_params(effective)
+    # 10-B2d: the stop frozen at the signal close is the template's own; with no stop at all the
+    # fill hook rejects risk sizing (missing_initial_stop).
+    risk = _parse_fixed_risk_params(effective, template_initial_stop=True)
     for key in ("stop_loss_pct", "take_profit_pct"):
         fraction = risk.get(key)
         if fraction is not None and (fraction <= 0 or 1 + fraction == 1 or 1 - fraction == 1):
@@ -5395,9 +5398,12 @@ _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name
     "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
     "double_top", "head_shoulders", "chan_3sell", "chan_3buy",
     "bullish_engulfing", "hammer_pin_bar", "morning_star", "three_white_soldiers", "bullish_doji_reversal",
-    "inside_bar_breakout", "double_bottom", "inverse_head_shoulders"))
+    "inside_bar_breakout", "double_bottom", "inverse_head_shoulders",
+    # 10-B2d: ORB / Asia size against the opposite range side frozen before the signal.
+    "opening_range_breakout", "asia_range_breakout"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
-    "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
+    "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion",
+                                                 "calendar_schedule", "red_streak_rsi", "us_open_momentum"))
 
 
 def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -5412,6 +5418,15 @@ def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     if tool_id in _SIZING_INTRINSIC_STOP_TOOLS:
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
+        return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
+    # 10-B2d: calendar freezes its own stop at the signal close; calendar_stop_enabled=false leaves
+    # none and the fill hook rejects with missing_initial_stop.
+    # 10-B2d: US open always has its frozen window stop; CME always has its intrinsic 2% stop.
+    if tool_id in ("local.backtesting_py.calendar_schedule", "local.backtesting_py.us_open_momentum",
+                   "local.backtesting_py.cme_weekend_gap"):
+        return True
+    # 10-B2d: red streak's default 3% stop exists only while no pricing key is supplied.
+    if tool_id == "local.backtesting_py.red_streak_rsi":
         return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
     return False
 
@@ -5654,6 +5669,11 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                 process_orders()
             self._broker._process_orders = guarded_orders
 
+        def _sizing_template_stop(self, order):
+            # 10-B2d: risk distance uses the stop frozen at the signal close (|fill - stop|), the
+            # same initial_stop _risk_check_exit keeps after the fill; consulted after the gap guard.
+            return self._f6_frozen.initial_stop if order is self._f6_order else None
+
         def _risk_check_exit(self):
             if not self.position or not self.trades:
                 return False
@@ -5704,6 +5724,8 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
             self._f6_signal_at = int(self.data.index[-1].timestamp())
             size = self._risk_entry_size()
             self._f6_order = self.buy() if size is None else self.buy(size=size)
+            if self._risk.get("position_sizing_enabled"):
+                self._f6_order._sizing_signal_bar = len(self.data) - 1
 
     return dict(strategy=RedStreakRsiStrategy, min_bars=min_bars,
                 executed_name=f"Red Streak RSI ({red_bars}, RSI{rsi_period}<{oversold:g}, hold {holding})")
@@ -7047,14 +7069,13 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
 # 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空。
-# 10-B2c 移出 K 线六个与双底、头肩底（按信号根冻结的形态止损定仓）；余下 6 个由 10-B2d 接上并清空名单。
-POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
-    "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
-    "us_open_momentum cme_weekend_gap").split())
+# 10-B2c 移出 K 线六个与双底、头肩底（按信号根冻结的形态止损定仓）。
+# 10-B2d 移出最后 6 个（ORB、亚洲区间、日历定时、red_streak_rsi、美股开盘、CME 缺口），名单清空；
+# 常量保留为空集（请求校验与测试仍引用），新单仓模板不得再进本名单，须接好定仓再注册。
+POSITION_SIZING_PENDING_TOOLS: frozenset[str] = frozenset()
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
         TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)
-del _pending_tool, _sizing_key
 
 
 def _position_sizing_failure(message):
