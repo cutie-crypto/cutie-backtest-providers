@@ -1129,6 +1129,44 @@ def _fetch_template_warmup(
         return empty
 
 
+
+def _fetch_strict_time_history(
+    exchange_id: str, market: str, symbol: str, timeframe: str,
+    start_sec: int, end_sec: int, definition,
+    *, observation_start=None,
+) -> pd.DataFrame:
+    """Fetch complete time history + main interval; never degrade to warmup.
+
+    This foundation is intentionally not called by run_backtest yet. Returned
+    bars carry a separate warmup-only mask in attrs, without changing OHLCV.
+    """
+    from datetime import datetime, timezone
+    from strategy_time_layer import TimeConfig, TimeContext, utc_datetime
+    from strategy_time_series import TimeHistoryError, required_history_start, validate_time_history
+
+    start = datetime.fromtimestamp(start_sec, timezone.utc)
+    end = datetime.fromtimestamp(end_sec, timezone.utc)
+    since = required_history_start(start, definition, observation_start)
+    context = TimeContext.build(TimeConfig(enabled=True), timeframe, [since])
+    if start < since or end <= start or (start - since) % context.period or (end - since) % context.period:
+        raise ValueError('INVALID_PARAMS:time history bounds must align with complete candles')
+    try:
+        fetched = _fetch_ohlcv(exchange_id, market, symbol, timeframe, int(since.timestamp()), end_sec)
+        opens = [utc_datetime(value) for value in fetched.index]
+        selected = [i for i, value in enumerate(opens) if since <= value < end]
+        result = fetched.iloc[selected].loc[:, list(_WARMUP_COLUMNS)].astype('float64').copy()
+        if not np.isfinite(result.to_numpy()).all() or (result['Volume'] < 0).any():
+            raise TimeHistoryError('nonfinite OHLCV or negative volume')
+        validate_time_history(result.index, since, end, context)
+    except TimeHistoryError:
+        raise
+    except Exception as exc:
+        raise TimeHistoryError('strict time-history source unavailable or invalid') from exc
+    result.attrs['time_warmup_only'] = [utc_datetime(value) < start for value in result.index]
+    result.attrs['time_history_start_utc'] = since.isoformat()
+    return result
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
