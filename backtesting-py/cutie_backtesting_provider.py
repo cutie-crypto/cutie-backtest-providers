@@ -36,7 +36,9 @@ from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
-from strategy_entry_filters import FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, entry_mask
+from strategy_entry_filters import (
+    FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, entry_mask, HigherTimeframeContext, FilterHistoryError,
+)
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from strategy_execution import (
@@ -2610,9 +2612,13 @@ def _with_filter_config(build=None, *, default_direction="long"):
 
 class _FilterLayerMixin:
     _filter_config = None
+    _filter_context = None
 
     def _filter_init(self) -> None:
         if self._filter_config is None:
+            return
+        if self._filter_context is not None:
+            self._filter_mask = self._filter_context.mask
             return
         columns = {}
         for name in _WARMUP_COLUMNS:
@@ -2624,7 +2630,7 @@ class _FilterLayerMixin:
         if self._filter_config is None:
             return True
         # No next open exists at the tail; do not let finalize_trades back-fill.
-        index = self._warmup_bars + len(self.data) - 1
+        index = (0 if self._filter_context is not None else self._warmup_bars) + len(self.data) - 1
         if index >= len(self._filter_mask) - 1:
             return False
         return bool(self._filter_mask[index])
@@ -5833,7 +5839,7 @@ for _tool_spec in TOOL_SPECS.values():
     }
 del _tool_spec
 
-# Entry filters are single-position only in 7P-1; ledger/kernel keys remain unknown.
+# Entry filters are single-position only; ledger/kernel keys remain unknown.
 for _filter_tool_spec in TOOL_SPECS.values():
     if getattr(_filter_tool_spec.get("build"), "_supports_entry_filters", False):
         _filter_tool_spec["param_schema_properties"].update(FILTER_PARAM_SCHEMA_PROPERTIES)
@@ -7530,7 +7536,7 @@ async def run_backtest(
         if bt_req.get("signal_execution") is not None:
             return _validation_failure("INVALID_PARAMS", "entry filters do not support signal_execution")
         try:
-            filter_step_ms = fixed_timeframe_milliseconds(timeframe)
+            filter_step_ms = filter_config.validate_timeframe(timeframe)
         except ValueError as e:
             return _validation_failure("INVALID_PARAMS", str(e).replace("time layer", "entry filters"))
 
@@ -7631,12 +7637,21 @@ async def run_backtest(
         except TimeDataGapError as e:
             return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
 
+    if filter_config is not None and filter_config.timeframe:
+        try:
+            strategy_class._filter_context = HigherTimeframeContext.build(
+                filter_config, timeframe, df.index,
+                lambda since, until: _fetch_ohlcv(exchange_id, market, symbol, filter_config.timeframe, since, until),
+                _supertrend_arrays, _timeframe_grid_offset_ms(filter_config.timeframe))
+        except FilterHistoryError as e:
+            return _business_failure(run_id, "INSUFFICIENT_DATA", str(e), reason="filter_history_insufficient")
+
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
     risk = getattr(strategy_class, "_risk", {})
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
-    filter_warmup = filter_config.required_bars if filter_config is not None else 0
+    filter_warmup = filter_config.required_bars if filter_config is not None and not filter_config.timeframe else 0
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
     warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup, vwap_warmup), df)
@@ -7913,7 +7928,9 @@ async def run_backtest(
                     "history_notes": stats["_strategy"]._f5_history,
                     "time_exits": stats["_strategy"]._f5_expiries}} if is_vwap else {}),
                 **turtle_raw_report,
-                **({"entry_filters": filter_config.report()} if filter_config is not None else {}),
+                **({"entry_filters": {**filter_config.report(),
+                    **(strategy_class._filter_context.report if strategy_class._filter_context is not None else {})}}
+                    if filter_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
