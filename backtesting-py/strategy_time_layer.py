@@ -12,6 +12,8 @@ from zoneinfo import TZPATH, ZoneInfo, ZoneInfoNotFoundError
 _TIME_PARAM_SCHEMA_PROPERTIES = {
     'time_layer_enabled': {'type': 'boolean', 'default': False},
     'time_timezone': {'type': 'string', 'default': 'UTC'},
+    'time_calendar': {'type': 'string', 'default': 'none',
+                      'enum': ['none', 'us_equity_regular', 'cme_btc_regular']},
     'time_session_start': {'type': 'string', 'default': ''},
     'time_session_end': {'type': 'string', 'default': ''},
     'time_weekdays': {'type': 'integer', 'default': 127, 'minimum': 1, 'maximum': 127},
@@ -31,6 +33,7 @@ class TimeConfig:
     max_holding_minutes: int = 0
     flatten_at: str = ''
     flatten_weekdays: int = 127
+    calendar_name: str = 'none'
 
     @classmethod
     def parse(cls, params: Mapping[str, Any]) -> TimeConfig:
@@ -50,6 +53,9 @@ class TimeConfig:
             ZoneInfo(name)
         except (ZoneInfoNotFoundError, ValueError):
             raise ValueError(f'INVALID_PARAMS:unknown IANA timezone {name}') from None
+        if values['time_calendar'] != 'none':
+            from strategy_time_calendar import validate_calendar_timezone
+            validate_calendar_timezone(values['time_calendar'], name)
         start, end = values['time_session_start'], values['time_session_end']
         for key in ('time_session_start', 'time_session_end', 'time_flatten_at'):
             value = values[key]
@@ -64,7 +70,13 @@ class TimeConfig:
         ):
             raise ValueError('INVALID_PARAMS:non-default time parameters require time_layer_enabled=true')
         return cls(values['time_layer_enabled'], name, start, end, values['time_weekdays'],
-                   values['time_max_holding_minutes'], values['time_flatten_at'], values['time_flatten_weekdays'])
+                   values['time_max_holding_minutes'], values['time_flatten_at'], values['time_flatten_weekdays'],
+                   values['time_calendar'])
+
+    def validate_timeframe(self, timeframe: str) -> None:
+        milliseconds = fixed_timeframe_milliseconds(timeframe)
+        if self.calendar_name != 'none' and milliseconds >= 86400000:
+            raise ValueError('INVALID_PARAMS:time_calendar requires a timeframe shorter than 1d')
 
 
 class TimeDataGapError(ValueError):
@@ -110,6 +122,7 @@ class TimeContext:
     def build(cls, config: TimeConfig, timeframe: str, opens: Sequence[datetime]) -> TimeContext:
         if not config.enabled:
             raise ValueError('TimeContext requires an enabled time layer')
+        config.validate_timeframe(timeframe)
         period = timedelta(milliseconds=fixed_timeframe_milliseconds(timeframe))
         timestamps = [utc_datetime(value) for value in opens]
         if not timestamps:
@@ -124,6 +137,11 @@ class TimeContext:
         return utc_datetime(bar_open) + self.period
 
     def allow_entry(self, decision_utc: datetime) -> bool:
+        if self.config.calendar_name != 'none':
+            from strategy_time_calendar import RegularCalendar
+            timeframe = f'{int(self.period.total_seconds()) // 60}m'
+            if not RegularCalendar(self.config.calendar_name).contains_bar(decision_utc, timeframe):
+                return False
         local = utc_datetime(decision_utc).astimezone(self.zone)
         minute = local.hour * 60 + local.minute
         weekday = local.weekday()
@@ -144,6 +162,10 @@ class TimeContext:
         result = {'time_layer': dict(timezone=self.config.timezone_name, tzdata_version=tzdata_version(),
             session_start=self.config.session_start, session_end=self.config.session_end,
             weekdays=self.config.weekdays, decision_time='bar_close', gate='entry_only', fill='next_bar_open')}
+        if self.config.calendar_name != 'none':
+            from strategy_time_calendar import REGULAR_CALENDAR_ASSUMPTION
+            result['time_layer']['calendar'] = dict(name=self.config.calendar_name,
+                gate='entire_next_fill_bar', note=REGULAR_CALENDAR_ASSUMPTION)
         if holding_bars or self.config.max_holding_minutes or self.config.flatten_at:
             result['time_layer']['holding'] = dict(
                 bars=holding_bars, minutes=self.config.max_holding_minutes,

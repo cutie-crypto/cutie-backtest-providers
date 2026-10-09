@@ -440,6 +440,8 @@ def test_catalog_schema_and_runner():
         'exchange':{'type':'string','default':provider.DEFAULT_EXCHANGE},
         'time_layer_enabled': {'type':'boolean','default':False},
         'time_timezone': {'type':'string','default':'UTC'},
+        'time_calendar': {'type':'string','default':'none',
+                          'enum':['none','us_equity_regular','cme_btc_regular']},
         'time_session_start': {'type':'string','default':''},
         'time_session_end': {'type':'string','default':''},
         'time_weekdays': {'type':'integer','default':127,'minimum':1,'maximum':127},

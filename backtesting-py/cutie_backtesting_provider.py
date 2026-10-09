@@ -7335,7 +7335,7 @@ async def run_backtest(
                    or getattr(strategy_class, "_time_config", None))
     if time_config is not None:
         try:
-            fixed_timeframe_milliseconds(timeframe)
+            time_config.validate_timeframe(timeframe)
         except ValueError as e:
             return _validation_failure("INVALID_PARAMS", str(e))
 

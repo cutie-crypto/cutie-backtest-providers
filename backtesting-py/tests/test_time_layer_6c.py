@@ -48,6 +48,7 @@ def build(name, extra):
 def test_schema_and_defaults(name):
     schema = p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']
     assert {k for k in schema if k.startswith('time_')} == set(_TIME_PARAM_SCHEMA_PROPERTIES)
+    assert schema['time_calendar'] == _TIME_PARAM_SCHEMA_PROPERTIES['time_calendar']
     assert schema['max_holding_bars'] == p._FIXED_RISK_PARAM_SCHEMA_PROPERTIES['max_holding_bars']
     original = build(name, {})
     disabled = build(name, {**DEFAULTS, 'max_holding_bars': 0})
@@ -64,7 +65,7 @@ def test_schema_and_defaults(name):
 ] + [
     {'time_reset_period': 'day'}, {'time_reset_at': '00:00'}, {'time_range_start': '00:00'},
     {'time_range_end': '01:00'}, {'time_vwap_price': 'hlc3'}, {'time_entry_at': '12:00'},
-    {'time_entry_weekday': 1}, {'time_entry_monthday': 1}, {'time_calendar': 'none'},
+    {'time_entry_weekday': 1}, {'time_entry_monthday': 1}, {'time_calendar': 'unknown'},
     {'time_flatten_weekdays': 1}, {'time_flatten_weekdays': 1.0},
     {'time_flatten_at': '24:00'}, {'time_flatten_at': 1200},
 ])
@@ -292,7 +293,7 @@ def test_http_gap_is_business_failure_before_warmup(name, monkeypatch):
 
 
 @pytest.mark.parametrize('name', PARAMS)
-@pytest.mark.parametrize('extra', [{'time_calendar':'none'}, {'time_reset_period':'day'},
+@pytest.mark.parametrize('extra', [{'time_calendar':'unknown'}, {'time_reset_period':'day'},
     {'time_weekdays':1.0}, {'max_holding_bars':3.0}, {'max_holding_bars':3}])
 def test_http_invalid_before_data_fetch(name, extra, monkeypatch):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
