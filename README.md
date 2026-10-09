@@ -92,7 +92,12 @@ Higher-timeframe history is fetched once for the complete run plus indicator
 warmup. Missing candles or unavailable history return `INSUFFICIENT_DATA`.
 Disabled filters preserve existing result bytes, and a non-default
 `filter_timeframe` while disabled is rejected before fetching market data.
-Short/both directions, ledger templates and `signal_execution` remain unsupported
+Short entries (the five short-only templates and `direction=short` requests) use
+the strict mirror: close < EMA, DIF < 0, Supertrend trend == -1; equality passes
+neither side, and warmup and the closed higher-timeframe clock are unchanged.
+Range-breakout days blocked by a filter record `filter_blocked` and
+`filter_blocked_decision_utc` in `range_breakout_days`.
+`direction=both`, ledger templates and `signal_execution` remain unsupported
 with filters. See the [parameter and verification evidence](backtesting-py/tests/entry_filters_7p2_evidence.md).
 
 ### Additional long-only patterns (9-T2)
