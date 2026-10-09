@@ -2333,8 +2333,8 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 
 
 def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
-    """Shared holding-key gate; the later time layer can extend this independently."""
-    return params.get("risk_layer_enabled") is True
+    """Either explicit layer consumes the shared 3b holding-bar limit."""
+    return params.get("risk_layer_enabled") is True or params.get("time_layer_enabled") is True
 
 
 # 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
