@@ -24,8 +24,12 @@ WAVEB_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_waveb_e6
 WAVEC_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_wavec_fd52acb_ab56369.json').read_text())
 
 
+SHORT_PAT1_GOLDEN = json.loads((Path(__file__).parent/'fixtures/short_pat1_off.json').read_text())
+
+
 def test_waveb_golden_covers_exactly_the_filter_unwired_tools():
-    assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
+    # Keep Wave-B bytes intact; the two futures-only tools have their own head golden.
+    assert set(WAVEB_GOLDEN['cases']) | set(SHORT_PAT1_GOLDEN['single'])=={t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
     assert all(set(v)=={'futures','spot'} for v in WAVEB_GOLDEN['cases'].values())
 
 
@@ -252,7 +256,7 @@ def baseline_provider():
 
 
 # New calendar tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
-@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap')])
+@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap', 'double_top', 'head_shoulders')])
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
