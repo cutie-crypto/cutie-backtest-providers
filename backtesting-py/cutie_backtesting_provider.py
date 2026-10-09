@@ -2572,6 +2572,7 @@ class _FixedRiskMixin(_TimeLayerMixin):
             self._isolated_liquidations = []
             self._isolated_blocked_bar = -1
             self._isolated_stop_beyond_trades = 0
+            self._isolated_install_settlement()
         if self._time_config is not None:
             self._risk_exit_reason = None
         if self._risk.get("risk_layer_enabled"):
@@ -2603,6 +2604,43 @@ class _FixedRiskMixin(_TimeLayerMixin):
             raise ValueError("INVALID_PARAMS:ATR entry history is shorter than risk_atr_period")
         # Only the signal close is available when the market entry is queued.
         self._risk_entry_atr = self._risk_atr[count - 1]
+
+    def _isolated_install_settlement(self) -> None:
+        """Reconcile before the broker processes another order or its insolvency check.
+
+        Only leveraged single-position runs install this per-request callback.
+        Never edit the library or merely repair report equity after sizing.
+        """
+        broker = self._broker
+        close_trade = broker._close_trade
+        scale = getattr(self, "_isolated_equity_scale", Decimal(1))
+        capital = getattr(self, "_isolated_initial_capital", Decimal(str(self._start_equity)) * scale)
+        fee = getattr(self, "_isolated_fee_bps", Decimal(str(broker._commission_relative)) * 10000)
+        slip = getattr(self, "_isolated_slippage_bps", Decimal(0))
+        data = self.data.df.copy()
+        step = getattr(self, "_isolated_step", int((data.index[1].value - data.index[0].value) // 10**9))
+        self._isolated_realized = Decimal(0)
+
+        def settle_close(trade, price, time_index):
+            close_trade(trade, price, time_index)
+            closed = broker.closed_trades[-1]
+            rows = pd.DataFrame([dict(Size=closed.size, EntryPrice=closed.entry_price,
+                                      ExitPrice=closed.exit_price, EntryTime=closed.entry_time,
+                                      ExitTime=closed.exit_time)])
+            trades = _build_result_v2_trades(rows, scale, fee, slip)
+            records = [record for record in self._isolated_liquidations
+                       if record["opened_at"] == trades[0]["opened_at"]]
+            if records:
+                trades = _settle_isolated_liquidations(
+                    trades, leverage=self._risk["leverage"], df=data, step=step,
+                    liquidations=records, fee_bps=fee, slippage_bps=slip)
+            self._isolated_realized += Decimal(trades[0]["pnl"])
+            # A partial close leaves entry costs allocated to the remaining units.
+            open_cost = sum((Decimal(abs(t.size)) * scale * Decimal(str(t.entry_price))
+                             * (fee + slip) / 10000 for t in broker.trades), Decimal(0))
+            broker._cash = float((capital + self._isolated_realized - open_cost) / scale)
+
+        broker._close_trade = settle_close
 
     def _risk_isolated_exit(self, stop: Optional[Decimal] = None) -> bool:
         trade = self.trades[-1]
