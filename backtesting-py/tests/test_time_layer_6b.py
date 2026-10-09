@@ -222,6 +222,9 @@ def test_every_registered_single_template_consumes_holding_bars(name):
     if name == 'us_open_momentum':
         data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
         tf = '15m'
+    if name == 'cme_weekend_gap':
+        from test_f4_cme_gap import frame as cme_frame
+        data = cme_frame()
     cls = p.TOOL_SPECS['local.backtesting_py.'+compat.tool_name(name)]['build'](params)['strategy']
     assert not cls._risk.get('risk_layer_enabled')
     cls._time_context = TimeContext.build(cls._time_config, tf, data.index)

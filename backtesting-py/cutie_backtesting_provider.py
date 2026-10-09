@@ -5085,7 +5085,26 @@ def _build_us_open_momentum(params, *, initial_capital=10000.0):
     return templates.build_us_open(sys.modules[__name__], params, initial_capital)
 
 
+@_with_time_config
+@_with_filter_config(default_direction="both")
+def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
+    import sys
+    import strategy_calendar_templates as templates
+    return templates.build_cme_gap(sys.modules[__name__], params, initial_capital)
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.cme_weekend_gap": {
+        "name": "Local Backtesting.py CME Weekend Gap",
+        "description": "BTC spot proxy for Chicago Friday 16:00 and Sunday 17:00 closing prices; fades inclusive weekend gaps with frozen Friday target, default 2 percent stop and Wednesday 00:00 UTC expiry.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_cme_weekend_gap, "long_only_spot": True, "ohlcv_market": "spot",
+        "param_schema_properties": {
+            "gap_pct": {"type": "number", "default": 1, "minimum": 0.2, "maximum": 10},
+            "direction": {"type": "string", "default": "both", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.us_open_momentum": {
         "name": "Local Backtesting.py US Open Momentum",
         "description": "Regular New York weekday opening-window momentum; frozen opposite-window stop and 16:00 flatten. Regular calendar excludes holiday and half-day modeling.",
@@ -7376,8 +7395,9 @@ async def run_backtest(
             return _validation_failure("INVALID_PARAMS", str(e).replace("time layer", "entry filters"))
 
     # --- Fetch OHLCV ---
+    source_market = tool_spec.get("ohlcv_market", market)
     try:
-        df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
+        df = _fetch_ohlcv(exchange_id, source_market, symbol, timeframe, start_at, end_at)
     except MarketDataFetchError as e:
         return _business_failure(
             run_id,
@@ -7458,7 +7478,7 @@ async def run_backtest(
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
     filter_warmup = filter_config.required_bars if filter_config is not None else 0
-    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup), df)
+    warmup_df = _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup), df)
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")

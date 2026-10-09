@@ -88,6 +88,8 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
         params.update(direction='long', time_timezone='America/New_York', time_session_start='09:30', time_session_end='10:30')
         tf = '15m'
+    if name == 'cme_weekend_gap':
+        params.update(direction='long', time_session_start='21:00', time_session_end='23:30')
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
     ctx = TimeContext.build(cls._time_config, tf, data.index)
     cls._time_context = ctx
