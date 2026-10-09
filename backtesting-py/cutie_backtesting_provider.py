@@ -1119,6 +1119,8 @@ def _fetch_template_warmup(
     都退化成「拿到多少用多少 / 不预热」，绝不让本来能跑的回测因此失败；主区间的取数
     与错误处理不经过这里。只保留早于主区间第一根的行，防止取数源不按区间裁剪时把
     主区间数据当成预热。
+    例外（P-LOW1）：ORB / 亚洲区间 / 日历开同周期过滤时，调用方在 run_backtest 里要求非空预热段
+    连续且紧挨主区间，有缺口即 INSUFFICIENT_DATA；本函数本身仍不失败。
     """
     empty = pd.DataFrame(columns=list(_WARMUP_COLUMNS), dtype="float64")
     if bars <= 0 or main_df.empty:
