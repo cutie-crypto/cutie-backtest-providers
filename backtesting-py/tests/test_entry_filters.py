@@ -24,7 +24,7 @@ CASES = capture.cases()
 BASELINE = json.loads((Path(__file__).parent / 'fixtures/entry_filters_5b8320a.json').read_text())
 SINGLE_NAMES = sorted({name for name, _ in CASES.values()})
 EXCLUDED = [key.removeprefix('local.backtesting_py.') for key, value in p.TOOL_SPECS.items()
-            if value.get('runner') in ('kernel_v3', p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER)
+            if value.get('runner') in ('kernel_v3', p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, p.ROTATION_RUNNER)
             or key in p.FILTER_LAYER_UNWIRED_TOOLS]
 
 

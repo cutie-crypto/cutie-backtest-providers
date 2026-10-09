@@ -20,6 +20,7 @@ import math
 import os
 import re
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -91,6 +92,10 @@ from strategy_kernel import (
     to_snapshot,
 )
 from strategy_spec_v3_builder import StrategySpecV3BuildError, build_strategy_spec_v3
+from portfolio_rotation_http import (
+    TOOL_ID as ROTATION_TOOL_ID, RUNNER as ROTATION_RUNNER, TOOL_SPEC as ROTATION_TOOL_SPEC,
+    rotation_catalog, rotation_response,
+)
 from scale_in_out_ledger import (
     LedgerBar,
     LedgerInvariantError,
@@ -6677,6 +6682,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
+TOOL_SPECS[ROTATION_TOOL_ID] = ROTATION_TOOL_SPEC
+
 # A6 二层：固定止损/止盈/仓位对全部 13 个内置模板统一生效，直接合并进每个工具的
 # param_schema_properties（而不是逐个手写 13 遍），新工具接入 TOOL_SPECS 时自动带上。
 # runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
@@ -6692,7 +6699,7 @@ for _tool_spec in TOOL_SPECS.values():
             "max_holding_bars": _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"],
         }
         continue
-    if _tool_spec.get("runner") in ("kernel_v3", TURTLE_RUNNER):
+    if _tool_spec.get("runner") in ("kernel_v3", TURTLE_RUNNER, ROTATION_RUNNER):
         continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
@@ -6826,6 +6833,8 @@ def _validate_params_against_schema(
 
 def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[str]) -> dict[str, Any]:
     """Build one catalog entry from a tool spec; shared fields kept identical across tools."""
+    if spec.get("runner") == ROTATION_RUNNER:
+        return rotation_catalog(_catalog_tool(tool_id, {**spec, "runner": None}, supported_symbols))
     return {
         "tool_id": tool_id,
         "kind": "external_http",
@@ -8323,6 +8332,8 @@ async def run_backtest(
     if tool_id and tool_id not in TOOL_SPECS:
         return _validation_failure("TOOL_NOT_FOUND", f"Unknown provider_tool_id: {tool_id}")
     effective_tool_id = tool_id or DEFAULT_TOOL_ID
+    if effective_tool_id == ROTATION_TOOL_ID:
+        return rotation_response(body, bt_req, run_id, sys.modules[__name__])
 
     # --- Validate symbol ---
     if not symbol:

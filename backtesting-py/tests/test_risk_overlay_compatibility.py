@@ -66,7 +66,7 @@ def enumerate_mixin_cases():
     """Discover actual default-built mixins; future tools need no old fingerprint."""
     cases = {}
     for tool_id, spec in provider.TOOL_SPECS.items():
-        if spec.get('runner') in ('kernel_v3', 'scale_in_out_ledger'):
+        if spec.get('runner') in ('kernel_v3', 'scale_in_out_ledger', provider.ROTATION_RUNNER):
             continue
         cls = spec['build']({})['strategy']
         if isinstance(cls, type) and issubclass(cls, provider._FixedRiskMixin):
