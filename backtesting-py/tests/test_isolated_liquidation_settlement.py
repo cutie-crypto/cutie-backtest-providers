@@ -282,5 +282,11 @@ def test_none_and_empty_liquidations_match_prechange_bytes(records, leverage):
     assert set(result) == {'schema_version', 'trades', 'equity_curve', 'metrics', 'data_manifest'}
 
 
-def test_public_leverage_gate_remains_closed():
-    assert p._single_leverage_rejection(5, 'futures') == 'leverage above 1 requires the isolated liquidation model'
+def test_public_leverage_gate_futures_open_spot_closed(monkeypatch):
+    from fastapi.testclient import TestClient
+    from test_leverage_params import request
+    assert p._single_leverage_rejection(5, 'futures') is None
+    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: pytest.fail('spot leverage reached market data'))
+    response = TestClient(p.app).post('/cutie/backtest', json=request({'leverage': 5})).json()
+    assert response['error_type'] == 'INVALID_PARAMS'
+    assert response['error_message'] == 'leverage above 1 requires futures market'
