@@ -218,6 +218,9 @@ def test_every_registered_single_template_consumes_holding_bars(name):
         params['rsi_exit'] = 85
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
+    if name == 'chan_3buy':
+        from test_9t6_chan_3buy import frame as chan_frame
+        data = chan_frame()
     cls = p.TOOL_SPECS['local.backtesting_py.'+compat.tool_name(name)]['build'](params)['strategy']
     assert not cls._risk.get('risk_layer_enabled')
     cls._time_context = TimeContext.build(cls._time_config, '1h', data.index)
