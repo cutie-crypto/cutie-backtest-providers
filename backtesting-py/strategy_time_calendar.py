@@ -104,3 +104,20 @@ class RegularCalendar:
                                         (inclusive and session.start_utc == instant)):
                 return session.start_utc
         raise AssertionError('regular weekly schedule must have an opening within eight days')
+
+
+def calendar_week_bounds(instant: datetime, calendar: RegularCalendar) -> PeriodBounds | None:
+    """Calendar-aware 6d-compatible week bounds, or None for CLOSED instants.
+
+    US: Monday 09:30 through Friday 16:00, New York.
+    CME: Sunday 17:00 through Friday 16:00, Chicago.
+    Bounds encompass internal closures; membership still requires an open
+    session. Neither weekends nor intraday pauses get assigned to a week.
+    """
+    trading_day = calendar.trading_day(instant)
+    if trading_day is None:
+        return None
+    monday = trading_day - timedelta(days=trading_day.weekday())
+    first = calendar._session_for_day(monday)
+    last = calendar._session_for_day(monday + timedelta(days=4))
+    return PeriodBounds(first.start_utc, last.end_utc)
