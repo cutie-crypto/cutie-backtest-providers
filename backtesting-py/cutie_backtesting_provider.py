@@ -39,6 +39,8 @@ from strategy_time_layer import (
 from strategy_entry_filters import (
     FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, entry_mask, HigherTimeframeContext, FilterHistoryError,
 )
+from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
+                                      parse_position_sizing, PositionSizingMixin)
 from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
 from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
 from strategy_time_series import SeriesBar, TimeHistoryError
@@ -2529,6 +2531,7 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
         if notional <= 0:
             raise ValueError("INVALID_PARAMS:position_size_notional must be > 0")
         out["position_size_notional"] = notional
+    out.update(parse_position_sizing(params))
     return out
 
 
@@ -2644,7 +2647,7 @@ class _FilterLayerMixin:
         return bool(self._filter_mask[index])
 
 
-class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
+class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
     """单仓模板共用覆盖层；1 倍且 risk_layer_enabled=false 完整保留旧层。
 
     3a 显式开启时用 High/Low 判触发，仍提交下一根开盘市价平仓。
@@ -2686,7 +2689,7 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
-        if self._risk.get("leverage", 1) > 1:
+        if self._risk.get("leverage", 1) > 1 or self._risk.get("position_sizing_enabled"):
             self._isolated_liquidations = []
             self._isolated_liquidation_units = {}
             self._isolated_blocked_bar = -1
@@ -2716,11 +2719,17 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
                     arrays.append(np.concatenate([prefix, np.asarray(getattr(self.data, column))]))
                 self._risk_atr = risk_atr_series(*arrays, self._risk["risk_atr_period"])
 
+        if self._risk.get("position_sizing_enabled"):
+            self._sizing_install()
+
     def _risk_prepare_entry(self) -> None:
         if not self._risk.get("atr_stop_multiplier"):
             return
         count = self._warmup_bars + len(self.data)
         if count < self._risk["risk_atr_period"]:
+            if self._risk.get("position_size_risk_pct") is not None:
+                self._risk_entry_atr = None
+                return  # The fill hook records invalid_initial_stop without sending an order.
             raise ValueError("INVALID_PARAMS:ATR entry history is shorter than risk_atr_period")
         # Only the signal close is available when the market entry is queued.
         self._risk_entry_atr = self._risk_atr[count - 1]
@@ -2765,7 +2774,7 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
 
         def process_before_insolvency():
             process_orders()
-            if broker.equity > 0 or not self.trades:
+            if self._risk.get("leverage", 1) == 1 or broker.equity > 0 or not self.trades:
                 return
             # Broker.next checks account insolvency BEFORE Strategy.next. A low
             # close can consume unallocated cash although this isolated trade
@@ -2826,7 +2835,8 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
             return True
         if self._risk_trade is not trade:
             self._risk_trade = trade
-            self._risk_state = initial_risk_state(
+            self._risk_state = self._sizing_states.get(trade) if self._risk.get("position_sizing_enabled") else None
+            self._risk_state = self._risk_state or initial_risk_state(
                 risk=self._risk, entry_price=trade.entry_price,
                 direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
                 entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
@@ -2874,6 +2884,8 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
         哨兵值（该哨兵是 float 子类，真实值≈0.9999999999999998，不是字面 0.9999；
         显式传 0.9999 会让仓位比原逻辑略小，破坏"未配置时逐字节不变"的回归底线）。
         """
+        if self._risk.get("position_sizing_enabled"):
+            return 1  # Placeholder absolute unit; replaced only at the next-open hook.
         size_pct = self._risk.get("position_size_pct")
         if size_pct is not None:
             return size_pct
@@ -2895,7 +2907,9 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
-        self.buy() if size is None else self.buy(size=size)
+        order = self.buy() if size is None else self.buy(size=size)
+        if self._risk.get("position_sizing_enabled"):
+            order._sizing_signal_bar = len(self.data) - 1
 
     def _risk_sell(self) -> None:
         if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
@@ -2904,7 +2918,9 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
-        self.sell() if size is None else self.sell(size=size)
+        order = self.sell() if size is None else self.sell(size=size)
+        if self._risk.get("position_sizing_enabled"):
+            order._sizing_signal_bar = len(self.data) - 1
 
     def _risk_check_exit(self) -> bool:
         if not self.position or not self.trades:
@@ -5577,6 +5593,295 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                 executed_name=f"Red Streak RSI ({red_bars}, RSI{rsi_period}<{oversold:g}, hold {holding})")
 
 
+_DIVERGENCE_EXIT_KEYS = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplier',
+    'take_profit_r', 'trailing_stop_pct', 'breakeven_stop', 'take_profit_levels')
+
+
+def _build_divergence(params, *, kind, initial_capital):
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS['local.backtesting_py.' + kind + '_bullish_divergence']['param_schema_properties']
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f'INVALID_PARAMS:{error}')
+    if params.get('direction', 'long') != 'long':
+        raise ValueError('INVALID_PARAMS:bullish divergence supports long only')
+    for key in _DIVERGENCE_EXIT_KEYS:
+        if (key in params if key in ('stop_loss_pct', 'take_profit_pct') else params.get(key)):
+            raise ValueError('INVALID_PARAMS:divergence frozen exits conflict with risk exit overrides')
+    for key, spec in properties.items():
+        if key in params and spec.get('type') == 'integer' and type(params[key]) is not int:
+            raise ValueError(f'INVALID_PARAMS:{key} must be a strict integer')
+    lo, hi = params.get('min_gap_bars', 5), params.get('max_gap_bars', 60)
+    if lo > hi:
+        raise ValueError('INVALID_PARAMS:min_gap_bars must not exceed max_gap_bars')
+    config = dict(n=params.get('swing_n', 5), min_gap=lo, max_gap=hi)
+    if kind == 'macd':
+        fast, slow, signal = params.get('fast', 12), params.get('slow', 26), params.get('signal', 9)
+        if fast >= slow:
+            raise ValueError('INVALID_PARAMS:fast must be less than slow')
+        config.update(fast=fast, slow=slow, signal=signal, compare=params.get('compare', 'dif'),
+                      indicator_bars=slow*3+signal+1)
+    else:
+        period = params.get('rsi_period', 14)
+        first, exit_above = params.get('rsi_first_below', 35), params.get('rsi_exit_above', 70)
+        if first >= exit_above:
+            raise ValueError('INVALID_PARAMS:rsi_first_below must be less than rsi_exit_above')
+        config.update(rsi_period=period, first_below=first, exit_above=exit_above,
+                      indicator_bars=period*3+1)
+    from strategy_divergence import make_divergence_strategy
+    cls = make_divergence_strategy(_FixedRiskMixin, kind=kind, config=config, risk=risk,
+                                  initial_capital=initial_capital, rsi_series=_rsi_series)
+    return dict(strategy=cls, executed_name=kind.upper()+' Bullish Divergence',
+        min_bars=config['indicator_bars']+2*config['n']+lo,
+        warmup_bars=config['indicator_bars']+2*config['n']+hi,
+        divergence_assumptions=dict(divergence_execution={
+            'direction': 'long_only', 'swing_confirmation': 'left_and_right_swing_n_closed_bars_strict_extrema',
+            'indicator_sample': 'swing_low_bar', 'indicator_history': 'first_low_must_have_full_indicator_warmup',
+            'pair': 'adjacent_confirmed_lows_inclusive_gap', 'signal': 'bar_close',
+            'macd_confirmation_cross': 'confirmation_close_is_eligible',
+            'fill': 'next_bar_open_market', 'stop': 'l2_low_times_0.999',
+            'target': 'actual_entry_price_plus_2_times_entry_minus_stop_frozen_at_fill',
+            'same_bar_priority': 'stop_before_time_expiry_before_take_profit_before_signal',
+            'gap': 'entry_open_at_or_below_frozen_stop_is_skipped',
+            'consumption': 'one_signal_opportunity_per_pair_even_if_entry_blocked',
+            'histogram': '2_times_dif_minus_dea', 'final_bar': 'engine_finalize_trades_settlement',
+            'leverage': 'shared_isolated_liquidation_precedes_exits_unless_closer_intrabar_stop'}))
+
+
+@_with_time_config
+@_with_filter_config
+def _build_macd_bullish_divergence(params, *, initial_capital=10000.0):
+    return _build_divergence(params, kind='macd', initial_capital=initial_capital)
+
+
+@_with_time_config
+@_with_filter_config
+def _build_rsi_bullish_divergence(params, *, initial_capital=10000.0):
+    return _build_divergence(params, kind='rsi', initial_capital=initial_capital)
+
+
+@_with_time_config
+@_with_filter_config
+def _build_chan_3buy(params, *, initial_capital=10000.0):
+    risk = _parse_fixed_risk_params(params)
+    if params.get('direction', 'long') != 'long':
+        raise ValueError('INVALID_PARAMS:Chan third buy supports long only')
+    bi_mode = params.get('bi_mode', 'new')
+    if bi_mode not in ('new', 'old'):
+        raise ValueError('INVALID_PARAMS:bi_mode must be new or old')
+    frozen_exit_keys = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplier',
+        'take_profit_r', 'trailing_stop_pct', 'breakeven_stop',
+        *(f'tp{n}_{suffix}' for n in (1,2,3) for suffix in ('r','close_pct')))
+    if any((key in params if key in ('stop_loss_pct','take_profit_pct') else params.get(key))
+           for key in frozen_exit_keys):
+        raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
+    from strategy_chan import make_chan_strategy
+    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)
+    return dict(strategy=cls, executed_name='Chan Third Buy ('+bi_mode+')', min_bars=3,
+        chan_assumptions=dict(chan_execution={
+            'direction': 'long_only', 'bi_mode': bi_mode,
+            'independent_bars_between_endpoints': 1 if bi_mode=='new' else 5,
+            'confirmation': 'right_independent_bar_close_facts_never_revised',
+            'initial_inclusion': 'defer_merge_until_direction_observable',
+            'centers': 'latest_three_completed_strokes_no_reuse_extension_or_expansion',
+            'fill': 'next_bar_open_market', 'stop': 'pullback_low_times_0.999',
+            'target': 'actual_fill_plus_2_times_fill_minus_stop_frozen',
+            'priority': 'stop_before_time_expiry_before_take_profit_before_close_below_zg',
+            'consumption': 'one_opportunity_per_center_even_if_entry_blocked',
+            'final_bar': 'engine_finalize_trades_settlement',
+            'leverage': 'shared_isolated_liquidation_arbitration'}))
+
+
+@_with_time_config
+@_with_filter_config
+def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """9T5: confirmed adjacent low/high events; signal-close frozen risk prices."""
+    error = _validate_params_against_schema(params, TOOL_SPECS["local.backtesting_py.fibonacci_retracement"]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    n = params.get("swing_n", 5)
+    if type(n) is not int:
+        raise ValueError("INVALID_PARAMS:swing_n must be an integer, not a float")
+    level = params.get("fib_level", 0.618)
+    tolerance = Decimal(str(params.get("fib_tolerance_pct", 0.3))) / 100
+    minimum = Decimal(str(params.get("swing_min_gain_pct", 5))) / 100
+    target = params.get("fib_target", "swing_high")
+    pricing_keys = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier", "take_profit_r",
+                    "trailing_stop_pct", "breakeven_stop",
+                    *(f"tp{k}_{suffix}" for k in (1, 2, 3) for suffix in ("r", "close_pct")))
+    intrinsic = not any(key in params for key in pricing_keys)
+    risk = _parse_fixed_risk_params(params)
+    from backtesting import Strategy
+    from dataclasses import replace
+    from strategy_swing_points import swing_points
+    from strategy_risk_overlay import RiskState, initial_risk_state, decide_exit
+    from strategy_dynamic_stop import initial_stop_state
+
+    class FibonacciRetracementStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            self._risk_init()
+            self._risk_trade = None
+            self._fib_order = self._fib_frozen = None
+            self._fib_skips, self._fib_waves, self._fib_exits = [], [], []
+            self._fib_previous = self._fib_active = None
+            self._fib_seen = -1
+            columns = {c: np.concatenate([self._warmup_cols[c] if self._warmup_bars else [],
+                                          np.asarray(getattr(self.data, c))])
+                       for c in ("High", "Low", "Close")}
+            self._fib_series = swing_points(columns["High"], columns["Low"], n=n)
+            self._fib_closes = columns["Close"]
+            self._fib_length = len(self.data)
+            process_orders = self._broker._process_orders
+
+            def guarded_orders():
+                order = self._fib_order
+                if order is not None and order in self.orders:
+                    opening = Decimal(str(self.data.Open[-1]))
+                    state = self._fib_frozen
+                    reason = ("frozen_stop_wrong_side_of_entry_open"
+                              if state.initial_stop is not None and opening <= state.initial_stop else
+                              "entry_open_at_or_above_frozen_target"
+                              if state.take_price is not None and opening >= state.take_price else None)
+                    if reason:
+                        self._fib_skips.append(dict(reason=reason, signal_index=self._fib_signal_index,
+                            execution_index=self._warmup_bars + len(self.data) - 1,
+                            entry_open=str(opening), frozen_stop=str(state.initial_stop),
+                            frozen_target=str(state.take_price)))
+                        order.cancel()
+                        self._fib_order = None
+                process_orders()
+            self._broker._process_orders = guarded_orders
+
+        def _fib_update(self, bar):
+            # Slots are confirmation bars; never inspect a point at its pivot index.
+            for at in range(self._fib_seen + 1, bar + 1):
+                lo, hi = self._fib_series.lows[at], self._fib_series.highs[at]
+                if lo is not None or hi is not None:
+                    self._fib_active = None
+                    previous = self._fib_previous
+                    # A candle can confirm both extrema: its event ordering is unknown.
+                    if lo is not None and hi is not None:
+                        self._fib_previous = None
+                    elif lo is not None:
+                        self._fib_previous = ("low", lo)
+                    else:
+                        if previous is not None and previous[0] == "low":
+                            low = previous[1]
+                            if hi.index > low.index and Decimal(str(hi.price)) / Decimal(str(low.price)) - 1 >= minimum:
+                                L, H = Decimal(str(low.price)), Decimal(str(hi.price))
+                                price = H - Decimal(str(level)) * (H - L)
+                                stop = ((H - Decimal("0.786") * (H - L)) if level < 0.786 else L) * Decimal("0.999")
+                                take = H if target == "swing_high" else L + Decimal(target) * (H - L)
+                                wave = dict(low_index=low.index, high_index=hi.index,
+                                    low_confirmed_at=low.confirmed_at, high_confirmed_at=hi.confirmed_at,
+                                    low_price=str(L), high_price=str(H), level_price=str(price),
+                                    stop_price=str(stop), target_price=str(take), used=False, invalid=False)
+                                self._fib_active = wave
+                                self._fib_waves.append(wave)
+                        self._fib_previous = ("high", hi)
+                wave = self._fib_active
+                if wave is not None and not wave["used"] and Decimal(str(self._fib_closes[at])) < Decimal(wave["stop_price"]):
+                    wave["invalid"] = True
+                    wave["invalidated_at"] = at
+            self._fib_seen = bar
+
+        def _risk_check_exit(self):
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            if self._risk_trade is not trade:
+                self._risk_trade = trade
+                state = self._fib_frozen
+                managed = (initial_stop_state(direction="long", entry_price=Decimal(str(trade.entry_price)),
+                    initial_stop=state.initial_stop, entry_at=int(pd.Timestamp(trade.entry_time).value))
+                    if state.stop_state is not None else None)
+                self._risk_state = replace(state, entry_price=Decimal(str(trade.entry_price)),
+                                           stop_state=managed, original_units=abs(trade.size))
+                if self._risk.get("leverage", 1) > 1 and any(self._risk.get(key) for key in
+                        ("atr_stop_multiplier", "trailing_stop_pct", "breakeven_stop")):
+                    liquidation = _isolated_liquidation_price(Decimal(str(trade.entry_price)), self._risk["leverage"], True)
+                    if state.initial_stop is not None and state.initial_stop <= liquidation:
+                        self._isolated_stop_beyond_trades += 1
+            if self._risk.get("risk_layer_enabled"):
+                exited = self._risk_layer_check_exit()
+            # Frozen intrinsic and user stops both participate in arbitration.
+            # With no configured user stop, initial_stop is None: liquidation only.
+            elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
+                exited = True
+            elif any(order.parent_trade is trade for order in self.orders):
+                return True
+            else:
+                fact = self._holding_expiry()
+                reason = decide_exit(self._risk_state,
+                    high=self.data.High[-1] if intrinsic else self.data.Close[-1],
+                    low=self.data.Low[-1] if intrinsic else self.data.Close[-1], holding_due=fact.due)
+                exited = reason is not None
+                if exited:
+                    self._risk_exit_reason = reason
+                    if reason == "time_expiry":
+                        self._record_holding_expiry(fact)
+                    self.position.close()
+            if exited:
+                self._fib_exits.append(dict(decision_index=self._warmup_bars + len(self.data) - 1,
+                                             reason=self._risk_exit_reason))
+            return exited
+
+        def next(self):
+            bar = self._warmup_bars + len(self.data) - 1
+            self._fib_update(bar)
+            if self.position:
+                self._risk_check_exit()
+                return
+            wave = self._fib_active
+            if self.orders or len(self.data) >= self._fib_length or wave is None or wave["used"] or wave["invalid"]:
+                return
+            if bar <= wave["high_confirmed_at"]:
+                return
+            price = Decimal(wave["level_price"])
+            if not (Decimal(str(self.data.Low[-1])) <= price * (1 + tolerance)
+                    and Decimal(str(self.data.Close[-1])) >= price * (1 - tolerance)
+                    and self.data.Close[-1] > self.data.Open[-1]):
+                return
+            if not self._time_allow_entry() or not self._filter_allow_entry():
+                return
+            self._risk_prepare_entry()
+            if intrinsic:
+                stop, take = Decimal(wave["stop_price"]), Decimal(wave["target_price"])
+                entry = Decimal(str(self.data.Close[-1]))
+                self._fib_frozen = RiskState(entry, stop, take, entry - stop, "long")
+            else:
+                self._fib_frozen = initial_risk_state(risk=risk, entry_price=self.data.Close[-1], direction="long",
+                    atr_value=getattr(self, "_risk_entry_atr", None))
+            wave["used"] = True
+            wave["signal_index"] = self._fib_signal_index = bar
+            wave["frozen_stop"] = str(self._fib_frozen.initial_stop)
+            wave["frozen_target"] = str(self._fib_frozen.take_price)
+            size = self._risk_entry_size()
+            self._fib_order = self.buy() if size is None else self.buy(size=size)
+
+    return dict(strategy=FibonacciRetracementStrategy, min_bars=2 * n + 1,
+                executed_name=f"Fibonacci Retracement ({level:g}, N={n}, target={target})")
+
+
+@_with_time_config
+@_with_filter_config(default_direction="both")
+def _build_us_open_momentum(params, *, initial_capital=10000.0):
+    import sys
+    import strategy_calendar_templates as templates
+    return templates.build_us_open(sys.modules[__name__], params, initial_capital)
+
+
+@_with_time_config
+@_with_filter_config(default_direction="both")
+def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
+    import sys
+    import strategy_calendar_templates as templates
+    return templates.build_cme_gap(sys.modules[__name__], params, initial_capital)
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     "local.backtesting_py.calendar_schedule": {
         "name": "Local Backtesting.py Calendar Schedule",
@@ -5725,6 +6030,92 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "breakout_window": {"type": "integer", "default": 3, "minimum": 1, "maximum": 20},
             "trend_filter": {"type": "boolean", "default": False},
             "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    'local.backtesting_py.macd_bullish_divergence': {
+        'name': 'Local Backtesting.py MACD Bullish Divergence',
+        'description': 'Long-only adjacent confirmed swing lows: lower price and higher MACD at the low bar. '
+                       'Next-open entry, frozen L2 stop minus 0.1 percent and actual-fill 2R target.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_macd_bullish_divergence,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'min_gap_bars': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 5000},
+            'max_gap_bars': {'type': 'integer', 'default': 60, 'minimum': 1, 'maximum': 5000},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'fast': {'type': 'integer', 'default': 12, 'minimum': 2, 'maximum': 100},
+            'slow': {'type': 'integer', 'default': 26, 'minimum': 3, 'maximum': 300},
+            'signal': {'type': 'integer', 'default': 9, 'minimum': 1, 'maximum': 100},
+            'compare': {'type': 'string', 'default': 'dif', 'enum': ['dif', 'hist']},
+        },
+    },
+    'local.backtesting_py.rsi_bullish_divergence': {
+        'name': 'Local Backtesting.py RSI Bullish Divergence',
+        'description': 'Long-only adjacent confirmed swing lows: lower price and higher RSI at the low bar. '
+                       'Next-open entry, frozen L2 stop minus 0.1 percent and actual-fill 2R target.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_rsi_bullish_divergence,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'min_gap_bars': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 5000},
+            'max_gap_bars': {'type': 'integer', 'default': 60, 'minimum': 1, 'maximum': 5000},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'rsi_period': {'type': 'integer', 'default': 14, 'minimum': 2, 'maximum': 300},
+            'rsi_first_below': {'type': 'number', 'default': 35, 'minimum': 0, 'maximum': 100},
+            'rsi_exit_above': {'type': 'number', 'default': 70, 'minimum': 0, 'maximum': 100},
+        },
+    },
+
+    'local.backtesting_py.chan_3buy': {
+        'name': 'Local Backtesting.py Chan Third Buy',
+        'description': 'Long-only simplified Chan third buy from confirmed fractals, alternating strokes and a three-stroke center. Next-open entry and frozen pullback stop / actual-fill 2R target.',
+        'strategy_family': 'breakout', 'is_default': False, 'build': _build_chan_3buy,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'bi_mode': {'type': 'string', 'default': 'new', 'enum': ['new', 'old']},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+        },
+    },
+
+    "local.backtesting_py.fibonacci_retracement": {
+        "name": "Local Backtesting.py Fibonacci Retracement",
+        "description": "Long-only retracement of adjacent confirmed swing low/high points; bullish close entry, frozen swing stop/target, next-open market fills. Maps to KOL '斐波那契回撤'.",
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_fibonacci_retracement,
+        "param_schema_properties": {
+            "swing_n": {"type": "integer", "default": 5, "minimum": 1, "maximum": 500},
+            "swing_min_gain_pct": {"type": "number", "default": 5, "minimum": 1, "maximum": 50},
+            "fib_level": {"type": "number", "default": 0.618, "enum": [0.382, 0.5, 0.618, 0.786]},
+            "fib_tolerance_pct": {"type": "number", "default": 0.3, "minimum": 0.05, "maximum": 2},
+            "fib_target": {"type": "string", "default": "swing_high", "enum": ["swing_high", "1.272", "1.618"]},
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.cme_weekend_gap": {
+        "name": "Local Backtesting.py CME Weekend Gap",
+        "description": "BTC spot proxy for Chicago Friday 16:00 and Sunday 17:00 closing prices; fades inclusive weekend gaps with frozen Friday target, default 2 percent stop and Wednesday 00:00 UTC expiry.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_cme_weekend_gap, "long_only_spot": True, "ohlcv_market": "spot",
+        "param_schema_properties": {
+            "gap_pct": {"type": "number", "default": 1, "minimum": 0.2, "maximum": 10},
+            "direction": {"type": "string", "default": "both", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.us_open_momentum": {
+        "name": "Local Backtesting.py US Open Momentum",
+        "description": "Regular New York weekday opening-window momentum; frozen opposite-window stop and 16:00 flatten. Regular calendar excludes holiday and half-day modeling.",
+        "strategy_family": "momentum", "is_default": False,
+        "build": _build_us_open_momentum, "long_only_spot": True,
+        "param_schema_properties": {
+            "window_minutes": {"type": "integer", "default": 30, "minimum": 15, "maximum": 60},
+            "threshold_pct": {"type": "number", "default": 0.3, "minimum": 0.05, "maximum": 5},
+            "direction": {"type": "string", "default": "both", "enum": ["long", "short", "both"]},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -6222,7 +6613,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": (
             "Two-leg futures basket, trend-following on the leg-a/leg-b close "
             "ratio: go long leg a + short leg b (per each leg's declared side) "
-            "when the fast SMA of the ratio crosses above the slow SMA, exit on "
+            "when the fast MA of the ratio crosses above the slow MA (SMA by default, optional EMA), exit on "
             "the opposite cross. Maps to KOL '组合比价 / 对冲配对'."
         ),
         "strategy_family": "basket_ratio_sma_cross",
@@ -6231,6 +6622,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "param_schema_properties": {
             "fast_window": {"type": "integer", "minimum": 2, "maximum": 50},
             "slow_window": {"type": "integer", "minimum": 5, "maximum": 200},
+            "ma_type": {"type": "string", "enum": ["sma", "ema"], "default": "sma"},
             **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
         },
     },
@@ -6305,6 +6697,7 @@ for _tool_spec in TOOL_SPECS.values():
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
         **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
+        **POSITION_SIZE_SCHEMA,
         **_TIME_PARAM_SCHEMA_PROPERTIES,
         **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     }
@@ -6334,6 +6727,37 @@ for _calendar_key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
         _calendar_properties.pop(_calendar_key, None)
 _calendar_properties["stop_loss_pct"] = {**_calendar_properties["stop_loss_pct"], "default": 3}
 del _calendar_properties, _calendar_key
+
+POSITION_SIZING_UNWIRED_TOOLS = frozenset({
+    "local.backtesting_py.rsi_scale_in_out", "local.backtesting_py.grid",
+    "local.backtesting_py.dca", "local.backtesting_py.turtle",
+    "local.backtesting_py.basket_ratio_sma_cross", "local.backtesting_py.basket_ratio_roc",
+    "local.backtesting_py.basket_ratio_zscore",
+})
+assert POSITION_SIZING_UNWIRED_TOOLS == {
+    tool for tool, spec in TOOL_SPECS.items()
+    if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3")
+}, "Every unwired runner must be explicitly listed"
+# 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
+# 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
+# schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
+POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
+    "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi vwap_reversion "
+    "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
+    "double_bottom inverse_head_shoulders macd_bullish_divergence rsi_bullish_divergence chan_3buy "
+    "fibonacci_retracement us_open_momentum cme_weekend_gap").split())
+for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
+    for _sizing_key in POSITION_SIZE_KEYS:
+        TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)
+del _pending_tool, _sizing_key
+
+
+def _position_sizing_failure(message):
+    response = _validation_failure("INVALID_PARAMS", message)
+    content = json.loads(response.body)
+    content["raw_report"]["position_sizing"] = {"rejections": [{"reason": message}]}
+    return JSONResponse(content=content)
+
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
 
@@ -7762,6 +8186,11 @@ def _run_basket_backtest(
             "exchange": CENTRAL_SUPPORTED_EXCHANGE,
             "market": market,
             "strategy_family": strategy_family,
+            **({"ema": {
+                "adjust": False,
+                "seed": "SMA of the first N aligned valid values; first output only after N bars",
+                "history": "recurrence starts at the beginning of the fetched aligned series",
+            }} if strategy_family == "basket_ratio_sma_cross" and params.get("ma_type") == "ema" else {}),
             "legs": [leg["symbol"] for leg in plan.legs],
             "real_market_data": True,
             "no_live_trading": True,
@@ -7953,6 +8382,15 @@ async def run_backtest(
     if not isinstance(params, dict):  # F5: non-dict -> INVALID_PARAMS, not a 500
         return _validation_failure("INVALID_PARAMS", "provider_params must be an object")
     tool_spec = TOOL_SPECS[effective_tool_id]
+    if set(params) & POSITION_SIZE_KEYS:
+        if effective_tool_id in POSITION_SIZING_UNWIRED_TOOLS:
+            return _position_sizing_failure("position sizing is not wired to this runner")
+        if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
+            return _position_sizing_failure("position sizing is not wired to this template yet")
+        try:
+            _parse_fixed_risk_params(params)
+        except ValueError as exc:
+            return _position_sizing_failure(str(exc).removeprefix("INVALID_PARAMS:"))
     if tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
         rejection = _scale_in_out_rejection(params, bt_req, market)
         if rejection:
@@ -8000,6 +8438,8 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "range breakout short/both requires futures market")
     if effective_tool_id == "local.backtesting_py.calendar_schedule" and market == "spot" and params.get("direction", "long") != "long":
         return _validation_failure("INVALID_PARAMS", "calendar short requires futures market")
+    if tool_spec.get("long_only_spot") and market != "futures" and params.get("direction", "both") != "long":
+        return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -8014,6 +8454,11 @@ async def run_backtest(
     except Exception as e:  # F8: don't let build bugs become bare 500s with lost context
         logger.exception("strategy build failed tool=%s", effective_tool_id)
         return _business_failure(run_id, "ENGINE_ERROR", f"Strategy build failed: {e}")
+    if "validate_timeframe" in built:
+        try:
+            built["validate_timeframe"](timeframe)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e))
     min_bars = int(built["min_bars"])
     executed_name = str(built["executed_name"])
     strategy_class = built["strategy"]
@@ -8062,6 +8507,7 @@ async def run_backtest(
         strategy_class._calendar_timeframe = timeframe
 
     # --- Fetch OHLCV ---
+    source_market = tool_spec.get("ohlcv_market", market)
     try:
         if range_config is not None:
             history = _fetch_strict_time_history(exchange_id, market, symbol, timeframe, start_at, end_at, range_config.definition)
@@ -8073,7 +8519,7 @@ async def run_backtest(
             strategy_class._range_timeframe = timeframe
             strategy_class._range_backtest_start = start
         else:
-            df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
+            df = _fetch_ohlcv(exchange_id, source_market, symbol, timeframe, start_at, end_at)
     except TimeHistoryError as exc:
         return _business_failure(run_id, exc.error_type, str(exc), reason=exc.reason)
     except MarketDataFetchError as e:
@@ -8184,7 +8630,8 @@ async def run_backtest(
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
     warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
-                 _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup, vwap_warmup), df))
+                 _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
+                                        max(min_bars, risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
@@ -8216,7 +8663,13 @@ async def run_backtest(
         # float，不受此契约约束），两条路径分道扬镳，互不干扰。
         internal_cash_dec = _internal_cash_dec(initial_capital, float(df["Close"].max()))
         equity_scale_dec = initial_capital / internal_cash_dec
-        if leverage > 1 and market == "futures":
+        sizing_enabled = getattr(StrategyClass, "_risk", {}).get("position_sizing_enabled", False)
+        if sizing_enabled:
+            # One engine unit is exactly one requested qty_step in user units.
+            equity_scale_dec = Decimal(str(StrategyClass._risk["position_size_qty_step"]))
+            internal_cash = float(initial_capital / equity_scale_dec)
+        if sizing_enabled or (leverage > 1 and market == "futures"):
+            StrategyClass._sizing_scale = equity_scale_dec
             StrategyClass._isolated_equity_scale = equity_scale_dec
             StrategyClass._isolated_initial_capital = initial_capital
             StrategyClass._isolated_fee_bps = fee_bps
@@ -8405,8 +8858,24 @@ async def run_backtest(
                 "exchange": exchange_id,
                 "market": market,
                 **strategy_assumptions,
+                **({"position_sizing": {"fill": "next_bar_open_market",
+                     "capital_base": "pre_fill_net_equity" if risk["compound"] else "initial_capital",
+                     "risk_quantity_leverage_multiplier": False,
+                     "initial_stop": "shared_frozen_actual_fill_risk_state",
+                     "qty_step_source": "provider_parameter_not_exchange_verified"}} if sizing_enabled else {}),
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
+                **({"fibonacci_retracement": {
+                    "swing_confirmation": "left_right_N_closed_bars_strict_extrema",
+                    "swing_indices": "warmup_plus_main_zero_based",
+                    "pair": "adjacent_low_then_high_simultaneous_extrema_discarded",
+                    "entry": "after_high_confirmation_bullish_close_then_next_open",
+                    "default_prices": "frozen_at_signal_close_whole_group_disabled_by_explicit_pricing_key",
+                    "default_trigger": "high_low_touch_next_open_market",
+                    "same_bar_priority": "stop_before_time_expiry_before_take_profit_before_signal",
+                    "pattern_confirmation": "not_implemented_engulfing_hammer_pending_shared_capability",
+                    "cancelled_entry": "consumes_pair_once",
+                }} if effective_tool_id == "local.backtesting_py.fibonacci_retracement" else {}),
                 **(_build_isolated_margin_assumptions(
                     leverage=leverage, market=market, stop_loss_pct=params.get("stop_loss_pct"),
                     stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
@@ -8416,6 +8885,9 @@ async def run_backtest(
                 **(range_assumptions(range_config) if range_config is not None else {}),
                 **(calendar_assumptions(calendar_config) if calendar_config is not None else {}),
                 **built.get("pattern_assumptions", {}),
+                **built.get("divergence_assumptions", {}),
+                **built.get("chan_assumptions", {}),
+                **built.get("template_assumptions", {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 **({"vwap_reversion": {
@@ -8484,7 +8956,20 @@ async def run_backtest(
                 **({"vwap_reversion": {"skipped_entries": stats["_strategy"]._f5_skips,
                     "history_notes": stats["_strategy"]._f5_history,
                     "time_exits": stats["_strategy"]._f5_expiries}} if is_vwap else {}),
+                **({"position_sizing": stats["_strategy"]._sizing_report}
+                   if sizing_enabled else {}),
                 **turtle_raw_report,
+                **({"divergence": stats["_strategy"].divergence_report}
+                   if hasattr(stats["_strategy"], "divergence_report") else {}),
+                **({"chan": stats["_strategy"].chan_report}
+                   if hasattr(stats["_strategy"], "chan_report") else {}),
+                **({"fibonacci_retracement": {
+                    "waves": stats["_strategy"]._fib_waves,
+                    "skipped_entries": stats["_strategy"]._fib_skips,
+                    "exit_decisions": stats["_strategy"]._fib_exits,
+                }} if effective_tool_id == "local.backtesting_py.fibonacci_retracement" else {}),
+                **({built["template_report_key"]: stats["_strategy"]._template_report}
+                   if "template_report_key" in built else {}),
                 **({"entry_filters": {**filter_config.report(),
                     **(strategy_class._filter_context.report if strategy_class._filter_context is not None else {})}}
                     if filter_config is not None else {}),

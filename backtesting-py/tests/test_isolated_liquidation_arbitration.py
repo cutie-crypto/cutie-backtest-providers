@@ -20,11 +20,20 @@ from test_leverage_params import request
 
 START, STEP = 1800000000, 3600
 WAVEB_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_waveb_e698d26_6b85dbf_9f8a6b0.json').read_text())
+# 9-T4 / 9-T6 OFF-state golden, captured once at each source head (fd52acb, ab56369) with capture_isolated_off_waveb.py.
+WAVEC_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_wavec_fd52acb_ab56369.json').read_text())
 
 
 def test_waveb_golden_covers_exactly_the_filter_unwired_tools():
     assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
     assert all(set(v)=={'futures','spot'} for v in WAVEB_GOLDEN['cases'].values())
+
+
+def test_wavec_golden_comes_from_source_heads():
+    assert WAVEC_GOLDEN['source_shas'][0].startswith('fd52acb') and WAVEC_GOLDEN['source_shas'][1].startswith('ab56369')
+    assert set(WAVEC_GOLDEN['cases'])=={'macd_bullish_divergence','rsi_bullish_divergence','chan_3buy'}
+    assert set(WAVEC_GOLDEN['cases']).isdisjoint(WAVEB_GOLDEN['cases'])
+    assert all(set(v)=={'futures','spot'} for v in WAVEC_GOLDEN['cases'].values())
 FLAT = [100, 101, 99, 100]
 SIDES = ['long', 'short']
 
@@ -242,11 +251,12 @@ def baseline_provider():
     return module
 
 
-@pytest.mark.parametrize('name',list(compat.enumerate_mixin_cases()))
+# New calendar tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
+@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap')])
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
-    golden=WAVEB_GOLDEN['cases'].get(name)
+    golden=WAVEB_GOLDEN['cases'].get(name) or WAVEC_GOLDEN['cases'].get(name)
     data=compat.frame().iloc[WAVEB_GOLDEN['data_offset'].get(name,60):].copy()
     params={'direction':'short'} if name.endswith('_short') else {}
     params.update(WAVEB_GOLDEN['tool_params'].get(name,{}))
@@ -266,13 +276,15 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         return out
     result=invoke(p)
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')
-    if name == 'vwap_reversion' or golden:
-        # F5 and the Wave-B tools did not exist at e25886e: compare their independent immutable goldens
+    if name in ('vwap_reversion', 'fibonacci_retracement') or golden:
+        # F5, 9T5 and the Wave-B tools did not exist at e25886e: compare their independent immutable goldens
         # (each captured at its own feature head), keeping the historical-source comparator for every other tool.
         import hashlib
         from pathlib import Path
         if golden:
             expected=golden[market]
+        elif name == 'fibonacci_retracement':
+            expected=json.loads((Path(__file__).parent/'fixtures/isolated_off_9t5_b42210b.json').read_text())['cases'][market]
         else:
             expected=json.loads((Path(__file__).parent/'fixtures/isolated_off_f5_b42210b.json').read_text())['cases'][market]
         digest=lambda value:hashlib.sha256(value.encode()).hexdigest()

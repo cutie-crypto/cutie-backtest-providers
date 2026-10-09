@@ -340,6 +340,27 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         assert len(trades) == 1 and reasons == ['time_expiry']
         assert trades.iloc[0].ExitBar - trades.iloc[0].EntryBar == 1
         return
+    if name.endswith('_bullish_divergence'):
+        from test_9t4_divergence import hand_frame, hand_params
+        build = p.TOOL_SPECS['local.backtesting_py.'+name]['build']
+        params = dict(hand_params(name), risk_layer_enabled=True, **FEATURES[feature])
+        if feature != 'holding':
+            # Frozen L2/2R exits reject incompatible generic overlay overrides.
+            with pytest.raises(ValueError, match='INVALID_PARAMS:'):
+                build(params)
+            return
+        reasons = []
+        cls = build(params)['strategy']
+        original = cls._record_holding_expiry
+        def record(self, fact):
+            reasons.append('time_expiry')
+            original(self, fact)
+        cls._record_holding_expiry = record
+        trades = Backtest(hand_frame(), cls, cash=100000,
+                          exclusive_orders=True, finalize_trades=True).run()['_trades']
+        assert trades[['EntryBar','ExitBar']].values.tolist() == [[24,25]]
+        assert reasons == ['time_expiry']
+        return
     observations=[]
     original=p._FixedRiskMixin._risk_layer_check_exit
     def observe(self):
@@ -352,9 +373,23 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         params['flatten_at'] = '23:00'  # 1h test grid
     if name == 'calendar_schedule':
         params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
+    if name == 'chan_3buy':
+        build=p.TOOL_SPECS['local.backtesting_py.chan_3buy']['build']
+        if feature != 'holding':
+            with pytest.raises(ValueError, match='INVALID_PARAMS'):
+                build(params)
+            return
+        from test_9t6_chan_3buy import run as chan_run
+        stats=chan_run(params=params)
+        assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[13,14]]
+        assert stats['_strategy'].chan_report['exits'][0]['reason']=='time_expiry'
+        return
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 100
     data=frame()
+    if name == 'us_open_momentum':
+        import pandas as pd
+        data.index=pd.date_range('2026-01-01',periods=len(data),freq='15min')
     if feature == 'breakeven':
         # Narrow wicks let close-based 1R activate before initial-stop touches.
         data['Open']=data.Close
@@ -364,6 +399,10 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
             # Equality intentionally is NOT red. Provide four real red bars
             # through the trough, followed by rebound bars for 1R activation.
             data.loc[data.index[43:47], 'Open'] = data.Close.iloc[43:47] + .005
+    if name == 'fibonacci_retracement':
+        from test_9t5_fibonacci import risk_feature_frame
+        data = risk_feature_frame(feature)
+        params['swing_n'] = 2
     cls=p.TOOL_SPECS['local.backtesting_py.'+tool_name(name)]['build'](params)['strategy']
     stats=Backtest(data,cls,cash=100000,exclusive_orders=True,finalize_trades=True).run()
     assert not stats['_trades'].empty and observations

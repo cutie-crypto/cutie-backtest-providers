@@ -1,0 +1,46 @@
+{
+  "cases": {
+    "chan_3buy": {
+      "futures": {
+        "assumptions": "3b7e37af09e4ff397e22f43cfef143f0569c255f58b0943b62b31927128c735a",
+        "raw_report": "d450760cf719685672d2779452816d7e054a30a2b397447a5022afae9b0b6503",
+        "v2": "42406ea64747d1288eba41dc4a1390080ae2fcf81412209239adc34c72f1005c"
+      },
+      "spot": {
+        "assumptions": "4d04be40afc18c9d96f1c51c94fa7bff48f9faaddf994dde8486ec25186a6688",
+        "raw_report": "d80eeb676b0af56f8731647246b501c6b216a418358cd3ba045e5497368909c2",
+        "v2": "4d7bb773cd93a28ba66e496b5459a59eb17fb274f3b5ea7baf0ba788ce037a8c"
+      }
+    },
+    "macd_bullish_divergence": {
+      "futures": {
+        "assumptions": "1f8e3d7d6687f5af4cc01ceae4301cc88dd87ed3faf93015daf77534e1c39fbd",
+        "raw_report": "d3f51f9eec6a3151bbfaf33a25af07cb21749b2464a35ecdce9fa78bffb83cd6",
+        "v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea"
+      },
+      "spot": {
+        "assumptions": "860f56f9f62e75f2c1252613c61207320544bf6776e24552e20a3709cdf31b2c",
+        "raw_report": "677d8a544880cd25ec29fc0dc0fda08847c672bde93bddb749413b42f9b469cc",
+        "v2": "4545dd76b0e145e0cbc2a77c20767de6262fef95dcb2426ea4a697e1bb6864ea"
+      }
+    },
+    "rsi_bullish_divergence": {
+      "futures": {
+        "assumptions": "cc7a97423c44a1fd637bbc212e088a1912234974265c9759bd9a6cd7d6b9c865",
+        "raw_report": "c6d9f1b9218af3ed561e2ad0ab88f4ef0be68ff1344cff63a054bf7f32f9b8f7",
+        "v2": "1c3eeab8e7c5e95582bbf3c0cc96273acc1a2cf4a4cc907fe74ed8da0f444f64"
+      },
+      "spot": {
+        "assumptions": "a157530b50232d5b3a582f3e2a20dfda40640d6bcd8cb3daf6ecd702bd42e534",
+        "raw_report": "aef26dae6d1bb9850c99f4fd438211d5f1c709100de19de40feb9ae873cbd428",
+        "v2": "ace635e5db981a25db9d4f6310e82f9412f95d6553c6385146a33cca6d21ec9a"
+      }
+    }
+  },
+  "data_offset": {},
+  "source_shas": [
+    "fd52acb01f4ad1cc669b9617f752f62d135e5f5b",
+    "ab56369453fc5016f911632c97f892331bd97e65"
+  ],
+  "tool_params": {}
+}

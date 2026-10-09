@@ -1,0 +1,18 @@
+{
+  "base_sha": "b42210ba1f47a2dcd98c9e2abbf9a0754088a5e5",
+  "single": {
+    "fibonacci_retracement": {
+      "min_bars": 11,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "62ebc4109684f8b3d19e108c0455ae3fd043aa2b3ca8ce390c127a6a5ff25dda",
+        "raw_report_sha256": "d21197fb0461a740491ad2da9880b690a19420318b0f0edd652029b3b56ef5b4"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "ab5d3a8b012360e3f9dcda8aec14b19204eadc95cd9c55f1244da819499d20f8",
+        "raw_report_sha256": "fadaae8f820d160b57a53cc8fc7233e429c517acfab9d2e78b52f9ea507c681c"
+      }
+    }
+  }
+}
