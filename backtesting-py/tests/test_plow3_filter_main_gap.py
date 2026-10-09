@@ -24,7 +24,7 @@ import test_plow1 as plow1  # noqa: E402
 
 GOLDEN = json.loads((Path(__file__).parent / 'fixtures/plow3_451b879.json').read_text())
 TOOLS = cap.tools()
-# VWAP requires a complete UTC candle grid (TIME_DATA_GAP before the filter guard, filter on or off).
+# VWAP has its own grid gate before the filter guard (P-LOW5-VWAP: within tolerance it masks whole UTC days).
 EARLIER_GRID_GATE = {'vwap_reversion'}
 
 
@@ -118,10 +118,9 @@ def test_aug31_same_bars_pass_without_gap_and_pre_gap_trades_identical(monkeypat
 def test_one_missing_bar_within_tolerance_runs(tool, monkeypatch, tmp_path):
     warm, data = base.gapped(cap.TIMEFRAME.get(tool, '1h'))
     body = run(monkeypatch, tmp_path, tool, data, warm)
-    if tool in EARLIER_GRID_GATE:
-        assert (body['error_type'], body['limitations']) == ('TIME_DATA_GAP', {'reason': 'time_data_gap'}), body
-        return
     assert body['result_status'] == 'success', body
+    if tool in EARLIER_GRID_GATE:
+        assert body['assumptions']['vwap_main_gaps']['missing_bars'] == 1
     gaps = body['assumptions']['entry_filter_main_gaps']
     assert gaps['missing_bars'] == 1 and len(gaps['segments']) == 1
 
@@ -131,10 +130,12 @@ def test_beyond_tolerance_fails_with_details(tool, monkeypatch, tmp_path):
     freq = cap.TIMEFRAME.get(tool, '1h')
     warm, data = base.gapped(freq, drop=range(100, 140))  # 320 of 360 bars < 324
     body = run(monkeypatch, tmp_path, tool, data, warm)
-    if tool in EARLIER_GRID_GATE:
-        assert (body['error_type'], body['limitations']) == ('TIME_DATA_GAP', {'reason': 'time_data_gap'}), body
-        return
     _, full = cap.series(freq)
+    if tool in EARLIER_GRID_GATE:
+        assert (body['error_type'], body['limitations']) == ('TIME_DATA_GAP', {
+            'reason': 'time_data_gap', 'gap_count': 1, 'missing_bars': 40, 'segments': [{
+                'after': iso(full.index[99]), 'before': iso(full.index[140]), 'missing_bars': 40}]}), body
+        return
     assert (body['result_status'], body['error_type'], body['error_message']) == (
         'failed', 'INSUFFICIENT_DATA', 'Entry filter indicator history has gaps'), body
     assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 1, 'missing_bars': 40,
