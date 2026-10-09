@@ -2337,7 +2337,7 @@ def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
     return params.get("risk_layer_enabled") is True or params.get("time_layer_enabled") is True
 
 
-# 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
+# 单仓杠杆独立于风控层与组合杠杆；futures >1 使用逐仓结算。
 _LEVERAGE_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "leverage": {"type": "integer", "default": 1, "minimum": 1, "maximum": 20},
 }
@@ -2351,11 +2351,9 @@ def _parse_single_leverage(params: dict[str, Any]) -> int:
 
 
 def _single_leverage_rejection(leverage: int, market: str) -> Optional[str]:
-    """唯一放行门；不能对外返回尚无逐仓爆仓模型的杠杆结果。"""
+    """唯一放行门；现货保持 1 倍，期货接入逐仓模型。"""
     if market == "spot" and leverage > 1:
         return "leverage above 1 requires futures market"
-    if leverage > 1:
-        return "leverage above 1 requires the isolated liquidation model"
     return None
 
 
@@ -5672,14 +5670,23 @@ def _build_isolated_risk_report(
 
 def _build_isolated_margin_assumptions(
     *, leverage: int, market: str, stop_loss_pct: Any = None,
+    stop_beyond_liquidation_trades: Optional[int] = None,
 ) -> dict[str, Any]:
-    """assumptions 的可合并片段；只判断固定止损，动态止损留给 T2-2b。"""
+    """原始百分数判固定距离；可选计数来自开仓冻结的动态初始止损。"""
     if market != "futures" or leverage == 1:
         return {}
     _parse_single_leverage({"leverage": leverage})
     stop = Decimal(str(stop_loss_pct)) if stop_loss_pct is not None else None
     if stop is not None and (not stop.is_finite() or not Decimal(0) <= stop <= Decimal(100)):
         raise ValueError("invalid fixed stop_loss_pct")
+    dynamic = {}
+    if stop_beyond_liquidation_trades is not None:
+        dynamic = {
+            "stop_beyond_liquidation_trades": stop_beyond_liquidation_trades,
+            "stop_beyond_liquidation_trades_definition": (
+                "启用 ATR/移动/保本的开仓笔数：初始止损价在爆仓价之外（含相等）；不计后续移动止损"
+            ),
+        }
     return {"isolated_margin": {
         "leverage": leverage,
         "mmr": "0",
@@ -5688,8 +5695,10 @@ def _build_isolated_margin_assumptions(
         "liquidation_price_formula": "long: E*(1-1/L); short: E*(1+1/L)",
         "gap_fill": "跳空按开盘价成交、result.v2 按冻结公式可超保证金、逐仓封顶见 raw_report",
         "stop_beyond_liquidation": (
-            stop is not None and stop / Decimal(100) >= Decimal(1) / Decimal(leverage)
+            (stop is not None and stop / Decimal(100) >= Decimal(1) / Decimal(leverage))
+            or bool(stop_beyond_liquidation_trades)
         ),
+        **dynamic,
     }}
 
 
@@ -6926,6 +6935,12 @@ async def run_backtest(
         # float，不受此契约约束），两条路径分道扬镳，互不干扰。
         internal_cash_dec = _internal_cash_dec(initial_capital, float(df["Close"].max()))
         equity_scale_dec = initial_capital / internal_cash_dec
+        if leverage > 1 and market == "futures":
+            StrategyClass._isolated_equity_scale = equity_scale_dec
+            StrategyClass._isolated_initial_capital = initial_capital
+            StrategyClass._isolated_fee_bps = fee_bps
+            StrategyClass._isolated_slippage_bps = slippage_bps
+            StrategyClass._isolated_step = _timeframe_milliseconds(timeframe) // 1000
         bt = Backtest(
             df,
             StrategyClass,
@@ -6958,6 +6973,8 @@ async def run_backtest(
         # 的权威形状，取代旧版自由格式 trades/equity_curve。旧展示性百分比指标全部移入
         # raw_report.legacy_metrics，不再留在顶层 metrics（server 端 _validate_result_v2
         # 对 metrics 做"恰好三键"严格校验，多一个键就判 evidence_mismatch）。
+        isolated = leverage > 1 and market == "futures"
+        liquidations = stats["_strategy"]._isolated_liquidations if isolated else None
         result_v2 = _build_result_v2(
             stats_trades=getattr(stats, "_trades", None),
             equity_scale_dec=equity_scale_dec,
@@ -6971,6 +6988,7 @@ async def run_backtest(
             timeframe=timeframe,
             exchange_id=exchange_id,
             df=df,
+            **({"leverage": leverage, "liquidations": liquidations} if isolated else {}),
         )
 
         signal_result = None
@@ -7067,6 +7085,10 @@ async def run_backtest(
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
+                **(_build_isolated_margin_assumptions(
+                    leverage=leverage, market=market, stop_loss_pct=params.get("stop_loss_pct"),
+                    stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
+                   if isolated else {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -7094,6 +7116,10 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **(_build_isolated_risk_report(
+                    result_v2["trades"], leverage=leverage, market=market, df=df,
+                    step=_timeframe_milliseconds(timeframe) // 1000, liquidations=liquidations)
+                   if isolated else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
