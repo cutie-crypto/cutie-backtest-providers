@@ -1,4 +1,4 @@
-"""Immutable 999664e fingerprints: exact engine floats and canonical result.v2 bytes.
+"""Immutable 999664e/c78def6 fingerprints: exact engine floats and canonical result.v2 bytes.
 
 Fixtures were captured BEFORE provider changes. No test regenerates them.
 """
@@ -43,6 +43,40 @@ RISK_CASES = {
 }
 DISABLED = dict(risk_layer_enabled=False, atr_stop_multiplier=0, risk_atr_period=0, take_profit_r=0)
 FIXTURE = Path(__file__).parent / 'fixtures' / 'risk_overlay_999664e.json'
+MAIN_FIXTURE = FIXTURE.with_name('risk_overlay_c78def6.json')
+PARAMS.update(json.loads(MAIN_FIXTURE.read_text())['params'])
+
+
+def fixture_cases():
+    original = json.loads(FIXTURE.read_text())['cases']
+    added = json.loads(MAIN_FIXTURE.read_text())['cases']
+    assert original.keys().isdisjoint(added)
+    return {**original, **added}
+
+
+def fixture_names():
+    return {key.split('/')[0] for key in fixture_cases()}
+
+
+def tool_name(name):
+    return 'ema_pullback' if name == 'ema_pullback_short' else name
+
+
+def enumerate_mixin_cases():
+    """Discover actual default-built mixins; future tools need no old fingerprint."""
+    cases = {}
+    for tool_id, spec in provider.TOOL_SPECS.items():
+        if spec.get('runner') in ('kernel_v3', 'scale_in_out_ledger'):
+            continue
+        cls = spec['build']({})['strategy']
+        if isinstance(cls, type) and issubclass(cls, provider._FixedRiskMixin):
+            name = tool_id.removeprefix('local.backtesting_py.')
+            cases[name] = cls
+            if name == 'ema_pullback':
+                short_cls = spec['build']({'direction': 'short'})['strategy']
+                assert issubclass(short_cls, provider._FixedRiskMixin)
+                cases[name + '_short'] = short_cls
+    return cases
 
 
 def frame():
@@ -57,7 +91,7 @@ def fingerprint(name, risk_case, warm, disabled=False):
     data = frame()
     prefix, data = data.iloc[:60], data.iloc[60:].copy()
     params = {**PARAMS[name], **RISK_CASES[risk_case], **(DISABLED if disabled else {})}
-    cls = provider.TOOL_SPECS['local.backtesting_py.' + name]['build'](params)['strategy']
+    cls = provider.TOOL_SPECS['local.backtesting_py.' + tool_name(name)]['build'](params)['strategy']
     if warm:
         cls._warmup_bars = len(prefix)
         cls._warmup_cols = {c: prefix[c].to_numpy() for c in provider._WARMUP_COLUMNS}
@@ -94,15 +128,14 @@ def fingerprint(name, risk_case, warm, disabled=False):
 @pytest.mark.parametrize('risk_case', RISK_CASES)
 @pytest.mark.parametrize('warm', [False, True])
 @pytest.mark.parametrize('disabled', [False, True])
-def test_13_templates_match_immutable_baseline(name, risk_case, warm, disabled):
-    fixture = json.loads(FIXTURE.read_text())
-    expected = fixture['cases'][f'{name}/{risk_case}/{int(warm)}']
+def test_templates_match_immutable_baselines(name, risk_case, warm, disabled):
+    expected = fixture_cases()[f'{name}/{risk_case}/{int(warm)}']
     assert expected['trade_count'] > 0, 'compatibility proof must exercise trades'
     assert fingerprint(name, risk_case, warm, disabled) == expected
 
 
-def test_compatibility_covers_every_mixin_template():
-    actual = {key.removeprefix('local.backtesting_py.') for key, spec in provider.TOOL_SPECS.items()
-              if spec.get('runner') not in ('kernel_v3', 'scale_in_out_ledger')}
-    assert actual == set(PARAMS)
-    assert len(actual) == 13
+def test_compatibility_covers_baseline_templates_among_runtime_mixins():
+    actual = set(enumerate_mixin_cases())
+    assert fixture_names() <= actual
+    assert len(actual) >= 19
+    assert set(PARAMS) == fixture_names()
