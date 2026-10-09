@@ -6838,10 +6838,11 @@ POSITION_SIZING_UNWIRED_TOOLS = frozenset({
     "local.backtesting_py.dca", "local.backtesting_py.turtle",
     "local.backtesting_py.basket_ratio_sma_cross", "local.backtesting_py.basket_ratio_roc",
     "local.backtesting_py.basket_ratio_zscore",
+    ROTATION_TOOL_ID,  # 10-E 轮动：v4 组合账本自管仓位，不消费定仓键（集成 D 登记）
 })
 assert POSITION_SIZING_UNWIRED_TOOLS == {
     tool for tool, spec in TOOL_SPECS.items()
-    if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3")
+    if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3", ROTATION_RUNNER)
 }, "Every unwired runner must be explicitly listed"
 # 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
@@ -8432,6 +8433,9 @@ async def run_backtest(
         return _validation_failure("TOOL_NOT_FOUND", f"Unknown provider_tool_id: {tool_id}")
     effective_tool_id = tool_id or DEFAULT_TOOL_ID
     if effective_tool_id == ROTATION_TOOL_ID:
+        # 集成 D：轮动是不接定仓的 runner，带定仓键与其它不接 runner 同形状在取数前拒（下方定仓检查走不到这里）
+        if isinstance(params, dict) and set(params) & POSITION_SIZE_KEYS:
+            return _position_sizing_failure("position sizing is not wired to this runner")
         return rotation_response(body, bt_req, run_id, sys.modules[__name__])
 
     # --- Validate symbol ---

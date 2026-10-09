@@ -311,6 +311,19 @@ def test_param_bounds_before_fetch(monkeypatch, key, value):
     assert http(req)['error_type'] == 'INVALID_PARAMS'
 
 
+@pytest.mark.parametrize('key,value', [('position_size_risk_pct', 1), ('compound', False), ('position_size_qty_step', 0.1)])
+def test_position_sizing_keys_rejected_as_unwired_before_fetch(monkeypatch, key, value):
+    # 集成 D：轮动登记为不接定仓 runner，拒绝形状与 main 其它不接 runner 一致
+    monkeypatch.setattr(api, '_verify_bearer', lambda _: None)
+    monkeypatch.setattr(api, '_fetch_basket_leg_klines', lambda *a: pytest.fail('sizing params fetched'))
+    monkeypatch.setattr(api, '_fetch_ohlcv_raw', lambda *a: pytest.fail('sizing params fetched'))
+    req = request()
+    req['provider_params'][key] = value
+    out = http(req)
+    assert out['error_type'] == 'INVALID_PARAMS'
+    assert 'not wired' in out['raw_report']['position_sizing']['rejections'][0]['reason']
+
+
 def test_defaults_enable_risk_k_two():
     req = request()
     del req['provider_params']['top_k']
