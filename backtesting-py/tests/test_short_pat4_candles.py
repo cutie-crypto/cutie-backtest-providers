@@ -254,6 +254,38 @@ def test_isolated_scenarios_follow_t2_2b(monkeypatch, tmp_path, scenes, name, sc
     assert sorted({bar for bar, _ in calls}) == [k - 1, k]
 
 
+@pytest.mark.parametrize('sizing', q.SIZINGS)
+@pytest.mark.parametrize('name', SHORT)
+def test_signal_on_liquidation_bar_places_no_order(monkeypatch, tmp_path, scenes, name, sizing):
+    # Short mirror of test_pliq1_pattern_liquidation's outcome pin: no entry on the liquidation bar.
+    # As on the long side this holds via next()'s position branch; the _isolated_blocked_bar guard is
+    # unreachable defence and dropping it keeps this test green, so it does NOT prove the guard itself.
+    import strategy_pattern_template as module
+    data, k = q.scenario_frame(name, 'B1')
+    signal_bar = q.SETUP[name]['fill'] - 1
+    make, sells, sell = module.make_short_pattern_strategy, [], bb.Strategy.sell
+
+    def with_extra_signal(*args, **kwargs):
+        class ExtraSignal(make(*args, **kwargs)):
+            def init(self):
+                super().init()
+                at, source = self._warmup_bars + k, self._warmup_bars + signal_bar
+                self._signals[at], self._anchors[at] = self._signals[source], self._anchors[source]
+        return ExtraSignal
+
+    def spy_sell(self, *args, **kwargs):
+        sells.append(len(self.data) - 1)
+        return sell(self, *args, **kwargs)
+    monkeypatch.setattr(module, 'make_short_pattern_strategy', with_extra_signal)
+    monkeypatch.setattr(bb.Strategy, 'sell', spy_sell)
+    body = q.post(monkeypatch, tmp_path, name, q.scenario_params(name, 'B1', sizing), data, 'futures')
+    assert body['result_status'] == 'success', body
+    assert sells == [signal_bar]
+    [trade] = body['trades']
+    assert body['raw_report']['isolated_risk']['liquidation_count'] == 1
+    assert q.bar_of(data, trade['closed_at']) == k
+
+
 @pytest.mark.parametrize('name', SHORT)
 def test_leverage_one_never_arbitrates(monkeypatch, tmp_path, name):
     monkeypatch.setattr(p._FixedRiskMixin, '_risk_isolated_exit', lambda *a, **k: pytest.fail('lev 1 arbitrated'))
