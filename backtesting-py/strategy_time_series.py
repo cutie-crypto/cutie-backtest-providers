@@ -75,3 +75,39 @@ def period_bounds(bar_open: datetime, definition: PeriodDefinition) -> PeriodBou
         next_day += stride
         end = _local_boundary(next_day, definition.reset_at, zone)
     return PeriodBounds(start, end)
+
+
+class TimeHistoryError(ValueError):
+    """Future runner adapters may map error_type/reason directly to failures."""
+    error_type = 'INSUFFICIENT_DATA'
+    reason = 'time_history_incomplete'
+
+    def __init__(self, message: str):
+        super().__init__(f'{self.error_type}:{self.reason}:{message}')
+
+
+def required_history_start(backtest_start: datetime, definition: PeriodDefinition,
+                           observation_start: datetime | None = None) -> datetime:
+    """Cover the opening cycle and, if earlier, an explicitly selected window."""
+    cycle_start = period_bounds(backtest_start, definition).start_utc
+    return min(cycle_start, utc_datetime(observation_start)) if observation_start is not None else cycle_start
+
+
+def validate_time_history(opens: Sequence[datetime], required_start: datetime,
+                          end_utc: datetime, context: TimeContext) -> None:
+    """Require exactly every complete candle in [required_start, end_utc).
+
+    Endpoints must be candle boundaries. Duplicates, disorder and extra rows are
+    rejected here; the fetch adapter crops source oversupply before validation.
+    """
+    start, end = utc_datetime(required_start), utc_datetime(end_utc)
+    if end <= start or (end - start) % context.period:
+        raise ValueError('INVALID_PARAMS:history bounds must align with complete candles')
+    expected = start
+    for value in opens:
+        current = utc_datetime(value)
+        if current != expected or current >= end:
+            raise TimeHistoryError(f'expected {expected.isoformat()}, got {current.isoformat()}')
+        expected += context.period
+    if expected != end:
+        raise TimeHistoryError(f'history ends at {expected.isoformat()}, requires {end.isoformat()}')
