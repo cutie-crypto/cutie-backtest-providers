@@ -203,8 +203,9 @@ def test_warmup_results_cover_main_range_only(client, monkeypatch, tool_id, para
     monkeypatch.setattr(provider, "_fetch_ohlcv", _range_fetch(full))
     body = _post(client, tool_id, params)
 
-    min_bars = int(provider.TOOL_SPECS[tool_id]["build"](params)["min_bars"])
-    assert body["assumptions"]["indicator_warmup_bars"] == min_bars
+    built = provider.TOOL_SPECS[tool_id]["build"](params)
+    target = built.get("ema_warmup_target_bars", built["min_bars"])
+    assert body["assumptions"]["indicator_warmup_bars"] == min(target, WARMUP_COUNT)
     for trade in body["trades"]:
         assert _to_epoch(trade["opened_at"]) >= START_AT
         assert _to_epoch(trade["closed_at"]) <= END_AT
