@@ -327,8 +327,17 @@ def test_catalog_schema_and_runner():
         'amount_per_grid':{'type':'number','minimum':0},
         'below_lower_action':{'type':'string','default':'pause','enum':['pause','stop_loss']},
         'exchange':{'type':'string','default':provider.DEFAULT_EXCHANGE},
+        'time_layer_enabled': {'type':'boolean','default':False},
+        'time_timezone': {'type':'string','default':'UTC'},
+        'time_session_start': {'type':'string','default':''},
+        'time_session_end': {'type':'string','default':''},
+        'time_weekdays': {'type':'integer','default':127,'minimum':1,'maximum':127},
+        'time_max_holding_minutes': {'type':'integer','default':0,'minimum':0,'maximum':525600},
+        'time_flatten_at': {'type':'string','default':''},
+        'time_flatten_weekdays': {'type':'integer','default':127,'minimum':1,'maximum':127},
+        'max_holding_bars': {'type':'integer','default':0,'minimum':0,'maximum':1000000},
     }
-    assert not set(entry['param_schema']['properties']) & set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    assert not set(entry['param_schema']['properties']) & (set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) - {'max_holding_bars'})
     assert spec['description'].endswith("maps to KOL '区间网格'")
     assert 'next bar open' in spec['description']
     built = provider._build_grid({k:v for k,v in BASE.items() if k != 'grid_count'})
