@@ -148,5 +148,7 @@ def make_top_strategy(mixin, *, kind, risk, initial_capital, config):
                 return
             tag = TopEntry(len(self.data)-1, signal.stop, signal.target)
             size = self._risk_entry_size()
-            self.sell(tag=tag) if size is None else self.sell(size=size, tag=tag)
+            order = self.sell(tag=tag) if size is None else self.sell(size=size, tag=tag)
+            if self._risk.get("position_sizing_enabled"):
+                order._sizing_signal_bar = len(self.data) - 1
     return TopStrategy

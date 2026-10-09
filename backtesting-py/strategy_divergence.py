@@ -181,6 +181,8 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
             tag = DivergenceEntry(len(self.data)-1, signal.stop, signal.setup)
             size = self._risk_entry_size()
             entry = self.sell if short else self.buy
-            entry(tag=tag) if size is None else entry(size=size, tag=tag)
+            order = entry(tag=tag) if size is None else entry(size=size, tag=tag)
+            if self._risk.get("position_sizing_enabled"):
+                order._sizing_signal_bar = len(self.data) - 1
 
     return DivergenceStrategy

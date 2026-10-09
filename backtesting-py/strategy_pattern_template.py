@@ -127,6 +127,8 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
                       else self._anchors[index])
             tag = PatternEntry(signal_bar=len(self.data) - 1, stop=anchor * 0.999)
             size = self._risk_entry_size()
-            self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
+            order = self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
+            if self._risk.get("position_sizing_enabled"):
+                order._sizing_signal_bar = len(self.data) - 1
 
     return LongPatternStrategy
