@@ -423,6 +423,56 @@ BOTTOM_PLOW2B_SIGNAL_BAR = (
     b"            if self._risk.get(\"position_sizing_enabled\"):\n"
     b"                order._sizing_signal_bar = len(self.data) - 1\n")
 
+# P-LIQ1：双底 / 头肩底接入逐仓爆仓逐根判与 T2-2b 仲裁（照 strategy_top_patterns 的 _risk_check_exit 镜像），
+# 底部源文件第三、四处允许的差异：引入 Decimal；持仓分支改为 _risk_check_exit 覆盖并加爆仓当根入场挡板。
+BOTTOM_PLIQ1_DECIMAL = (
+    b"from dataclasses import asdict, dataclass\n",
+    b"from dataclasses import asdict, dataclass\n"
+    b"from decimal import Decimal\n")
+BOTTOM_PLIQ1_EXIT = (
+    b'        def next(self):\n'
+    b'            if self.position:\n'
+    b'                trade = self.trades[-1]\n'
+    b'                if any(order.parent_trade is trade for order in self.orders):\n'
+    b'                    return\n'
+    b'                if self.data.Low[-1] <= trade.tag.stop:\n'
+    b"                    self._risk_exit_reason = 'stop_loss'\n"
+    b"                elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:\n"
+    b'                    self._record_holding_expiry(fact)\n'
+    b'                elif self.data.High[-1] >= trade.tag.target:\n'
+    b"                    self._risk_exit_reason = 'take_profit'\n"
+    b'                else:\n'
+    b'                    return\n'
+    b'                self.position.close()\n'
+    b'                return\n',
+    b'        def _risk_check_exit(self):\n'
+    b'            # Also used by the shared broker insolvency bridge. Supply the frozen\n'
+    b'            # pattern stop to T2-2b arbitration before checking expiry/target.\n'
+    b'            if not self.position or not self.trades:\n'
+    b'                return False\n'
+    b'            trade = self.trades[-1]\n'
+    b'            if any(order.parent_trade is trade for order in self.orders):\n'
+    b'                return True\n'
+    b"            if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(trade.tag.stop))):\n"
+    b'                return True\n'
+    b'            if self.data.Low[-1] <= trade.tag.stop:\n'
+    b"                self._risk_exit_reason = 'stop_loss'\n"
+    b"            elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:\n"
+    b'                self._record_holding_expiry(fact)\n'
+    b'            elif self.data.High[-1] >= trade.tag.target:\n'
+    b"                self._risk_exit_reason = 'take_profit'\n"
+    b'            else:\n'
+    b'                return False\n'
+    b'            self.position.close()\n'
+    b'            return True\n'
+    b'\n'
+    b'        def next(self):\n'
+    b'            if self.position:\n'
+    b'                self._risk_check_exit()\n'
+    b'                return\n'
+    b"            if self._risk.get('leverage', 1) > 1 and self._isolated_blocked_bar == len(self.data)-1:\n"
+    b'                return\n')
+
 
 def test_long_source_and_golden_files_byte_unchanged():
     root=Path(__file__).resolve().parents[2]
@@ -430,7 +480,7 @@ def test_long_source_and_golden_files_byte_unchanged():
                      'backtesting-py/tests/fixtures/9t3_bottom_off.json'):
         expected=subprocess.check_output(['git','show','32ae030:'+relative],cwd=root)
         if relative.endswith('strategy_bottom_patterns.py'):
-            for allowed in (BOTTOM_7P3B2_GATE, BOTTOM_PLOW2B_SIGNAL_BAR):
+            for allowed in (BOTTOM_7P3B2_GATE, BOTTOM_PLOW2B_SIGNAL_BAR, BOTTOM_PLIQ1_DECIMAL, BOTTOM_PLIQ1_EXIT):
                 assert expected.count(allowed[0])==1
                 expected=expected.replace(*allowed)
         assert (root/relative).read_bytes()==expected
@@ -501,7 +551,12 @@ def test_long_builders_and_tool_spec_source_byte_unchanged():
         ("                               initial_capital=initial_capital, config=config)\n",
          "                               initial_capital=initial_capital, config=config)\n"
          "    # 10-B2c: risk distance = |actual fill - last bottom Low * 0.999| frozen in BottomEntry.stop.\n"
-         "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n")):
+         "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n"),
+        # P-LIQ1：假设说明只在 leverage > 1 时补 T2-2b 仲裁一句，lev=1 文本不变。
+        ("            'Stop precedes holding expiry, which precedes target. Equal peak High chooses earliest bar. '\n",
+         "            + ('Isolated liquidation uses T2-2b gap/distance arbitration against the frozen stop; stop precedes'\n"
+         "               if risk.get('leverage', 1) > 1 else 'Stop precedes') +\n"
+         "            ' holding expiry, which precedes target. Equal peak High chooses earliest bar. '\n")):
         assert expected['_build_bottom_pattern'].count(before)==1
         expected['_build_bottom_pattern']=expected['_build_bottom_pattern'].replace(before,after)
     assert len(fragments(current))==5

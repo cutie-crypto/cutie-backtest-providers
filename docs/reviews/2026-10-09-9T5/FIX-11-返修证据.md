@@ -17,3 +17,10 @@
 - 初次validator单测误读已安装旧包，4 failed/25 passed（EXIT=1）；显式PYTHONPATH修正当前源码后29 passed。
 
 只推feat/1009-cx4-9t5-fibonacci，不开PR、不合main；外部行情/Pre/生产未验证。
+
+## 1010 P-LIQ1 取代说明（显式价格键部分作废）
+
+本文「显式价格键也将冻结 initial_stop 传入逐仓仲裁」与 mixin 旧路径口径冲突：显式用户止损按收盘判，盘中爆仓应先于它。统领 1010 第 30 封裁定（裁 a），由 P-LIQ1 统一：
+- intrinsic（默认价格组，止损按 High/Low 盘中判）仍带冻结 initial_stop 参与 T2-2b 仲裁，不变；
+- 显式价格键（stop_loss_pct 等，止损按收盘判）仲裁不带 stop，盘中穿 L 即爆仓。
+上文 3% 止损那一格的预期由 `stop_loss 104.76` 改为 `liquidation 98.1`；用例见 `backtesting-py/tests/test_9t5_fibonacci.py` 的 `test_explicit_frozen_stop_liquidation_arbitration`、`test_explicit_close_only_stop_yields_to_intrabar_liquidation`、`test_intrinsic_stop_still_joins_liquidation_arbitration`。

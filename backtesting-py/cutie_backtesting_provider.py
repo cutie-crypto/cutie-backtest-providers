@@ -4848,6 +4848,8 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
             "pattern_assumptions": {"pattern_execution":
                 "Pattern confirmed at close; market entry and triggered stop/target exits fill at the next bar open. "
                 "Stop/target prices are not guaranteed fills; an entry open at or below the frozen stop is skipped."
+                + (" Isolated liquidation uses T2-2b gap/distance arbitration against the frozen stop."
+                   if risk.get("leverage", 1) > 1 else "")
                 + ({"doji": " Only the immediately following close above the doji high confirms; the stop uses the doji low.",
                     "inside_bar": f" A close above the mother high within {breakout_window} bars after the inside bar confirms; otherwise the setup expires. Latest setup replaces prior; stop uses mother low.",
                     "star": " Stop uses the second candle low; middle body is at most 30% of first body.",
@@ -4929,7 +4931,9 @@ def _build_bottom_pattern(params, *, kind, initial_capital):
             'market entry and triggered stop/target exits fill at the next bar open. '
             'Stop and measured-move target are frozen at breakout; prices are not guaranteed fills. '
             'Entry open at or below frozen stop is skipped. New confirmed low or close below stop invalidates setup. '
-            'Stop precedes holding expiry, which precedes target. Equal peak High chooses earliest bar. '
+            + ('Isolated liquidation uses T2-2b gap/distance arbitration against the frozen stop; stop precedes'
+               if risk.get('leverage', 1) > 1 else 'Stop precedes') +
+            ' holding expiry, which precedes target. Equal peak High chooses earliest bar. '
             'Head-and-shoulders target uses neckline at breakout plus neckline at head minus head low; '
             'nonpositive measured move or neckline at/below stop invalidates setup.'))
 
@@ -5559,7 +5563,9 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                             self._isolated_stop_beyond_trades += 1
             if self._risk.get("risk_layer_enabled"):
                 return self._risk_layer_check_exit()
-            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
+            # Off the risk layer the stop below is close-only, so any intrabar liquidation precedes
+            # it (same rule as the mixin's legacy path): arbitrate without the stop.
+            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit():
                 return True
             if any(order.parent_trade is trade for order in self.orders):
                 return True
@@ -5695,6 +5701,10 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                                            stop_state=managed, original_units=abs(trade.size))
             if self._risk.get("risk_layer_enabled"):
                 return self._risk_layer_check_exit()
+            # Off the risk layer the stop below is close-only, so any intrabar liquidation precedes
+            # it (same rule as the mixin's legacy path): arbitrate without the stop.
+            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit():
+                return True
             if any(order.parent_trade is trade for order in self.orders):
                 return True
             fact = self._holding_expiry()
@@ -6066,9 +6076,11 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                         self._isolated_stop_beyond_trades += 1
             if self._risk.get("risk_layer_enabled"):
                 exited = self._risk_layer_check_exit()
-            # Frozen intrinsic and user stops both participate in arbitration.
-            # With no configured user stop, initial_stop is None: liquidation only.
-            elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
+            # The frozen intrinsic stop is judged intrabar and joins T2-2b arbitration. An explicit
+            # user stop is judged on the close only (decide_exit below), so any intrabar liquidation
+            # precedes it: arbitrate without the stop (mixin legacy rule, as F5/F6; P-LIQ1 1010).
+            elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(
+                    self._risk_state.initial_stop if intrinsic else None):
                 exited = True
             elif any(order.parent_trade is trade for order in self.orders):
                 return True
