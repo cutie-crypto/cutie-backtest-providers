@@ -193,6 +193,7 @@ def test_range_ignoring_fetch_never_reuses_main_rows_as_warmup(client, monkeypat
         ("local.backtesting_py.ichimoku_cloud_breakout", {}),
         ("local.backtesting_py.supertrend", {"atr_period": 10, "multiplier": 3}),
         ("local.backtesting_py.keltner_breakout", {}),
+        ("local.backtesting_py.turtle", {}),
         ("local.backtesting_py.ema_trend_rsi", {"ema_fast": 5, "ema_slow": 20, "rsi_period": 14}),
         ("local.backtesting_py.ema_pullback", {"ema_fast": 5, "ema_slow": 30}),
     ],

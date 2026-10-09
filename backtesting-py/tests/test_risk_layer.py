@@ -47,7 +47,7 @@ def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
     assert fixture_names() <= actual
     assert len(actual) >= 19
     for spec in p.TOOL_SPECS.values():
-        included = spec.get('runner') not in ('kernel_v3', 'scale_in_out_ledger')
+        included = spec.get('runner') not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group')
         for key in NEW:
             assert (key in spec['param_schema_properties']) == included
 
