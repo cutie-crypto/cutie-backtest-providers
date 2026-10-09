@@ -1,0 +1,49 @@
+{
+  "base_sha": "b42210ba1f47a2dcd98c9e2abbf9a0754088a5e5",
+  "gates": {
+    "baseline": {
+      "log": "/tmp/9t4/baseline.log",
+      "passed": 5131,
+      "exit": 0,
+      "sha256": "25760461caabd3f0895a260146e3872d76112d994b38b8413af397bd5c7a6530"
+    },
+    "focus": {
+      "log": "/tmp/9t4/focus-final.log",
+      "passed": 1240,
+      "exit": 0,
+      "sha256": "7f3864d0a2b9c757eaf2838cf426b60129690c9264861d6ae827f63b2ba03abd"
+    },
+    "compat_repair": {
+      "log": "/tmp/9t4/compat-repair.log",
+      "passed": 564,
+      "exit": 0,
+      "sha256": "47eb4563e8871968fb8b2e5b6643849c2a6ee8cab61e8df7a368c9be578b0021"
+    },
+    "warmup_focus": {
+      "log": "/tmp/9t4/warmup-final.log",
+      "passed": 94,
+      "exit": 0,
+      "sha256": "40fb871e4c15f4080eb6d0c676a9332e09de4d1d54b993806409844c960e78b3"
+    },
+    "final_all": {
+      "log": "/tmp/9t4/all.log",
+      "passed": 5289,
+      "exit": 0,
+      "sha256": "0eb12754e835c6c2806bd202cf5c992e519940d8a42f498e8d6ab186253af604"
+    },
+    "validator_local": {
+      "log": "/tmp/9t4/validator-local.log",
+      "passed": 29,
+      "exit": 0,
+      "sha256": "045928269e28bc569f0af7e3bb6760f080d1c97173c7b5991992dea35ee361be"
+    }
+  },
+  "formula": "5289 = 5131 baseline + 94 direct divergence cases + 64 runtime enumeration additions; provider 5260 = 5102 + 94 + 64; validator 29",
+  "old_filter_cases_unchanged": 58,
+  "added_filter_cases": 8,
+  "mutation_count": 7,
+  "restoration_cmp_exit": 0,
+  "strategy_sha256": "1197f9361abf6e898a40a58e58cf6675d0bbf38db84a15fae8983032100da2a7",
+  "implementation_commit": "fa7c159c7c53bcbc73c761c15879b78b7a17d9e3",
+  "tests_commit": "89a97f672f3ef5b53a9eeb251996ccbdc39ac590"
+}

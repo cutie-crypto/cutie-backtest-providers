@@ -5577,6 +5577,73 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                 executed_name=f"Red Streak RSI ({red_bars}, RSI{rsi_period}<{oversold:g}, hold {holding})")
 
 
+_DIVERGENCE_EXIT_KEYS = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplier',
+    'take_profit_r', 'trailing_stop_pct', 'breakeven_stop', 'take_profit_levels')
+
+
+def _build_divergence(params, *, kind, initial_capital):
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS['local.backtesting_py.' + kind + '_bullish_divergence']['param_schema_properties']
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f'INVALID_PARAMS:{error}')
+    if params.get('direction', 'long') != 'long':
+        raise ValueError('INVALID_PARAMS:bullish divergence supports long only')
+    for key in _DIVERGENCE_EXIT_KEYS:
+        if (key in params if key in ('stop_loss_pct', 'take_profit_pct') else params.get(key)):
+            raise ValueError('INVALID_PARAMS:divergence frozen exits conflict with risk exit overrides')
+    for key, spec in properties.items():
+        if key in params and spec.get('type') == 'integer' and type(params[key]) is not int:
+            raise ValueError(f'INVALID_PARAMS:{key} must be a strict integer')
+    lo, hi = params.get('min_gap_bars', 5), params.get('max_gap_bars', 60)
+    if lo > hi:
+        raise ValueError('INVALID_PARAMS:min_gap_bars must not exceed max_gap_bars')
+    config = dict(n=params.get('swing_n', 5), min_gap=lo, max_gap=hi)
+    if kind == 'macd':
+        fast, slow, signal = params.get('fast', 12), params.get('slow', 26), params.get('signal', 9)
+        if fast >= slow:
+            raise ValueError('INVALID_PARAMS:fast must be less than slow')
+        config.update(fast=fast, slow=slow, signal=signal, compare=params.get('compare', 'dif'),
+                      indicator_bars=slow*3+signal+1)
+    else:
+        period = params.get('rsi_period', 14)
+        first, exit_above = params.get('rsi_first_below', 35), params.get('rsi_exit_above', 70)
+        if first >= exit_above:
+            raise ValueError('INVALID_PARAMS:rsi_first_below must be less than rsi_exit_above')
+        config.update(rsi_period=period, first_below=first, exit_above=exit_above,
+                      indicator_bars=period*3+1)
+    from strategy_divergence import make_divergence_strategy
+    cls = make_divergence_strategy(_FixedRiskMixin, kind=kind, config=config, risk=risk,
+                                  initial_capital=initial_capital, rsi_series=_rsi_series)
+    return dict(strategy=cls, executed_name=kind.upper()+' Bullish Divergence',
+        min_bars=config['indicator_bars']+2*config['n']+lo,
+        warmup_bars=config['indicator_bars']+2*config['n']+hi,
+        divergence_assumptions=dict(divergence_execution={
+            'direction': 'long_only', 'swing_confirmation': 'left_and_right_swing_n_closed_bars_strict_extrema',
+            'indicator_sample': 'swing_low_bar', 'indicator_history': 'first_low_must_have_full_indicator_warmup',
+            'pair': 'adjacent_confirmed_lows_inclusive_gap', 'signal': 'bar_close',
+            'macd_confirmation_cross': 'confirmation_close_is_eligible',
+            'fill': 'next_bar_open_market', 'stop': 'l2_low_times_0.999',
+            'target': 'actual_entry_price_plus_2_times_entry_minus_stop_frozen_at_fill',
+            'same_bar_priority': 'stop_before_time_expiry_before_take_profit_before_signal',
+            'gap': 'entry_open_at_or_below_frozen_stop_is_skipped',
+            'consumption': 'one_signal_opportunity_per_pair_even_if_entry_blocked',
+            'histogram': '2_times_dif_minus_dea', 'final_bar': 'engine_finalize_trades_settlement',
+            'leverage': 'shared_isolated_liquidation_precedes_exits_unless_closer_intrabar_stop'}))
+
+
+@_with_time_config
+@_with_filter_config
+def _build_macd_bullish_divergence(params, *, initial_capital=10000.0):
+    return _build_divergence(params, kind='macd', initial_capital=initial_capital)
+
+
+@_with_time_config
+@_with_filter_config
+def _build_rsi_bullish_divergence(params, *, initial_capital=10000.0):
+    return _build_divergence(params, kind='rsi', initial_capital=initial_capital)
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     "local.backtesting_py.calendar_schedule": {
         "name": "Local Backtesting.py Calendar Schedule",
@@ -5728,6 +5795,42 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    'local.backtesting_py.macd_bullish_divergence': {
+        'name': 'Local Backtesting.py MACD Bullish Divergence',
+        'description': 'Long-only adjacent confirmed swing lows: lower price and higher MACD at the low bar. '
+                       'Next-open entry, frozen L2 stop minus 0.1 percent and actual-fill 2R target.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_macd_bullish_divergence,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'min_gap_bars': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 5000},
+            'max_gap_bars': {'type': 'integer', 'default': 60, 'minimum': 1, 'maximum': 5000},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'fast': {'type': 'integer', 'default': 12, 'minimum': 2, 'maximum': 100},
+            'slow': {'type': 'integer', 'default': 26, 'minimum': 3, 'maximum': 300},
+            'signal': {'type': 'integer', 'default': 9, 'minimum': 1, 'maximum': 100},
+            'compare': {'type': 'string', 'default': 'dif', 'enum': ['dif', 'hist']},
+        },
+    },
+    'local.backtesting_py.rsi_bullish_divergence': {
+        'name': 'Local Backtesting.py RSI Bullish Divergence',
+        'description': 'Long-only adjacent confirmed swing lows: lower price and higher RSI at the low bar. '
+                       'Next-open entry, frozen L2 stop minus 0.1 percent and actual-fill 2R target.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_rsi_bullish_divergence,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'min_gap_bars': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 5000},
+            'max_gap_bars': {'type': 'integer', 'default': 60, 'minimum': 1, 'maximum': 5000},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'rsi_period': {'type': 'integer', 'default': 14, 'minimum': 2, 'maximum': 300},
+            'rsi_first_below': {'type': 'number', 'default': 35, 'minimum': 0, 'maximum': 100},
+            'rsi_exit_above': {'type': 'number', 'default': 70, 'minimum': 0, 'maximum': 100},
+        },
+    },
+
     "local.backtesting_py.stoch_oversold_cross": {
         "name": "Local Backtesting.py Stochastic Oversold Cross",
         "description": (
@@ -8184,7 +8287,8 @@ async def run_backtest(
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
     warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
-                 _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup, vwap_warmup), df))
+                 _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at,
+                                        max(min_bars, risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
@@ -8416,6 +8520,7 @@ async def run_backtest(
                 **(range_assumptions(range_config) if range_config is not None else {}),
                 **(calendar_assumptions(calendar_config) if calendar_config is not None else {}),
                 **built.get("pattern_assumptions", {}),
+                **built.get("divergence_assumptions", {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 **({"vwap_reversion": {
@@ -8485,6 +8590,8 @@ async def run_backtest(
                     "history_notes": stats["_strategy"]._f5_history,
                     "time_exits": stats["_strategy"]._f5_expiries}} if is_vwap else {}),
                 **turtle_raw_report,
+                **({"divergence": stats["_strategy"].divergence_report}
+                   if hasattr(stats["_strategy"], "divergence_report") else {}),
                 **({"entry_filters": {**filter_config.report(),
                     **(strategy_class._filter_context.report if strategy_class._filter_context is not None else {})}}
                     if filter_config is not None else {}),

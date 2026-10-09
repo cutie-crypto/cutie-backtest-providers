@@ -33,6 +33,9 @@ PATTERN2_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t2_candle_off
 BASELINE['single'].update(PATTERN2_BASELINE['single'])
 PATTERN3_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t3_bottom_off.json').read_text())
 BASELINE['single'].update(PATTERN3_BASELINE['single'])
+DIVERGENCE_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t4_divergence_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(DIVERGENCE_BASELINE['single'])
+BASELINE['single'].update(DIVERGENCE_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -112,6 +115,17 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
     if name in PATTERN_BASELINE['single'] or name in PATTERN2_BASELINE['single'] or name in PATTERN3_BASELINE['single']:
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
+    if name in DIVERGENCE_BASELINE['single']:
+        from test_9t4_divergence import hand_frame, hand_params
+        data = hand_frame()
+        # Signal23 at07:00, fill24 at08:00; MACD exit28 at12:00.
+        data.index = pd.date_range('2026-01-01 08:00', periods=len(data), freq='h')
+        params.update(hand_params(name))
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
+        if name.startswith('rsi'):
+            params['rsi_exit_above'] = 100
+            data.iloc[27, 1] = 150
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
