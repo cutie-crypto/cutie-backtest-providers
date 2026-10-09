@@ -5350,7 +5350,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 # 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
 # 132：定额分批（runner=scale_in_out_ledger）同样不合并——账本不消费固定止损止盈/仓位，
 # 带这些参数的请求直接 INVALID_PARAMS（IMPL §3.1）。
-# 海龟组级状态自管定量与退出，不声明单仓风控、杠杆及后续时间层键。
+# 海龟单独声明组级风控三键，自管定量与退出；不声明杠杆及 time_* 键。
 for _tool_spec in TOOL_SPECS.values():
     if _tool_spec.get("runner") in ("kernel_v3", SCALE_IN_OUT_RUNNER, TURTLE_RUNNER):
         continue
@@ -5650,7 +5650,8 @@ def _build_result_v2_trades(
     return trades
 
 
-def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]],
+                         exit_reasons: Optional[dict[str, str]] = None) -> list[dict[str, Any]]:
     """Map internal tags to the unchanged result.v2 sequence, or fail closed.
 
     Use the same stable (closed_at, opened_at) second-resolution ordering as
@@ -5672,7 +5673,8 @@ def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]]) -> 
                 or not isinstance(tag, str) or not tag):
             raise ValueError("turtle group mapping has missing tag or inconsistent trade sequence")
         groups.setdefault(tag, []).append(seq)
-    return [{"group_id": group_id, "trade_seqs": seqs, "units": len(seqs)}
+    return [{"group_id": group_id, "trade_seqs": seqs, "units": len(seqs),
+             **({"exit_reason": exit_reasons.get(group_id, "end_of_data")} if exit_reasons is not None else {})}
             for group_id, seqs in groups.items()]
 
 
@@ -7209,7 +7211,24 @@ async def run_backtest(
                 "unit_risk_pct_definition": _TURTLE_RISK_DESCRIPTION,
                 "units_skipped": stats["_strategy"].units_skipped,
             }
-            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"])}
+            turtle_risk = strategy_class._turtle_risk
+            reasons = None
+            if turtle_risk.get("risk_layer_enabled"):
+                instance = stats["_strategy"]
+                reasons = dict(instance._group_exit_reasons)
+                if instance._group_id is not None:
+                    reasons[instance._group_id] = "end_of_data"
+                turtle_assumptions["turtle_risk"] = {
+                    "holding_bars_count_from": "group_first_fill_bar_is_1",
+                    "max_holding_bars": turtle_risk.get("max_holding_bars", 0),
+                    "take_profit_basis": "group_vwap_entry",
+                    "take_profit_pct": turtle_risk.get("take_profit_pct"),
+                    "trigger": "current_bar_high_low",
+                    "fill": "next_bar_open_market",
+                    "same_bar_priority": "stop_before_time_expiry_before_take_profit_before_channel_before_add_before_entry",
+                    "final_bar": "engine_finalize_trades_settlement",
+                }
+            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"], reasons)}
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
