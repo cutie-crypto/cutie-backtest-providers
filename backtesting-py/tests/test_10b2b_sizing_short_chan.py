@@ -66,6 +66,21 @@ def test_risk_quantity_hand_calculated(name, monkeypatch, tmp_path):
     assert body['assumptions']['position_sizing']['initial_stop'] == 'template_frozen_signal_stop_actual_fill_distance'
 
 
+# The top fixtures fill at an open equal to the signal close (89 / 81); move the fill-bar open so the
+# distance can only come from the actual fill:
+#  double top:     open 88 (bar54 Low 88): 100 / (100.1 - 88) = 100 / 12.1 = 8.2644.. -> -8.264 (close 89 would give 9.009)
+#  head-shoulders: open 80 (bar54 Low 80): 100 / (99.099 - 80) = 100 / 19.099 = 5.2358.. -> -5.235 (81 would give 5.525)
+@pytest.mark.parametrize('name,opening,expected', [('double_top', 88, ('88.0', '8.264')),
+                                                   ('head_shoulders', 80, ('80.0', '5.235'))])
+def test_top_distance_uses_actual_fill_not_signal_close(name, opening, expected, monkeypatch, tmp_path):
+    data = c.CASES[name][0]()
+    data.iloc[54, 0] = opening
+    body = c.post(monkeypatch, tmp_path, name, RISK, data=data)
+    assert body['result_status'] == 'success', body
+    assert [(f['fill_price'], f['qty']) for f in fills(body)] == [expected]
+    assert [signed_qty(t) for t in body['trades']] == [-Decimal(expected[1])]
+
+
 def gapped(name):
     data = c.CASES[name][0]()
     if name in ('macd_bearish_divergence', 'rsi_bearish_divergence'):
