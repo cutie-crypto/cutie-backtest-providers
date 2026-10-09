@@ -5383,7 +5383,7 @@ _TEMPLATE_PRICING_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multipli
 # Templates whose own frozen stop is always used (they reject user stop/take-profit keys).
 _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
     "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
-    "double_top", "head_shoulders"))
+    "double_top", "head_shoulders", "chan_3sell"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
     "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
 
@@ -5864,7 +5864,8 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
 @_with_time_config
 def _build_chan_3sell(params, *, initial_capital=10000.0):
     """SHORT-PAT-3: strict mirror of chan_3buy, futures short only (market gate in run)."""
-    risk = _parse_fixed_risk_params(params)
+    # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     if params.get('direction', 'short') != 'short':
         raise ValueError('INVALID_PARAMS:Chan third sell supports short only')
     bi_mode = params.get('bi_mode', 'new')
@@ -5879,6 +5880,8 @@ def _build_chan_3sell(params, *, initial_capital=10000.0):
     from strategy_chan import make_chan_strategy
     cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital,
                              direction='short')
+    # 10-B2b: risk distance = |actual fill - pullback High * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name='Chan Third Sell ('+bi_mode+')', min_bars=3,
         chan_assumptions=dict(chan_execution={
             'direction': 'short_only', 'market': 'futures_only', 'bi_mode': bi_mode,
@@ -7030,7 +7033,7 @@ POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for nam
     "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
     "double_bottom inverse_head_shoulders chan_3buy "
-    "us_open_momentum cme_weekend_gap chan_3sell").split())
+    "us_open_momentum cme_weekend_gap").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
         TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)
