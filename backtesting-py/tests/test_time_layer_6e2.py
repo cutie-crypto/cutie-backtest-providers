@@ -244,7 +244,7 @@ def test_none_byte_unchanged(name):
 @pytest.mark.parametrize('tool,spec', list(p.TOOL_SPECS.items()), ids=list(p.TOOL_SPECS))
 def test_calendar_schema_matches_consumers(tool, spec):
     schema = spec['param_schema_properties']
-    excluded = spec.get('runner') in ('kernel_v3', p.TURTLE_RUNNER)
+    excluded = spec.get('runner') in ('kernel_v3', p.TURTLE_RUNNER, p.ROTATION_RUNNER)
     assert ('time_calendar' in schema) is not excluded
     if not excluded:
         assert schema['time_calendar'] == {'type':'string', 'default':'none',

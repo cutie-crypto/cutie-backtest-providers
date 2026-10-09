@@ -424,7 +424,7 @@ def test_new_schema_consumed_only_by_runtime_mixins(key):
     for tool_id, spec in p.TOOL_SPECS.items():
         runner = spec.get('runner')
         included = (
-            runner not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group') or
+            runner not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group', p.ROTATION_RUNNER) or
             (runner in ('scale_in_out_ledger', p.TURTLE_RUNNER) and key == 'max_holding_bars'))
         if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout', 'local.backtesting_py.calendar_schedule'):
             included = key == 'max_holding_bars'
