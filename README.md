@@ -51,6 +51,37 @@ assumption builders describe margin and excess loss only for futures L>1.
 The public runner does not call these helpers or accept L>1 yet; arbitration and
 runner wiring remain a later batch.
 
+### Long-only candle patterns
+
+`local.backtesting_py.bullish_engulfing` and `local.backtesting_py.hammer_pin_bar`
+confirm at the last pattern close and enter at the next open. Position filtering
+is on by default: engulfing requires its two-bar low within 0.5% of the preceding
+20-bar low or a touch of Bollinger(20, 2) lower; hammer requires a new low against
+the preceding 20 bars or a touch of EMA20/60. Touch means the indicator lies in
+the confirmation bar's Low–High range. Indicators include only the current and
+previous closes; an EMA needs its full period of history. Filtered requests need
+21 main bars; disabling the filter reduces that to 2.
+
+| Parameter | Default | Accepted values |
+|---|---|---|
+| `direction` | `long` | `long` only; `short`/`both` rejected before fetching |
+| `position_filter` | `true` | Boolean |
+| `reward_r` | `2` | Number, 0.1–20 |
+| `exchange` | `okx` | Existing exchange selection (environment may override the default) |
+
+The stop is frozen at the pattern low times 0.999 (the hammer's lower-shadow tip).
+The target is the actual engine entry plus `reward_r` times entry-to-stop distance.
+An entry open at or below its frozen stop is canceled before a position exists;
+`raw_report.candle_pattern` contains the skip reason, prices, bar indexes and count.
+Stop and target use bar Low/High triggers, followed by next-open market exits;
+they do not guarantee a fill at the trigger price, as disclosed in `assumptions`.
+Stop wins over holding expiry, which wins over target on the same bar.
+
+Existing sizing, leverage=1 and time gates apply. Fixed `stop_loss_pct` or
+`take_profit_pct` keys, and active ATR/R/trailing/breakeven/multi-target exit keys,
+are incompatible with these template-owned exits. Disabled risk/time defaults
+remain valid. All new reporting stays outside the frozen result.v2 key sets.
+
 ### StrategySpec v2 artifact execution
 
 The backtesting.py service also advertises
