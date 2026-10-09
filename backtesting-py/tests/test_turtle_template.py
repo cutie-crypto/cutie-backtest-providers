@@ -120,8 +120,8 @@ def test_golden_engine_times_prices_quantities_and_group_ids():
     result = provider._build_result_v2_trades(actual, Decimal('.1'), Decimal(0), Decimal(0))
     assert all(set(t)==TRADE_KEYS for t in result)
     assert provider._build_turtle_groups(actual, result)==[
-        dict(group_id='turtle-1',trade_seqs=[1,2,3,4]),
-        dict(group_id='turtle-2',trade_seqs=[5]), dict(group_id='turtle-3',trade_seqs=[6])]
+        dict(group_id='turtle-1',trade_seqs=[1,2,3,4],units=4),
+        dict(group_id='turtle-2',trade_seqs=[5],units=1), dict(group_id='turtle-3',trade_seqs=[6],units=1)]
     assert [t['qty'] for t in result] == [provider.canonical_decimal_str(Decimal(t['size'])/10) for t in fx['expected']['trades']]
 
 
@@ -241,7 +241,8 @@ def test_registered_route_exclusivity_tags_and_assumptions(monkeypatch, tmp_path
         seqs=[seq for group in groups for seq in group['trade_seqs']]
         assert sorted(seqs)==[t['seq'] for t in result['trades']]
         assert len(seqs)==len(set(seqs))
-        assert all(set(group)=={'group_id','trade_seqs'} for group in groups)
+        assert all(set(group)=={'group_id','trade_seqs','units'} for group in groups)
+        assert all(group['units']==len(group['trade_seqs']) for group in groups)
         group_by_seq={seq:group['group_id'] for group in groups for seq in group['trade_seqs']}
         assert result['assumptions']['unit_risk_pct_definition']==provider._TURTLE_RISK_DESCRIPTION
         scaled_fx=fixture()
@@ -356,5 +357,5 @@ def test_turtle_groups_empty_evidence_and_stable_order():
     stats=run(fixture())['_trades'].iloc[::-1]
     result=provider._build_result_v2_trades(stats,Decimal(1),Decimal(0),Decimal(0))
     assert provider._build_turtle_groups(stats,result)==[
-        dict(group_id='turtle-1',trade_seqs=[1,2,3,4]),
-        dict(group_id='turtle-2',trade_seqs=[5]),dict(group_id='turtle-3',trade_seqs=[6])]
+        dict(group_id='turtle-1',trade_seqs=[1,2,3,4],units=4),
+        dict(group_id='turtle-2',trade_seqs=[5],units=1),dict(group_id='turtle-3',trade_seqs=[6],units=1)]
