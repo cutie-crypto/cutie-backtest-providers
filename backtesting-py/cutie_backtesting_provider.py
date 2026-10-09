@@ -5569,7 +5569,8 @@ def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]]) -> 
                 or not isinstance(tag, str) or not tag):
             raise ValueError("turtle group mapping has missing tag or inconsistent trade sequence")
         groups.setdefault(tag, []).append(seq)
-    return [{"group_id": group_id, "trade_seqs": seqs} for group_id, seqs in groups.items()]
+    return [{"group_id": group_id, "trade_seqs": seqs, "units": len(seqs)}
+            for group_id, seqs in groups.items()]
 
 
 def _result_v2_bar_closes(df: pd.DataFrame, timeframe: str) -> list[tuple[int, int, Decimal]]:
