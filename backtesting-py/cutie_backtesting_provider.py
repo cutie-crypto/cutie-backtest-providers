@@ -5383,6 +5383,115 @@ def _build_result_v2_trades(
     return trades
 
 
+def _isolated_liquidation_fills(
+    trades_v2: list[dict[str, Any]],
+    *,
+    leverage: int,
+    df: pd.DataFrame,
+    step: int,
+    liquidations: list[dict[str, int]],
+) -> dict[int, dict[str, Any]]:
+    """已判定爆仓记录的 Decimal 成交事实；不负责触发/止损仲裁，不改输入。
+
+    trades_v2 是库逐笔的等价中间表，价格和 qty 已折回 result.v2 口径。
+    仅接受唯一单仓 opened_at 和真实、对齐的爆仓根；错误记录一律拒绝。
+    """
+    _parse_single_leverage({"leverage": leverage})
+    if leverage <= 1 or isinstance(step, bool) or not isinstance(step, int) or step <= 0:
+        raise ValueError("isolated liquidation requires leverage >1 and a positive integer step")
+    trades_by_open: dict[int, list[dict[str, Any]]] = {}
+    for trade in trades_v2:
+        trades_by_open.setdefault(trade["opened_at"], []).append(trade)
+    bars_by_open: dict[int, list[Any]] = {}
+    for ts, bar in df.iterrows():
+        bars_by_open.setdefault(int(ts.value // 10**9), []).append(bar)
+    fills: dict[int, dict[str, Any]] = {}
+    for record in liquidations:
+        if set(record) != {"opened_at", "liquidation_bar_open_time"}:
+            raise ValueError("invalid isolated liquidation record keys")
+        opened_at = record["opened_at"]
+        bar_open = record["liquidation_bar_open_time"]
+        if any(isinstance(ts, bool) or not isinstance(ts, int) or ts <= 0
+               for ts in (opened_at, bar_open)):
+            raise ValueError("invalid isolated liquidation timestamps")
+        if opened_at in fills:
+            raise ValueError("duplicate isolated liquidation record")
+        matches = trades_by_open.get(opened_at, [])
+        if len(matches) != 1:
+            raise ValueError("isolated liquidation must match exactly one trade")
+        if bar_open % step or bar_open < opened_at - opened_at % step:
+            raise ValueError("liquidation bar is unaligned or precedes entry bar")
+        bars = bars_by_open.get(bar_open, [])
+        if len(bars) != 1:
+            raise ValueError("liquidation bar must exist exactly once")
+        trade, bar = matches[0], bars[0]
+        entry = Decimal(trade["entry_price"])
+        qty = Decimal(trade["qty"])
+        open_price, low, high = (Decimal(str(bar[key])) for key in ("Open", "Low", "High"))
+        if (not all(value.is_finite() and value > 0 for value in (entry, qty, open_price, low, high))
+                or not low <= open_price <= high or trade["side"] not in {"long", "short"}):
+            raise ValueError("invalid isolated liquidation prices, qty or side")
+        inverse_leverage = Decimal(1) / Decimal(leverage)
+        liquidation_price = entry * (Decimal(1) - inverse_leverage if trade["side"] == "long"
+                                     else Decimal(1) + inverse_leverage)
+        gap = (open_price <= liquidation_price if trade["side"] == "long"
+               else open_price >= liquidation_price)
+        fill_price = open_price if gap else liquidation_price
+        if not low <= fill_price <= high:
+            raise ValueError("liquidation fill is outside its bar range")
+        fills[opened_at] = {
+            "closed_at": bar_open,
+            "liquidation_price": liquidation_price,
+            "fill_price": fill_price,
+            "liquidation_gap": gap,
+            "margin_lost": entry * qty / Decimal(leverage),
+            "loss_beyond_margin": abs(fill_price - liquidation_price) * qty if gap else Decimal(0),
+        }
+    return fills
+
+
+def _settle_isolated_liquidations(
+    trades_v2: list[dict[str, Any]],
+    *,
+    leverage: int,
+    df: pd.DataFrame,
+    step: int,
+    liquidations: list[dict[str, int]],
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+) -> list[dict[str, Any]]:
+    """按已判定的爆仓根重算冻结 10 键；跳空损失可超过保证金，费用不进爆仓价。"""
+    if not liquidations:
+        return [dict(trade) for trade in trades_v2]
+    fills = _isolated_liquidation_fills(
+        trades_v2, leverage=leverage, df=df, step=step, liquidations=liquidations,
+    )
+    settled = []
+    for trade in trades_v2:
+        rewritten = dict(trade)
+        fill = fills.get(trade["opened_at"])
+        if fill is not None:
+            entry, qty = Decimal(trade["entry_price"]), Decimal(trade["qty"])
+            exit_price = fill["fill_price"]
+            fee = (entry + exit_price) * qty * fee_bps / Decimal(10000)
+            slippage = (entry + exit_price) * qty * slippage_bps / Decimal(10000)
+            gross = (exit_price - entry if trade["side"] == "long" else entry - exit_price) * qty
+            rewritten.update({
+                "closed_at": fill["closed_at"],
+                "exit_price": canonical_decimal_str(exit_price),
+                "fee": canonical_decimal_str(fee),
+                "slippage": canonical_decimal_str(slippage),
+                "pnl": canonical_decimal_str(gross - fee - slippage),
+            })
+        settled.append(rewritten)
+    ordered = sorted(settled, key=lambda trade: (trade["closed_at"], trade["opened_at"]))
+    if [id(trade) for trade in ordered] != [id(trade) for trade in settled]:
+        raise ValueError("isolated liquidation changed single-position trade order")
+    for seq, trade in enumerate(ordered, start=1):
+        trade["seq"] = seq
+    return ordered
+
+
 def _result_v2_bar_closes(df: pd.DataFrame, timeframe: str) -> list[tuple[int, int, Decimal]]:
     """按市值点的 bar 序列：(open_time, close_time, close)，open_time 升序。
 
@@ -5486,12 +5595,22 @@ def _build_result_v2(
     timeframe: str,
     exchange_id: str,
     df: pd.DataFrame,
+    leverage: int = 1,
+    liquidations: Optional[list[dict[str, int]]] = None,
 ) -> dict[str, Any]:
     """组装 SPEC §2 冻结的 result.v2 五键：schema_version/trades/equity_curve/metrics/
     data_manifest。metrics 恰好三键（total_return/max_drawdown/trade_count）——server
     端 _validate_result_v2 对多余键判 evidence_mismatch，不得在此加展示性字段。
     """
     trades_v2 = _build_result_v2_trades(stats_trades, equity_scale_dec, fee_bps, slippage_bps)
+    if liquidations:
+        if market != "futures":
+            raise ValueError("isolated liquidation requires futures market")
+        trades_v2 = _settle_isolated_liquidations(
+            trades_v2, leverage=leverage, df=df,
+            step=_timeframe_milliseconds(timeframe) // 1000,
+            liquidations=liquidations, fee_bps=fee_bps, slippage_bps=slippage_bps,
+        )
     equity_curve_v2 = _build_result_v2_equity_curve(
         trades_v2,
         initial_capital,
