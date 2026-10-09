@@ -3487,14 +3487,15 @@ def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 
 
 
 TURTLE_RUNNER = "turtle_group"
-# 不接单仓入场过滤层的新模板（INTEG-B2 裁定）：入场处没有 _filter_allow_entry()，F1/F2 也无过滤预热。
-# 接入属于新能力，另开「7-P3 新模板接过滤层」批；在此之前 schema 不得出现 filter_* 键。
-# 7-P3 接入前临时排除；7-P3 合入时本名单必须清空（到期用例 test_filter_unwired_list_only_shrinks_and_expires）。
+# 不接单仓入场过滤层的模板：入场处没有 _filter_allow_entry()，schema 不得出现 filter_* 键。
+# 做空模板：过滤层只支持做多（_with_filter_config 拒非 long），做空过滤口径待新单 7-P4 做空过滤层裁定后接入；
+# 7-P4 合入时本名单必须清空（到期用例 test_filter_unwired_list_only_shrinks_and_expires）。
+# 名单里仍有的做多模板是 7-P3 在途项（K 线六个归 7-P3a；双底、头肩底、ORB、亚洲区间、日历归 7-P3b 续单，
+# 其中 F1/F2 的 runner 预热对区间与日历强制为空，接线时须同时补过滤预热），接完即删。
 FILTER_LAYER_UNWIRED_TOOLS = (
     "local.backtesting_py.opening_range_breakout",
     "local.backtesting_py.asia_range_breakout",
     "local.backtesting_py.calendar_schedule",
-    "local.backtesting_py.red_streak_rsi",
     "local.backtesting_py.double_bottom",
     "local.backtesting_py.inverse_head_shoulders",
     "local.backtesting_py.macd_bearish_divergence",
@@ -5566,6 +5567,7 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
 
 
 @_with_time_config
+@_with_filter_config
 def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Jessie #18: exact Nth red close + RSI, frozen levels and shared 3b expiry."""
     properties = TOOL_SPECS["local.backtesting_py.red_streak_rsi"]["param_schema_properties"]
@@ -5674,7 +5676,8 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                 return
             if self.red_count[-1] != red_bars or not math.isfinite(self.rsi[-1]) or not self.rsi[-1] < oversold:
                 return
-            if not self._time_allow_entry():
+            # Judgment bar = the exact Nth red close; a blocked signal is discarded, not delayed.
+            if not self._time_allow_entry() or not self._filter_allow_entry():
                 return
             self._risk_prepare_entry()
             self._f6_frozen = initial_risk_state(risk=risk, entry_price=self.data.Close[-1], direction="long",

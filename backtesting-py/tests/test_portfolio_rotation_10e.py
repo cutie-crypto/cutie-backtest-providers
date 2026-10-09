@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as api
 import portfolio_rotation as rotation
 from canonical_json import canonical_json_sha256
+from strategy_entry_filters import FILTER_PARAM_SCHEMA_PROPERTIES
 from portfolio_rotation import RotationError, parse_rotation, fetch_rotation, run_rotation, ema200
 from portfolio_rotation_http import TOOL_ID
 from strategy_entry_filters import FILTER_PARAM_SCHEMA_PROPERTIES
@@ -279,10 +280,6 @@ def test_registered_http_runner_and_optional_metric(monkeypatch):
     assert response['fills'] == response2['fills']
 
 
-WIRED_SINCE_7P3A = {'bullish_engulfing', 'hammer_pin_bar', 'morning_star', 'three_white_soldiers',
-                    'bullish_doji_reversal', 'inside_bar_breakout'}
-
-
 def test_catalog_existing_entries_byte_identical():
     root = Path(__file__).resolve().parents[2]
     # 集成 D：基线由 10-D 头 b0e150a（基于旧 main 09bd963）改为集成起点 main 32ae030；
@@ -302,8 +299,8 @@ def test_catalog_existing_entries_byte_identical():
             assert set(api.POSITION_SIZE_KEYS) <= set(properties), tool_id
             for key in api.POSITION_SIZE_KEYS:
                 properties.pop(key)
-        if tool_id.removeprefix('local.backtesting_py.') in WIRED_SINCE_7P3A:
-            # 7-P3a：这 6 个 K 线形态模板接入过滤层后 schema 只新增 filter_* 键，其余字段逐字节不变。
+        # 7-P3 接入过滤层的工具（基线时在未接名单里，7-P3a 的 6 个 K 线形态也在内）只允许多出 filter_* 键，其余逐字节不变。
+        if tool_id in getattr(baseline, 'FILTER_LAYER_UNWIRED_TOOLS', ()) and tool_id not in api.FILTER_LAYER_UNWIRED_TOOLS:
             added = {key for key in properties if key.startswith('filter_')}
             assert added == set(FILTER_PARAM_SCHEMA_PROPERTIES), tool_id
             entry['param_schema']['properties'] = {k: v for k, v in properties.items() if k not in added}
