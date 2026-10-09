@@ -2310,7 +2310,7 @@ def _rsi_series(values: Any, period: int):
 
 
 # 共用风险参数：旧四键保留；3a 扩展必须显式启用，默认走原收盘覆盖层。
-# 移动/保本/时间/多档留给 3b，不提前声明尚未消费的参数。
+# 3b 动态止损、持仓期限与三档止盈使用扁平键。
 _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "stop_loss_pct": {"type": "number", "minimum": 0, "maximum": 100},
     "take_profit_pct": {"type": "number", "minimum": 0, "maximum": 100},
@@ -2320,7 +2320,17 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "atr_stop_multiplier": {"type": "number", "default": 0, "minimum": 0, "maximum": 100},
     "risk_atr_period": {"type": "integer", "default": 0, "minimum": 0, "maximum": 500},
     "take_profit_r": {"type": "number", "default": 0, "minimum": 0, "maximum": 100},
+    "trailing_stop_pct": {"type": "number", "default": 0, "minimum": 0, "exclusiveMaximum": 100},
+    "breakeven_stop": {"type": "boolean", "default": False},
+    "max_holding_bars": {"type": "integer", "default": 0, "minimum": 0, "maximum": 1000000},
+    **{f"tp{n}_{suffix}": {"type": "number", "default": 0, "minimum": 0, "maximum": 100}
+       for n in (1, 2, 3) for suffix in ("r", "close_pct")},
 }
+
+
+def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
+    """Shared holding-key gate; the later time layer can extend this independently."""
+    return params.get("risk_layer_enabled") is True
 
 
 def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -2346,8 +2356,36 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("INVALID_PARAMS:stop_loss_pct and ATR stop are mutually exclusive")
     if profit_r and params.get("take_profit_pct") is not None:
         raise ValueError("INVALID_PARAMS:take_profit_pct and take_profit_r are mutually exclusive")
-    if profit_r and not (multiplier or params.get("stop_loss_pct")):
-        raise ValueError("INVALID_PARAMS:take_profit_r requires an initial stop")
+    trailing = params.get("trailing_stop_pct", 0)
+    holding = params.get("max_holding_bars", 0)
+    if "max_holding_bars" in params and type(holding) is not int:
+        raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+    if trailing >= 100:
+        raise ValueError("INVALID_PARAMS:trailing_stop_pct must be < 100")
+    dynamic_keys = ("trailing_stop_pct", "breakeven_stop",
+                    *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
+    if not enabled and any(params.get(key, 0) for key in dynamic_keys):
+        raise ValueError("INVALID_PARAMS:new risk parameters require risk_layer_enabled=true")
+    if holding and not _consumes_max_holding_bars(params):
+        raise ValueError("INVALID_PARAMS:max_holding_bars requires risk_layer_enabled=true")
+    levels = []
+    for n in (1, 2, 3):
+        r, pct = params.get(f"tp{n}_r", 0), params.get(f"tp{n}_close_pct", 0)
+        if bool(r) != bool(pct):
+            raise ValueError("INVALID_PARAMS:take-profit level r and close_pct must be paired")
+        if r:
+            if n != len(levels) + 1 or (levels and r <= levels[-1][0]):
+                raise ValueError("INVALID_PARAMS:take-profit levels must be continuous and strictly increasing")
+            levels.append((r, pct))
+    total = sum(Decimal(str(pct)) for _, pct in levels)
+    if total > 100 or (levels and total < 100 and not trailing):
+        raise ValueError("INVALID_PARAMS:take-profit allocation must be <= 100; remainder requires trailing")
+    if levels and (profit_r or params.get("take_profit_pct") is not None):
+        raise ValueError("INVALID_PARAMS:take-profit modes are mutually exclusive")
+    if (profit_r or levels or params.get("breakeven_stop")) and not (
+        multiplier or params.get("stop_loss_pct") or trailing
+    ):
+        raise ValueError("INVALID_PARAMS:R targets and breakeven require an initial stop")
     out: dict[str, Any] = {}
     if enabled:
         out["risk_layer_enabled"] = True
@@ -2355,6 +2393,9 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
             out.update(atr_stop_multiplier=multiplier, risk_atr_period=int(period))
         if profit_r:
             out["take_profit_r"] = profit_r
+    for key in (*dynamic_keys, "max_holding_bars"):
+        if params.get(key):
+            out[key] = params[key]
     for key in ("stop_loss_pct", "take_profit_pct"):
         raw = params.get(key)
         if raw is None:
