@@ -18,6 +18,7 @@
 - codex-4 定：首个主周期决策前（含相等边界）必须已有 required_bars 根完整大周期历史，连续覆盖至最后决策可见的大周期根；缺首根、内根、尾根、错位、非有限值、空数据或取数异常均 `INSUFFICIENT_DATA`。不补洞、不退化为主周期。
 - codex-4 定：大周期指标预热与主周期模板／风控预热分离，按主 K 线索引读取已对齐掩码，主周期预热长度不改变大周期判定。只在启用且指定大周期时增加取数；EMA／MACD／Supertrend 继续 AND，只做 long 入场。
 - short/both 在取数前拒；账本／kernel_v3 连显式缺省新键也拒；关态保留旧交易、权益、完整 result.v2、assumptions 与 raw_report 字节。启用态周期／历史跨度／来源只增加到 raw_report.entry_filters，result.v2 键集不变。
+- 7-P4 起（provider `1d66844` 之后）：short 改为严格镜像放行（close < EMA、DIF < 0、trend == -1，相等两边都不放行，多周期同口径透传方向），只有 both 仍在取数前拒；上两条里「只做 long 入场」「short/both 在取数前拒」是 7P-2 交付时的历史口径。
 
 ## 取数量级（本地推导，无真实网络调用）
 

@@ -358,14 +358,16 @@ def test_futures_only_before_any_fetch(name,market,direction,monkeypatch):
     assert TestClient(p.app).post('/cutie/backtest',json=body).json()['error_type']=='INVALID_PARAMS'
 
 
+# 7-P4：做空模板接入单仓入场过滤层（镜像规则与开态手算见 test_7p4_short_filter.py）。
 @pytest.mark.parametrize('name', NAMES)
-def test_unwired_filter_rejected_and_not_executed(name,monkeypatch):
-    properties=p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']
-    assert not any(key.startswith('filter_') for key in properties)
-    monkeypatch.setattr(p._FixedRiskMixin,'_filter_allow_entry',lambda *a:pytest.fail('unwired filter gate called'))
+def test_filter_layer_wired_as_short(name):
+    spec=p.TOOL_SPECS['local.backtesting_py.'+name]
+    assert all(key in spec['param_schema_properties'] for key in ('filter_layer_enabled','filter_ema_enabled'))
+    cls=spec['build']({'filter_layer_enabled':True,'filter_ema_enabled':True})['strategy']
+    assert cls._filter_direction=='short' and cls._filter_config.ema_enabled
     assert run(name)['_strategy'].divergence_report['entries']
     with pytest.raises(ValueError,match='INVALID_PARAMS'):
-        p.TOOL_SPECS['local.backtesting_py.'+name]['build']({'filter_layer_enabled':True})
+        spec['build']({'filter_layer_enabled':True})
 
 
 def http_response(name,params=None,data=None,warm=0):
