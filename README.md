@@ -31,25 +31,37 @@ floats (including `2.0`), strings, and non-finite values are invalid. Explicit
 `leverage=1` preserves the omitted parameter's trades, equity, and result.v2;
 it adds no leverage-related report fields and passes no `margin` engine option.
 Spot requests above 1 are rejected before market data access. Futures requests
-above 1 are also rejected for now with
-`leverage above 1 requires the isolated liquidation model`; leveraged execution
-will require the later isolated-liquidation implementation.
+above 1 enable the simplified MMR=0 isolated-liquidation model, independently of
+`risk_layer_enabled`. This provider gate does not change server or UI enablement.
 
 The internal sizing preparation treats `position_size_pct` as a margin budget:
 the engine's `margin=1/L` applies leverage once. `position_size_notional` retains
 its nominal amount by dividing its engine allocation fraction by L. Unconfigured
-sizing continues to use the library's full-equity sentinel. These L>1 semantics
-are currently tested only through direct engine construction, not public runs.
+sizing continues to use the library's full-equity sentinel.
 The `rsi_scale_in_out`, `grid`, and `dca` ledger templates do not advertise or
 accept `leverage`, even 1. Basket `kernel_v3` leverage remains in [1, 3].
 
-The dormant isolated-settlement helpers can rewrite already identified liquidation
-trades before result.v2 equity/metrics construction. They preserve the frozen
-trade keys and use MMR=0, fee-exclusive liquidation prices, and bar-open gap fills;
-gap PnL follows the frozen formula and can exceed margin. Separate report and
-assumption builders describe margin and excess loss only for futures L>1.
-The public runner does not call these helpers or accept L>1 yet; arbitration and
-runner wiring remain a later batch.
+Liquidation uses `E*(L-1)/L` for longs and `E*(L+1)/L` for shorts, with fees
+excluded from the trigger. Open beyond the liquidation price wins immediately;
+otherwise a closer effective intrabar stop wins, with equality going to liquidation.
+Liquidation precedes holding expiry, profit targets, and template signals. Legacy
+close-only stops occur after intrabar liquidation. Reentry is blocked on that bar.
+The broker still closes at the next open; a per-request close callback reconciles
+cash to cumulative result.v2 PnL before subsequent sizing and insolvency checks.
+If close-price marking would exhaust the account before Strategy.next, the broker
+order hook invokes the same arbitration point and bridges a pending liquidation
+with positive settled equity until its next-open close. Genuine exhaustion still
+uses the library check. Earlier partial exits retain their own PnL; an internal
+remaining-unit sidecar selects only the liquidated remainder for settlement and
+reporting, without changing liquidation records or result.v2 trade keys.
+Result.v2 rewrites the exit bucket and price to the liquidation bar and preserves
+all frozen keys. Gap fills use that bar's open; their PnL can exceed margin.
+`raw_report.isolated_risk` discloses margin lost and excess loss, while
+`assumptions.isolated_margin` describes the model. Fixed stop distances use the
+request's original percentage. For ATR/trailing/breakeven, the beyond-liquidation
+flag and trade count use each entry's frozen initial stop, including equality;
+subsequent stop ratchets do not increase this count. These nodes appear only for
+futures L>1. Funding, MMR>0, and exchange-specific liquidation rules are excluded.
 
 ### StrategySpec v2 artifact execution
 

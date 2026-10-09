@@ -74,10 +74,21 @@ def test_basket_leverage_schema_unchanged():
 
 @pytest.mark.parametrize('market,message', [
     ('spot', 'leverage above 1 requires futures market'),
-    ('futures', 'leverage above 1 requires the isolated liquidation model'),
+    ('futures', None),
 ])
 @pytest.mark.parametrize('leverage', [2, 20])
-def test_market_rejection_before_fetch(monkeypatch, market, message, leverage):
+def test_market_gate_before_fetch(monkeypatch, market, message, leverage):
+    if market == 'futures':
+        calls = []
+        def empty_fetch(*args, **kwargs):
+            calls.append(True)
+            return pd.DataFrame()
+        monkeypatch.setattr(provider, '_fetch_ohlcv', empty_fetch)
+        body = TestClient(provider.app).post('/cutie/backtest', json=request({'leverage': leverage}, market)).json()
+        assert calls == [True]
+        assert body['error_type'] == 'INSUFFICIENT_DATA', body
+        assert provider._single_leverage_rejection(leverage, market) is None
+        return
     monkeypatch.setattr(provider, '_fetch_ohlcv', lambda *a, **k: pytest.fail('rejected leverage fetched data'))
     body = TestClient(provider.app).post('/cutie/backtest', json=request({'leverage': leverage}, market)).json()
     assert body['error_type'] == 'INVALID_PARAMS', body
