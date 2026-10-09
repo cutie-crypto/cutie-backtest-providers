@@ -4848,6 +4848,8 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
             "pattern_assumptions": {"pattern_execution":
                 "Pattern confirmed at close; market entry and triggered stop/target exits fill at the next bar open. "
                 "Stop/target prices are not guaranteed fills; an entry open at or below the frozen stop is skipped."
+                + (" Isolated liquidation uses T2-2b gap/distance arbitration against the frozen stop."
+                   if risk.get("leverage", 1) > 1 else "")
                 + ({"doji": " Only the immediately following close above the doji high confirms; the stop uses the doji low.",
                     "inside_bar": f" A close above the mother high within {breakout_window} bars after the inside bar confirms; otherwise the setup expires. Latest setup replaces prior; stop uses mother low.",
                     "star": " Stop uses the second candle low; middle body is at most 30% of first body.",
@@ -4929,7 +4931,9 @@ def _build_bottom_pattern(params, *, kind, initial_capital):
             'market entry and triggered stop/target exits fill at the next bar open. '
             'Stop and measured-move target are frozen at breakout; prices are not guaranteed fills. '
             'Entry open at or below frozen stop is skipped. New confirmed low or close below stop invalidates setup. '
-            'Stop precedes holding expiry, which precedes target. Equal peak High chooses earliest bar. '
+            + ('Isolated liquidation uses T2-2b gap/distance arbitration against the frozen stop; stop precedes'
+               if risk.get('leverage', 1) > 1 else 'Stop precedes') +
+            ' holding expiry, which precedes target. Equal peak High chooses earliest bar. '
             'Head-and-shoulders target uses neckline at breakout plus neckline at head minus head low; '
             'nonpositive measured move or neckline at/below stop invalidates setup.'))
 

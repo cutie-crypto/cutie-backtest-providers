@@ -4,6 +4,7 @@ The broker guard reads the currently arriving Open before calling the engine's
 order processor. It does not inspect future bars or change engine fill pricing.
 """
 from dataclasses import dataclass
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
@@ -97,23 +98,35 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
             # Per-backtest instance only; other templates retain their exact broker.
             self._broker._process_orders = guarded_process_orders
 
+        def _risk_check_exit(self):
+            # Also used by the shared broker insolvency bridge. Supply the frozen
+            # pattern stop to T2-2b arbitration before checking expiry/target.
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            if any(order.parent_trade is trade for order in self.orders):
+                return True
+            stop = trade.tag.stop
+            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(Decimal(str(stop))):
+                return True
+            target = trade.entry_price + (trade.entry_price - stop) * reward_r
+            # A trigger queues a market close; the engine fills at the next Open.
+            if self.data.Low[-1] <= stop:
+                self._risk_exit_reason = "stop_loss"
+            elif (self._time_config is not None or self._risk.get("max_holding_bars")) and (fact := self._holding_expiry()).due:
+                self._record_holding_expiry(fact)
+            elif self.data.High[-1] >= target:
+                self._risk_exit_reason = "take_profit"
+            else:
+                return False
+            self.position.close()
+            return True
+
         def next(self):
             if self.position:
-                trade = self.trades[-1]
-                if any(order.parent_trade is trade for order in self.orders):
-                    return
-                stop = trade.tag.stop
-                target = trade.entry_price + (trade.entry_price - stop) * reward_r
-                # A trigger queues a market close; the engine fills at the next Open.
-                if self.data.Low[-1] <= stop:
-                    self._risk_exit_reason = "stop_loss"
-                elif (self._time_config is not None or self._risk.get("max_holding_bars")) and (fact := self._holding_expiry()).due:
-                    self._record_holding_expiry(fact)
-                elif self.data.High[-1] >= target:
-                    self._risk_exit_reason = "take_profit"
-                else:
-                    return
-                self.position.close()
+                self._risk_check_exit()
+                return
+            if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
                 return
             if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():
                 return
