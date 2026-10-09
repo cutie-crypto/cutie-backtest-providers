@@ -438,8 +438,17 @@ def test_catalog_schema_and_runner():
         'max_dip_adds':{'type':'integer','default':3,'minimum':0,'maximum':10},
         'profit_target_pct':{'type':'number','default':10,'minimum':1,'maximum':100},
         'exchange':{'type':'string','default':provider.DEFAULT_EXCHANGE},
+        'time_layer_enabled': {'type':'boolean','default':False},
+        'time_timezone': {'type':'string','default':'UTC'},
+        'time_session_start': {'type':'string','default':''},
+        'time_session_end': {'type':'string','default':''},
+        'time_weekdays': {'type':'integer','default':127,'minimum':1,'maximum':127},
+        'time_max_holding_minutes': {'type':'integer','default':0,'minimum':0,'maximum':525600},
+        'time_flatten_at': {'type':'string','default':''},
+        'time_flatten_weekdays': {'type':'integer','default':127,'minimum':1,'maximum':127},
+        'max_holding_bars': {'type':'integer','default':0,'minimum':0,'maximum':1000000},
     }
-    assert not set(entry['param_schema']['properties']) & set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    assert not set(entry['param_schema']['properties']) & (set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) - {'max_holding_bars'})
     assert spec['description'].endswith("maps to KOL '定投 + 跌幅加码'")
     assert 'next bar open' in spec['description'] and '1w' in spec['description']
     assert 'first calendar boundary' in spec['description']
