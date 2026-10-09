@@ -3281,6 +3281,200 @@ def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     }
 
 
+def _stoch_arrays(high: Any, low: Any, close: Any, period: int, smooth: int, d_period: int) -> dict[str, Any]:
+    highest = pd.Series(high, dtype="float64").rolling(period).max()
+    lowest = pd.Series(low, dtype="float64").rolling(period).min()
+    width = highest - lowest
+    raw = ((pd.Series(close, dtype="float64") - lowest) / width.replace(0, np.nan) * 100).mask(width == 0, 50)
+    k = raw.rolling(smooth).mean()
+    d = k.rolling(d_period).mean()
+    return {"raw": raw.to_numpy(), "k": k.to_numpy(), "d": d.to_numpy()}
+
+
+def _build_stoch_oversold_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.stoch_oversold_cross"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("stoch_period", 14))
+    smooth = int(params.get("stoch_smooth", 3))
+    d_period = int(params.get("stoch_d", 3))
+    oversold = float(params.get("oversold", 20))
+    overbought = float(params.get("overbought", 80))
+    if not all(math.isfinite(v) for v in (oversold, overbought)):
+        raise ValueError("INVALID_PARAMS:Stochastic levels must be finite")
+
+    from backtesting import Strategy
+
+    # One complete D value plus its predecessor for the crossover comparison.
+    min_bars = period + smooth + d_period - 1
+
+    class StochOversoldCrossStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("k", "d"):
+                func = lambda h, l, c, key=key: _stoch_arrays(h, l, c, period, smooth, d_period)[key]
+                setattr(self, key, self.I(self._warm(func, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            if not all(math.isfinite(v) for v in (self.k[-1], self.k[-2], self.d[-1], self.d[-2])):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if self.k[-2] <= self.d[-2] and self.k[-1] > self.d[-1] and self.k[-1] < oversold:
+                    self._risk_buy()
+            elif self.k[-2] >= self.d[-2] and self.k[-1] < self.d[-1] and self.k[-1] > overbought:
+                self.position.close()
+
+    return {"strategy": StochOversoldCrossStrategy,
+            "executed_name": f"Stochastic Oversold Cross ({period}/{smooth}/{d_period}, {oversold:g}/{overbought:g})",
+            "min_bars": min_bars}
+
+
+def _bollinger_squeeze_arrays(close: Any, period: int, std_mult: float, lookback: int) -> dict[str, Any]:
+    s = pd.Series(close, dtype="float64")
+    middle = s.rolling(period).mean()
+    sd = s.rolling(period).std(ddof=0)
+    upper, lower = middle + std_mult * sd, middle - std_mult * sd
+    # Undefined bandwidth (zero middle) cannot contribute to a complete window.
+    bandwidth = (upper - lower) / middle.replace(0, np.nan)
+    rank = bandwidth.rolling(lookback).apply(lambda x: np.count_nonzero(x <= x[-1]) / lookback, raw=True)
+    return {"middle": middle.to_numpy(), "upper": upper.to_numpy(), "lower": lower.to_numpy(),
+            "bandwidth": bandwidth.to_numpy(), "previous_rank": rank.shift(1).to_numpy()}
+
+
+def _build_bollinger_squeeze_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.bollinger_squeeze_breakout"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("bb_period", 20))
+    std_mult = float(params.get("bb_std", 2.0))
+    lookback = int(params.get("bandwidth_lookback", 120))
+    squeeze = float(params.get("squeeze_pct", 20))
+    if not all(math.isfinite(v) for v in (std_mult, squeeze)):
+        raise ValueError("INVALID_PARAMS:Bollinger parameters must be finite")
+
+    from backtesting import Strategy
+
+    min_bars = period + lookback
+
+    class BollingerSqueezeBreakoutStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("middle", "upper", "previous_rank"):
+                def func(c, key=key):
+                    values = _bollinger_squeeze_arrays(c, period, std_mult, lookback)[key]
+                    # An incomplete window is never a squeeze. Neutral rank keeps the
+                    # engine from skipping the first eligible signal after NaN warmup.
+                    return np.nan_to_num(values, nan=1.0) if key == "previous_rank" else values
+                setattr(self, key, self.I(self._warm(func, "Close"), self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            price = self.data.Close[-1]
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if self.previous_rank[-1] <= squeeze / 100 and price > self.upper[-1]:
+                    self._risk_buy()
+            elif price < self.middle[-1]:
+                self.position.close()
+
+    return {"strategy": BollingerSqueezeBreakoutStrategy,
+            "executed_name": f"Bollinger Squeeze Breakout ({period}/{std_mult:.1f}, {lookback}/{squeeze:g}%)",
+            "min_bars": min_bars}
+
+
+def _adx_di_arrays(high: Any, low: Any, close: Any, period: int) -> dict[str, Any]:
+    """Wilder RMA seeded at the first value, matching Supertrend's ewm."""
+    h, l, c = (np.asarray(x, dtype="float64") for x in (high, low, close))
+    tr = np.zeros(len(c), dtype="float64")
+    plus_dm, minus_dm = np.zeros_like(tr), np.zeros_like(tr)
+    if len(c):
+        tr[0] = h[0] - l[0]
+        tr[1:] = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+        up, down = h[1:] - h[:-1], l[:-1] - l[1:]
+        plus_dm[1:] = np.where((up > down) & (up > 0), up, 0)
+        minus_dm[1:] = np.where((down > up) & (down > 0), down, 0)
+
+    def rma(values: Any) -> Any:
+        return pd.Series(values).ewm(alpha=1 / period, adjust=False).mean().to_numpy()
+
+    atr = rma(tr)
+    plus = np.divide(100 * rma(plus_dm), atr, out=np.zeros_like(tr), where=atr != 0)
+    minus = np.divide(100 * rma(minus_dm), atr, out=np.zeros_like(tr), where=atr != 0)
+    total = plus + minus
+    dx = np.divide(100 * np.abs(plus - minus), total, out=np.zeros_like(tr), where=total != 0)
+    return {"adx": rma(dx), "plus_di": plus, "minus_di": minus}
+
+
+def _build_adx_di_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.adx_di_cross"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("adx_period", 14))
+    threshold = float(params.get("adx_threshold", 25))
+    exit_level = float(params.get("adx_exit", 20))
+    if not all(math.isfinite(v) for v in (threshold, exit_level)):
+        raise ValueError("INVALID_PARAMS:ADX levels must be finite")
+    if exit_level >= threshold:
+        raise ValueError("INVALID_PARAMS:adx_exit must be < adx_threshold")
+
+    from backtesting import Strategy
+
+    min_bars = 2 * period
+
+    class AdxDiCrossStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("adx", "plus_di", "minus_di"):
+                func = lambda h, l, c, key=key: _adx_di_arrays(h, l, c, period)[key]
+                setattr(self, key, self.I(self._warm(func, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            if not all(math.isfinite(v) for v in (self.adx[-1], self.plus_di[-1], self.plus_di[-2],
+                                                   self.minus_di[-1], self.minus_di[-2])):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if (self.adx[-1] > threshold and self.plus_di[-2] <= self.minus_di[-2]
+                        and self.plus_di[-1] > self.minus_di[-1]):
+                    self._risk_buy()
+            elif ((self.minus_di[-2] <= self.plus_di[-2] and self.minus_di[-1] > self.plus_di[-1])
+                  or self.adx[-1] < exit_level):
+                self.position.close()
+
+    return {"strategy": AdxDiCrossStrategy,
+            "executed_name": f"ADX DI Cross ({period}, {threshold:g}/{exit_level:g})", "min_bars": min_bars}
+
+
 def _supertrend_arrays(high: Any, low: Any, close: Any, atr_period: int, multiplier: float) -> dict[str, Any]:
     """Supertrend：Wilder ATR(RMA, ewm alpha=1/n adjust=False) + 带沿用/重置的 final 上下轨 + trend(+1 up/-1 down)。
 
@@ -3721,9 +3915,288 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Long-only close-confirmed BIAS reversion, filled at the next open."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        period = int(params.get("ema_period", 20))
+        entry = float(params.get("bias_entry_pct", 3))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:ema_period/bias_entry_pct must be numbers")
+    if not 10 <= period <= 60:
+        raise ValueError("INVALID_PARAMS:ema_period must be within 10-60")
+    if not 1 <= entry <= 10:
+        raise ValueError("INVALID_PARAMS:bias_entry_pct must be within 1-10")
+
+    from backtesting import Strategy
+
+    min_bars = period
+
+    class BiasReversionStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            def bias(values):
+                close = pd.Series(values, dtype="float64")
+                ema = close.ewm(span=period, adjust=False).mean()
+                return ((close - ema) / ema * 100).to_numpy()
+
+            self.bias = self.I(self._warm(bias, "Close"), self.data.Close, name="BIAS")
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            value = self.bias[-1]
+            if not math.isfinite(value):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if value <= -entry:
+                    self._risk_buy()
+            elif value >= 0:
+                self.position.close()
+
+    return {
+        "strategy": BiasReversionStrategy,
+        "executed_name": f"BIAS Reversion ({period}/-{entry:g}%)",
+        "min_bars": min_bars,
+    }
+
+
+def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Long-only entry on the first bar forming short > mid > long EMA alignment."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        short = int(params.get("ema_short", 20))
+        mid = int(params.get("ema_mid", 60))
+        long = int(params.get("ema_long", 120))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:ema_short/ema_mid/ema_long must be integers")
+    if not 5 <= short <= 50:
+        raise ValueError("INVALID_PARAMS:ema_short must be within 5-50")
+    if not 20 <= mid <= 150:
+        raise ValueError("INVALID_PARAMS:ema_mid must be within 20-150")
+    if not 60 <= long <= 300:
+        raise ValueError("INVALID_PARAMS:ema_long must be within 60-300")
+    if not short < mid < long:
+        raise ValueError("INVALID_PARAMS:require ema_short < ema_mid < ema_long")
+
+    from backtesting import Strategy
+
+    min_bars = long
+
+    class EmaTripleAlignmentStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            def ema(period):
+                return self.I(
+                    self._warm(lambda x: pd.Series(x).ewm(span=period, adjust=False).mean(), "Close"),
+                    self.data.Close, name=f"EMA({period})",
+                )
+
+            self.ema_short = ema(short)
+            self.ema_mid = ema(mid)
+            self.ema_long = ema(long)
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            short_now, mid_now, long_now = self.ema_short[-1], self.ema_mid[-1], self.ema_long[-1]
+            if not all(math.isfinite(v) for v in (short_now, mid_now, long_now)):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                aligned = short_now > mid_now > long_now
+                was_aligned = self.ema_short[-2] > self.ema_mid[-2] > self.ema_long[-2]
+                if aligned and not was_aligned:
+                    self._risk_buy()
+            elif short_now < mid_now:
+                self.position.close()
+
+    return {
+        "strategy": EmaTripleAlignmentStrategy,
+        "executed_name": f"EMA Triple Alignment ({short}/{mid}/{long})",
+        "min_bars": min_bars,
+    }
+
+
+def _build_macd_above_zero(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Separate long-only MACD template; both DIF and DEA must be above zero."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        fast = int(params.get("fast", 12))
+        slow = int(params.get("slow", 26))
+        signal_period = int(params.get("signal", 9))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:fast/slow/signal must be integers")
+    if fast < 2:
+        raise ValueError(f"INVALID_PARAMS:fast must be >= 2 (got {fast})")
+    if slow <= fast:
+        raise ValueError("INVALID_PARAMS:slow must be greater than fast")
+    if signal_period < 1:
+        raise ValueError(f"INVALID_PARAMS:signal must be >= 1 (got {signal_period})")
+    if fast > 100 or slow > 300 or signal_period > 100:
+        raise ValueError("INVALID_PARAMS:fast/slow/signal exceed schema maximums 100/300/100")
+
+    from backtesting import Strategy
+
+    min_bars = slow * 3 + signal_period + 1
+
+    def _macd_line(values: Any) -> Any:
+        s = pd.Series(values, dtype="float64")
+        return s.ewm(span=fast, adjust=False).mean() - s.ewm(span=slow, adjust=False).mean()
+
+    class MacdAboveZeroStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            close = self.data.Close
+            self.macd = self.I(self._warm(lambda x: _macd_line(x).to_numpy(), "Close"), close, name="MACD")
+            self.signal = self.I(
+                self._warm(lambda x: _macd_line(x).ewm(span=signal_period, adjust=False).mean().to_numpy(), "Close"),
+                close,
+                name="Signal",
+            )
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            dif, dea = self.macd[-1], self.signal[-1]
+            prev_dif, prev_dea = self.macd[-2], self.signal[-2]
+            if not all(math.isfinite(v) for v in (dif, dea, prev_dif, prev_dea)):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if prev_dif <= prev_dea and dif > dea and dif > 0 and dea > 0:
+                    self._risk_buy()
+            elif prev_dif >= prev_dea and dif < dea:
+                self.position.close()
+
+    return {
+        "strategy": MacdAboveZeroStrategy,
+        "executed_name": f"MACD Above-Zero Cross ({fast}/{slow}/{signal_period})",
+        "min_bars": min_bars,
+    }
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.stoch_oversold_cross": {
+        "name": "Local Backtesting.py Stochastic Oversold Cross",
+        "description": (
+            "Long on an SMA-smoothed stochastic K cross above D below oversold; "
+            "exit on a cross below D above overbought. Maps to KOL 'KDJ超卖金叉'."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_stoch_oversold_cross,
+        "param_schema_properties": {
+            "stoch_period": {"type": "integer", "default": 14, "minimum": 5, "maximum": 30},
+            "stoch_smooth": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5},
+            "stoch_d": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5},
+            "oversold": {"type": "number", "default": 20, "minimum": 10, "maximum": 30},
+            "overbought": {"type": "number", "default": 80, "minimum": 70, "maximum": 90},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bollinger_squeeze_breakout": {
+        "name": "Local Backtesting.py Bollinger Squeeze Breakout",
+        "description": (
+            "Long above the current upper Bollinger band only after a prior-bar bandwidth percentile squeeze; "
+            "exit below the middle SMA. Maps to KOL '布林带收口突破'."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "build": _build_bollinger_squeeze_breakout,
+        "param_schema_properties": {
+            "bb_period": {"type": "integer", "default": 20, "minimum": 10, "maximum": 50},
+            "bb_std": {"type": "number", "default": 2.0, "minimum": 1, "maximum": 3},
+            "bandwidth_lookback": {"type": "integer", "default": 120, "minimum": 50, "maximum": 300},
+            "squeeze_pct": {"type": "number", "default": 20, "minimum": 5, "maximum": 40},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.adx_di_cross": {
+        "name": "Local Backtesting.py ADX DI Cross",
+        "description": (
+            "Long on a positive DI cross above negative DI with ADX above the strength threshold; "
+            "exit on the opposite cross or weak ADX. Maps to KOL 'ADX趋势强度 + DI交叉'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_adx_di_cross,
+        "param_schema_properties": {
+            "adx_period": {"type": "integer", "default": 14, "minimum": 7, "maximum": 30},
+            "adx_threshold": {"type": "number", "default": 25, "minimum": 15, "maximum": 40},
+            "adx_exit": {"type": "number", "default": 20, "minimum": 10, "maximum": 30},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.macd_above_zero": {
+        "name": "Local Backtesting.py MACD Above-Zero Cross",
+        "description": (
+            "Long-only MACD: buy on a DIF cross above DEA only when both lines are "
+            "strictly above zero; exit on the opposite cross regardless of the zero axis. "
+            "Signals confirm at close and fill at the next open — maps to KOL 'MACD 零轴上金叉'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_macd_above_zero,
+        "param_schema_properties": {
+            "fast": {"type": "integer", "default": 12, "minimum": 2, "maximum": 100},
+            "slow": {"type": "integer", "default": 26, "minimum": 3, "maximum": 300},
+            "signal": {"type": "integer", "default": 9, "minimum": 1, "maximum": 100},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.ema_triple_alignment": {
+        "name": "Local Backtesting.py EMA Triple Alignment",
+        "description": (
+            "Long-only trend following: buy when short > mid > long EMA alignment "
+            "first forms; exit when the short EMA is below the mid EMA. "
+            "Signals confirm at close and fill at the next open — maps to KOL 'EMA 三线多头排列'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_ema_triple_alignment,
+        "param_schema_properties": {
+            "ema_short": {"type": "integer", "default": 20, "minimum": 5, "maximum": 50},
+            "ema_mid": {"type": "integer", "default": 60, "minimum": 20, "maximum": 150},
+            "ema_long": {"type": "integer", "default": 120, "minimum": 60, "maximum": 300},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bias_reversion": {
+        "name": "Local Backtesting.py BIAS Reversion",
+        "description": (
+            "Long-only mean reversion: buy when close-to-EMA BIAS is at or below "
+            "the negative entry percentage, exit when BIAS reaches zero or above. "
+            "Signals confirm at close and fill at the next open — maps to KOL '均线乖离率 BIAS 回归'."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_bias_reversion,
+        "param_schema_properties": {
+            "ema_period": {"type": "integer", "default": 20, "minimum": 10, "maximum": 60},
+            "bias_entry_pct": {"type": "number", "default": 3, "minimum": 1, "maximum": 10},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.ema_cross": {
         "name": "Local Backtesting.py EMA Cross",
         "description": (
