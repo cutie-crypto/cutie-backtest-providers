@@ -411,11 +411,22 @@ def test_frozen_off_bytes(name,warm,explicit,monkeypatch):
     assert 'isolated_risk' not in body['raw_report'] and 'time_layer' not in body['raw_report']
 
 
+# 7-P3b2：双底 / 头肩底接入单仓入场过滤层，底部源文件唯一允许的差异是判定根这一处入场门；其余字节仍须与 32ae030 相同。
+BOTTOM_7P3B2_GATE = (
+    b"            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry():\n",
+    b"            # Judgment bar = the breakout close; a filtered signal is discarded (signals fire once), not delayed.\n"
+    b"            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():\n")
+
+
 def test_long_source_and_golden_files_byte_unchanged():
     root=Path(__file__).resolve().parents[2]
     for relative in ('backtesting-py/strategy_bottom_patterns.py','backtesting-py/tests/test_9t3_patterns.py',
                      'backtesting-py/tests/fixtures/9t3_bottom_off.json'):
-        assert (root/relative).read_bytes()==subprocess.check_output(['git','show','32ae030:'+relative],cwd=root)
+        expected=subprocess.check_output(['git','show','32ae030:'+relative],cwd=root)
+        if relative.endswith('strategy_bottom_patterns.py'):
+            assert expected.count(BOTTOM_7P3B2_GATE[0])==1
+            expected=expected.replace(*BOTTOM_7P3B2_GATE)
+        assert (root/relative).read_bytes()==expected
 
 
 @pytest.mark.parametrize('name',NAMES)
