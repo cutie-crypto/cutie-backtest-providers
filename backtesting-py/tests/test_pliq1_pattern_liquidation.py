@@ -7,6 +7,8 @@ Expected values are T2-2b answers written by hand from the scenario inputs (lev 
       full equity -> stop_loss at the crash close (backtesting 0.6.5 insolvency close, same as double_top)
   B1/B2  only L crossed (stop farther)                               -> liquidation at L on the crash bar
   G   crash bar opens beyond L                                       -> liquidation at that open (gap)
+red_streak_rsi off the risk layer judges its stop on the close only, so any intrabar liquidation precedes
+it (mixin legacy rule): every scenario liquidates on the crash bar and arbitration carries no stop.
 """
 from decimal import Decimal
 import json
@@ -32,11 +34,15 @@ EXPECTED = {
     'inverse_head_shoulders': ('100.899', '100.899', '108', '119', '108', '97.1', '107.1', '96.2'),
     'red_streak_rsi': ('89.24', '78.2', '93', '93', '93', '83.6', '83.7', '82.7'),
 }
+# Close-only stops: liquidation precedes them whenever L is crossed intrabar (A and B share E 93, L 83.7).
+CLOSE_ONLY = ('red_streak_rsi',)
 
 
 def expected(name, scenario, sizing):
     """-> (exit reason, exit price, closed_at bar offset from the crash bar, liquidation count, gap)."""
     *_, next_open, crash_close, liquidation, gap_open = EXPECTED[name]
+    if name in CLOSE_ONLY:
+        return ('liquidation', gap_open, 0, 1, True) if scenario == 'G' else ('liquidation', liquidation, 0, 1, False)
     if scenario == 'A1' or (scenario == 'A2' and sizing == 'pct20'):
         return 'stop_loss', next_open, 1, 0, None
     if scenario == 'A2':
@@ -87,7 +93,8 @@ def test_scenario_matrix_follows_t2_2b(monkeypatch, tmp_path, name, scenario, si
         [row] = report['liquidations']
         assert (row['fill_price'], row['liquidation_gap']) == (price, gap)
     # Every arbitration call carries the frozen stop; none falls back to the stop-less default path.
-    assert calls and {call['stop'] for call in calls} == {Decimal(stop)}
+    # Close-only stops are the exception: they must arbitrate without the stop.
+    assert calls and {call['stop'] for call in calls} == ({None} if name in CLOSE_ONLY else {Decimal(stop)})
     # Fill bar and crash bar are both arbitrated (the crash bar by the insolvency bridge when equity runs out).
     assert sorted({call['bar'] for call in calls}) == [k - 1, k]
 
@@ -96,6 +103,11 @@ def test_scenario_matrix_follows_t2_2b(monkeypatch, tmp_path, name, scenario, si
 def test_insolvency_bridge_passes_frozen_stop(monkeypatch, tmp_path, name):
     body, data, k, calls, closes = run_spied(monkeypatch, tmp_path, name, 'A2', 'full')
     bridge = [call for call in calls if call['bridge']]
+    if name in CLOSE_ONLY:
+        assert [(call['bar'], call['stop']) for call in bridge] == [(k, None)]
+        assert closes == [(k, 'liquidation')]
+        assert body['raw_report']['isolated_risk']['liquidation_count'] == 1
+        return
     assert [(call['bar'], call['stop']) for call in bridge] == [(k, Decimal(EXPECTED[name][0]))]
     assert closes == [(k, 'stop_loss')]
     assert body['raw_report']['isolated_risk']['liquidation_count'] == 0
