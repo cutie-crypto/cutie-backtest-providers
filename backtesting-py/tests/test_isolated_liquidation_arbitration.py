@@ -32,7 +32,11 @@ def test_waveb_golden_covers_exactly_the_filter_unwired_tools():
     assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in FROZEN_UNWIRED_WAVE_B}
     # Keep Wave-B bytes intact; the two futures-only SHORT-PAT-1 tools have their own head golden.
     # 集成 D：做空二两个工具同在过滤层名单，故用子集而非做空一原来的相等断言。
-    assert set(WAVEB_GOLDEN['cases']) | set(SHORT_PAT1_GOLDEN['single']) <= {t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
+    # 7-P3 起名单只缩：已接过滤层的工具离开名单，其 Wave-B 关态金样不变；仍在名单的必须没有过滤能力。
+    unwired = {t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
+    wired = {name for name in WAVEB_GOLDEN['cases'] if name not in unwired}
+    assert all(getattr(p.TOOL_SPECS['local.backtesting_py.'+name]['build'], '_supports_entry_filters', False) for name in wired)
+    assert (set(WAVEB_GOLDEN['cases']) - wired) | set(SHORT_PAT1_GOLDEN['single']) <= unwired
     assert all(set(v)=={'futures','spot'} for v in WAVEB_GOLDEN['cases'].values())
 
 

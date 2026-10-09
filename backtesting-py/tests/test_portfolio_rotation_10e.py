@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as api
 import portfolio_rotation as rotation
 from canonical_json import canonical_json_sha256
+from strategy_entry_filters import FILTER_PARAM_SCHEMA_PROPERTIES
 from portfolio_rotation import RotationError, parse_rotation, fetch_rotation, run_rotation, ema200
 from portfolio_rotation_http import TOOL_ID
 
@@ -290,7 +291,14 @@ def test_catalog_existing_entries_byte_identical():
     symbols = ['BTCUSDT', 'ETHUSDT']
     for tool_id, spec in baseline.TOOL_SPECS.items():
         old = json.dumps(baseline._catalog_tool(tool_id, spec, symbols), ensure_ascii=False, separators=(',', ':')).encode()
-        new = json.dumps(api._catalog_tool(tool_id, api.TOOL_SPECS[tool_id], symbols), ensure_ascii=False, separators=(',', ':')).encode()
+        current = api._catalog_tool(tool_id, api.TOOL_SPECS[tool_id], symbols)
+        # 7-P3 接入过滤层的工具（基线时在未接名单里）只允许多出 filter_* 键，其余逐字节不变。
+        if tool_id in getattr(baseline, 'FILTER_LAYER_UNWIRED_TOOLS', ()) and tool_id not in api.FILTER_LAYER_UNWIRED_TOOLS:
+            properties = current['param_schema']['properties']
+            assert {k for k in properties if k.startswith('filter_')} == set(FILTER_PARAM_SCHEMA_PROPERTIES), tool_id
+            current = {**current, 'param_schema': {**current['param_schema'],
+                       'properties': {k: v for k, v in properties.items() if not k.startswith('filter_')}}}
+        new = json.dumps(current, ensure_ascii=False, separators=(',', ':')).encode()
         assert old == new, tool_id
     # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。
     assert set(api.TOOL_SPECS) - set(baseline.TOOL_SPECS) == {
