@@ -16,7 +16,8 @@ import _10b2d_cases as cd
 import cutie_backtesting_provider as p
 
 RISK = dict(position_size_risk_pct=1, position_size_qty_step=0.001)
-SHORT = {'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell'}
+SHORT = {'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell',
+         'bearish_engulfing', 'shooting_star', 'evening_star'}  # SHORT-PAT-4
 # Templates whose stop needs a user stop_loss_pct to exist at all.
 EXTRA = {'red_streak_rsi': dict(stop_loss_pct=2)}
 # Closes walk to the stop: legacy close-only stop decisions (risk layer off), and RSI divergences whose
@@ -48,6 +49,9 @@ def _module(name):
 def _frame(name):
     if name == 'vwap_reversion':
         return _vwap_early_frame()
+    if name in p._SHORT_CANDLE_TOOL_NAMES.values():
+        import test_short_pat4_candles as pat4
+        return pat4.frame(name)
     module = _module(name)
     if module is None:
         return cd.frame(name)
@@ -56,6 +60,9 @@ def _frame(name):
 
 
 def _post(monkeypatch, tmp_path, name, data):
+    if name in p._SHORT_CANDLE_TOOL_NAMES.values():  # SHORT-PAT-4: futures-only, posted through its own suite
+        import test_short_pat4_candles as pat4
+        return pat4.post(monkeypatch, tmp_path, name, RISK, data)[0]
     module = _module(name) or cd
     if name == 'vwap_reversion':  # hourly frame, see _vwap_early_frame
         monkeypatch.setitem(ca.CASES, name, (_vwap_early_frame, {}, '1h'))
