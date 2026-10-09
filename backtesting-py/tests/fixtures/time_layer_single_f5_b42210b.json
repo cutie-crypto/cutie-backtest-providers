@@ -1,0 +1,18 @@
+{
+  "baseline_sha": "b42210ba1f47a2dcd98c9e2abbf9a0754088a5e5",
+  "single": {
+    "vwap_reversion": {
+      "min_bars": 2,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "938fd4f82e507cc569acc25938cc0f1ad71d234abaa3d681e35111420525570c",
+        "raw_report_sha256": "4198566c309478ff659b596b8407bddc49b2d3ec749b711508c86c41c266f2ae"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "1a989142c5d16df2b3717a8cb291680c14ddec7a31fdeaf452b4f6650315a5e5",
+        "raw_report_sha256": "4412f283624d987354ced50d8bb0806cf26eb9b4deafc8ec4df7ee52dbcacfe0"
+      }
+    }
+  }
+}
