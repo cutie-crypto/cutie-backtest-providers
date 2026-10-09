@@ -522,6 +522,42 @@
       "warmup_bars": 60,
       "assumptions": "3d94df38fffd3519f1231ee48977e779795c24a4e5aefba04dad21983fa0e774",
       "raw_report": "00c70fd2624bfd356e89a5084215d16a9c63726b4c7f992e412f3e132662e456"
+    },
+    "fibonacci_retracement/0": {
+      "min_bars": 11,
+      "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
+      "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
+      "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "warmup_bars": 0,
+      "assumptions": "62ebc4109684f8b3d19e108c0455ae3fd043aa2b3ca8ce390c127a6a5ff25dda",
+      "raw_report": "d21197fb0461a740491ad2da9880b690a19420318b0f0edd652029b3b56ef5b4"
+    },
+    "fibonacci_retracement/1": {
+      "min_bars": 11,
+      "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
+      "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
+      "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "warmup_bars": 60,
+      "assumptions": "ab5d3a8b012360e3f9dcda8aec14b19204eadc95cd9c55f1244da819499d20f8",
+      "raw_report": "fadaae8f820d160b57a53cc8fc7233e429c517acfab9d2e78b52f9ea507c681c"
+    },
+    "fibonacci_retracement@long/0": {
+      "min_bars": 11,
+      "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
+      "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
+      "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "warmup_bars": 0,
+      "assumptions": "62ebc4109684f8b3d19e108c0455ae3fd043aa2b3ca8ce390c127a6a5ff25dda",
+      "raw_report": "d21197fb0461a740491ad2da9880b690a19420318b0f0edd652029b3b56ef5b4"
+    },
+    "fibonacci_retracement@long/1": {
+      "min_bars": 11,
+      "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
+      "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
+      "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "warmup_bars": 60,
+      "assumptions": "ab5d3a8b012360e3f9dcda8aec14b19204eadc95cd9c55f1244da819499d20f8",
+      "raw_report": "fadaae8f820d160b57a53cc8fc7233e429c517acfab9d2e78b52f9ea507c681c"
     }
   }
 }

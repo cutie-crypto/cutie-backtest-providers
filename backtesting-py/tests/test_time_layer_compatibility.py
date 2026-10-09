@@ -24,6 +24,9 @@ BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_ledger_11e8c
 ADDED_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_da027cd.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(ADDED_BASELINE['single'])
 BASELINE['single'] = {**BASELINE['single'], **ADDED_BASELINE['single']}
+FIB_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_9t5_b42210b.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(FIB_BASELINE['single'])
+BASELINE['single'].update(FIB_BASELINE['single'])
 MIXINS = compat.enumerate_mixin_cases()
 
 
@@ -80,6 +83,11 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
               'time_session_start': '06:00', 'time_session_end': '10:00'}
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
+    if name == 'fibonacci_retracement':
+        from test_9t5_fibonacci import frame as fibonacci_frame
+        data = fibonacci_frame()
+        data.loc[data.index[10], ['High', 'Close']] = [117, 116]
+        params['swing_n'] = 2
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
     ctx = TimeContext.build(cls._time_config, '1h', data.index)
     cls._time_context = ctx

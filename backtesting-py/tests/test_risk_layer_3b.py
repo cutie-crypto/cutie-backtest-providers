@@ -328,6 +328,10 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         data['Open']=data.Close
         data['High']=data.Close+.01
         data['Low']=data.Close-.01
+    if name == 'fibonacci_retracement':
+        from test_9t5_fibonacci import risk_feature_frame
+        data = risk_feature_frame(feature)
+        params['swing_n'] = 2
     cls=p.TOOL_SPECS['local.backtesting_py.'+tool_name(name)]['build'](params)['strategy']
     stats=Backtest(data,cls,cash=100000,exclusive_orders=True,finalize_trades=True).run()
     assert not stats['_trades'].empty and observations
