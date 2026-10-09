@@ -5339,7 +5339,8 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
 
 def _build_range_breakout(params, profile, initial_capital):
     config = RangeConfig.parse(params, profile)
-    risk = _parse_fixed_risk_params(params)
+    # 10-B2d: the frozen opposite range side is the template's own stop (user stop keys are rejected).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     return dict(strategy=make_strategy(_FixedRiskMixin, config, risk, initial_capital),
                 executed_name="Opening Range Breakout" if profile == "orb" else "Asia Range Breakout",
                 min_bars=2, range_config=config)
@@ -5395,7 +5396,9 @@ _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name
     "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
     "double_top", "head_shoulders", "chan_3sell", "chan_3buy",
     "bullish_engulfing", "hammer_pin_bar", "morning_star", "three_white_soldiers", "bullish_doji_reversal",
-    "inside_bar_breakout", "double_bottom", "inverse_head_shoulders"))
+    "inside_bar_breakout", "double_bottom", "inverse_head_shoulders",
+    # 10-B2d: ORB / Asia size against the opposite range side frozen before the signal.
+    "opening_range_breakout", "asia_range_breakout"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
     "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
 
@@ -7049,7 +7052,7 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空。
 # 10-B2c 移出 K 线六个与双底、头肩底（按信号根冻结的形态止损定仓）；余下 6 个由 10-B2d 接上并清空名单。
 POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
-    "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
+    "calendar_schedule red_streak_rsi "
     "us_open_momentum cme_weekend_gap").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
