@@ -205,7 +205,8 @@ def test_schema_runner_and_risk_definition():
     spec=provider.TOOL_SPECS[TOOL]
     props=spec['param_schema_properties']
     assert spec['runner']==provider.TURTLE_RUNNER and spec['exclusive_orders'] is False
-    assert not set(props) & (set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) | set(provider._LEVERAGE_PARAM_SCHEMA_PROPERTIES))
+    assert set(props) & set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == set(provider._TURTLE_RISK_KEYS)
+    assert not set(props) & set(provider._LEVERAGE_PARAM_SCHEMA_PROPERTIES)
     assert not any(k.startswith('time_') for k in props)
     assert props['direction']==dict(type='string', default='long', enum=['long','short','both'])
     assert props['unit_risk_pct']['description']==provider._TURTLE_RISK_DESCRIPTION
