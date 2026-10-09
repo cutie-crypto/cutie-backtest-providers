@@ -227,7 +227,7 @@ def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
 
     10-B2b expired the short part: the five short ids must be absent and wired to
     their own frozen stop; the remaining 14 may only shrink below
-    FROZEN_PENDING_AFTER_10B2B. At 10-B2c (the last close-out batch) the whole
+    FROZEN_PENDING_AFTER_10B2B. At 10-B2d (the last close-out batch; 10-B2c takes 8 of the 14) the whole
     list must be empty: replace the subset assertion with
     `assert not p.POSITION_SIZING_PENDING_TOOLS` and retire every frozen set here.
     """
