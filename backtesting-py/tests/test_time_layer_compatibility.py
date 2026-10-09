@@ -21,6 +21,9 @@ spec = importlib.util.spec_from_file_location('time_capture', Path(__file__).par
 capture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capture)
 BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_ledger_11e8cfb.json').read_text())
+ADDED_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_da027cd.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(ADDED_BASELINE['single'])
+BASELINE['single'] = {**BASELINE['single'], **ADDED_BASELINE['single']}
 MIXINS = compat.enumerate_mixin_cases()
 
 
