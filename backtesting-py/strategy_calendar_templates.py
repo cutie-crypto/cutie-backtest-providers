@@ -47,12 +47,19 @@ def build_us_open(p, params, initial_capital):
                 self._calendar._zone, self._period, utc_datetime(self.data.index[-1]))
             self._attempted = set()
             self._window_stop = None
+            self._entry_due = None
             self._template_report = {'skipped': [], 'entries': [], 'exits': []}
             process = self._broker._process_orders
             def guarded_fill():
                 # Called at the actual fill open, before the broker executes entry.
                 for order in list(self.orders):
                     if order.parent_trade is None and self._window_stop is not None:
+                        # Match F4: never postpone a market entry across a missing fill bar.
+                        if self._entry_due is not None and utc_datetime(self.data.index[-1]) != self._entry_due:
+                            order.cancel()
+                            self._template_report['skipped'].append({'reason': 'entry_fill_bar_missing',
+                                'at': int(pd.Timestamp(self.data.index[-1]).timestamp())})
+                            continue
                         opening = self.data.Open[-1]
                         if (opening <= self._window_stop if order.is_long else opening >= self._window_stop):
                             order.cancel()
@@ -120,6 +127,7 @@ def build_us_open(p, params, initial_capital):
             if side is None or direction not in ('both', side) or now >= self._cutoff_context.last_open_utc:
                 return
             self._window_stop = min(self.data.Low[indices]) if side == 'long' else max(self.data.High[indices])
+            self._entry_due = decision
             (self._risk_buy if side == 'long' else self._risk_sell)()
             if self.orders:
                 self._template_report['entries'].append({'day': str(day), 'decision_at': int(decision.timestamp()),
