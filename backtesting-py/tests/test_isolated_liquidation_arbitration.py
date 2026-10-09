@@ -237,7 +237,7 @@ def baseline_provider():
 
 
 # New calendar tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
-@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name != 'us_open_momentum'])
+@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap')])
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):

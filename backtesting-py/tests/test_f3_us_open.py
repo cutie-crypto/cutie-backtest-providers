@@ -38,10 +38,13 @@ def response(data, values=None, name=NAME, timeframe='15m', market='futures'):
         initial_capital='10000', fee_bps='0', slippage_bps='0')}
     with tempfile.TemporaryDirectory() as reports, patch.object(p, 'AUTH_TOKEN', ''), \
          patch.object(p, 'REPORTS_DIR', Path(reports)), \
-         patch.object(p, '_fetch_ohlcv', return_value=data), \
+         patch.object(p, '_fetch_ohlcv', return_value=data) as fetch, \
          patch.object(p, '_fetch_template_warmup', return_value=data.iloc[:0]), \
          patch.object(Backtest, 'plot', return_value=None):
-        return TestClient(p.app).post('/cutie/backtest', json=body).json()
+        result = TestClient(p.app).post('/cutie/backtest', json=body).json()
+        if name == 'cme_weekend_gap':
+            assert fetch.call_args.args[1] == 'spot'
+        return result
 
 
 @pytest.mark.parametrize('day,start,entry,exit_', [
