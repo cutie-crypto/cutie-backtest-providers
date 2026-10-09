@@ -5852,6 +5852,12 @@ def _run_scale_in_out_backtest(
     config = built["scale_in_out"]
     executed_name = str(built["executed_name"])
     min_bars = int(built["min_bars"])
+    time_context = None
+    if "time_config" in config:
+        try:
+            time_context = TimeContext.build(config["time_config"], timeframe, df.index)
+        except TimeDataGapError as e:
+            return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
     warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, min_bars, df)
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars < min_bars:
@@ -5896,6 +5902,8 @@ def _run_scale_in_out_backtest(
             end_at=end_at,
             lot_order=config.get("lot_order", "fifo"),
             on_fill=on_fill,
+            **(dict(time_context=time_context, max_holding_bars=config["max_holding_bars"])
+               if time_context is not None else {}),
         )
     except LedgerInvariantError as e:
         logger.exception("scale-in/out ledger invariant violated run_id=%s", run_id)
