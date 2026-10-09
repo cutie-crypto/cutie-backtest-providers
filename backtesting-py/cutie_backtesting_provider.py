@@ -3721,9 +3721,76 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Long-only close-confirmed BIAS reversion, filled at the next open."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        period = int(params.get("ema_period", 20))
+        entry = float(params.get("bias_entry_pct", 3))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:ema_period/bias_entry_pct must be numbers")
+    if not 10 <= period <= 60:
+        raise ValueError("INVALID_PARAMS:ema_period must be within 10-60")
+    if not 1 <= entry <= 10:
+        raise ValueError("INVALID_PARAMS:bias_entry_pct must be within 1-10")
+
+    from backtesting import Strategy
+
+    min_bars = period
+
+    class BiasReversionStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            def bias(values):
+                close = pd.Series(values, dtype="float64")
+                ema = close.ewm(span=period, adjust=False).mean()
+                return ((close - ema) / ema * 100).to_numpy()
+
+            self.bias = self.I(self._warm(bias, "Close"), self.data.Close, name="BIAS")
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            value = self.bias[-1]
+            if not math.isfinite(value):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if value <= -entry:
+                    self._risk_buy()
+            elif value >= 0:
+                self.position.close()
+
+    return {
+        "strategy": BiasReversionStrategy,
+        "executed_name": f"BIAS Reversion ({period}/-{entry:g}%)",
+        "min_bars": min_bars,
+    }
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.bias_reversion": {
+        "name": "Local Backtesting.py BIAS Reversion",
+        "description": (
+            "Long-only mean reversion: buy when close-to-EMA BIAS is at or below "
+            "the negative entry percentage, exit when BIAS reaches zero or above. "
+            "Signals confirm at close and fill at the next open — maps to KOL '均线乖离率 BIAS 回归'."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_bias_reversion,
+        "param_schema_properties": {
+            "ema_period": {"type": "integer", "default": 20, "minimum": 10, "maximum": 60},
+            "bias_entry_pct": {"type": "number", "default": 3, "minimum": 1, "maximum": 10},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.ema_cross": {
         "name": "Local Backtesting.py EMA Cross",
         "description": (

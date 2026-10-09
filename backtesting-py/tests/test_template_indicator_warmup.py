@@ -182,6 +182,7 @@ def test_range_ignoring_fetch_never_reuses_main_rows_as_warmup(client, monkeypat
         ("local.backtesting_py.macd", {"fast": 5, "slow": 10, "signal": 4}),
         ("local.backtesting_py.cci_rsi", {"cci_period": 10, "rsi_period": 10}),
         ("local.backtesting_py.ema_rsi_pullback", {"ema_period": 50, "rsi_period": 10, "rsi_entry": 40, "rsi_exit": 70}),
+        ("local.backtesting_py.bias_reversion", {"ema_period": 20, "bias_entry_pct": 3}),
         ("local.backtesting_py.roc", {"roc_period": 12, "entry_threshold": 1, "exit_threshold": 0}),
         ("local.backtesting_py.supertrend", {"atr_period": 10, "multiplier": 3}),
         ("local.backtesting_py.ema_trend_rsi", {"ema_fast": 5, "ema_slow": 20, "rsi_period": 14}),
