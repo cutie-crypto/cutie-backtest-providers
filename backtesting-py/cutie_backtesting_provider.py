@@ -4334,6 +4334,57 @@ def _build_inside_bar_breakout(params: dict[str, Any], *, initial_capital: float
     return _build_long_candle_pattern(params, kind="inside_bar", initial_capital=initial_capital)
 
 
+def _build_bottom_pattern(params, *, kind, initial_capital):
+    spec = TOOL_SPECS['local.backtesting_py.' + kind]
+    error = _validate_params_against_schema(params, spec['param_schema_properties'])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    if params.get('direction', 'long') != 'long':
+        raise ValueError('INVALID_PARAMS:bottom pattern templates support long only')
+    if any(key in params if key in ('stop_loss_pct', 'take_profit_pct') else params.get(key, 0)
+           for key in _PATTERN_EXIT_KEYS):
+        raise ValueError('INVALID_PARAMS:pattern exits and risk-layer stop/take-profit parameters are mutually exclusive')
+    n = params.get('swing_n', 5)
+    if type(n) is not int:
+        raise ValueError('INVALID_PARAMS:swing_n must be an integer')
+    config = dict(n=n)
+    if kind == 'double_bottom':
+        lo, hi = params.get('min_gap_bars', 10), params.get('max_gap_bars', 60)
+        if type(lo) is not int or type(hi) is not int or lo > hi:
+            raise ValueError('INVALID_PARAMS:gap bounds must be ordered integers')
+        config.update(min_gap=lo, max_gap=hi, tolerance=params.get('bottom_tolerance_pct', 1)/100,
+                      rebound=params.get('min_rebound_pct', 3)/100)
+        min_bars = 2*n + max(n+1, lo) + 1
+    else:
+        config.update(head_depth=params.get('head_depth_pct', 2)/100,
+                      shoulder_tolerance=params.get('shoulder_tolerance_pct', 3)/100)
+        min_bars = 4*n + 3
+    risk = _parse_fixed_risk_params(params)
+    from strategy_bottom_patterns import make_bottom_strategy
+    cls = make_bottom_strategy(_FixedRiskMixin, kind=kind, risk=risk,
+                               initial_capital=initial_capital, config=config)
+    return dict(strategy=cls, min_bars=min_bars, executed_name=kind.replace('_', ' ').title(),
+        pattern_assumptions=dict(pattern_execution=
+            'Only adjacent lows confirmed by swing_n closed bars on each side are used; '
+            'a breakout may occur at the confirmation close. Strict close above High-based neckline; '
+            'market entry and triggered stop/target exits fill at the next bar open. '
+            'Stop and measured-move target are frozen at breakout; prices are not guaranteed fills. '
+            'Entry open at or below frozen stop is skipped. New confirmed low or close below stop invalidates setup. '
+            'Stop precedes holding expiry, which precedes target. Equal peak High chooses earliest bar. '
+            'Head-and-shoulders target uses neckline at breakout plus neckline at head minus head low; '
+            'nonpositive measured move or neckline at/below stop invalidates setup.'))
+
+
+@_with_time_config
+def _build_double_bottom(params, *, initial_capital=10000.0):
+    return _build_bottom_pattern(params, kind='double_bottom', initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_inverse_head_shoulders(params, *, initial_capital=10000.0):
+    return _build_bottom_pattern(params, kind='inverse_head_shoulders', initial_capital=initial_capital)
+
+
 @_with_time_config
 def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only close-confirmed BIAS reversion, filled at the next open."""
@@ -4671,6 +4722,34 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    'local.backtesting_py.double_bottom': {
+        'name': 'Local Backtesting.py Double Bottom',
+        'description': 'Long-only confirmed adjacent swing lows, High-based neckline breakout and frozen measured-move exits; next-open fills. Risk stop/target keys are incompatible.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_double_bottom,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'min_gap_bars': {'type': 'integer', 'default': 10, 'minimum': 2, 'maximum': 2000},
+            'max_gap_bars': {'type': 'integer', 'default': 60, 'minimum': 2, 'maximum': 2000},
+            'bottom_tolerance_pct': {'type': 'number', 'default': 1, 'minimum': 0, 'maximum': 20},
+            'min_rebound_pct': {'type': 'number', 'default': 3, 'minimum': 0.1, 'maximum': 100},
+        },
+    },
+    'local.backtesting_py.inverse_head_shoulders': {
+        'name': 'Local Backtesting.py Inverse Head Shoulders',
+        'description': 'Long-only confirmed adjacent swing lows, High-based neckline breakout and frozen measured-move exits; next-open fills. Risk stop/target keys are incompatible.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_inverse_head_shoulders,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'head_depth_pct': {'type': 'number', 'default': 2, 'minimum': 0.1, 'maximum': 50},
+            'shoulder_tolerance_pct': {'type': 'number', 'default': 3, 'minimum': 0, 'maximum': 20},
+        },
+    },
     "local.backtesting_py.bullish_engulfing": {
         "name": "Local Backtesting.py Bullish Engulfing",
         "description": "Long-only bullish engulfing with optional prior-20 low/Bollinger position filter; frozen pattern low minus 0.1% stop and configurable R target. Risk stop/target keys are incompatible.",
@@ -7148,6 +7227,8 @@ async def run_backtest(
             },
             "raw_report": {
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
+                **({"bottom_pattern": stats["_strategy"].bottom_pattern_report}
+                   if hasattr(stats["_strategy"], "bottom_pattern_report") else {}),
                 **({"candle_pattern": stats["_strategy"].pattern_report}
                    if hasattr(stats["_strategy"], "pattern_report") else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
