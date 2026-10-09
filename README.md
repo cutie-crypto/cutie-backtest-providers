@@ -155,6 +155,42 @@ EMA starts at the fetched history's beginning, so changing that history can
 change signals. EMA-only assumptions disclose this seed/history boundary.
 ROC, zscore, leg directions and the basket runner remain as declared.
 
+### Single-position risk sizing and compounding (provider 10B)
+
+The `_FixedRiskMixin` templates accept three mutually exclusive sizing fields:
+`position_size_notional` (fixed nominal amount), `position_size_pct` (percentage
+of the capital base allocated to margin), or `position_size_risk_pct` (percentage
+of capital put at risk at the frozen initial stop). Risk percentages are expressed
+as 1 for 1%, must be positive, and may not exceed 100.
+
+New fields are opt-in. If `position_size_risk_pct`, `compound`, and
+`position_size_qty_step` are all omitted, legacy sizing, compounding, trades,
+equity and result.v2 bytes follow the existing path. If any is supplied, exactly
+one of the three sizing fields is required. In this new path, `compound` defaults
+to false: the capital base is initial principal. When true, it is net equity
+immediately before the fill, after prior settlements, fees and slippage.
+Fixed nominal sizing remains nominal in either setting.
+
+`position_size_qty_step` is a positive quantity increment (default `0.00000001`,
+minimum `0.00000001`, matching result.v2 quantity precision). It is a caller
+parameter, not a verified exchange rule. At the next-open market fill, risk
+quantity is `floor_to_step(capital_base * risk_pct / abs(fill_price - initial_stop))`.
+The initial stop and R targets use the same frozen fill-time state; ATR comes
+only from closed bars through the signal candle. Leverage affects margin,
+never the risk quantity. Margin plus entry fee and slippage must fit available
+funds; the provider cancels unaffordable entries rather than reducing quantity.
+The existing next-open exit model remains applicable: the risk budget is an
+initial-stop sizing target, not a guaranteed bound on gap losses.
+
+A missing stop is rejected before fetching data. Invalid/unavailable fill-time
+stops, non-positive distances, sub-step quantities and insufficient funds are
+recorded in `raw_report.position_sizing.rejections`; valid fills disclose the
+capital base, actual fill price, quantity, initial stop and margin. A final-bar
+signal has no next open and is rejected. Turtle, RSI scale-in/out, grid, DCA and
+all kernel_v3 baskets reject every new field, including `compound=false`.
+This change enables the provider only; server parsing and user interfaces are
+separate work.
+
 ### StrategySpec v2 artifact execution
 
 The backtesting.py service also advertises
