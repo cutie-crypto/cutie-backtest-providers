@@ -6827,7 +6827,7 @@ POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for nam
     "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi vwap_reversion "
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
     "double_bottom inverse_head_shoulders macd_bullish_divergence rsi_bullish_divergence chan_3buy "
-    "fibonacci_retracement us_open_momentum cme_weekend_gap").split())
+    "fibonacci_retracement us_open_momentum cme_weekend_gap double_top head_shoulders").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
         TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)

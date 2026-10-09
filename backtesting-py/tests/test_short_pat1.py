@@ -475,3 +475,18 @@ def test_long_builders_and_tool_spec_source_byte_unchanged():
         return result
     assert len(fragments(current))==5
     assert fragments(current)==fragments(old)
+
+
+@pytest.mark.parametrize('name',NAMES)
+@pytest.mark.parametrize('key,value',[
+    ('position_size_risk_pct',1),('compound',False),('position_size_qty_step',.1),
+])
+def test_pending_sizing_futures_rejected_before_fetch(monkeypatch,name,key,value):
+    monkeypatch.setattr(p,'AUTH_TOKEN','')
+    monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a,**kw:pytest.fail('pending sizing fetched main data'))
+    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *a,**kw:pytest.fail('pending sizing fetched warmup'))
+    assert key not in p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']
+    body=TestClient(p.app).post('/cutie/backtest',json=request(name,{key:value},frame(name))).json()
+    assert body['error_type']=='INVALID_PARAMS'
+    assert body['raw_report']['position_sizing']['rejections']==[
+        {'reason':'position sizing is not wired to this template yet'}]
