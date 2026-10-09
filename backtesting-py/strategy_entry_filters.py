@@ -8,7 +8,11 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import pandas as pd
 
+from strategy_time_layer import fixed_timeframe_milliseconds
+
 FILTER_PARAM_SCHEMA_PROPERTIES = {
+    'filter_timeframe': {'type': 'string', 'default': '',
+                         'enum': ['', '1m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w']},
     'filter_layer_enabled': {'type': 'boolean', 'default': False},
     'filter_ema_enabled': {'type': 'boolean', 'default': False},
     'filter_ema_period': {'type': 'integer', 'default': 200, 'minimum': 2, 'maximum': 500},
@@ -23,6 +27,7 @@ FILTER_PARAM_SCHEMA_PROPERTIES = {
 
 @dataclass(frozen=True)
 class FilterConfig:
+    timeframe: str = ""
     enabled: bool = False
     ema_enabled: bool = False
     ema_period: int = 200
@@ -47,9 +52,11 @@ class FilterConfig:
                 except OverflowError:
                     valid = False
             else:
-                valid = type(value) is {'boolean': bool, 'integer': int}[spec['type']]
+                valid = type(value) is {'boolean': bool, 'integer': int, 'string': str}[spec['type']]
             if not valid:
                 raise ValueError(f'INVALID_PARAMS:{key} must be a finite {spec["type"]}')
+            if 'enum' in spec and value not in spec['enum']:
+                raise ValueError(f'INVALID_PARAMS:{key} must be one of {spec["enum"]}')
             if 'minimum' in spec and not spec['minimum'] <= value <= spec['maximum']:
                 raise ValueError(f'INVALID_PARAMS:{key} must be within {spec["minimum"]}-{spec["maximum"]}')
         if not values['filter_layer_enabled'] and any(values[k] != s['default'] for k, s in FILTER_PARAM_SCHEMA_PROPERTIES.items()):
@@ -66,6 +73,12 @@ class FilterConfig:
         if values['filter_macd_fast'] >= values['filter_macd_slow']:
             raise ValueError('INVALID_PARAMS:filter_macd_fast must be less than filter_macd_slow')
         return cls(**{key.removeprefix('filter_').replace('layer_enabled', 'enabled'): value for key, value in values.items()})
+
+    def validate_timeframe(self, primary: str) -> int:
+        primary_step = fixed_timeframe_milliseconds(primary)
+        if self.timeframe and fixed_timeframe_milliseconds(self.timeframe) <= primary_step:
+            raise ValueError('INVALID_PARAMS:filter_timeframe must be larger than the primary timeframe')
+        return primary_step
 
     @property
     def required_bars(self) -> int:
@@ -105,3 +118,58 @@ def entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertrend: Cal
         allowed &= np.isfinite(trend) & (trend == 1)
     allowed[:max(0, config.required_bars - 1)] = False
     return allowed
+
+
+class FilterHistoryError(ValueError):
+    """The requested closed higher-timeframe history cannot be proven complete."""
+
+
+@dataclass(frozen=True)
+class HigherTimeframeContext:
+    mask: np.ndarray
+    report: dict[str, Any]
+
+    @classmethod
+    def build(cls, config: FilterConfig, primary: str, opens: pd.DatetimeIndex,
+              fetch: Callable[[int, int], pd.DataFrame], supertrend: Callable,
+              grid_offset_ms: int = 0) -> HigherTimeframeContext:
+        """One strict fetch; align indicator values by close <= primary decision.
+
+        History includes required_bars already closed at the first decision.
+        Weekly grids use the provider's Monday UTC anchor. Never fill gaps or
+        substitute primary candles. Source tails outside the span are ignored.
+        """
+        primary_step = config.validate_timeframe(primary)
+        step = fixed_timeframe_milliseconds(config.timeframe)
+        decisions = opens.as_unit('ns').asi8 // 1000000 + primary_step
+        latest_opens = ((decisions - grid_offset_ms) // step) * step + grid_offset_ms - step
+        first = int(latest_opens[0] - (config.required_bars - 1) * step)
+        last = int(latest_opens[-1])
+        if first < 0:
+            raise FilterHistoryError('Higher-timeframe history precedes available timestamps')
+        try:
+            data = fetch(first // 1000, (last + step) // 1000)
+        except Exception as exc:
+            raise FilterHistoryError('Higher-timeframe history fetch unavailable') from exc
+        expected = pd.to_datetime(np.arange(first, last + step, step, dtype=np.int64), unit='ms', utc=True)
+        index = pd.to_datetime(data.index, utc=True)
+        data = data.loc[(index >= expected[0]) & (index <= expected[-1])].copy()
+        actual = pd.to_datetime(data.index, utc=True)
+        if not actual.equals(expected):
+            raise FilterHistoryError('Higher-timeframe history has missing or misaligned candles')
+        if not np.isfinite(data[['Open', 'High', 'Low', 'Close', 'Volume']].to_numpy(dtype='float64')).all():
+            raise FilterHistoryError('Higher-timeframe history has non-finite candles')
+        coarse = entry_mask(config, data, supertrend)
+        closes = expected.as_unit('ns').asi8 // 1000000 + step
+        # Exact close boundary is available; the current unfinished candle is not.
+        positions = np.searchsorted(closes, decisions, side='right') - 1
+        if np.any(positions < config.required_bars - 1):
+            raise FilterHistoryError('Higher-timeframe indicator warmup is insufficient')
+        return cls(coarse[positions], dict(
+            timeframe=config.timeframe, primary_timeframe=primary,
+            clock='higher_bar_close_lte_primary_bar_close', boundary='inclusive',
+            fetched_bars=len(data), history_start_at=first // 1000,
+            history_end_at=(last + step) // 1000,
+            data_source=data.attrs.get('cutie_data_source'),
+            central_market_data_used=data.attrs.get('cutie_central_market_data_used'),
+            market_data_cache_hit=data.attrs.get('cutie_market_data_cache_hit', False)))
