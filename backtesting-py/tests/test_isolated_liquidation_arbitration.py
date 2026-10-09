@@ -27,12 +27,17 @@ WAVEC_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_wavec_fd
 SHORT_PAT1_GOLDEN = json.loads((Path(__file__).parent/'fixtures/short_pat1_off.json').read_text())
 
 
+# 7-P3a：这 6 个 K 线形态已接过滤层、移出名单；其关态金样（Wave-B 字节）保持不变。
+WIRED_7P3A = {'bullish_engulfing', 'hammer_pin_bar', 'morning_star', 'three_white_soldiers',
+              'bullish_doji_reversal', 'inside_bar_breakout'}
+
+
 def test_waveb_golden_covers_exactly_the_filter_unwired_tools():
     from test_entry_filters import FROZEN_UNWIRED_WAVE_B
     assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in FROZEN_UNWIRED_WAVE_B}
     # Keep Wave-B bytes intact; the two futures-only SHORT-PAT-1 tools have their own head golden.
     # 集成 D：做空二两个工具同在过滤层名单，故用子集而非做空一原来的相等断言。
-    assert set(WAVEB_GOLDEN['cases']) | set(SHORT_PAT1_GOLDEN['single']) <= {t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
+    assert set(WAVEB_GOLDEN['cases']) | set(SHORT_PAT1_GOLDEN['single']) <= ({t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS} | WIRED_7P3A)
     assert all(set(v)=={'futures','spot'} for v in WAVEB_GOLDEN['cases'].values())
 
 
@@ -259,7 +264,7 @@ def baseline_provider():
 
 
 # New calendar / short-pattern tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
-@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap', 'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders')])
+@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap', 'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell')])
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
@@ -282,6 +287,12 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         assert out['result_status']=='success',out
         return out
     result=invoke(p)
+    if name == 'ema_cross':
+        # Validate the added S4b disclosure separately, then keep the exact
+        # historical comparator for every pre-existing field and result.v2.
+        assert result['assumptions'].pop('ema_warmup') == 'EMA 预热取 10×最长周期（目标 600 根，实得 0 根）'
+        assert result['raw_report'].pop('ema_warmup') == dict(requested_bars=600,
+            target_bars=600, actual_bars=0, truncated=False, tenfold_reached=False)
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')
     if name in ('vwap_reversion', 'fibonacci_retracement') or golden:
         # F5, 9T5 and the Wave-B tools did not exist at e25886e: compare their independent immutable goldens

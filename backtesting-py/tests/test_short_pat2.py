@@ -439,8 +439,8 @@ def test_branch_head_isolated_off_golden(name,warm,explicit):
 
 
 def test_catalog_count_and_default_params():
-    # 集成 D：做空二基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空一 +2 → 53
-    assert len(p.TOOL_SPECS)==53
+    # 集成 D：做空二基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空一 +2 → 53；SHORT-PAT-3 缠论三卖 +1 → 54
+    assert len(p.TOOL_SPECS)==54
     for name in NAMES:
         assert p.TOOL_SPECS['local.backtesting_py.'+name]['markets']==['futures']
         props=p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']
@@ -499,4 +499,16 @@ def test_bullish_builders_and_catalog_source_bytes_unchanged():
                         result[key.value]=ast.get_source_segment(source,value)
         return result
     assert len(sections(current))==5
-    assert sections(current)==sections(original)
+    # 10-B2a: the only sanctioned bullish delta wires risk sizing to the frozen L2 stop.
+    expected=sections(original)
+    for old,new in (
+        ("    risk = _parse_fixed_risk_params(params)\n",
+         "    # Divergence rejects user stops; its L2 stop is frozen at the signal (10-B2a).\n"
+         "    risk = _parse_fixed_risk_params(params, template_initial_stop=True)\n"),
+        ("                                  initial_capital=initial_capital, rsi_series=_rsi_series)\n",
+         "                                  initial_capital=initial_capital, rsi_series=_rsi_series)\n"
+         "    # 10-B2a: risk distance = |actual fill - Low(L2) * 0.999| frozen in the order tag.\n"
+         "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n")):
+        assert expected['_build_divergence'].count(old)==1
+        expected['_build_divergence']=expected['_build_divergence'].replace(old,new)
+    assert sections(current)==expected

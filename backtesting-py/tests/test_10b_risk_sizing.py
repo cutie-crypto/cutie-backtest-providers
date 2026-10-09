@@ -207,12 +207,29 @@ FROZEN_PENDING_SHORT_PAT12 = frozenset({
 })
 
 
+# SHORT-PAT-3：缠论三卖与 chan_3buy 同口径（冻结出场、未核定仓）进待接名单；只比 SHORT_PAT12 多本批 1 个 id。
+FROZEN_PENDING_SHORT_PAT3 = FROZEN_PENDING_SHORT_PAT12 | {"local.backtesting_py.chan_3sell"}
+
+
+# 10-B2b：做空 5 个（集成 D 的 4 个 + SHORT-PAT-3 的 chan_3sell）全部接定仓，做空部分到期。
+SHORT_PENDING_EXPIRED_10B2B = frozenset("local.backtesting_py." + n for n in (
+    "macd_bearish_divergence", "rsi_bearish_divergence", "double_top", "head_shoulders", "chan_3sell"))
+WIRED_10B2B = SHORT_PENDING_EXPIRED_10B2B | {"local.backtesting_py.chan_3buy"}
+# 10-B2a 已移出的 4 个（PAT3 冻结时它们仍在名单里，故上界同时减去，24 - 4 - 6 = 14）。
+WIRED_10B2A = frozenset("local.backtesting_py." + n for n in (
+    "macd_bullish_divergence", "rsi_bullish_divergence", "fibonacci_retracement", "vwap_reversion"))
+# 10-B2b 之后的唯一上界；SHORT_PAT12 / PAT3 只保留作历史推导，不再作上界。
+FROZEN_PENDING_AFTER_10B2B = FROZEN_PENDING_SHORT_PAT3 - WIRED_10B2A - WIRED_10B2B
+
+
 def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
     """Pending tools may only shrink; tools with sizing keys must leave this list.
 
-    At 10-B2 close-out POSITION_SIZING_PENDING_TOOLS must be empty; both frozen
-    sets expire together. Replace the subset assertion with
-    `assert not p.POSITION_SIZING_PENDING_TOOLS`.
+    10-B2b expired the short part: the five short ids must be absent and wired to
+    their own frozen stop; the remaining 14 may only shrink below
+    FROZEN_PENDING_AFTER_10B2B. At 10-B2d (the last close-out batch; 10-B2c takes 8 of the 14) the whole
+    list must be empty: replace the subset assertion with
+    `assert not p.POSITION_SIZING_PENDING_TOOLS` and retire every frozen set here.
     """
     assert len(FROZEN_PENDING_SHORT_PAT12) == 23
     assert FROZEN_PENDING_SHORT_PAT12 - FROZEN_PENDING_INTEG_C == {
@@ -221,7 +238,14 @@ def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
         "local.backtesting_py.double_top",
         "local.backtesting_py.head_shoulders",
     }
-    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_SHORT_PAT12
+    assert len(FROZEN_PENDING_SHORT_PAT3) == 24
+    assert FROZEN_PENDING_SHORT_PAT3 - FROZEN_PENDING_SHORT_PAT12 == {"local.backtesting_py.chan_3sell"}
+    assert SHORT_PENDING_EXPIRED_10B2B == (FROZEN_PENDING_SHORT_PAT3 - FROZEN_PENDING_INTEG_C)
+    assert len(FROZEN_PENDING_AFTER_10B2B) == 14
+    # 做空部分到期：交集为空，且本批 6 个都按模板冻结止损定仓。
+    assert not (SHORT_PENDING_EXPIRED_10B2B & p.POSITION_SIZING_PENDING_TOOLS)
+    assert WIRED_10B2B <= p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
+    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_AFTER_10B2B
     assert p.POSITION_SIZING_PENDING_TOOLS.isdisjoint(p.POSITION_SIZING_UNWIRED_TOOLS)
     for tool in p.POSITION_SIZING_PENDING_TOOLS:
         assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
@@ -233,7 +257,10 @@ def test_catalog_and_builders_cover_actual_mixins():
         wired = tool not in p.POSITION_SIZING_UNWIRED_TOOLS | p.POSITION_SIZING_PENDING_TOOLS
         assert POSITION_SIZE_KEYS <= set(spec['param_schema_properties']) if wired else POSITION_SIZE_KEYS.isdisjoint(spec['param_schema_properties'])
         if wired:
-            cls = spec['build'](PARAMS)['strategy']
+            # 10-B2a: template-stop tools size against their own frozen stop (divergence rejects user stops).
+            params = ({k: v for k, v in PARAMS.items() if k != 'stop_loss_pct'}
+                      if tool in p.POSITION_SIZING_TEMPLATE_STOP_TOOLS else PARAMS)
+            cls = spec['build'](params)['strategy']
             assert issubclass(cls, p._FixedRiskMixin)
             assert cls._risk['compound'] is False
     assert p.POSITION_SIZING_UNWIRED_TOOLS == {tool for tool,spec in p.TOOL_SPECS.items()
