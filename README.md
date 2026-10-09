@@ -63,6 +63,18 @@ flag and trade count use each entry's frozen initial stop, including equality;
 subsequent stop ratchets do not increase this count. These nodes appear only for
 futures L>1. Funding, MMR>0, and exchange-specific liquidation rules are excluded.
 
+### Basket ratio MA option
+
+`local.backtesting_py.basket_ratio_sma_cross` accepts optional `ma_type=sma|ema`.
+Omitted or explicit `sma` retains the frozen SMA spec, trades and equity bytes.
+EMA is v3-only, uses `adjust=False`, seeds with the first N aligned valid values' SMA,
+and emits its first value after N bars. Later values use `alpha=2/(N+1)` and
+`alpha*x + (1-alpha)*previous` in decimal128. Crosses need `slow_window+1`
+aligned bars; the provider fetches `slow_window` bars before the requested start.
+EMA starts at the fetched history's beginning, so changing that history can
+change signals. EMA-only assumptions disclose this seed/history boundary.
+ROC, zscore, leg directions and the basket runner remain as declared.
+
 ### StrategySpec v2 artifact execution
 
 The backtesting.py service also advertises

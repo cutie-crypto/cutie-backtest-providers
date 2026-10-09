@@ -415,7 +415,7 @@ INVALID_CASES = [
     ("primitive_unknown_ref", _set(("features", 3, "source_stream"), "feature:nope"), "$.strategy_spec.features[3].source_stream", ERR_SPEC_INVALID),
     ("primitive_v2_source", _set(("features", 3, "source_stream"), "kline.primary.close"), "$.strategy_spec.features[3].source_stream", ERR_SPEC_INVALID),
     ("primitive_bad_kline_leg", _set(("features", 3, "source_stream"), "kline.leg.c.close"), "$.strategy_spec.features[3].source_stream", ERR_SPEC_INVALID),
-    ("primitive_unknown", _set(("features", 3, "primitive"), "ema"), "$.strategy_spec.features[3].primitive", ERR_SPEC_INVALID),
+    ("primitive_unknown", _set(("features", 3, "primitive"), "wma"), "$.strategy_spec.features[3].primitive", ERR_SPEC_INVALID),
     ("primitive_version", _set(("features", 3, "primitive_version"), "2"), "$.strategy_spec.features[3].primitive_version", ERR_SPEC_INVALID),
     ("primitive_required_false", _set(("features", 3, "required"), False), "$.strategy_spec.features[3].required", ERR_SPEC_INVALID),
     ("primitive_output_integer", _set(("features", 3, "output_type"), "integer"), "$.strategy_spec.features[3].output_type", ERR_SPEC_INVALID),
