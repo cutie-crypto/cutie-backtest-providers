@@ -4912,6 +4912,61 @@ def _build_inside_bar_breakout(params: dict[str, Any], *, initial_capital: float
     return _build_long_candle_pattern(params, kind="inside_bar", initial_capital=initial_capital)
 
 
+_SHORT_CANDLE_TOOL_NAMES = {"engulfing": "bearish_engulfing", "pin_bar": "shooting_star", "star": "evening_star"}
+
+
+def _build_short_candle_pattern(params, *, kind, initial_capital):
+    """SHORT-PAT-4: futures short mirror of _build_long_candle_pattern (engulfing / pin bar / star)."""
+    tool_id = "local.backtesting_py." + _SHORT_CANDLE_TOOL_NAMES[kind]
+    error = _validate_params_against_schema(params, TOOL_SPECS[tool_id]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    if params.get("direction", "short") != "short":
+        raise ValueError("INVALID_PARAMS:bearish candle pattern templates support short only")
+    if any(key in params if key in ("stop_loss_pct", "take_profit_pct") else params.get(key, 0)
+           for key in _PATTERN_EXIT_KEYS):
+        raise ValueError("INVALID_PARAMS:pattern exits and risk-layer stop/take-profit parameters are mutually exclusive")
+    # Candle patterns reject user stops; the pattern stop is frozen at the signal (10-B2c mirror).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
+    position_filter = params.get("position_filter", True)
+    reward_r = params.get("reward_r", 2)
+    min_bars = 23 if kind == "star" else (21 if position_filter else 2)
+    from strategy_pattern_template import make_short_pattern_strategy
+    strategy = make_short_pattern_strategy(_FixedRiskMixin, kind=kind, position_filter=position_filter,
+                                           reward_r=reward_r, risk=risk, initial_capital=initial_capital)
+    # Risk distance = |actual fill - anchor High * 1.001| frozen in PatternEntry.stop.
+    strategy._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
+    return {"strategy": strategy, "min_bars": min_bars,
+            "executed_name": f"{_SHORT_CANDLE_TOOL_NAMES[kind].replace('_', ' ').title()} ({reward_r}R)",
+            "pattern_assumptions": {"pattern_execution":
+                "Futures short only. Pattern confirmed at close; market entry and triggered stop/target exits fill at "
+                "the next bar open. Stop/target prices are not guaranteed fills; an entry open at or above the frozen "
+                "stop is skipped."
+                + (" Isolated liquidation uses T2-2b gap/distance arbitration against the frozen stop."
+                   if risk.get("leverage", 1) > 1 else "")
+                + {"engulfing": " Stop uses the higher High of the two candles.",
+                   "pin_bar": " Stop uses the upper-shadow tip.",
+                   "star": " Stop uses the second candle high; middle body is at most 30% of first body."}[kind]}}
+
+
+@_with_time_config
+@_with_filter_config(default_direction="short")
+def _build_bearish_engulfing(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_short_candle_pattern(params, kind="engulfing", initial_capital=initial_capital)
+
+
+@_with_time_config
+@_with_filter_config(default_direction="short")
+def _build_shooting_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_short_candle_pattern(params, kind="pin_bar", initial_capital=initial_capital)
+
+
+@_with_time_config
+@_with_filter_config(default_direction="short")
+def _build_evening_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_short_candle_pattern(params, kind="star", initial_capital=initial_capital)
+
+
 def _build_bottom_pattern(params, *, kind, initial_capital):
     spec = TOOL_SPECS['local.backtesting_py.' + kind]
     error = _validate_params_against_schema(params, spec['param_schema_properties'])
@@ -5428,6 +5483,8 @@ _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name
     "double_top", "head_shoulders", "chan_3sell", "chan_3buy",
     "bullish_engulfing", "hammer_pin_bar", "morning_star", "three_white_soldiers", "bullish_doji_reversal",
     "inside_bar_breakout", "double_bottom", "inverse_head_shoulders",
+    # SHORT-PAT-4: the three futures short candle patterns.
+    "bearish_engulfing", "shooting_star", "evening_star",
     # 10-B2d: ORB / Asia size against the opposite range side frozen before the signal.
     "opening_range_breakout", "asia_range_breakout"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
@@ -6333,6 +6390,41 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "param_schema_properties": {
             "direction": {"type": "string", "default": "long", "enum": ["long"]},
             "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bearish_engulfing": {
+        "name": "Local Backtesting.py Bearish Engulfing",
+        "description": "Futures short-only bearish engulfing with optional prior-20 high/upper-Bollinger position filter; frozen pattern high plus 0.1% stop and configurable R target. Risk stop/target keys are incompatible.",
+        "strategy_family": "mean_reversion", "is_default": False, "markets": ["futures"],
+        "build": _build_bearish_engulfing,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "short", "enum": ["short"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.shooting_star": {
+        "name": "Local Backtesting.py Shooting Star",
+        "description": "Futures short-only shooting star with optional prior-20 new-high/EMA20/60 position filter; frozen upper-shadow tip plus 0.1% stop and configurable R target. Risk stop/target keys are incompatible.",
+        "strategy_family": "mean_reversion", "is_default": False, "markets": ["futures"],
+        "build": _build_shooting_star,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "short", "enum": ["short"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.evening_star": {
+        "name": "Local Backtesting.py Evening Star",
+        "description": "Futures short-only three-bar evening star; middle body <= 30% of first body; stop above second high by 0.1%, next-open entry and configurable R target.",
+        "strategy_family": "mean_reversion", "is_default": False, "markets": ["futures"],
+        "build": _build_evening_star,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "short", "enum": ["short"]},
             "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
