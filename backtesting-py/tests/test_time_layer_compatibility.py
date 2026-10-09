@@ -48,6 +48,9 @@ BASELINE['single'].update(FIB_BASELINE['single'])
 NEW_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_calendar_templates.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(NEW_BASELINE['single'])
 BASELINE['single'].update(NEW_BASELINE['single'])
+SHORTPAT2_BASELINE = json.loads((Path(__file__).parent / 'fixtures/shortpat2_time_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(SHORTPAT2_BASELINE['single'])
+BASELINE['single'].update(SHORTPAT2_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -138,6 +141,16 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         if name.startswith('rsi'):
             params['rsi_exit_above'] = 100
             data.iloc[27, 1] = 150
+    if name in SHORTPAT2_BASELINE['single']:
+        from test_short_pat2 import hand_frame, hand_params
+        data = hand_frame()
+        data.index = pd.date_range('2026-01-01 08:00', periods=len(data), freq='h')
+        params.update(hand_params(name))
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
+        if name.startswith('rsi'):
+            params['rsi_exit_below'] = 0
+            data.iloc[27, 2] = 50
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
     if name == 'chan_3buy':

@@ -25,7 +25,9 @@ WAVEC_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_wavec_fd
 
 
 def test_waveb_golden_covers_exactly_the_filter_unwired_tools():
-    assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
+    from test_entry_filters import FROZEN_UNWIRED_WAVE_B
+    assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in FROZEN_UNWIRED_WAVE_B}
+    assert set(WAVEB_GOLDEN['cases']) <= {t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
     assert all(set(v)=={'futures','spot'} for v in WAVEB_GOLDEN['cases'].values())
 
 
@@ -251,8 +253,8 @@ def baseline_provider():
     return module
 
 
-# New calendar tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
-@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap')])
+# New calendar / bearish tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
+@pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap', 'macd_bearish_divergence', 'rsi_bearish_divergence')])
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
