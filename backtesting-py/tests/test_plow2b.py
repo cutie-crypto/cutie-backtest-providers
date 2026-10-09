@@ -87,3 +87,36 @@ def test_sizing_initial_stop_is_the_stop_the_exit_fires_on(name, monkeypatch, tm
     closed = pd.Timestamp(trade['closed_at'], unit='s', tz=data.index.tz)
     assert closed == data.index[f + 2], trade
     assert Decimal(trade['exit_price']) == Decimal(str(data['Open'].iloc[f + 2])), trade
+
+
+# 2. Self-placed template entries carry _sizing_signal_bar (the no_next_open guard reads it).
+SIGNAL_BAR_FAMILIES = {  # one tool per template module that places its own entry order
+    'strategy_divergence': 'macd_bullish_divergence',
+    'strategy_top_patterns': 'double_top',
+    'strategy_bottom_patterns': 'double_bottom',
+    'strategy_pattern_template': 'bullish_engulfing',
+    'strategy_chan': 'chan_3buy',
+}
+
+
+@pytest.mark.parametrize('module_name', sorted(SIGNAL_BAR_FAMILIES))
+def test_sized_template_entry_order_records_its_signal_bar(module_name, monkeypatch, tmp_path):
+    from backtesting import Strategy
+    name = SIGNAL_BAR_FAMILIES[module_name]
+    placed = []
+    for side in ('buy', 'sell'):
+        original = getattr(Strategy, side)
+
+        def spy(self, *args, _original=original, **kwargs):
+            order = _original(self, *args, **kwargs)
+            if type(self).__module__ == module_name:
+                placed.append((order, len(self.data) - 1, kwargs.get('tag')))
+            return order
+        monkeypatch.setattr(Strategy, side, spy)
+    body = _post(monkeypatch, tmp_path, name, _frame(name))
+    assert body['result_status'] == 'success', body.get('error_message')
+    assert body['raw_report']['position_sizing']['fills'], 'fixture must open a sized trade'
+    assert placed, 'template placed no entry order'
+    for order, bar, tag in placed:
+        assert tag is not None and tag.signal_bar == bar
+        assert getattr(order, '_sizing_signal_bar', None) == bar

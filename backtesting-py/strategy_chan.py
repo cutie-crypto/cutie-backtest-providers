@@ -278,6 +278,8 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long
             tag = ChanEntry(len(self.data)-1, signal.stop, signal.center, signal.zd if short else signal.zg)
             size = self._risk_entry_size()
             entry = self.sell if short else self.buy
-            entry(tag=tag) if size is None else entry(size=size, tag=tag)
+            order = entry(tag=tag) if size is None else entry(size=size, tag=tag)
+            if self._risk.get("position_sizing_enabled"):
+                order._sizing_signal_bar = len(self.data) - 1
 
     return ChanStrategy
