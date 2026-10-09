@@ -115,7 +115,7 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
                     return
                 self.position.close()
                 return
-            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry():
+            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():
                 return
             index = self._warmup_bars + len(self.data) - 1
             if position_filter:

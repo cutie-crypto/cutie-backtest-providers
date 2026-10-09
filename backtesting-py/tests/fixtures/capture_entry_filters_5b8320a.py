@@ -52,7 +52,11 @@ def snapshot(name, params, warm):
 
 
 def compat_encode(value):
+    import dataclasses
     import pandas as pd
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        # 7-P3a: candle templates tag entries with a frozen dataclass (PatternEntry).
+        return dataclasses.asdict(value)
     if value is pd.NaT:
         return 'NaT'
     if isinstance(value, float):

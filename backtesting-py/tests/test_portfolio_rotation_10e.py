@@ -29,6 +29,7 @@ import portfolio_rotation as rotation
 from canonical_json import canonical_json_sha256
 from portfolio_rotation import RotationError, parse_rotation, fetch_rotation, run_rotation, ema200
 from portfolio_rotation_http import TOOL_ID
+from strategy_entry_filters import FILTER_PARAM_SCHEMA_PROPERTIES
 
 D = Decimal
 DAY = 86400
@@ -278,6 +279,10 @@ def test_registered_http_runner_and_optional_metric(monkeypatch):
     assert response['fills'] == response2['fills']
 
 
+WIRED_SINCE_7P3A = {'bullish_engulfing', 'hammer_pin_bar', 'morning_star', 'three_white_soldiers',
+                    'bullish_doji_reversal', 'inside_bar_breakout'}
+
+
 def test_catalog_existing_entries_byte_identical():
     root = Path(__file__).resolve().parents[2]
     # 集成 D：基线由 10-D 头 b0e150a（基于旧 main 09bd963）改为集成起点 main 32ae030；
@@ -291,12 +296,17 @@ def test_catalog_existing_entries_byte_identical():
     for tool_id, spec in baseline.TOOL_SPECS.items():
         old = json.dumps(baseline._catalog_tool(tool_id, spec, symbols), ensure_ascii=False, separators=(',', ':')).encode()
         entry = api._catalog_tool(tool_id, api.TOOL_SPECS[tool_id], symbols)
+        properties = entry['param_schema']['properties']
         if tool_id in api.POSITION_SIZING_TEMPLATE_STOP_TOOLS:
             # 10-B2a：这 4 个模板接了按风险定仓，schema 恢复定仓键是唯一允许的差异；去掉后仍须逐字节相同。
-            properties = entry['param_schema']['properties']
             assert set(api.POSITION_SIZE_KEYS) <= set(properties), tool_id
             for key in api.POSITION_SIZE_KEYS:
                 properties.pop(key)
+        if tool_id.removeprefix('local.backtesting_py.') in WIRED_SINCE_7P3A:
+            # 7-P3a：这 6 个 K 线形态模板接入过滤层后 schema 只新增 filter_* 键，其余字段逐字节不变。
+            added = {key for key in properties if key.startswith('filter_')}
+            assert added == set(FILTER_PARAM_SCHEMA_PROPERTIES), tool_id
+            entry['param_schema']['properties'] = {k: v for k, v in properties.items() if k not in added}
         new = json.dumps(entry, ensure_ascii=False, separators=(',', ':')).encode()
         assert old == new, tool_id
     # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。
