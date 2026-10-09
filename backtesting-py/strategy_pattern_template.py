@@ -18,7 +18,8 @@ class PatternEntry:
     stop: float
 
 
-def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initial_capital):
+def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initial_capital,
+                          breakout_window=3, trend_filter=False, rsi_series=None):
     class LongPatternStrategy(mixin, Strategy):
         _risk = risk
         _initial_capital = initial_capital
@@ -37,10 +38,43 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
                 # Population standard deviation, including the confirmation close.
                 mean = close.rolling(20).mean()
                 indicators = {"bb_lower": (mean - 2 * close.rolling(20).std(ddof=0)).to_numpy()}
-            else:
+            elif kind == "pin_bar":
                 indicators = {f"ema{period}": close.ewm(span=period, adjust=False, min_periods=period).mean().to_numpy()
                               for period in (20, 60)}
+            elif kind == "doji":
+                indicators = {"rsi": rsi_series(arrays[3], 14)}
+            else:
+                indicators = {}
             self._patterns = candle_patterns(kind, geometry, indicators=indicators)
+            candidates = self._patterns.bullish if position_filter else self._patterns.bullish_shape
+            # Compute only causal confirmation facts over warmup + main bars.
+            # Candidate consumption is independent of positions and session gates.
+            self._signals = list(candidates)
+            self._anchors = list(geometry.low)
+            if kind == "star":
+                self._anchors = [geometry.low[max(0, i - 1)] for i in range(len(candidates))]
+            elif kind == "soldiers":
+                self._anchors = [geometry.low[max(0, i - 2)] for i in range(len(candidates))]
+            elif kind == "doji":
+                self._signals = [i > 0 and candidates[i - 1] and geometry.close[i] > geometry.high[i - 1]
+                                 for i in range(len(candidates))]
+                self._anchors = [geometry.low[max(0, i - 1)] for i in range(len(candidates))]
+            elif kind == "inside_bar":
+                self.pattern_report.update(breakout_window=breakout_window, trend_filter=trend_filter)
+                ema = close.ewm(span=20, adjust=False, min_periods=20).mean().to_numpy()
+                self._signals = [False] * len(candidates)
+                armed = None
+                for i in range(len(candidates)):
+                    if armed is not None:
+                        inside, mother = armed
+                        if i - inside > breakout_window:
+                            armed = None
+                        elif geometry.close[i] > geometry.high[mother]:
+                            self._signals[i] = not trend_filter or geometry.close[i] > ema[i]
+                            self._anchors[i] = geometry.low[mother]
+                            armed = None  # one breakout consumes the candidate, even if filtered
+                    if candidates[i] and not self._signals[i]:
+                        armed = (i, i - 1)  # latest inside bar replaces an unbroken candidate
             self._geometry = geometry
             self._main_bars = len(self.data)
             process_orders = self._broker._process_orders
@@ -83,12 +117,12 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
                 return
             index = self._warmup_bars + len(self.data) - 1
             if position_filter:
-                if index < 20 or not self._patterns.bullish[index]:
+                if index < 20 or not self._signals[index]:
                     return
-            elif not self._patterns.bullish_shape[index]:
+            elif not self._signals[index]:
                 return
             anchor = (min(self._geometry.low[index - 1:index + 1]) if kind == "engulfing"
-                      else self._geometry.low[index])
+                      else self._anchors[index])
             tag = PatternEntry(signal_bar=len(self.data) - 1, stop=anchor * 0.999)
             size = self._risk_entry_size()
             self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)

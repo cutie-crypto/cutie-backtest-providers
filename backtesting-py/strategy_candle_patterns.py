@@ -2,7 +2,7 @@
 
 All means/extrema use the preceding lookback bars, excluding the current bar.
 Signals here are candidates at the last pattern close. Doji confirmation and
-inside-bar breakout/expiry belong to a future template, not this library.
+inside-bar breakout/expiry belong to the order template, not this library.
 """
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ def candle_patterns(kind: str, geometry: Geometry, *, config: PatternConfig | No
             sp = (i >= g.lookback and g.high[i] > max(g.high[i - g.lookback:i])) or ema_touch
         elif kind == 'star' and i >= 2:
             a, m = i - 2, i - 1
-            middle = small[m] and g.body[m] <= g.body[a] * cfg.star_middle_body_fraction
+            middle = g.body[m] <= g.body[a] * cfg.star_middle_body_fraction
             b = (large[a] and g.close[a] < g.open[a] and middle and g.close[m] < g.close[a]
                  and up and g.close[i] > (g.open[a] + g.close[a]) / 2)
             s = (large[a] and g.close[a] > g.open[a] and middle and g.close[m] > g.close[a]

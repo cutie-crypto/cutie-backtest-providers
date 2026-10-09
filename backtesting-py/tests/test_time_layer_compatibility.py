@@ -26,6 +26,8 @@ assert BASELINE['single'].keys().isdisjoint(ADDED_BASELINE['single'])
 BASELINE['single'] = {**BASELINE['single'], **ADDED_BASELINE['single']}
 PATTERN_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t1_candle_off.json').read_text())
 BASELINE['single'].update(PATTERN_BASELINE['single'])
+PATTERN2_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t2_candle_off.json').read_text())
+BASELINE['single'].update(PATTERN2_BASELINE['single'])
 MIXINS = compat.enumerate_mixin_cases()
 
 
@@ -75,7 +77,10 @@ def test_schema_only_runtime_single_position_templates():
 @pytest.mark.parametrize('name', MIXINS)
 @pytest.mark.parametrize('risk_enabled', [False, True])
 def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled):
-    if name in PATTERN_BASELINE['single']:
+    if name in PATTERN2_BASELINE['single']:
+        from test_9t2_patterns import compatibility_frame
+        data = compatibility_frame(name)
+    elif name in PATTERN_BASELINE['single']:
         from test_9t1_engulf_pin import compatibility_frame
         data = compatibility_frame(name)
     else:
@@ -84,7 +89,7 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
     params = {**compat.PARAMS.get(name, {}), 'stop_loss_pct': 3, 'take_profit_pct': 5,
               'risk_layer_enabled': risk_enabled, 'time_layer_enabled': True,
               'time_session_start': '06:00', 'time_session_end': '10:00'}
-    if name in PATTERN_BASELINE['single']:
+    if name in PATTERN_BASELINE['single'] or name in PATTERN2_BASELINE['single']:
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
     if name == 'ichimoku_cloud_breakout':
