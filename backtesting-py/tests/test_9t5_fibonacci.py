@@ -367,3 +367,25 @@ def risk_feature_frame(feature):
         data.loc[data.index[9],['Open','High','Low','Close']]=[108,108.3,108,108.25]
         data.loc[data.index[10],['Open','High','Low','Close']]=[108.25,109,108,108.5]
     return data
+
+
+@pytest.mark.parametrize('pricing,reason,exit_price', [
+    (dict(stop_loss_pct=3), 'stop_loss', 104.76),
+    (dict(stop_loss_pct=20), 'liquidation', 98.1),
+    (dict(take_profit_pct=5), 'liquidation', 98.1),
+])
+def test_explicit_frozen_stop_liquidation_arbitration(monkeypatch, tmp_path, pricing, reason, exit_price):
+    # Signal close108: 3% stop104.76, 20% stop86.4; fill109/L10 => liquidation98.1.
+    # Low95 crosses both stops. Close96 triggers the legacy close-only stop.
+    # Stop orders retain next-open execution; set that open to the hand-written stop.
+    data = frame()
+    data.loc[data.index[9], ['Open', 'High', 'Low', 'Close']] = [109, 110, 95, 96]
+    data.loc[data.index[10], ['Open', 'High', 'Low', 'Close']] = [104.76, 108, 104, 107]
+    body = response(monkeypatch, tmp_path, params={
+        **pricing, 'leverage': 10, 'position_size_pct': 20,
+    }, data=data, market='futures')
+    assert body['result_status'] == 'success', body
+    assert len(body['trades']) == 1
+    assert body['raw_report']['fibonacci_retracement']['exit_decisions'][0]['reason'] == reason
+    assert float(body['trades'][0]['entry_price']) == 109
+    assert float(body['trades'][0]['exit_price']) == exit_price

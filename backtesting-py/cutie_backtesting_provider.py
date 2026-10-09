@@ -5192,7 +5192,9 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                         self._isolated_stop_beyond_trades += 1
             if self._risk.get("risk_layer_enabled"):
                 exited = self._risk_layer_check_exit()
-            elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop if intrinsic else None):
+            # Frozen intrinsic and user stops both participate in arbitration.
+            # With no configured user stop, initial_stop is None: liquidation only.
+            elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
                 exited = True
             elif any(order.parent_trade is trade for order in self.orders):
                 return True
