@@ -116,7 +116,7 @@ def test_filter_is_queried_only_on_judgment_bar(monkeypatch):
 def test_short_direction_is_not_offered():
     properties = p.TOOL_SPECS[TOOL]['param_schema_properties']
     assert 'direction' not in properties
-    with pytest.raises(ValueError, match='long direction only'):
+    with pytest.raises(ValueError, match="unknown parameter 'direction'"):
         p.TOOL_SPECS[TOOL]['build']({**EMA2, 'direction': 'short'})
 
 
@@ -388,7 +388,8 @@ def test_range_calendar_schema_trim_keeps_filter_keys_and_no_unconsumed_risk_key
         assert set(FILTER_PARAM_SCHEMA_PROPERTIES) <= set(properties), name
 
 
-def test_unwired_list_is_exactly_the_five_short_templates():
-    # 基点 11 - red_streak_rsi(7-P3b) = 10；7-P3b2 再移出 5 个做多模板：10 - 5 = 5，只剩做空，留给 7-P4。
-    assert {t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS} == SHORT_ONLY
-    assert len(p.FILTER_LAYER_UNWIRED_TOOLS) == 5
+def test_unwired_list_empty_after_7p4_short_templates():
+    # 基点 11 - red_streak_rsi(7-P3b) = 10；7-P3b2 再移出 5 个做多模板：10 - 5 = 5；7-P4 接入这 5 个做空模板后为 0。
+    assert not p.FILTER_LAYER_UNWIRED_TOOLS
+    assert all(getattr(p.TOOL_SPECS['local.backtesting_py.' + n]['build'], '_supports_entry_filters', False)
+               for n in SHORT_ONLY)
