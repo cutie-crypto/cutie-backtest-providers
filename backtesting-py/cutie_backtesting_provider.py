@@ -5077,7 +5077,50 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
 
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
+@_with_time_config
+@_with_filter_config
+def _build_chan_3buy(params, *, initial_capital=10000.0):
+    risk = _parse_fixed_risk_params(params)
+    if params.get('direction', 'long') != 'long':
+        raise ValueError('INVALID_PARAMS:Chan third buy supports long only')
+    bi_mode = params.get('bi_mode', 'new')
+    if bi_mode not in ('new', 'old'):
+        raise ValueError('INVALID_PARAMS:bi_mode must be new or old')
+    frozen_exit_keys = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplier',
+        'take_profit_r', 'trailing_stop_pct', 'breakeven_stop',
+        *(f'tp{n}_{suffix}' for n in (1,2,3) for suffix in ('r','close_pct')))
+    if any((key in params if key in ('stop_loss_pct','take_profit_pct') else params.get(key))
+           for key in frozen_exit_keys):
+        raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
+    from strategy_chan import make_chan_strategy
+    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)
+    return dict(strategy=cls, executed_name='Chan Third Buy ('+bi_mode+')', min_bars=3,
+        chan_assumptions=dict(chan_execution={
+            'direction': 'long_only', 'bi_mode': bi_mode,
+            'independent_bars_between_endpoints': 1 if bi_mode=='new' else 5,
+            'confirmation': 'right_independent_bar_close_facts_never_revised',
+            'initial_inclusion': 'defer_merge_until_direction_observable',
+            'centers': 'latest_three_completed_strokes_no_reuse_extension_or_expansion',
+            'fill': 'next_bar_open_market', 'stop': 'pullback_low_times_0.999',
+            'target': 'actual_fill_plus_2_times_fill_minus_stop_frozen',
+            'priority': 'stop_before_time_expiry_before_take_profit_before_close_below_zg',
+            'consumption': 'one_opportunity_per_center_even_if_entry_blocked',
+            'final_bar': 'engine_finalize_trades_settlement',
+            'leverage': 'shared_isolated_liquidation_arbitration'}))
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    'local.backtesting_py.chan_3buy': {
+        'name': 'Local Backtesting.py Chan Third Buy',
+        'description': 'Long-only simplified Chan third buy from confirmed fractals, alternating strokes and a three-stroke center. Next-open entry and frozen pullback stop / actual-fill 2R target.',
+        'strategy_family': 'breakout', 'is_default': False, 'build': _build_chan_3buy,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'bi_mode': {'type': 'string', 'default': 'new', 'enum': ['new', 'old']},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+        },
+    },
+
     "local.backtesting_py.stoch_oversold_cross": {
         "name": "Local Backtesting.py Stochastic Oversold Cross",
         "description": (
@@ -7642,6 +7685,7 @@ async def run_backtest(
                     stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
                    if isolated else {}),
                 **turtle_assumptions,
+                **built.get("chan_assumptions", {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -7676,6 +7720,8 @@ async def run_backtest(
                     equity_scale_dec=equity_scale_dec)
                    if isolated else {}),
                 **turtle_raw_report,
+                **({"chan": stats["_strategy"].chan_report}
+                   if hasattr(stats["_strategy"], "chan_report") else {}),
                 **({"entry_filters": filter_config.report()} if filter_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
