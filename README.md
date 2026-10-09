@@ -48,6 +48,12 @@ Liquidation precedes holding expiry, profit targets, and template signals. Legac
 close-only stops occur after intrabar liquidation. Reentry is blocked on that bar.
 The broker still closes at the next open; a per-request close callback reconciles
 cash to cumulative result.v2 PnL before subsequent sizing and insolvency checks.
+If close-price marking would exhaust the account before Strategy.next, the broker
+order hook invokes the same arbitration point and bridges a pending liquidation
+with positive settled equity until its next-open close. Genuine exhaustion still
+uses the library check. Earlier partial exits retain their own PnL; an internal
+remaining-unit sidecar selects only the liquidated remainder for settlement and
+reporting, without changing liquidation records or result.v2 trade keys.
 Result.v2 rewrites the exit bucket and price to the liquidation bar and preserves
 all frozen keys. Gap fills use that bar's open; their PnL can exceed margin.
 `raw_report.isolated_risk` discloses margin lost and excess loss, while

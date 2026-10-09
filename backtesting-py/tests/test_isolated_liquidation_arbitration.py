@@ -32,7 +32,7 @@ def frame(rows):
 
 def run(extra=None, *, side='long', rows=None, signal=False, reentry=False, fee=0, slip=0, cash=1000):
     data = frame(rows or [FLAT]*3+[[100,131,69,100]]+[FLAT]*4)
-    params = dict(leverage=5, position_size_pct=20, **(extra or {}))
+    params = {'leverage':5, 'position_size_pct':20, **(extra or {})}
     config = TimeConfig.parse(params)
     class Manual(p._FixedRiskMixin, Strategy):
         _risk = p._parse_fixed_risk_params(params)
@@ -67,9 +67,11 @@ def run(extra=None, *, side='long', rows=None, signal=False, reentry=False, fee=
     result = p._build_result_v2(stats_trades=stats['_trades'],equity_scale_dec=D(1),fee_bps=D(fee),
         slippage_bps=D(slip),initial_capital=D(cash),start_at=START,end_at=START+len(data)*STEP,
         symbol='BTCUSDT',market='futures',timeframe='1h',exchange_id='binance',df=data,
-        leverage=5,liquidations=obj._isolated_liquidations)
+        leverage=5,liquidations=obj._isolated_liquidations,
+        liquidation_units=obj._isolated_liquidation_units)
     report = p._build_isolated_risk_report(result['trades'],leverage=5,market='futures',
-        df=data,step=STEP,liquidations=obj._isolated_liquidations)['isolated_risk']
+        df=data,step=STEP,liquidations=obj._isolated_liquidations,
+        liquidation_units=obj._isolated_liquidation_units)['isolated_risk']
     return stats,result,report
 
 
@@ -219,6 +221,8 @@ def test_http_raw_stop_percentage_and_dynamic_count(monkeypatch,tmp_path):
     assert body['assumptions']['isolated_margin']==margin_assumptions(True,1)
     body=http(monkeypatch,tmp_path,data,dict(leverage=5,ema_fast=2,ema_slow=3,position_size_pct=20,stop_loss_pct=2))
     assert body['assumptions']['isolated_margin']==margin_assumptions(False,0)
+    body=http(monkeypatch,tmp_path,data,dict(leverage=5,ema_fast=2,ema_slow=3,position_size_pct=20,stop_loss_pct=20))
+    assert body['assumptions']['isolated_margin']==margin_assumptions(True,0)
 
 
 @pytest.fixture(scope='module')
@@ -258,3 +262,26 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
     for key in ('assumptions','raw_report'):
         assert json.dumps(result[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))
     assert 'isolated_margin' not in result['assumptions'] and 'isolated_risk' not in result['raw_report']
+
+
+def test_liquidation_preserves_unallocated_equity_before_broker_insolvency():
+    stats,result,report=run(dict(position_size_pct=50),
+        rows=[FLAT]*3+[[100,101,49,50],[110,111,99,100]]+[FLAT]*3,reentry=True)
+    assert result['trades'][0]['pnl']=='-500'
+    assert list(abs(stats['_trades'].Size))==[25,12]
+    assert stats['_strategy']._broker._cash==500
+    assert report['liquidation_count']==1
+
+
+def test_partial_take_profit_then_liquidation_only_settles_remaining_units():
+    stats,result,report=run(dict(risk_layer_enabled=True,stop_loss_pct=20,
+        tp1_r=1,tp1_close_pct=50,tp2_r=2,tp2_close_pct=50),
+        rows=[FLAT]*3+[[100,121,99,120],[100,101,69,100]]+[FLAT]*3)
+    assert list(abs(stats['_trades'].Size))==[5,5]
+    assert [t['pnl'] for t in result['trades']]==['0','-100']
+    assert [t['exit_price'] for t in result['trades']]==['100','80']
+    assert stats['_strategy']._broker._cash==900
+    assert report=={'leverage':5,'liquidation_count':1,'liquidated_margin_total':'100',
+        'liquidation_gap_count':0,'loss_beyond_margin_total':'0','liquidations':[
+        {'seq':2,'liquidation_price':'80','fill_price':'80','liquidation_gap':False,
+         'margin_lost':'100','loss_beyond_margin':'0'}]}
