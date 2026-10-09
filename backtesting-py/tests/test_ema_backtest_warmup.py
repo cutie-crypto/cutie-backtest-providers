@@ -82,7 +82,16 @@ def test_http_fetch_depth_and_cap(client, monkeypatch, fast, slow, target):
     assert calls == [(START, START+(slow+1)*STEP), (START-(target+2)*STEP, START)]
     assert body['raw_report']['ema_warmup'] == dict(requested_bars=slow*10,
         target_bars=target, actual_bars=target, truncated=(slow==3000), tenfold_reached=(slow!=3000))
-    assert body['assumptions']['ema_warmup'] == f'EMA 预热取 10×最长周期（目标 {target} 根，实得 {target} 根）'
+    expected = f'EMA 预热取 10×最长周期（目标 {target} 根，实得 {target} 根）'
+    if slow == 3000:
+        # Frozen customer-facing cap disclosure; requested=30000 is handwritten.
+        expected += ('回测已把预热截到 20000 根；实盘自动信号要求 10×最长周期 ≤ 20000 根，'
+                     '本参数（需 30000 根）无法布防自动信号，请调小慢线周期')
+        assert '需 30000 根' in body['assumptions']['ema_warmup']
+    else:
+        assert '回测已把预热截到' not in body['assumptions']['ema_warmup']
+        assert '无法布防自动信号' not in body['assumptions']['ema_warmup']
+    assert body['assumptions']['ema_warmup'] == expected
 
 
 def test_tenfold_suppresses_seed_cross_at_first_evaluated_bar(client, monkeypatch):
