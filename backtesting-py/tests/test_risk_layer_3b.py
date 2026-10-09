@@ -322,6 +322,8 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         return exited
     monkeypatch.setattr(p._FixedRiskMixin,'_risk_layer_check_exit',observe)
     params=dict(PARAMS.get(name,{}),risk_layer_enabled=True,**FEATURES[feature])
+    if name == 'opening_range_breakout':
+        params['flatten_at'] = '23:00'  # 1h test grid
     if name == 'calendar_schedule':
         params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
     if name == 'ema_rsi_pullback':

@@ -82,6 +82,7 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
               'risk_layer_enabled': risk_enabled, 'time_layer_enabled': True,
               'time_session_start': '06:00', 'time_session_end': '10:00'}
     if name in F1_CASES:
+        params['flatten_at'] = '23:00'  # this test uses 1h candles
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
     if name in F2_CASES:
