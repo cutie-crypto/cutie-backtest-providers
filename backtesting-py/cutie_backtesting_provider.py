@@ -3667,7 +3667,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
 
 
 def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
-    """Long-only EMA pullback; rearm only on a later flat bar above the zone."""
+    """Directional EMA pullback; rearm only on a later flat bar beyond the zone."""
     risk = _parse_fixed_risk_params(params)
     try:
         ema_fast = int(params.get("ema_fast", 20))
@@ -3683,6 +3683,10 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
         raise ValueError("INVALID_PARAMS:ema_fast must be less than ema_slow")
     if not 0 <= tolerance <= 1:
         raise ValueError("INVALID_PARAMS:pullback_tolerance_pct must be within 0-1")
+
+    direction = params.get("direction", "long")
+    if direction not in ("long", "short"):
+        raise ValueError("INVALID_PARAMS:direction must be long or short")
 
     from backtesting import Strategy
 
@@ -3713,12 +3717,22 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
             slow = self.ema_slow[-1]
             close = self.data.Close[-1]
             if self.position:
-                if close < slow:
+                if (direction == "short" and close > slow) or (direction == "long" and close < slow):
                     self.position.close()
                 return
             if self._warmup_bars + len(self.data) < min_bars:
                 return
             if not (math.isfinite(fast) and math.isfinite(slow)):
+                return
+            if direction == "short":
+                zone = fast * (1 - tolerance / 100)
+                if self.armed and fast < slow and self.data.High[-1] >= zone and close < fast:
+                    self._risk_sell()
+                    self.armed = False
+                    # Orders fill next bar: do not rearm on this still-flat signal bar.
+                    return
+                if close < zone:
+                    self.armed = True
                 return
             zone = fast * (1 + tolerance / 100)
             if self.armed and fast > slow and self.data.Low[-1] <= zone and close > fast:
@@ -3731,7 +3745,7 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
 
     return {
         "strategy": EmaPullbackStrategy,
-        "executed_name": f"EMA Pullback ({ema_fast}/{ema_slow}, tolerance={tolerance:g}%)",
+        "executed_name": f"EMA Pullback ({ema_fast}/{ema_slow}, tolerance={tolerance:g}%)" + (" Short" if direction == "short" else ""),
         "min_bars": min_bars,
     }
 
@@ -4462,7 +4476,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "local.backtesting_py.ema_pullback": {
         "name": "Local Backtesting.py EMA Pullback",
         "description": (
-            "Long-only trend pullback: fast EMA above slow EMA, low touches the "
+            "Trend pullback (default long; short mirrors all conditions): fast EMA above slow EMA, low touches the "
             "tolerance zone and close recovers above fast EMA. Exit below slow EMA; "
             "rearm only while flat after a close above the zone — maps to KOL "
             "'趋势回踩 / 回踩均线'."
@@ -4474,6 +4488,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "ema_fast": {"type": "integer", "default": 20, "minimum": 5, "maximum": 50},
             "ema_slow": {"type": "integer", "default": 60, "minimum": 30, "maximum": 200},
             "pullback_tolerance_pct": {"type": "number", "default": 0.2, "minimum": 0, "maximum": 1},
+            "direction": {"type": "string", "enum": ["long", "short"], "default": "long"},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
