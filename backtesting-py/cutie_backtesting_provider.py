@@ -36,6 +36,8 @@ from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
+from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
+from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from strategy_execution import (
@@ -4624,9 +4626,54 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
             "executed_name": f"Ichimoku Cloud Breakout ({tenkan}/{kijun}/{senkou_b})", "min_bars": min_bars}
 
 
+def _build_range_breakout(params, profile, initial_capital):
+    config = RangeConfig.parse(params, profile)
+    risk = _parse_fixed_risk_params(params)
+    return dict(strategy=make_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Opening Range Breakout" if profile == "orb" else "Asia Range Breakout",
+                min_bars=2, range_config=config)
+
+
+@_with_time_config
+def _build_opening_range_breakout(params, *, initial_capital=10000.0):
+    return _build_range_breakout(params, "orb", initial_capital)
+
+
+@_with_time_config
+def _build_asia_range_breakout(params, *, initial_capital=10000.0):
+    return _build_range_breakout(params, "asia", initial_capital)
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.opening_range_breakout": {
+        "name": "Local Backtesting.py Opening Range Breakout",
+        "description": "One daily close-confirmed frozen opening-range breakout; next-open market exits.",
+        "strategy_family": "breakout", "is_default": False, "build": _build_opening_range_breakout,
+        "param_schema_properties": {
+            "range_start": {"type": "string", "default": "00:00"},
+            "range_minutes": {"type": "integer", "default": 60, "minimum": 15, "maximum": 240},
+            "flatten_at": {"type": "string", "default": "23:45"},
+            "take_profit_multiple": {"type": "number", "default": 2.0, "minimum": 0.01, "maximum": 100},
+            "direction": {"type": "string", "default": "long", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.asia_range_breakout": {
+        "name": "Local Backtesting.py Asia Range Breakout",
+        "description": "One daily frozen Asia-range breakout in the European opening window; next-open market exits.",
+        "strategy_family": "breakout", "is_default": False, "build": _build_asia_range_breakout,
+        "param_schema_properties": {
+            "range_start": {"type": "string", "default": "00:00"},
+            "range_end": {"type": "string", "default": "07:00"},
+            "breakout_start": {"type": "string", "default": "07:00"},
+            "flatten_at": {"type": "string", "default": "20:00"},
+            "take_profit_multiple": {"type": "number", "default": 1.5, "minimum": 0.01, "maximum": 100},
+            "direction": {"type": "string", "default": "long", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.stoch_oversold_cross": {
         "name": "Local Backtesting.py Stochastic Oversold Cross",
         "description": (
@@ -6734,6 +6781,8 @@ async def run_backtest(
 
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
+    if effective_tool_id in ("local.backtesting_py.opening_range_breakout", "local.backtesting_py.asia_range_breakout") and market == "spot" and params.get("direction", "long") != "long":
+        return _validation_failure("INVALID_PARAMS", "range breakout short/both requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -6758,9 +6807,29 @@ async def run_backtest(
         except ValueError as e:
             return _validation_failure("INVALID_PARAMS", str(e))
 
+    range_config = built.get("range_config")
+    if range_config is not None:
+        from datetime import datetime, timezone
+        try:
+            range_config.validate_grid(timeframe, datetime.fromtimestamp(start_at, timezone.utc), datetime.fromtimestamp(end_at, timezone.utc))
+        except ValueError as exc:
+            return _validation_failure("INVALID_PARAMS", str(exc))
+
     # --- Fetch OHLCV ---
     try:
-        df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
+        if range_config is not None:
+            history = _fetch_strict_time_history(exchange_id, market, symbol, timeframe, start_at, end_at, range_config.definition)
+            start = datetime.fromtimestamp(start_at, timezone.utc)
+            prefix = history.loc[[utc_datetime(value) < start for value in history.index]]
+            df = history.loc[[utc_datetime(value) >= start for value in history.index]].copy()
+            strategy_class._range_prefix = tuple(SeriesBar(t, h, lo, c, v) for t, h, lo, c, v in
+                zip(prefix.index, prefix.High, prefix.Low, prefix.Close, prefix.Volume))
+            strategy_class._range_timeframe = timeframe
+            strategy_class._range_backtest_start = start
+        else:
+            df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
+    except TimeHistoryError as exc:
+        return _business_failure(run_id, exc.error_type, str(exc), reason=exc.reason)
     except MarketDataFetchError as e:
         return _business_failure(
             run_id,
@@ -6835,7 +6904,8 @@ async def run_backtest(
     risk = strategy_class._risk
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
-    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df)
+    warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None else
+                 _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df))
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
@@ -6874,6 +6944,10 @@ async def run_backtest(
             **_leverage_backtest_kwargs(leverage),
         )
         stats = bt.run()
+        if range_config is not None:
+            for daily in stats["_strategy"].daily_ranges.values():
+                if daily["triggered"] and daily["exit_reason"] is None:
+                    daily["exit_reason"] = "engine_finalize_trades_settlement"
 
         # Generate HTML report
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -7003,6 +7077,7 @@ async def run_backtest(
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
+                **(range_assumptions(range_config) if range_config is not None else {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -7030,6 +7105,7 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **({"range_breakout_days": list(stats["_strategy"].daily_ranges.values())} if range_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
