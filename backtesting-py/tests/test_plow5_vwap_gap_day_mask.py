@@ -21,19 +21,19 @@ DAYS = 5
 GAP = pd.date_range('2026-08-31 04:00', '2026-08-31 12:00', freq='1h', tz='UTC')  # the 9 central-source bars
 
 
-def series():
-    index = pd.date_range('2026-08-29', periods=24 * DAYS, freq='1h', tz='UTC')
+def series(days=DAYS):
+    index = pd.date_range('2026-08-29', periods=24 * days, freq='1h', tz='UTC')
     close = [90.0 if t.hour == 1 else 100.0 for t in index]
     return pd.DataFrame(dict(Open=close, High=close, Low=close, Close=close, Volume=1.0), index=index)
 
 
-def post(monkeypatch, tmp_path, data, params=None):
+def post(monkeypatch, tmp_path, data, params=None, days=DAYS):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a: data.copy())
     monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a: data.iloc[:0])
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **kw: None)
-    full = series()
+    full = series(days)
     request = dict(run_id='plow5', provider_tool_id=TOOL, provider_params=params or {}, symbol='BTCUSDT',
                    market='spot', timeframe='1h', start_at=int(full.index[0].timestamp()),
                    end_at=int(full.index[-1].timestamp()) + 3600, initial_capital='10000', fee_bps='0',
@@ -126,3 +126,14 @@ def test_off_grid_or_duplicate_open_still_fails(monkeypatch, tmp_path, shift):
     body = post(monkeypatch, tmp_path, data)
     assert (body['error_type'], body['error_message']) == (
         'TIME_DATA_GAP', 'TIME_DATA_GAP:VWAP requires a complete UTC candle grid'), body
+
+
+def test_whole_utc_day_missing_within_tolerance_runs(monkeypatch, tmp_path):
+    # pi critical: a masked day with no candle at all must still split the VWAP runs (264 >= 288 * 0.9).
+    whole = pd.date_range('2026-08-31', periods=24, freq='1h', tz='UTC')
+    body = post(monkeypatch, tmp_path, series(12).drop(whole), days=12)
+    assert body['result_status'] == 'success', body
+    gaps = body['assumptions']['vwap_main_gaps']
+    assert (gaps['missing_bars'], gaps['masked_utc_days']) == (24, ['2026-08-31'])
+    opened = {day(t['opened_at']) for t in body['trades']}
+    assert '2026-08-31' not in opened and {'2026-08-30', '2026-09-01'} <= opened
