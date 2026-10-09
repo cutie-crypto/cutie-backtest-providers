@@ -58,8 +58,10 @@ lifo 自上一次买入成交起被卖出批次的 opened_at 单调不增（每�
 from __future__ import annotations
 
 import functools
+import inspect
 import math
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import (
     ROUND_DOWN,
     ROUND_HALF_EVEN,
@@ -75,6 +77,7 @@ from decimal import (
 from typing import Any, Callable, Optional, Sequence
 
 from canonical_json import canonical_decimal_str
+from strategy_time_layer import TimeContext, expiry_due
 
 BUY = "buy"
 SELL = "sell"
@@ -97,7 +100,9 @@ _EXACT = Context(
 )
 
 SignalFn = Callable[[int], Any]  # "buy" | "sell" | "hold" | "sell_all" | ("buy", Decimal) | ("sell_lot",) | ("sell_all",)
-FillFn = Callable[[int, str, bool, Decimal], None]
+# Legacy callbacks keep their four positional arguments. Reason-aware callbacks
+# optionally accept keyword-only reason; enabled expiry/gate notifications use it.
+FillFn = Callable[..., None]
 
 
 class LedgerInvariantError(RuntimeError):
@@ -201,6 +206,7 @@ class LedgerResult:
     realized_pnl: Decimal
     total_invested: Decimal
     max_unrealized_loss: Decimal
+    time_expiry_fills: int = 0
 
 
 def threshold_signal(values: Sequence[float], *, buy_below: float, sell_above: float) -> SignalFn:
@@ -453,7 +459,12 @@ def run_scale_in_out(
     end_at: int,
     lot_order: str = FIFO,
     on_fill: Optional[FillFn] = None,
+    time_context: TimeContext | None = None,
+    max_holding_bars: int = 0,
 ) -> LedgerResult:
+    # Enabled-only notifications: expiry uses the next-open fill index/price;
+    # a gated BUY uses the decision index/close with filled=False and
+    # reason=time_entry_blocked so templates can undo signal-side state.
     ledger = ScaleInOutLedger(
         initial_capital=initial_capital,
         buy_notional=buy_notional,
@@ -467,10 +478,29 @@ def run_scale_in_out(
     snapshots: list[BarSnapshot] = []
     pending: tuple[str, Optional[Decimal]] = (HOLD, None)
     last = len(bars) - 1
+    round_entry_bar = None
+    pending_reason = None
+    time_expiry_fills = 0
+    reason_aware = False
+    if time_context is not None and on_fill is not None:
+        try:
+            inspect.signature(on_fill).bind(0, BUY, False, Decimal(0), reason="time_expiry")
+            reason_aware = True
+        except (TypeError, ValueError):
+            pass
+
+    def notify(index, action, filled, price, reason=None):
+        if on_fill is not None:
+            if reason is not None and reason_aware:
+                on_fill(index, action, filled, price, reason=reason)
+            else:
+                on_fill(index, action, filled, price)
+
     for index, bar in enumerate(bars):
         ledger.begin_bar()
         filled = False
         action, notional = pending
+        was_empty = not ledger.lots
         if action == BUY:
             filled = ledger.buy(bar.open_time, bar.open, notional=notional)
         elif action == SELL:
@@ -482,13 +512,20 @@ def run_scale_in_out(
             if filled:  # 信号清仓是一次卖出成交（计入 ⑤ 同根冲突判定）；期末强平不计
                 ledger.sell_fills += 1
                 ledger.sells_this_bar += 1
+        if filled and time_context is not None:
+            if action == BUY and was_empty:
+                round_entry_bar = index  # Round clock starts only on its first actual fill.
+            if not ledger.lots:
+                round_entry_bar = None
+            if pending_reason == "time_expiry":
+                time_expiry_fills += 1
         if filled:
             ledger.check_invariants(bar.open, f"bar {index} fill")
             fill_ts.add(bar.open_time)
             if bar.open_time > start_at:
                 points[bar.open_time] = ledger.equity_by_cash(bar.open)
         if on_fill is not None and action != HOLD:
-            on_fill(index, action, filled, bar.open)
+            notify(index, action, filled, bar.open, pending_reason)
         ledger.check_invariants(bar.close, f"bar {index} close")
         snapshots.append(BarSnapshot(
             index=index,
@@ -507,7 +544,26 @@ def run_scale_in_out(
         if ledger.lots and start_at < bar.close_time < end_at:
             points[bar.close_time] = ledger.equity_by_cash(bar.close)
         if index < last and bars[index + 1].open_time < end_at:
-            pending = _parse_signal(index, signal(index))
+            pending_reason = None
+            fact = None
+            if time_context is not None and round_entry_bar is not None:
+                fact = expiry_due(
+                    holding_bars=max_holding_bars, entry_bar=round_entry_bar, bar=index,
+                    entry_utc=datetime.fromtimestamp(bars[round_entry_bar].open_time, timezone.utc),
+                    bar_open=datetime.fromtimestamp(bar.open_time, timezone.utc), context=time_context)
+            if fact is not None and fact.due:
+                pending = (SELL_ALL, None)  # Expiry wins before evaluating template state.
+                pending_reason = "time_expiry"
+                if fact.flatten_delay_bars is not None:
+                    time_context.flatten_delays.append(fact.flatten_delay_bars)
+            else:
+                pending = _parse_signal(index, signal(index))
+                if time_context is not None and pending[0] == BUY:
+                    bar_open = datetime.fromtimestamp(bar.open_time, timezone.utc)
+                    if (bar_open >= time_context.last_open_utc or
+                            not time_context.allow_entry(time_context.decision_utc(bar_open))):
+                        notify(index, BUY, False, bar.close, "time_entry_blocked")
+                        pending = (HOLD, None)
         else:
             pending = (HOLD, None)  # D5：最后一根（及成交会落在 end_at 上的那根）不判新信号
 
@@ -533,6 +589,7 @@ def run_scale_in_out(
         realized_pnl=ledger.realized_pnl,
         total_invested=ledger.total_invested,
         max_unrealized_loss=min([Decimal(0), *(snap.unrealized_pnl for snap in snapshots)]),
+        time_expiry_fills=time_expiry_fills,
     )
 
 

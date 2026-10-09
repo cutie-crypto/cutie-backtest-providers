@@ -66,7 +66,7 @@ def test_disabled_response_and_start_unchanged(monkeypatch, name, warm):
 def test_schema_only_runtime_single_position_templates():
     actual = {tool.removeprefix('local.backtesting_py.') for tool, spec in provider.TOOL_SPECS.items()
               if 'time_layer_enabled' in spec['param_schema_properties']}
-    assert actual == {compat.tool_name(name) for name in MIXINS}
+    assert actual == {compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS)
     assert set(BASELINE['single']) == set(MIXINS)
 
 
@@ -135,7 +135,7 @@ def test_http_invalid_time_before_fetch(client, params):
 
 
 EXCLUDED = [name.removeprefix('local.backtesting_py.') for name, spec in provider.TOOL_SPECS.items()
-            if spec.get('runner') in ('kernel_v3', provider.SCALE_IN_OUT_RUNNER)]
+            if spec.get('runner') == 'kernel_v3']
 
 
 @pytest.mark.parametrize('name', EXCLUDED)
@@ -196,3 +196,21 @@ def test_http_unsupported_timeframe_before_fetch(client):
     body['backtest']['timeframe'] = '1M'
     response = client.post('/cutie/backtest', json=body)
     assert response.json()['error_type'] == 'INVALID_PARAMS'
+
+
+@pytest.mark.parametrize('name', compat.enumerate_turtle_cases())
+@pytest.mark.parametrize('direction', ['long', 'short', 'both'])
+def test_turtle_group_time_exemption_preserves_disabled_golden(name, direction):
+    from test_turtle_risk_3b import assert_disabled_golden
+    assert_disabled_golden(name, direction)
+    props = provider.TOOL_SPECS['local.backtesting_py.' + name]['param_schema_properties']
+    assert not any(key.startswith('time_') for key in props)
+
+
+@pytest.mark.parametrize('name', compat.enumerate_turtle_cases())
+@pytest.mark.parametrize('key,value', list(DEFAULTS.items()) + [
+    ('time_max_holding_minutes', 1), ('time_flatten_at', '12:00'), ('time_flatten_weekdays', 1)])
+def test_turtle_time_keys_rejected_even_with_group_risk(client, name, key, value):
+    body = capture.request_body(name, {'risk_layer_enabled': True, key: value})
+    body['backtest']['market'] = 'futures'
+    assert client.post('/cutie/backtest', json=body).json()['error_type'] == 'INVALID_PARAMS'

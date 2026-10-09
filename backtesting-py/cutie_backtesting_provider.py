@@ -36,6 +36,7 @@ from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
+from strategy_entry_filters import FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, entry_mask
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from strategy_execution import (
@@ -1127,6 +1128,44 @@ def _fetch_template_warmup(
             symbol, timeframe, bars, e,
         )
         return empty
+
+
+
+def _fetch_strict_time_history(
+    exchange_id: str, market: str, symbol: str, timeframe: str,
+    start_sec: int, end_sec: int, definition,
+    *, observation_start=None,
+) -> pd.DataFrame:
+    """Fetch complete time history + main interval; never degrade to warmup.
+
+    This foundation is intentionally not called by run_backtest yet. Returned
+    bars carry a separate warmup-only mask in attrs, without changing OHLCV.
+    """
+    from datetime import datetime, timezone
+    from strategy_time_layer import TimeConfig, TimeContext, utc_datetime
+    from strategy_time_series import TimeHistoryError, required_history_start, validate_time_history
+
+    start = datetime.fromtimestamp(start_sec, timezone.utc)
+    end = datetime.fromtimestamp(end_sec, timezone.utc)
+    since = required_history_start(start, definition, observation_start)
+    context = TimeContext.build(TimeConfig(enabled=True), timeframe, [since])
+    if start < since or end <= start or (start - since) % context.period or (end - since) % context.period:
+        raise ValueError('INVALID_PARAMS:time history bounds must align with complete candles')
+    try:
+        fetched = _fetch_ohlcv(exchange_id, market, symbol, timeframe, int(since.timestamp()), end_sec)
+        opens = [utc_datetime(value) for value in fetched.index]
+        selected = [i for i, value in enumerate(opens) if since <= value < end]
+        result = fetched.iloc[selected].loc[:, list(_WARMUP_COLUMNS)].astype('float64').copy()
+        if not np.isfinite(result.to_numpy()).all() or (result['Volume'] < 0).any():
+            raise TimeHistoryError('nonfinite OHLCV or negative volume')
+        validate_time_history(result.index, since, end, context)
+    except TimeHistoryError:
+        raise
+    except Exception as exc:
+        raise TimeHistoryError('strict time-history source unavailable or invalid') from exc
+    result.attrs['time_warmup_only'] = [utc_datetime(value) < start for value in result.index]
+    result.attrs['time_history_start_utc'] = since.isoformat()
+    return result
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -2332,12 +2371,35 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+_TURTLE_RISK_KEYS = ("risk_layer_enabled", "max_holding_bars", "take_profit_pct")
+
+
+def _parse_turtle_risk_params(params: dict[str, Any]) -> dict[str, Any]:
+    conflicts = sorted(set(params) & (set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) - set(_TURTLE_RISK_KEYS)))
+    if conflicts:
+        raise ValueError("INVALID_PARAMS:Turtle does not support risk parameters: " + ", ".join(conflicts))
+    selected = {key: params[key] for key in _TURTLE_RISK_KEYS if key in params}
+    error = _validate_params_against_schema(selected, _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    holding = selected.get("max_holding_bars", 0)
+    if type(holding) is not int:
+        raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+    take = selected.get("take_profit_pct")
+    if take is not None and not 0 < take < 100:
+        raise ValueError("INVALID_PARAMS:take_profit_pct must be > 0 and < 100")
+    enabled = selected.get("risk_layer_enabled", False)
+    if not enabled and (holding or take is not None):
+        raise ValueError("INVALID_PARAMS:Turtle risk parameters require risk_layer_enabled=true")
+    return selected if enabled else {}
+
+
 def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
     """Either explicit layer consumes the shared 3b holding-bar limit."""
     return params.get("risk_layer_enabled") is True or params.get("time_layer_enabled") is True
 
 
-# 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
+# 单仓杠杆独立于风控层与组合杠杆；futures >1 使用逐仓结算。
 _LEVERAGE_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "leverage": {"type": "integer", "default": 1, "minimum": 1, "maximum": 20},
 }
@@ -2351,11 +2413,9 @@ def _parse_single_leverage(params: dict[str, Any]) -> int:
 
 
 def _single_leverage_rejection(leverage: int, market: str) -> Optional[str]:
-    """唯一放行门；不能对外返回尚无逐仓爆仓模型的杠杆结果。"""
+    """唯一放行门；现货保持 1 倍，期货接入逐仓模型。"""
     if market == "spot" and leverage > 1:
         return "leverage above 1 requires futures market"
-    if leverage > 1:
-        return "leverage above 1 requires the isolated liquidation model"
     return None
 
 
@@ -2509,8 +2569,65 @@ def _with_time_config(build):
     return configured
 
 
-class _FixedRiskMixin(_TimeLayerMixin):
-    """13 模板共用覆盖层；risk_layer_enabled=false 完整保留旧层。
+def _isolated_liquidation_price(entry: Decimal, leverage: int, is_long: bool) -> Decimal:
+    # One division avoids rounding 1/L before multiplying by E.
+    return entry * Decimal(leverage - 1 if is_long else leverage + 1) / Decimal(leverage)
+
+
+def _isolated_liquidation_candidate(*, entry_price, leverage: int, is_long: bool,
+                                    open_price, high, low) -> Optional[dict[str, Any]]:
+    """MMR=0; fees excluded. Shared by both exit arbitration paths."""
+    price = _isolated_liquidation_price(Decimal(str(entry_price)), leverage, is_long)
+    opening, high, low = (Decimal(str(value)) for value in (open_price, high, low))
+    if not (low <= price if is_long else high >= price):
+        return None
+    gap = opening <= price if is_long else opening >= price
+    return {"liquidation_price": price, "liquidation_gap": gap,
+            "fill_price": opening if gap else price}
+
+
+def _with_filter_config(build=None, *, default_direction="long"):
+    if build is None:
+        return functools.partial(_with_filter_config, default_direction=default_direction)
+
+    @functools.wraps(build)
+    def configured(params, **kwargs):
+        config = FilterConfig.parse(params)
+        direction = params.get("direction", default_direction)
+        if config.enabled and direction != "long":
+            raise ValueError("INVALID_PARAMS:entry filters support long direction only; short/both are not supported")
+        built = build(params, **kwargs)
+        if config.enabled:
+            built["strategy"]._filter_config = config
+        return built
+    configured._supports_entry_filters = True
+    return configured
+
+
+class _FilterLayerMixin:
+    _filter_config = None
+
+    def _filter_init(self) -> None:
+        if self._filter_config is None:
+            return
+        columns = {}
+        for name in _WARMUP_COLUMNS:
+            prefix = self._warmup_cols[name] if self._warmup_bars else []
+            columns[name] = np.concatenate([prefix, np.asarray(getattr(self.data, name))])
+        self._filter_mask = entry_mask(self._filter_config, columns, _supertrend_arrays)
+
+    def _filter_allow_entry(self) -> bool:
+        if self._filter_config is None:
+            return True
+        # No next open exists at the tail; do not let finalize_trades back-fill.
+        index = self._warmup_bars + len(self.data) - 1
+        if index >= len(self._filter_mask) - 1:
+            return False
+        return bool(self._filter_mask[index])
+
+
+class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
+    """单仓模板共用覆盖层；1 倍且 risk_layer_enabled=false 完整保留旧层。
 
     3a 显式开启时用 High/Low 判触发，仍提交下一根开盘市价平仓。
 
@@ -2551,6 +2668,13 @@ class _FixedRiskMixin(_TimeLayerMixin):
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
+        if self._risk.get("leverage", 1) > 1:
+            self._isolated_liquidations = []
+            self._isolated_liquidation_units = {}
+            self._isolated_blocked_bar = -1
+            self._isolated_stop_beyond_trades = 0
+            self._isolated_install_settlement()
+        self._filter_init()
         if self._time_config is not None:
             self._risk_exit_reason = None
         if self._risk.get("risk_layer_enabled"):
@@ -2583,6 +2707,98 @@ class _FixedRiskMixin(_TimeLayerMixin):
         # Only the signal close is available when the market entry is queued.
         self._risk_entry_atr = self._risk_atr[count - 1]
 
+    def _isolated_install_settlement(self) -> None:
+        """Reconcile before the broker processes another order or its insolvency check.
+
+        Only leveraged single-position runs install this per-request callback.
+        Never edit the library or merely repair report equity after sizing.
+        """
+        broker = self._broker
+        close_trade = broker._close_trade
+        scale = getattr(self, "_isolated_equity_scale", Decimal(1))
+        capital = getattr(self, "_isolated_initial_capital", Decimal(str(self._start_equity)) * scale)
+        fee = getattr(self, "_isolated_fee_bps", Decimal(str(broker._commission_relative)) * 10000)
+        slip = getattr(self, "_isolated_slippage_bps", Decimal(0))
+        data = self.data.df.copy()
+        step = getattr(self, "_isolated_step", int((data.index[1].value - data.index[0].value) // 10**9))
+        self._isolated_realized = Decimal(0)
+
+        def settle_close(trade, price, time_index):
+            close_trade(trade, price, time_index)
+            closed = broker.closed_trades[-1]
+            rows = pd.DataFrame([dict(Size=closed.size, EntryPrice=closed.entry_price,
+                                      ExitPrice=closed.exit_price, EntryTime=closed.entry_time,
+                                      ExitTime=closed.exit_time)])
+            trades = _build_result_v2_trades(rows, scale, fee, slip)
+            records = [record for record in self._isolated_liquidations
+                       if record["opened_at"] == trades[0]["opened_at"]]
+            if records:
+                trades = _settle_isolated_liquidations(
+                    trades, leverage=self._risk["leverage"], df=data, step=step,
+                    liquidations=records, fee_bps=fee, slippage_bps=slip)
+            self._isolated_realized += Decimal(trades[0]["pnl"])
+            # A partial close leaves entry costs allocated to the remaining units.
+            open_cost = sum((Decimal(abs(t.size)) * scale * Decimal(str(t.entry_price))
+                             * (fee + slip) / 10000 for t in broker.trades), Decimal(0))
+            broker._cash = float((capital + self._isolated_realized - open_cost) / scale)
+
+        broker._close_trade = settle_close
+        process_orders = broker._process_orders
+
+        def process_before_insolvency():
+            process_orders()
+            if broker.equity > 0 or not self.trades:
+                return
+            # Broker.next checks account insolvency BEFORE Strategy.next. A low
+            # close can consume unallocated cash although this isolated trade
+            # should already have liquidated. Reuse the SAME arbitration point,
+            # then bridge its pending settlement until the next-open close.
+            count = len(self._isolated_liquidations)
+            self._risk_check_exit()
+            if len(self._isolated_liquidations) == count:
+                return
+            trade = self.trades[-1]
+            rows = pd.DataFrame([dict(Size=trade.size, EntryPrice=trade.entry_price,
+                ExitPrice=self.data.Close[-1], EntryTime=trade.entry_time,
+                ExitTime=self.data.index[-1])])
+            projected = _settle_isolated_liquidations(
+                _build_result_v2_trades(rows, scale, fee, slip), leverage=self._risk["leverage"],
+                df=data, step=step, liquidations=self._isolated_liquidations[-1:],
+                fee_bps=fee, slippage_bps=slip)
+            target = capital + self._isolated_realized + Decimal(projected[0]["pnl"])
+            if target > 0:
+                broker._cash = float(target / scale) - sum(t.pl for t in broker.trades)
+            # Genuine exhaustion still goes through the library's existing check.
+
+        broker._process_orders = process_before_insolvency
+
+    def _risk_isolated_exit(self, stop: Optional[Decimal] = None) -> bool:
+        trade = self.trades[-1]
+        if any(order.parent_trade is trade for order in self.orders):
+            return True
+        candidate = _isolated_liquidation_candidate(
+            entry_price=trade.entry_price, leverage=self._risk["leverage"],
+            is_long=trade.is_long, open_price=self.data.Open[-1],
+            high=self.data.High[-1], low=self.data.Low[-1])
+        if candidate is None:
+            return False
+        price = candidate["liquidation_price"]
+        # Non-gap intrabar stops closer to entry are crossed before liquidation.
+        if not candidate["liquidation_gap"] and stop is not None and (
+            stop > price if trade.is_long else stop < price
+        ):
+            return False
+        opened_at = int(pd.Timestamp(trade.entry_time).value // 10**9)
+        self._isolated_liquidation_units[opened_at] = abs(trade.size)
+        self._isolated_liquidations.append({
+            "opened_at": opened_at,
+            "liquidation_bar_open_time": int(pd.Timestamp(self.data.index[-1]).value // 10**9),
+        })
+        self._isolated_blocked_bar = len(self.data) - 1
+        self._risk_exit_reason = "liquidation"
+        self.position.close()
+        return True
+
     def _risk_layer_check_exit(self) -> bool:
         from strategy_risk_overlay import initial_risk_state, decide_exit, advance_risk_state, level_exit
 
@@ -2597,6 +2813,19 @@ class _FixedRiskMixin(_TimeLayerMixin):
                 direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
                 entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
             )
+            if self._risk.get("leverage", 1) > 1 and any(self._risk.get(key) for key in (
+                "atr_stop_multiplier", "trailing_stop_pct", "breakeven_stop"
+            )):
+                stop = self._risk_state.initial_stop
+                price = _isolated_liquidation_price(
+                    Decimal(str(trade.entry_price)), self._risk["leverage"], trade.is_long)
+                if stop is not None and (stop <= price if trade.is_long else stop >= price):
+                    self._isolated_stop_beyond_trades += 1
+        if self._risk.get("leverage", 1) > 1:
+            stop = (self._risk_state.stop_state.effective_stop
+                    if self._risk_state.stop_state is not None else self._risk_state.initial_stop)
+            if self._risk_isolated_exit(stop):
+                return True
         bar = len(self.data) - 1
         fact = self._holding_expiry()
         reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
@@ -2641,13 +2870,18 @@ class _FixedRiskMixin(_TimeLayerMixin):
         return None
 
     def _risk_buy(self) -> None:
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+            return
         if not self._time_allow_entry(): return
+        if not self._filter_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
         self.buy() if size is None else self.buy(size=size)
 
     def _risk_sell(self) -> None:
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+            return
         if not self._time_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
@@ -2659,6 +2893,9 @@ class _FixedRiskMixin(_TimeLayerMixin):
             return False
         if self._risk.get("risk_layer_enabled"):
             return self._risk_layer_check_exit()
+        # Legacy stops are close-only; any intrabar liquidation precedes them.
+        if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit():
+            return True
         sl_pct = self._risk.get("stop_loss_pct")
         tp_pct = self._risk.get("take_profit_pct")
         time_enabled = self._time_config is not None
@@ -2694,6 +2931,7 @@ class _FixedRiskMixin(_TimeLayerMixin):
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -2754,6 +2992,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
 
 
 @_with_time_config
+@_with_filter_config
 def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -2810,6 +3049,26 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
 SCALE_IN_OUT_RUNNER = "scale_in_out_ledger"
 
 
+def _with_ledger_time_config(build):
+    @functools.wraps(build)
+    def configured(params, **kwargs):
+        time = TimeConfig.parse(params)
+        holding = params.get("max_holding_bars", 0)
+        spec = _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"]
+        if type(holding) is not int:
+            raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+        if not spec["minimum"] <= holding <= spec["maximum"]:
+            raise ValueError("INVALID_PARAMS:max_holding_bars must be within 0-1000000")
+        if holding and not time.enabled:
+            raise ValueError("INVALID_PARAMS:max_holding_bars requires risk_layer_enabled=true or time_layer_enabled=true")
+        built = build(params, **kwargs)
+        if time.enabled:
+            built["scale_in_out"].update(time_config=time, max_holding_bars=holding)
+        return built
+    return configured
+
+
+@_with_ledger_time_config
 def _build_rsi_scale_in_out(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """132 RSI 定额分批：参数校验 + 指标函数，不产出 backtesting.py Strategy。
 
@@ -2858,6 +3117,7 @@ def _build_rsi_scale_in_out(params: dict[str, Any], *, initial_capital: float = 
     }
 
 
+@_with_ledger_time_config
 def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Close-based grid; references advance on signals, lots only on actual fills."""
     from decimal import Context, localcontext
@@ -2915,14 +3175,15 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
 
     stats = {"grid_fills": 0, "stop_loss_triggered": 0, "sell_lot_ts": set()}
 
-    def signal_factory(bars):
+    def signal_factory(bars, *, time_context=None):
         ref_level = level(bars[0].close) if bars else 0
         holdings = 0
         reset_pending = False
+        entry_ref_before = ref_level
         stats.update(grid_fills=0, stop_loss_triggered=0, sell_lot_ts=set())
 
         def signal(index):
-            nonlocal ref_level, reset_pending
+            nonlocal ref_level, reset_pending, entry_ref_before
             if index == 0:
                 return "hold"
             lv = level(bars[index].close)
@@ -2937,6 +3198,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 reset_pending = False
                 return "hold"
             if 0 <= lv <= n and lv < ref_level:
+                entry_ref_before = ref_level
                 ref_level -= 1  # Advance even if the next-open buy lacks cash.
                 return ("buy", amount)
             if lv > ref_level:
@@ -2946,8 +3208,11 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 ref_level = min(lv, n)
             return "hold"
 
-        def on_fill(index, action, filled, price):
-            nonlocal holdings
+        def on_fill(index, action, filled, price, *, reason=None):
+            nonlocal holdings, ref_level, reset_pending
+            if reason == "time_entry_blocked":
+                ref_level = entry_ref_before
+                return
             if not filled:
                 return
             if action == "buy":
@@ -2959,7 +3224,11 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 stats["sell_lot_ts"].add(bars[index].open_time)
             elif action == "sell_all":
                 holdings = 0
-                stats["stop_loss_triggered"] += 1
+                if reason == "time_expiry":
+                    ref_level = level(price)
+                    reset_pending = False
+                else:
+                    stats["stop_loss_triggered"] += 1
 
         return signal, on_fill
 
@@ -2998,6 +3267,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3051,6 +3321,7 @@ def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float 
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3117,6 +3388,7 @@ def _keltner_arrays(high: Any, low: Any, close: Any, ema_period: int,
 
 
 @_with_time_config
+@_with_filter_config
 def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     values = {}
@@ -3168,7 +3440,199 @@ def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 
     }
 
 
+TURTLE_RUNNER = "turtle_group"
+_TURTLE_RISK_DESCRIPTION = (
+    "单单位到初始止损的风险占权益比；经典海龟是 1%÷N（2N 止损下每单位 2%），本参数填 2 即经典口径"
+)
+
+
+class _TurtleGroupMixin:
+    """One frozen-N, frozen-quantity group; reconcile only actual broker fills."""
+
+    _time_context = None
+    _turtle_risk: dict[str, Any] = {}
+
+    _warmup_bars: int = 0
+    _warmup_cols: dict[str, Any] = {}
+
+    def _warm(self, func: Any, *columns: str) -> Any:
+        if not self._warmup_bars:
+            return func
+        prefixes = [self._warmup_cols[column] for column in columns]
+
+        @functools.wraps(func)
+        def wrapped(*arrays: Any) -> Any:
+            full = [np.concatenate([prefix, np.asarray(array, dtype="float64")])
+                    for prefix, array in zip(prefixes, arrays)]
+            return np.asarray(func(*full), dtype="float64")[-len(arrays[0]):]
+        return wrapped
+
+    def _turtle_init(self) -> None:
+        self.units_skipped = 0
+        self._group_sequence = 0
+        self._group_id = None
+        self._group_side = 0
+        self._group_n = 0.0
+        self._group_q = 0
+        self._last_fill = None
+        self._group_units = 0
+        self._pending_unit = None
+        self._closing_group = False
+        self._group_entry_bar = None
+        self._group_take = None
+        self._group_exit_reasons = {}
+
+    def _turtle_sync(self) -> bool:
+        # Called after broker.next(): a queued market order has either filled or
+        # been canceled for insufficient margin. Never infer fills from signals.
+        if self._pending_unit is not None and self._pending_unit not in self.orders:
+            filled = len(self.trades) > self._group_units
+            if filled:
+                if self._group_units == 0:
+                    self._group_entry_bar = self.trades[0].entry_bar
+                if self._turtle_risk.get("take_profit_pct") is not None:
+                    quantity = sum(abs(trade.size) for trade in self.trades)
+                    vwap = sum(Decimal(str(trade.entry_price)) * abs(trade.size)
+                               for trade in self.trades) / quantity
+                    pct = Decimal(str(self._turtle_risk["take_profit_pct"])) / 100
+                    self._group_take = vwap * (1 + self._group_side * pct)
+                self._group_units = len(self.trades)
+                self._last_fill = self.trades[-1].entry_price
+                self._group_stop = self._last_fill - self._group_side * self._stop_multiple * self._group_n
+            elif self._group_units:
+                self.units_skipped += 1
+            else:
+                self._group_id = None
+                self._group_side = 0
+            self._pending_unit = None
+        if self._closing_group and not self.trades:
+            self._group_id = None
+            self._group_side = 0
+            self._group_units = 0
+            self._last_fill = None
+            self._closing_group = False
+            return True  # No new group on the exit-fill bar either.
+        return False
+
+    def _turtle_close(self, reason: str) -> None:
+        self.position.close()
+        self._group_exit_reasons[self._group_id] = reason
+        self._closing_group = True
+
+    def _turtle_next(self) -> None:
+        if self._turtle_sync() or self._closing_group or self._pending_unit is not None:
+            return
+        price = self.data.Close[-1]
+        if self.position:
+            if (self.data.Low[-1] <= self._group_stop if self._group_side == 1
+                    else self.data.High[-1] >= self._group_stop):
+                self._turtle_close("stop")
+                return
+            if self._turtle_risk.get("risk_layer_enabled"):
+                first = self.trades[0]
+                due = expiry_due(
+                    holding_bars=self._turtle_risk.get("max_holding_bars", 0),
+                    entry_bar=self._group_entry_bar, bar=len(self.data) - 1,
+                    entry_utc=first.entry_time, bar_open=self.data.index[-1], context=None)
+                if due.due:
+                    self._turtle_close("time_expiry")
+                    return
+                if self._group_take is not None and (
+                    Decimal(str(self.data.High[-1])) >= self._group_take if self._group_side == 1
+                    else Decimal(str(self.data.Low[-1])) <= self._group_take
+                ):
+                    self._turtle_close("take_profit")
+                    return
+            if (price < self.exit_low[-1] if self._group_side == 1
+                    else price > self.exit_high[-1]):
+                self._turtle_close("channel")
+                return
+            if (self._group_units < self._max_units
+                    and self._group_side * (price - self._last_fill) >= self._add_step * self._group_n):
+                # An absolute integer order is all-or-nothing in backtesting.py.
+                # Let the next-open broker check cash including commission/gaps.
+                order = self.buy if self._group_side == 1 else self.sell
+                self._pending_unit = order(size=self._group_q, tag=self._group_id)
+            return
+        if self._warmup_bars + len(self.data) < self._min_bars:
+            return
+        long_signal = self._direction in ("long", "both") and price > self.entry_high[-1]
+        short_signal = self._direction in ("short", "both") and price < self.entry_low[-1]
+        if long_signal or short_signal:
+            n = float(self.atr[-1])
+            if not math.isfinite(n) or n <= 0:
+                return
+            q = math.floor(self.equity * self._unit_risk / 100 / (self._stop_multiple * n))
+            if q <= 0:
+                return
+            self._group_sequence += 1
+            self._group_id = f"turtle-{self._group_sequence}"
+            self._group_side = 1 if long_signal else -1
+            self._group_n, self._group_q = n, q
+            self._group_units = 0
+            self._group_entry_bar = None
+            self._group_take = None
+            order = self.buy if self._group_side == 1 else self.sell
+            self._pending_unit = order(size=q, tag=self._group_id)
+
+
+def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_turtle_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.turtle"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    values = {key: params.get(key, spec.get("default")) for key, spec in properties.items()}
+    for key in ("entry_period", "exit_period", "atr_period", "max_units"):
+        if type(values[key]) is not int:
+            raise ValueError(f"INVALID_PARAMS:{key} must be an integer, not a float")
+    if values["unit_risk_pct"] <= 0:
+        raise ValueError("INVALID_PARAMS:unit_risk_pct must be > 0")
+    entry, exit_, atr_period = (values[k] for k in ("entry_period", "exit_period", "atr_period"))
+    min_bars = max(entry, exit_, atr_period) + 1
+    from backtesting import Strategy
+
+    class TurtleStrategy(_TurtleGroupMixin, Strategy):
+        _turtle_risk = risk
+        _direction = values["direction"]
+        _stop_multiple = values["stop_atr_multiplier"]
+        _unit_risk = values["unit_risk_pct"]
+        _add_step = values["add_step_atr"]
+        _max_units = values["max_units"]
+        _min_bars = min_bars
+
+        def init(self):
+            # Inf sentinels preserve the first eligible signal bar: the engine
+            # must not add another NaN-indicator warmup bar beyond min_bars.
+            self.entry_high = self.I(self._warm(
+                lambda h: pd.Series(h).rolling(entry).max().shift(1).fillna(np.inf).to_numpy(),
+                "High"), self.data.High, name="Turtle entry")
+            self.exit_low = self.I(self._warm(
+                lambda l: pd.Series(l).rolling(exit_).min().shift(1).fillna(-np.inf).to_numpy(),
+                "Low"), self.data.Low, name="Turtle exit")
+            if self._direction in ("short", "both"):
+                self.entry_low = self.I(self._warm(
+                    lambda l: pd.Series(l).rolling(entry).min().shift(1).fillna(-np.inf).to_numpy(),
+                    "Low"), self.data.Low, name="Turtle short entry")
+                self.exit_high = self.I(self._warm(
+                    lambda h: pd.Series(h).rolling(exit_).max().shift(1).fillna(np.inf).to_numpy(),
+                    "High"), self.data.High, name="Turtle short exit")
+            self.atr = self.I(self._warm(
+                lambda h, l, c: _supertrend_arrays(h, l, c, atr_period, 1)["atr"],
+                "High", "Low", "Close"), self.data.High, self.data.Low, self.data.Close,
+                name="Turtle N")
+            self._turtle_init()
+
+        def next(self):
+            self._turtle_next()
+
+    suffix = {"long": "", "short": " Short", "both": " Both"}[values["direction"]]
+    return {"strategy": TurtleStrategy, "executed_name": f"Turtle{suffix} ({entry}/{exit_}/{atr_period})",
+            "min_bars": min_bars}
+
+
 @_with_time_config
+@_with_filter_config
 def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3241,6 +3705,7 @@ def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3322,6 +3787,7 @@ def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 1
 
 
 @_with_time_config
+@_with_filter_config
 def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3394,6 +3860,7 @@ def _cci_series(high: Any, low: Any, close: Any, period: int):
 
 
 @_with_time_config
+@_with_filter_config(default_direction="both")
 def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3473,6 +3940,7 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """R1-T4：EMA 趋势过滤 + RSI 回调（Jessie #3）。只做多。
 
@@ -3550,6 +4018,7 @@ def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 
 
 
 @_with_time_config
+@_with_filter_config
 def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3609,6 +4078,7 @@ def _stoch_arrays(high: Any, low: Any, close: Any, period: int, smooth: int, d_p
 
 
 @_with_time_config
+@_with_filter_config
 def _build_stoch_oversold_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.stoch_oversold_cross"]["param_schema_properties"]
@@ -3672,6 +4142,7 @@ def _bollinger_squeeze_arrays(close: Any, period: int, std_mult: float, lookback
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bollinger_squeeze_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.bollinger_squeeze_breakout"]["param_schema_properties"]
@@ -3744,6 +4215,7 @@ def _adx_di_arrays(high: Any, low: Any, close: Any, period: int) -> dict[str, An
 
 
 @_with_time_config
+@_with_filter_config
 def _build_adx_di_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.adx_di_cross"]["param_schema_properties"]
@@ -3833,6 +4305,7 @@ def _supertrend_arrays(high: Any, low: Any, close: Any, atr_period: int, multipl
 
 
 @_with_time_config
+@_with_filter_config
 def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """R1-T2：Supertrend 翻转，本批只做多。down→up 翻转那一根收盘确认、下一根开盘买入；
     up→down 翻转那一根收盘确认、下一根开盘平仓。"""
@@ -3897,6 +4370,7 @@ def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """108 顺序 5a-P：两条件 AND（EMA 趋势过滤 + RSI 入场）。契约唯一权威见 TokenBeep 仓
     docs/features/108_策略自动发信号执行器扩容/IMPL_顺序5a_两条件AND回测.md §2/§3。
@@ -3989,6 +4463,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Directional EMA pullback; rearm only on a later flat bar beyond the zone."""
     risk = _parse_fixed_risk_params(params)
@@ -4073,6 +4548,7 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
     }
 
 
+@_with_ledger_time_config
 def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Calendar buys, bounded dip attempts and whole-round profit taking."""
     from datetime import datetime, timezone
@@ -4125,14 +4601,16 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     if dip_amount <= 0:
         raise ValueError("INVALID_PARAMS:dip amount must remain positive after cash quantization")
 
-    def period(ts):
+    def period(ts, time_context=None):
         day = datetime.fromtimestamp(ts, timezone.utc)
+        if time_context is not None:
+            day = day.astimezone(time_context.zone)
         return day.date() if interval == "daily" else day.isocalendar()[:2]
 
     # Reporting mirror only. Trading state belongs to each signal/on_fill closure.
     stats = {"avg_cost": None, "rounds_completed": 0, "dip_adds_total": 0}
 
-    def signal_factory(bars):
+    def signal_factory(bars, *, time_context=None):
         round_notional = Decimal(0)
         round_qty = Decimal(0)
         last_buy_price = None
@@ -4140,6 +4618,7 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
         last_round_avg_cost = None
         pending_amount = amount
         pending_dip = False
+        entry_state_before = None
         stats.update(avg_cost=None, rounds_completed=0, dip_adds_total=0)
 
         def avg_cost():
@@ -4149,7 +4628,8 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
                 return canonical_decimal_str(round_cash(round_notional / round_qty)) if round_qty else None
 
         def signal(index):
-            nonlocal dip_adds_this_round, pending_amount, pending_dip
+            nonlocal dip_adds_this_round, pending_amount, pending_dip, entry_state_before
+            entry_state_before = (dip_adds_this_round, pending_amount, pending_dip)
             pending_dip = False
             if index + 1 >= len(bars):
                 return "hold"
@@ -4161,13 +4641,17 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
                     dip_adds_this_round += 1  # A skipped buy still consumes this attempt.
                     pending_amount, pending_dip = dip_amount, True
                     return ("buy", pending_amount)
-            if period(bars[index + 1].open_time) != period(bars[index].open_time):
+            if period(bars[index + 1].open_time, time_context) != period(bars[index].open_time, time_context):
                 pending_amount = amount
                 return ("buy", pending_amount)
             return "hold"
 
-        def on_fill(index, action, filled, price):
+        def on_fill(index, action, filled, price, *, reason=None):
             nonlocal round_notional, round_qty, last_buy_price, dip_adds_this_round, last_round_avg_cost
+            nonlocal pending_amount, pending_dip
+            if reason == "time_entry_blocked":
+                dip_adds_this_round, pending_amount, pending_dip = entry_state_before
+                return
             if not filled:
                 return
             with localcontext(exact):
@@ -4253,6 +4737,7 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only close-confirmed BIAS reversion, filled at the next open."""
     risk = _parse_fixed_risk_params(params)
@@ -4305,6 +4790,7 @@ def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only entry on the first bar forming short > mid > long EMA alignment."""
     risk = _parse_fixed_risk_params(params)
@@ -4369,6 +4855,7 @@ def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: floa
 
 
 @_with_time_config
+@_with_filter_config
 def _build_macd_above_zero(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Separate long-only MACD template; both DIF and DEA must be above zero."""
     risk = _parse_fixed_risk_params(params)
@@ -4465,6 +4952,7 @@ def _parabolic_sar_arrays(high: Any, low: Any, close: Any, af_start: float,
 
 
 @_with_time_config
+@_with_filter_config
 def _build_parabolic_sar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     values = {}
@@ -4534,6 +5022,7 @@ def _ichimoku_arrays(high: Any, low: Any, tenkan_period: int,
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     periods = {}
@@ -4818,6 +5307,31 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "ema_period": {"type": "integer", "default": 20, "minimum": 5, "maximum": 100},
             "atr_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
             "multiplier": {"type": "number", "default": 2, "minimum": 1, "maximum": 4},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.turtle": {
+        "name": "Local Backtesting.py Turtle",
+        "description": (
+            "Turtle groups: spot supports long only; futures supports long, short, or both directions. "
+            "Prior-bar Donchian channels, frozen Wilder N and unit size; next-open fills."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "runner": TURTLE_RUNNER,
+        "exclusive_orders": False,
+        "build": _build_turtle,
+        "param_schema_properties": {
+            **{key: dict(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]) for key in _TURTLE_RISK_KEYS},
+            "entry_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
+            "exit_period": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200},
+            "atr_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 100},
+            "unit_risk_pct": {"type": "number", "default": 1, "exclusiveMinimum": 0, "maximum": 2,
+                              "description": _TURTLE_RISK_DESCRIPTION},
+            "add_step_atr": {"type": "number", "default": 0.5, "minimum": 0.1, "maximum": 2},
+            "max_units": {"type": "integer", "default": 4, "minimum": 1, "maximum": 4},
+            "stop_atr_multiplier": {"type": "number", "default": 2, "minimum": 0.5, "maximum": 5},
+            "direction": {"type": "string", "default": "long", "enum": ["long", "short", "both"]},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -5112,10 +5626,18 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 # param_schema_properties（而不是逐个手写 13 遍），新工具接入 TOOL_SPECS 时自动带上。
 # runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
 # 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
-# 132：定额分批（runner=scale_in_out_ledger）同样不合并——账本不消费固定止损止盈/仓位，
+# 132：定额分批（runner=scale_in_out_ledger）只合并时间键与共享持仓根数；不消费固定止损止盈/仓位，
 # 带这些参数的请求直接 INVALID_PARAMS（IMPL §3.1）。
+# 海龟单独声明组级风控三键，自管定量与退出；不声明杠杆及 time_* 键。
 for _tool_spec in TOOL_SPECS.values():
-    if _tool_spec.get("runner") in ("kernel_v3", SCALE_IN_OUT_RUNNER):
+    if _tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
+        _tool_spec["param_schema_properties"] = {
+            **_tool_spec["param_schema_properties"],
+            **_TIME_PARAM_SCHEMA_PROPERTIES,
+            "max_holding_bars": _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"],
+        }
+        continue
+    if _tool_spec.get("runner") in ("kernel_v3", TURTLE_RUNNER):
         continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
@@ -5124,6 +5646,12 @@ for _tool_spec in TOOL_SPECS.values():
         **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     }
 del _tool_spec
+
+# Entry filters are single-position only in 7P-1; ledger/kernel keys remain unknown.
+for _filter_tool_spec in TOOL_SPECS.values():
+    if getattr(_filter_tool_spec.get("build"), "_supports_entry_filters", False):
+        _filter_tool_spec["param_schema_properties"].update(FILTER_PARAM_SCHEMA_PROPERTIES)
+del _filter_tool_spec
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
 
@@ -5413,6 +5941,34 @@ def _build_result_v2_trades(
     return trades
 
 
+def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]],
+                         exit_reasons: Optional[dict[str, str]] = None) -> list[dict[str, Any]]:
+    """Map internal tags to the unchanged result.v2 sequence, or fail closed.
+
+    Use the same stable (closed_at, opened_at) second-resolution ordering as
+    _build_result_v2_trades. Never append metadata to signed trade evidence.
+    """
+    rows = []
+    if stats_trades is not None:
+        for _, trade in stats_trades.iterrows():
+            entry_time, exit_time = trade.get("EntryTime"), trade.get("ExitTime")
+            if not hasattr(entry_time, "value") or not hasattr(exit_time, "value"):
+                continue
+            rows.append((int(exit_time.value // 10**9), int(entry_time.value // 10**9), trade.get("Tag")))
+    rows.sort(key=lambda row: (row[0], row[1]))
+    if len(rows) != len(trades_v2):
+        raise ValueError("turtle group mapping does not cover result.v2 trades")
+    groups: dict[str, list[int]] = {}
+    for seq, ((closed_at, opened_at, tag), trade) in enumerate(zip(rows, trades_v2), start=1):
+        if (trade["seq"] != seq or trade["closed_at"] != closed_at or trade["opened_at"] != opened_at
+                or not isinstance(tag, str) or not tag):
+            raise ValueError("turtle group mapping has missing tag or inconsistent trade sequence")
+        groups.setdefault(tag, []).append(seq)
+    return [{"group_id": group_id, "trade_seqs": seqs, "units": len(seqs),
+             **({"exit_reason": exit_reasons.get(group_id, "end_of_data")} if exit_reasons is not None else {})}
+            for group_id, seqs in groups.items()]
+
+
 def _isolated_liquidation_fills(
     trades_v2: list[dict[str, Any]],
     *,
@@ -5461,9 +6017,7 @@ def _isolated_liquidation_fills(
         if (not all(value.is_finite() and value > 0 for value in (entry, qty, open_price, low, high))
                 or not low <= open_price <= high or trade["side"] not in {"long", "short"}):
             raise ValueError("invalid isolated liquidation prices, qty or side")
-        inverse_leverage = Decimal(1) / Decimal(leverage)
-        liquidation_price = entry * (Decimal(1) - inverse_leverage if trade["side"] == "long"
-                                     else Decimal(1) + inverse_leverage)
+        liquidation_price = _isolated_liquidation_price(entry, leverage, trade["side"] == "long")
         gap = (open_price <= liquidation_price if trade["side"] == "long"
                else open_price >= liquidation_price)
         fill_price = open_price if gap else liquidation_price
@@ -5522,6 +6076,23 @@ def _settle_isolated_liquidations(
     return ordered
 
 
+def _isolated_liquidation_trades(trades, liquidations, units, scale):
+    """Runtime sidecar identifies the remaining lot after earlier partial exits.
+
+    Records retain their frozen two keys. Dormant helpers still reject ambiguous
+    opened_at inputs; only the live engine can supply authoritative remaining units.
+    """
+    latest = {trade["opened_at"]: trade for trade in trades}
+    selected = []
+    for record in liquidations:
+        opened = record["opened_at"]
+        trade = latest.get(opened)
+        if trade is None or Decimal(trade["qty"]) != Decimal(units[opened]) * scale:
+            raise ValueError("isolated liquidation remaining units mismatch")
+        selected.append(trade)
+    return selected
+
+
 def _build_isolated_risk_report(
     trades_v2: list[dict[str, Any]],
     *,
@@ -5530,13 +6101,18 @@ def _build_isolated_risk_report(
     df: pd.DataFrame,
     step: int,
     liquidations: Optional[list[dict[str, int]]] = None,
+    liquidation_units: Optional[dict[int, int]] = None,
+    equity_scale_dec: Decimal = Decimal(1),
 ) -> dict[str, Any]:
-    """raw_report 的可合并片段；T2-2b 才接线，seq 取结算后 result.v2。
+    """raw_report 的可合并片段；seq 取结算后 result.v2。
 
     futures L>1 即使没有爆仓也输出零计数；spot/L=1 返回空片段。
     """
     if market != "futures" or leverage == 1:
         return {}
+    if liquidation_units is not None:
+        trades_v2 = _isolated_liquidation_trades(
+            trades_v2, liquidations or [], liquidation_units, equity_scale_dec)
     fills = _isolated_liquidation_fills(
         trades_v2, leverage=leverage, df=df, step=step, liquidations=liquidations or [],
     )
@@ -5570,14 +6146,23 @@ def _build_isolated_risk_report(
 
 def _build_isolated_margin_assumptions(
     *, leverage: int, market: str, stop_loss_pct: Any = None,
+    stop_beyond_liquidation_trades: Optional[int] = None,
 ) -> dict[str, Any]:
-    """assumptions 的可合并片段；只判断固定止损，动态止损留给 T2-2b。"""
+    """原始百分数判固定距离；可选计数来自开仓冻结的动态初始止损。"""
     if market != "futures" or leverage == 1:
         return {}
     _parse_single_leverage({"leverage": leverage})
     stop = Decimal(str(stop_loss_pct)) if stop_loss_pct is not None else None
     if stop is not None and (not stop.is_finite() or not Decimal(0) <= stop <= Decimal(100)):
         raise ValueError("invalid fixed stop_loss_pct")
+    dynamic = {}
+    if stop_beyond_liquidation_trades is not None:
+        dynamic = {
+            "stop_beyond_liquidation_trades": stop_beyond_liquidation_trades,
+            "stop_beyond_liquidation_trades_definition": (
+                "启用 ATR/移动/保本的开仓笔数：初始止损价在爆仓价之外（含相等）；不计后续移动止损"
+            ),
+        }
     return {"isolated_margin": {
         "leverage": leverage,
         "mmr": "0",
@@ -5586,8 +6171,10 @@ def _build_isolated_margin_assumptions(
         "liquidation_price_formula": "long: E*(1-1/L); short: E*(1+1/L)",
         "gap_fill": "跳空按开盘价成交、result.v2 按冻结公式可超保证金、逐仓封顶见 raw_report",
         "stop_beyond_liquidation": (
-            stop is not None and stop / Decimal(100) >= Decimal(1) / Decimal(leverage)
+            (stop is not None and stop / Decimal(100) >= Decimal(1) / Decimal(leverage))
+            or bool(stop_beyond_liquidation_trades)
         ),
+        **dynamic,
     }}
 
 
@@ -5696,6 +6283,7 @@ def _build_result_v2(
     df: pd.DataFrame,
     leverage: int = 1,
     liquidations: Optional[list[dict[str, int]]] = None,
+    liquidation_units: Optional[dict[int, int]] = None,
 ) -> dict[str, Any]:
     """组装 SPEC §2 冻结的 result.v2 五键：schema_version/trades/equity_curve/metrics/
     data_manifest。metrics 恰好三键（total_return/max_drawdown/trade_count）——server
@@ -5705,11 +6293,21 @@ def _build_result_v2(
     if liquidations:
         if market != "futures":
             raise ValueError("isolated liquidation requires futures market")
-        trades_v2 = _settle_isolated_liquidations(
-            trades_v2, leverage=leverage, df=df,
+        selected = (_isolated_liquidation_trades(trades_v2, liquidations, liquidation_units, equity_scale_dec)
+                    if liquidation_units is not None else trades_v2)
+        settled = _settle_isolated_liquidations(
+            selected, leverage=leverage, df=df,
             step=_timeframe_milliseconds(timeframe) // 1000,
             liquidations=liquidations, fee_bps=fee_bps, slippage_bps=slippage_bps,
         )
+        if liquidation_units is None:
+            trades_v2 = settled
+        else:
+            replacements = {old["seq"]: {**new, "seq": old["seq"]}
+                            for old, new in zip(selected, settled)}
+            trades_v2 = [replacements.get(trade["seq"], trade) for trade in trades_v2]
+            if trades_v2 != sorted(trades_v2, key=lambda trade: (trade["closed_at"], trade["opened_at"])):
+                raise ValueError("isolated liquidation changed single-position trade order")
     equity_curve_v2 = _build_result_v2_equity_curve(
         trades_v2,
         initial_capital,
@@ -5761,7 +6359,7 @@ def _scale_in_out_rejection(params: dict[str, Any], bt_req: dict[str, Any], mark
         return "scale-in/out template supports spot market only"
     if "leverage" in params:
         return "scale-in/out template does not support leverage"
-    risk_keys = sorted(key for key in params if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    risk_keys = sorted(key for key in params if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES and key != "max_holding_bars")
     if risk_keys:
         return (
             "scale-in/out template does not support fixed risk parameters: "
@@ -5823,6 +6421,12 @@ def _run_scale_in_out_backtest(
     config = built["scale_in_out"]
     executed_name = str(built["executed_name"])
     min_bars = int(built["min_bars"])
+    time_context = None
+    if "time_config" in config:
+        try:
+            time_context = TimeContext.build(config["time_config"], timeframe, df.index)
+        except TimeDataGapError as e:
+            return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
     warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, min_bars, df)
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars < min_bars:
@@ -5844,7 +6448,8 @@ def _run_scale_in_out_backtest(
         ]
         if "signal_factory" in config:
             # R3 分批账本模板（网格 / DCA）：信号与成交回调由模板自带，策略状态只在其闭包里。
-            signal, on_fill = config["signal_factory"](bars)
+            signal, on_fill = config["signal_factory"](
+                bars, **(dict(time_context=time_context) if time_context is not None else {}))
         else:
             closes = np.concatenate([
                 warmup_df["Close"].to_numpy(dtype="float64"),
@@ -5867,6 +6472,8 @@ def _run_scale_in_out_backtest(
             end_at=end_at,
             lot_order=config.get("lot_order", "fifo"),
             on_fill=on_fill,
+            **(dict(time_context=time_context, max_holding_bars=config["max_holding_bars"])
+               if time_context is not None else {}),
         )
     except LedgerInvariantError as e:
         logger.exception("scale-in/out ledger invariant violated run_id=%s", run_id)
@@ -5940,6 +6547,12 @@ def _run_scale_in_out_backtest(
         )
         # 模板自报的统计（网格成交次数、DCA 平均成本等）排在固定字段之后，可覆盖 position_mode。
         template_assumptions = config["extra_assumptions"](ledger) if "extra_assumptions" in config else {}
+        time_assumptions = {}
+        if time_context is not None:
+            time_assumptions = time_context.assumptions(config["max_holding_bars"])
+            holding = time_assumptions["time_layer"].setdefault("holding", {})
+            holding.update(clock="round_first_fill", same_bar_priority="time_expiry_before_template_signal",
+                           final_bar="ledger_end_liquidation_without_callback")
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
@@ -5976,6 +6589,7 @@ def _run_scale_in_out_backtest(
                 "real_market_data": True,
                 "no_live_trading": True,
                 **template_assumptions,
+                **time_assumptions,
             },
             "limitations": {
                 "verification": "external_unverified",
@@ -5989,6 +6603,7 @@ def _run_scale_in_out_backtest(
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,
                 "legacy_metrics": legacy_metrics,
+                **(dict(time_expiry_fills=ledger.time_expiry_fills) if time_context is not None else {}),
                 "market_data_provenance": {
                     "provider_revision": PROVIDER_REVISION,
                     "source": df.attrs.get("cutie_data_source", DATA_SOURCE),
@@ -6696,6 +7311,9 @@ async def run_backtest(
 
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
+    if (effective_tool_id == "local.backtesting_py.turtle"
+            and params.get("direction") in ("short", "both") and market != "futures"):
+        return _validation_failure("INVALID_PARAMS", "Turtle short/both direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -6713,12 +7331,22 @@ async def run_backtest(
     min_bars = int(built["min_bars"])
     executed_name = str(built["executed_name"])
     strategy_class = built["strategy"]
-    time_config = getattr(strategy_class, "_time_config", None)
+    time_config = (built.get("scale_in_out", {}).get("time_config")
+                   or getattr(strategy_class, "_time_config", None))
     if time_config is not None:
         try:
             fixed_timeframe_milliseconds(timeframe)
         except ValueError as e:
             return _validation_failure("INVALID_PARAMS", str(e))
+
+    filter_config = getattr(strategy_class, "_filter_config", None)
+    if filter_config is not None:
+        if bt_req.get("signal_execution") is not None:
+            return _validation_failure("INVALID_PARAMS", "entry filters do not support signal_execution")
+        try:
+            filter_step_ms = fixed_timeframe_milliseconds(timeframe)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e).replace("time layer", "entry filters"))
 
     # --- Fetch OHLCV ---
     try:
@@ -6758,6 +7386,11 @@ async def run_backtest(
         logger.exception("OHLCV fetch unexpected error")
         return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch market data: {e}")
 
+    if filter_config is not None:
+        # Only completed signal candles are visible, including when time is disabled.
+        cutoff = min(end_at * 1000, int(time.time() * 1000))
+        df = df.loc[df.index.map(lambda value: pd.Timestamp(value).value // 1000000) + filter_step_ms <= cutoff].copy()
+
     if len(df) < min_bars:
         return _business_failure(
             run_id,
@@ -6794,10 +7427,14 @@ async def run_backtest(
 
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
-    risk = strategy_class._risk
+    risk = getattr(strategy_class, "_risk", {})
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
-    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df)
+    filter_warmup = filter_config.required_bars if filter_config is not None else 0
+    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup), df)
+    if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
+        return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
+                                 reason="filter_history_insufficient")
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
@@ -6824,12 +7461,18 @@ async def run_backtest(
         # float，不受此契约约束），两条路径分道扬镳，互不干扰。
         internal_cash_dec = _internal_cash_dec(initial_capital, float(df["Close"].max()))
         equity_scale_dec = initial_capital / internal_cash_dec
+        if leverage > 1 and market == "futures":
+            StrategyClass._isolated_equity_scale = equity_scale_dec
+            StrategyClass._isolated_initial_capital = initial_capital
+            StrategyClass._isolated_fee_bps = fee_bps
+            StrategyClass._isolated_slippage_bps = slippage_bps
+            StrategyClass._isolated_step = _timeframe_milliseconds(timeframe) // 1000
         bt = Backtest(
             df,
             StrategyClass,
             cash=internal_cash,
             commission=commission,
-            exclusive_orders=True,
+            exclusive_orders=tool_spec.get("exclusive_orders", True),
             # Settle trades still open at the end (close at last bar) so metrics /
             # trade_count reflect them instead of silently dropping unrealized PnL.
             finalize_trades=True,
@@ -6856,6 +7499,8 @@ async def run_backtest(
         # 的权威形状，取代旧版自由格式 trades/equity_curve。旧展示性百分比指标全部移入
         # raw_report.legacy_metrics，不再留在顶层 metrics（server 端 _validate_result_v2
         # 对 metrics 做"恰好三键"严格校验，多一个键就判 evidence_mismatch）。
+        isolated = leverage > 1 and market == "futures"
+        liquidations = stats["_strategy"]._isolated_liquidations if isolated else None
         result_v2 = _build_result_v2(
             stats_trades=getattr(stats, "_trades", None),
             equity_scale_dec=equity_scale_dec,
@@ -6869,6 +7514,8 @@ async def run_backtest(
             timeframe=timeframe,
             exchange_id=exchange_id,
             df=df,
+            **({"leverage": leverage, "liquidations": liquidations,
+                "liquidation_units": stats["_strategy"]._isolated_liquidation_units} if isolated else {}),
         )
 
         signal_result = None
@@ -6936,6 +7583,31 @@ async def run_backtest(
 
         from strategy_risk_overlay import risk_assumptions
 
+        turtle_assumptions = {}
+        turtle_raw_report = {}
+        if tool_spec.get("runner") == TURTLE_RUNNER:
+            turtle_assumptions = {
+                "unit_risk_pct_definition": _TURTLE_RISK_DESCRIPTION,
+                "units_skipped": stats["_strategy"].units_skipped,
+            }
+            turtle_risk = strategy_class._turtle_risk
+            reasons = None
+            if turtle_risk.get("risk_layer_enabled"):
+                instance = stats["_strategy"]
+                reasons = dict(instance._group_exit_reasons)
+                if instance._group_id is not None:
+                    reasons[instance._group_id] = "end_of_data"
+                turtle_assumptions["turtle_risk"] = {
+                    "holding_bars_count_from": "group_first_fill_bar_is_1",
+                    "max_holding_bars": turtle_risk.get("max_holding_bars", 0),
+                    "take_profit_basis": "group_vwap_entry",
+                    "take_profit_pct": turtle_risk.get("take_profit_pct"),
+                    "trigger": "current_bar_high_low",
+                    "fill": "next_bar_open_market",
+                    "same_bar_priority": "stop_before_time_expiry_before_take_profit_before_channel_before_add_before_entry",
+                    "final_bar": "engine_finalize_trades_settlement",
+                }
+            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"], reasons)}
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
@@ -6965,6 +7637,11 @@ async def run_backtest(
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
+                **(_build_isolated_margin_assumptions(
+                    leverage=leverage, market=market, stop_loss_pct=params.get("stop_loss_pct"),
+                    stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
+                   if isolated else {}),
+                **turtle_assumptions,
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -6992,6 +7669,14 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **(_build_isolated_risk_report(
+                    result_v2["trades"], leverage=leverage, market=market, df=df,
+                    step=_timeframe_milliseconds(timeframe) // 1000, liquidations=liquidations,
+                    liquidation_units=stats["_strategy"]._isolated_liquidation_units,
+                    equity_scale_dec=equity_scale_dec)
+                   if isolated else {}),
+                **turtle_raw_report,
+                **({"entry_filters": filter_config.report()} if filter_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
