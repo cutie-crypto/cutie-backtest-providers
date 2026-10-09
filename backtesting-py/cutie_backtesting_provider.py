@@ -3772,9 +3772,89 @@ def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10
     }
 
 
+def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Long-only entry on the first bar forming short > mid > long EMA alignment."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        short = int(params.get("ema_short", 20))
+        mid = int(params.get("ema_mid", 60))
+        long = int(params.get("ema_long", 120))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:ema_short/ema_mid/ema_long must be integers")
+    if not 5 <= short <= 50:
+        raise ValueError("INVALID_PARAMS:ema_short must be within 5-50")
+    if not 20 <= mid <= 150:
+        raise ValueError("INVALID_PARAMS:ema_mid must be within 20-150")
+    if not 60 <= long <= 300:
+        raise ValueError("INVALID_PARAMS:ema_long must be within 60-300")
+    if not short < mid < long:
+        raise ValueError("INVALID_PARAMS:require ema_short < ema_mid < ema_long")
+
+    from backtesting import Strategy
+
+    min_bars = long
+
+    class EmaTripleAlignmentStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            def ema(period):
+                return self.I(
+                    self._warm(lambda x: pd.Series(x).ewm(span=period, adjust=False).mean(), "Close"),
+                    self.data.Close, name=f"EMA({period})",
+                )
+
+            self.ema_short = ema(short)
+            self.ema_mid = ema(mid)
+            self.ema_long = ema(long)
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            short_now, mid_now, long_now = self.ema_short[-1], self.ema_mid[-1], self.ema_long[-1]
+            if not all(math.isfinite(v) for v in (short_now, mid_now, long_now)):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                aligned = short_now > mid_now > long_now
+                was_aligned = self.ema_short[-2] > self.ema_mid[-2] > self.ema_long[-2]
+                if aligned and not was_aligned:
+                    self._risk_buy()
+            elif short_now < mid_now:
+                self.position.close()
+
+    return {
+        "strategy": EmaTripleAlignmentStrategy,
+        "executed_name": f"EMA Triple Alignment ({short}/{mid}/{long})",
+        "min_bars": min_bars,
+    }
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.ema_triple_alignment": {
+        "name": "Local Backtesting.py EMA Triple Alignment",
+        "description": (
+            "Long-only trend following: buy when short > mid > long EMA alignment "
+            "first forms; exit when the short EMA is below the mid EMA. "
+            "Signals confirm at close and fill at the next open — maps to KOL 'EMA 三线多头排列'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_ema_triple_alignment,
+        "param_schema_properties": {
+            "ema_short": {"type": "integer", "default": 20, "minimum": 5, "maximum": 50},
+            "ema_mid": {"type": "integer", "default": 60, "minimum": 20, "maximum": 150},
+            "ema_long": {"type": "integer", "default": 120, "minimum": 60, "maximum": 300},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.bias_reversion": {
         "name": "Local Backtesting.py BIAS Reversion",
         "description": (
