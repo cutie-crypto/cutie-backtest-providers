@@ -94,8 +94,9 @@ def test_invalid_timeframe_rejected_before_fetch(timeframe,monkeypatch):
     assert TestClient(p.app).post('/cutie/backtest',json=body).json()['error_type']=='INVALID_PARAMS'
 
 
+# 7-P4：short 放行（多周期镜像见 test_7p4_short_filter.py），both 仍拒。
 @pytest.mark.parametrize('name',['ema_pullback','breakout','cci_rsi'])
-@pytest.mark.parametrize('direction',['short','both'])
+@pytest.mark.parametrize('direction',['both'])
 def test_mtf_short_both_rejected_before_fetch(name,direction,monkeypatch):
     monkeypatch.setattr(p,'AUTH_TOKEN','')
     monkeypatch.setattr(p,'_fetch_ohlcv',lambda *args:pytest.fail('direction rejection fetched data'))
