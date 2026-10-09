@@ -309,8 +309,10 @@ FEATURES = {
     'levels': dict(stop_loss_pct=20,tp1_r=.01,tp1_close_pct=50,tp2_r=.02,tp2_close_pct=50),
 }
 
-@pytest.mark.parametrize('name', list(enumerate_mixin_cases()))
-@pytest.mark.parametrize('feature', FEATURES)
+FEATURE_CASES = [(name, feature) for name in enumerate_mixin_cases() for feature, values in FEATURES.items()
+                 if set(values) <= set(p.TOOL_SPECS['local.backtesting_py.'+tool_name(name)]['param_schema_properties'])]
+
+@pytest.mark.parametrize('name,feature', FEATURE_CASES)
 def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
     observations=[]
     original=p._FixedRiskMixin._risk_layer_check_exit
@@ -385,8 +387,11 @@ def test_http_invalid_combination_before_market_fetch(monkeypatch):
 @pytest.mark.parametrize('key',KEYS)
 def test_new_schema_consumed_only_by_runtime_mixins(key):
     assert p._FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]['default'] == (False if key=='breakeven_stop' else 0)
-    for spec in p.TOOL_SPECS.values():
-        assert (key in spec['param_schema_properties']) == (spec.get('runner') not in ('kernel_v3','scale_in_out_ledger'))
+    for tool_id, spec in p.TOOL_SPECS.items():
+        included = spec.get('runner') not in ('kernel_v3','scale_in_out_ledger')
+        if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout'):
+            included = key == 'max_holding_bars'
+        assert (key in spec['param_schema_properties']) == included
 
 @pytest.mark.parametrize('side',['long','short'])
 def test_partial_fee_accounting_preserves_quantity_and_equity(side):

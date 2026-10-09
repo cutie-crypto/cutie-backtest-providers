@@ -275,3 +275,18 @@ def test_generic_holding_limit_still_consumed(direction):
 def test_nonpositive_short_target_fails_instead_of_publishing_invalid_price():
     with pytest.raises(ValueError, match='INVALID_PARAMS:nonpositive frozen range exit price'):
         direct(market_frame(side='short'), {'direction': 'short', 'take_profit_multiple': 100})
+
+
+@pytest.mark.parametrize('tool', ['opening_range_breakout', 'asia_range_breakout'])
+@pytest.mark.parametrize('key', ['stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplier',
+                                'trailing_stop_pct', 'breakeven_stop', 'tp1_r', 'take_profit_r'])
+def test_unconsumed_price_keys_not_declared_and_rejected_before_fetch(monkeypatch, tool, key):
+    assert key not in p.TOOL_SPECS['local.backtesting_py.'+tool]['param_schema_properties']
+    monkeypatch.setattr(p, 'AUTH_TOKEN', '')
+    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a: pytest.fail('unconsumed price key fetched'))
+    req = {'backtest': dict(provider_tool_id='local.backtesting_py.'+tool,
+        provider_params={key: True if key == 'breakeven_stop' else 2}, symbol='BTCUSDT', market='futures',
+        timeframe='15m', start_at=1767225600, end_at=1767232800)}
+    response = TestClient(p.app).post('/cutie/backtest', json=req).json()
+    assert response['error_type'] == 'INVALID_PARAMS'
+    assert key in response['error_message']

@@ -46,10 +46,13 @@ def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
     actual = set(enumerate_mixin_cases())
     assert fixture_names() <= actual
     assert len(actual) >= 19
-    for spec in p.TOOL_SPECS.values():
+    for tool_id, spec in p.TOOL_SPECS.items():
         included = spec.get('runner') not in ('kernel_v3', 'scale_in_out_ledger')
         for key in NEW:
-            assert (key in spec['param_schema_properties']) == included
+            supported = included
+            if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout'):
+                supported = key == 'risk_layer_enabled'
+            assert (key in spec['param_schema_properties']) == supported
 
 
 @pytest.mark.parametrize('key', NEW)
