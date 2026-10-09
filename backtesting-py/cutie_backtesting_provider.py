@@ -3488,12 +3488,6 @@ FILTER_LAYER_UNWIRED_TOOLS = (
     "local.backtesting_py.asia_range_breakout",
     "local.backtesting_py.calendar_schedule",
     "local.backtesting_py.red_streak_rsi",
-    "local.backtesting_py.bullish_engulfing",
-    "local.backtesting_py.hammer_pin_bar",
-    "local.backtesting_py.morning_star",
-    "local.backtesting_py.three_white_soldiers",
-    "local.backtesting_py.bullish_doji_reversal",
-    "local.backtesting_py.inside_bar_breakout",
     "local.backtesting_py.double_bottom",
     "local.backtesting_py.inverse_head_shoulders",
     "local.backtesting_py.macd_bearish_divergence",
@@ -4850,31 +4844,37 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bullish_engulfing(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="engulfing", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_hammer_pin_bar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="pin_bar", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_morning_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="star", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_three_white_soldiers(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="soldiers", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bullish_doji_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="doji", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_inside_bar_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="inside_bar", initial_capital=initial_capital)
 
