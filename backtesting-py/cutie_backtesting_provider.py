@@ -2314,7 +2314,7 @@ def _rsi_series(values: Any, period: int):
 
 
 # 共用风险参数：旧四键保留；3a 扩展必须显式启用，默认走原收盘覆盖层。
-# 移动/保本/时间/多档留给 3b，不提前声明尚未消费的参数。
+# 3b 动态止损、持仓期限与三档止盈使用扁平键。
 _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "stop_loss_pct": {"type": "number", "minimum": 0, "maximum": 100},
     "take_profit_pct": {"type": "number", "minimum": 0, "maximum": 100},
@@ -2324,7 +2324,44 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "atr_stop_multiplier": {"type": "number", "default": 0, "minimum": 0, "maximum": 100},
     "risk_atr_period": {"type": "integer", "default": 0, "minimum": 0, "maximum": 500},
     "take_profit_r": {"type": "number", "default": 0, "minimum": 0, "maximum": 100},
+    "trailing_stop_pct": {"type": "number", "default": 0, "minimum": 0, "exclusiveMaximum": 100},
+    "breakeven_stop": {"type": "boolean", "default": False},
+    "max_holding_bars": {"type": "integer", "default": 0, "minimum": 0, "maximum": 1000000},
+    **{f"tp{n}_{suffix}": {"type": "number", "default": 0, "minimum": 0, "maximum": 100}
+       for n in (1, 2, 3) for suffix in ("r", "close_pct")},
 }
+
+
+def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
+    """Shared holding-key gate; the later time layer can extend this independently."""
+    return params.get("risk_layer_enabled") is True
+
+
+# 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
+_LEVERAGE_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
+    "leverage": {"type": "integer", "default": 1, "minimum": 1, "maximum": 20},
+}
+
+
+def _parse_single_leverage(params: dict[str, Any]) -> int:
+    leverage = params.get("leverage", 1)
+    if isinstance(leverage, bool) or not isinstance(leverage, int) or not 1 <= leverage <= 20:
+        raise ValueError("INVALID_PARAMS:leverage must be an integer within 1-20")
+    return leverage
+
+
+def _single_leverage_rejection(leverage: int, market: str) -> Optional[str]:
+    """唯一放行门；不能对外返回尚无逐仓爆仓模型的杠杆结果。"""
+    if market == "spot" and leverage > 1:
+        return "leverage above 1 requires futures market"
+    if leverage > 1:
+        return "leverage above 1 requires the isolated liquidation model"
+    return None
+
+
+def _leverage_backtest_kwargs(leverage: int) -> dict[str, float]:
+    # 1 倍完全保留旧构造参数，不能显式传 margin=1.0。
+    return {"margin": 1 / leverage} if leverage > 1 else {}
 
 
 def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -2334,6 +2371,7 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
     非法值一律 ``INVALID_PARAMS:`` 前缀 ValueError，被 run_backtest() 的既有 except
     分支捕获转成 INVALID_PARAMS 失败响应。
     """
+    leverage = _parse_single_leverage(params)
     risk_params = {key: value for key, value in params.items() if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES}
     error = _validate_params_against_schema(risk_params, _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
     if error:
@@ -2350,15 +2388,48 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("INVALID_PARAMS:stop_loss_pct and ATR stop are mutually exclusive")
     if profit_r and params.get("take_profit_pct") is not None:
         raise ValueError("INVALID_PARAMS:take_profit_pct and take_profit_r are mutually exclusive")
-    if profit_r and not (multiplier or params.get("stop_loss_pct")):
-        raise ValueError("INVALID_PARAMS:take_profit_r requires an initial stop")
+    trailing = params.get("trailing_stop_pct", 0)
+    holding = params.get("max_holding_bars", 0)
+    if "max_holding_bars" in params and type(holding) is not int:
+        raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+    if trailing >= 100:
+        raise ValueError("INVALID_PARAMS:trailing_stop_pct must be < 100")
+    dynamic_keys = ("trailing_stop_pct", "breakeven_stop",
+                    *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
+    if not enabled and any(params.get(key, 0) for key in dynamic_keys):
+        raise ValueError("INVALID_PARAMS:new risk parameters require risk_layer_enabled=true")
+    if holding and not _consumes_max_holding_bars(params):
+        raise ValueError("INVALID_PARAMS:max_holding_bars requires risk_layer_enabled=true")
+    levels = []
+    for n in (1, 2, 3):
+        r, pct = params.get(f"tp{n}_r", 0), params.get(f"tp{n}_close_pct", 0)
+        if bool(r) != bool(pct):
+            raise ValueError("INVALID_PARAMS:take-profit level r and close_pct must be paired")
+        if r:
+            if n != len(levels) + 1 or (levels and r <= levels[-1][0]):
+                raise ValueError("INVALID_PARAMS:take-profit levels must be continuous and strictly increasing")
+            levels.append((r, pct))
+    total = sum(Decimal(str(pct)) for _, pct in levels)
+    if total > 100 or (levels and total < 100 and not trailing):
+        raise ValueError("INVALID_PARAMS:take-profit allocation must be <= 100; remainder requires trailing")
+    if levels and (profit_r or params.get("take_profit_pct") is not None):
+        raise ValueError("INVALID_PARAMS:take-profit modes are mutually exclusive")
+    if (profit_r or levels or params.get("breakeven_stop")) and not (
+        multiplier or params.get("stop_loss_pct") or trailing
+    ):
+        raise ValueError("INVALID_PARAMS:R targets and breakeven require an initial stop")
     out: dict[str, Any] = {}
+    if leverage > 1:
+        out["leverage"] = leverage
     if enabled:
         out["risk_layer_enabled"] = True
         if multiplier:
             out.update(atr_stop_multiplier=multiplier, risk_atr_period=int(period))
         if profit_r:
             out["take_profit_r"] = profit_r
+    for key in (*dynamic_keys, "max_holding_bars"):
+        if params.get(key):
+            out[key] = params[key]
     for key in ("stop_loss_pct", "take_profit_pct"):
         raw = params.get(key)
         if raw is None:
@@ -2472,6 +2543,11 @@ class _FixedRiskMixin(_TimeLayerMixin):
             self._risk_state = None
             self._risk_entry_atr = None
             self._risk_exit_reason = None
+            if self._risk.get("trailing_stop_pct") or self._risk.get("breakeven_stop"):
+                # Timestamp.value is nanoseconds; kernel bars have inclusive ends.
+                self._risk_bar_times = [int(pd.Timestamp(t).value) for t in self.data.index]
+                self._risk_period_ns = getattr(self, "_risk_timeframe_ns", None) or (
+                    self._risk_bar_times[1] - self._risk_bar_times[0])
             if self._risk.get("atr_stop_multiplier"):
                 from strategy_risk_overlay import risk_atr_series
 
@@ -2493,21 +2569,42 @@ class _FixedRiskMixin(_TimeLayerMixin):
         self._risk_entry_atr = self._risk_atr[count - 1]
 
     def _risk_layer_check_exit(self) -> bool:
-        from strategy_risk_overlay import initial_risk_state, decide_exit
+        from strategy_risk_overlay import initial_risk_state, decide_exit, advance_risk_state, level_exit
 
         trade = self.trades[-1]
+        # Parent orders remain pending until the broker confirms the next-open fill.
+        if any(order.parent_trade is trade for order in self.orders):
+            return True
         if self._risk_trade is not trade:
             self._risk_trade = trade
             self._risk_state = initial_risk_state(
                 risk=self._risk, entry_price=trade.entry_price,
                 direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
+                entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
             )
-        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1])
-        if reason is None:
-            return False
-        self._risk_exit_reason = reason
-        self.position.close()
-        return True
+        bar = len(self.data) - 1
+        holding = self._risk.get("max_holding_bars", 0)
+        due = bool(holding and bar - trade.entry_bar + 1 >= holding)
+        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=due)
+        if reason is not None:
+            self._risk_exit_reason = reason
+            self.position.close()
+            return True
+        self._risk_state, units = level_exit(
+            self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], remaining_units=abs(trade.size))
+        if self._risk_state.stop_state is not None:
+            open_at = self._risk_bar_times[bar]
+            next_open = (self._risk_bar_times[bar + 1] if bar + 1 < len(self._risk_bar_times)
+                         else open_at + self._risk_period_ns)
+            self._risk_state = advance_risk_state(
+                self._risk_state, self._risk, open_at=open_at, close_at=next_open - 1,
+                high=self.data.High[-1], low=self.data.Low[-1], close=self.data.Close[-1])
+        if units:
+            self._risk_exit_reason = "take_profit_levels"
+            # Precompute integer units to bypass Trade.close's minimum-one/round semantics.
+            trade.close(portion=units / abs(trade.size))
+            return True
+        return False
 
     def _risk_entry_size(self) -> Optional[float]:
         """None 表示未配置固定仓位——调用方必须不传 size=，直接吃库内 __FULL_EQUITY
@@ -2519,7 +2616,11 @@ class _FixedRiskMixin(_TimeLayerMixin):
             return size_pct
         notional = self._risk.get("position_size_notional")
         if notional is not None:
+            # 百分比是保证金预算，库按 margin 放大；固定名义需先除 L。
+            leverage = self._risk.get("leverage", 1)
             fraction = (notional * self._start_equity) / (self._initial_capital * self.equity)
+            if leverage > 1:
+                fraction /= leverage
             return min(0.999999, max(1e-9, fraction))
         return None
 
@@ -2968,6 +3069,72 @@ def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float 
         "strategy": BollingerBreakoutStrategy,
         "executed_name": f"Bollinger Breakout ({period}, {std_mult:g}sigma)",
         "min_bars": period + 1,
+    }
+
+
+def _keltner_arrays(high: Any, low: Any, close: Any, ema_period: int,
+                     atr_period: int, multiplier: float) -> dict[str, Any]:
+    """Causal EMA channel; first true range seeds the Wilder ATR, as in Supertrend."""
+    h, l, c = (np.asarray(x, dtype="float64") for x in (high, low, close))
+    tr = np.empty(len(c), dtype="float64")
+    if len(c):
+        tr[0] = h[0] - l[0]
+        tr[1:] = np.maximum(h[1:] - l[1:],
+                            np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+    mid = pd.Series(c).ewm(span=ema_period, adjust=False).mean().to_numpy()
+    atr = pd.Series(tr).ewm(alpha=1 / atr_period, adjust=False).mean().to_numpy()
+    return {"mid": mid, "atr": atr, "upper": mid + multiplier * atr}
+
+
+@_with_time_config
+def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    values = {}
+    for key, default, lo, hi in (("ema_period", 20, 5, 100),
+                                 ("atr_period", 14, 2, 100),
+                                 ("multiplier", 2, 1, 4)):
+        value = params.get(key, default)
+        integer = key != "multiplier"
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or (integer and not isinstance(value, int)) or not lo <= value <= hi
+                or not math.isfinite(value)):
+            kind = "integer" if integer else "number"
+            raise ValueError(f"INVALID_PARAMS:{key} must be a finite {kind} within {lo}-{hi}")
+        values[key] = value
+    ema_period, atr_period, multiplier = (values[k] for k in ("ema_period", "atr_period", "multiplier"))
+    min_bars = max(ema_period, atr_period) + 1
+
+    from backtesting import Strategy
+
+    class KeltnerBreakoutStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("mid", "upper"):
+                def indicator(high, low, close, key=key):
+                    return _keltner_arrays(high, low, close, ema_period, atr_period, multiplier)[key]
+                setattr(self, key, self.I(self._warm(indicator, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close,
+                                         name=f"Keltner {key}"))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            price = self.data.Close[-1]
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if price > self.upper[-1]:
+                    self._risk_buy()
+            elif price < self.mid[-1]:
+                self.position.close()
+
+    return {
+        "strategy": KeltnerBreakoutStrategy,
+        "executed_name": f"Keltner Breakout ({ema_period}/{atr_period}/{multiplier:g})",
+        "min_bars": min_bars,
     }
 
 
@@ -4607,6 +4774,23 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    "local.backtesting_py.keltner_breakout": {
+        "name": "Local Backtesting.py Keltner Breakout",
+        "description": (
+            "Long-only Keltner / ATR channel breakout: buy when Close > EMA + multiplier * "
+            "Wilder ATR; exit when Close < EMA. Signals confirm at close and fill at the next open. "
+            "Maps to KOL 'Keltner 通道突破'. Optional ATR stops use the shared risk layer."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "build": _build_keltner_breakout,
+        "param_schema_properties": {
+            "ema_period": {"type": "integer", "default": 20, "minimum": 5, "maximum": 100},
+            "atr_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
+            "multiplier": {"type": "number", "default": 2, "minimum": 1, "maximum": 4},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.breakout": {
         "name": "Local Backtesting.py Donchian Breakout",
         "description": (
@@ -4907,6 +5091,7 @@ for _tool_spec in TOOL_SPECS.values():
         **_tool_spec["param_schema_properties"],
         **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
         **_TIME_PARAM_SCHEMA_PROPERTIES,
+        **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     }
 del _tool_spec
 
@@ -5356,6 +5541,8 @@ def _scale_in_out_rejection(params: dict[str, Any], bt_req: dict[str, Any], mark
     """IMPL §3.1 拒绝条件（schema 校验之前判，报错信息比「unknown parameter」直白）。"""
     if market != "spot":
         return "scale-in/out template supports spot market only"
+    if "leverage" in params:
+        return "scale-in/out template does not support leverage"
     risk_keys = sorted(key for key in params if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
     if risk_keys:
         return (
@@ -6279,6 +6466,16 @@ async def run_backtest(
             instrument_rules=bt_req.get("instrument_rules"),
         )
 
+    leverage = 1
+    if "leverage" in tool_spec["param_schema_properties"]:
+        try:
+            leverage = _parse_single_leverage(params)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e).removeprefix("INVALID_PARAMS:"))
+        rejection = _single_leverage_rejection(leverage, market)
+        if rejection:
+            return _validation_failure("INVALID_PARAMS", rejection)
+
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
@@ -6380,6 +6577,7 @@ async def run_backtest(
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
     risk = strategy_class._risk
+    strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
     warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df)
     indicator_warmup_bars = len(warmup_df)
@@ -6417,6 +6615,7 @@ async def run_backtest(
             # Settle trades still open at the end (close at last bar) so metrics /
             # trade_count reflect them instead of silently dropping unrealized PnL.
             finalize_trades=True,
+            **_leverage_backtest_kwargs(leverage),
         )
         stats = bt.run()
 
