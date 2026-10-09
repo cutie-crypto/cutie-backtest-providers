@@ -2810,6 +2810,26 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
 SCALE_IN_OUT_RUNNER = "scale_in_out_ledger"
 
 
+def _with_ledger_time_config(build):
+    @functools.wraps(build)
+    def configured(params, **kwargs):
+        time = TimeConfig.parse(params)
+        holding = params.get("max_holding_bars", 0)
+        spec = _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"]
+        if type(holding) is not int:
+            raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+        if not spec["minimum"] <= holding <= spec["maximum"]:
+            raise ValueError("INVALID_PARAMS:max_holding_bars must be within 0-1000000")
+        if holding and not time.enabled:
+            raise ValueError("INVALID_PARAMS:max_holding_bars requires risk_layer_enabled=true or time_layer_enabled=true")
+        built = build(params, **kwargs)
+        if time.enabled:
+            built["scale_in_out"].update(time_config=time, max_holding_bars=holding)
+        return built
+    return configured
+
+
+@_with_ledger_time_config
 def _build_rsi_scale_in_out(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """132 RSI 定额分批：参数校验 + 指标函数，不产出 backtesting.py Strategy。
 
@@ -2858,6 +2878,7 @@ def _build_rsi_scale_in_out(params: dict[str, Any], *, initial_capital: float = 
     }
 
 
+@_with_ledger_time_config
 def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Close-based grid; references advance on signals, lots only on actual fills."""
     from decimal import Context, localcontext
@@ -4073,6 +4094,7 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
     }
 
 
+@_with_ledger_time_config
 def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Calendar buys, bounded dip attempts and whole-round profit taking."""
     from datetime import datetime, timezone
@@ -5115,7 +5137,14 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 # 132：定额分批（runner=scale_in_out_ledger）同样不合并——账本不消费固定止损止盈/仓位，
 # 带这些参数的请求直接 INVALID_PARAMS（IMPL §3.1）。
 for _tool_spec in TOOL_SPECS.values():
-    if _tool_spec.get("runner") in ("kernel_v3", SCALE_IN_OUT_RUNNER):
+    if _tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
+        _tool_spec["param_schema_properties"] = {
+            **_tool_spec["param_schema_properties"],
+            **_TIME_PARAM_SCHEMA_PROPERTIES,
+            "max_holding_bars": _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"],
+        }
+        continue
+    if _tool_spec.get("runner") == "kernel_v3":
         continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
