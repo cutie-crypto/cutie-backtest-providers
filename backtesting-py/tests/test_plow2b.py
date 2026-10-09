@@ -21,11 +21,21 @@ SHORT = {'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'hea
 EXTRA = {'red_streak_rsi': dict(stop_loss_pct=2)}
 # Closes walk to the stop: legacy close-only stop decisions (risk layer off), and RSI divergences whose
 # RSI exit would fire first on flat closes.
-CLOSE_ONLY = {'red_streak_rsi', 'fibonacci_retracement', 'rsi_bullish_divergence', 'rsi_bearish_divergence'}
-# vwap_reversion: its fixture fills on the last 6h bar of the UTC day, so utc_day_end expiry closes
-# at the same next open as the stop and cannot discriminate; not covered here (reported as residual).
-TEMPLATE_STOP_NAMES = sorted(t.rsplit('.', 1)[1] for t in p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
-                             if not t.endswith('.vwap_reversion'))
+# vwap_reversion walks closes too: a close back at VWAP would exit first.
+CLOSE_ONLY = {'red_streak_rsi', 'fibonacci_retracement', 'rsi_bullish_divergence', 'rsi_bearish_divergence',
+              'vwap_reversion'}
+TEMPLATE_STOP_NAMES = sorted(t.rsplit('.', 1)[1] for t in p.POSITION_SIZING_TEMPLATE_STOP_TOOLS)
+
+
+def _vwap_early_frame():
+    """The golden vwap fixture (6h) fills on the UTC day's last bar, where utc_day_end expiry closes at the
+    same next open as the stop; with 6h bars the earliest possible fill (12:00) still exits at the next
+    00:00. Hourly bars instead: flat at 100 until the 20:00 signal (close 90 <= VWAP ~99.7 * 0.985), so
+    the fill is 21:00 (f), the stop exits at the 23:00 open (f+2) one bar before the day-end flatten
+    (next 00:00), and no re-entry follows (23:00 is the day's last bar, 00:00 the frame's last bar)."""
+    rows = [(100, 100, 100, 100)] * 20 + [(100, 100, 90, 90)] + [(91, 92, 90, 91)] * 4
+    return pd.DataFrame([dict(Open=o, High=h, Low=lo, Close=c, Volume=1) for o, h, lo, c in rows],
+                        index=pd.date_range('2026-01-01', periods=len(rows), freq='1h', tz='UTC')).astype(float)
 
 
 def _module(name):
@@ -36,6 +46,8 @@ def _module(name):
 
 
 def _frame(name):
+    if name == 'vwap_reversion':
+        return _vwap_early_frame()
     module = _module(name)
     if module is None:
         return cd.frame(name)
@@ -45,6 +57,8 @@ def _frame(name):
 
 def _post(monkeypatch, tmp_path, name, data):
     module = _module(name) or cd
+    if name == 'vwap_reversion':  # hourly frame, see _vwap_early_frame
+        monkeypatch.setitem(ca.CASES, name, (_vwap_early_frame, {}, '1h'))
     return module.post(monkeypatch, tmp_path, name, {**RISK, **EXTRA.get(name, {})}, data=data)
 
 
