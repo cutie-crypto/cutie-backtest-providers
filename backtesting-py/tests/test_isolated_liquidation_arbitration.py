@@ -256,11 +256,22 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         out=TestClient(module.app).post('/cutie/backtest',json=req).json()
         assert out['result_status']=='success',out
         return out
-    baseline,result=invoke(baseline_provider),invoke(p)
+    result=invoke(p)
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')
-    assert canonical_json({k:result[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
-    for key in ('assumptions','raw_report'):
-        assert json.dumps(result[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))
+    if name == 'fibonacci_retracement':
+        # 9T5 did not exist in e25886e; retain the historical comparator for old tools.
+        import hashlib
+        from pathlib import Path
+        expected=json.loads((Path(__file__).parent/'fixtures/isolated_off_9t5_b42210b.json').read_text())['cases'][market]
+        digest=lambda value:hashlib.sha256(value.encode()).hexdigest()
+        assert digest(canonical_json({k:result[k] for k in v2}))==expected['v2']
+        for key in ('assumptions','raw_report'):
+            assert digest(json.dumps(result[key],sort_keys=True,separators=(',',':')))==expected[key]
+    else:
+        baseline=invoke(baseline_provider)
+        assert canonical_json({k:result[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
+        for key in ('assumptions','raw_report'):
+            assert json.dumps(result[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))
     assert 'isolated_margin' not in result['assumptions'] and 'isolated_risk' not in result['raw_report']
 
 
