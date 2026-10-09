@@ -27,12 +27,17 @@ WAVEC_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_wavec_fd
 SHORT_PAT1_GOLDEN = json.loads((Path(__file__).parent/'fixtures/short_pat1_off.json').read_text())
 
 
+# 7-P3a：这 6 个 K 线形态已接过滤层、移出名单；其关态金样（Wave-B 字节）保持不变。
+WIRED_7P3A = {'bullish_engulfing', 'hammer_pin_bar', 'morning_star', 'three_white_soldiers',
+              'bullish_doji_reversal', 'inside_bar_breakout'}
+
+
 def test_waveb_golden_covers_exactly_the_filter_unwired_tools():
     from test_entry_filters import FROZEN_UNWIRED_WAVE_B
     assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in FROZEN_UNWIRED_WAVE_B}
     # Keep Wave-B bytes intact; the two futures-only SHORT-PAT-1 tools have their own head golden.
     # 集成 D：做空二两个工具同在过滤层名单，故用子集而非做空一原来的相等断言。
-    assert set(WAVEB_GOLDEN['cases']) | set(SHORT_PAT1_GOLDEN['single']) <= {t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
+    assert set(WAVEB_GOLDEN['cases']) | set(SHORT_PAT1_GOLDEN['single']) <= ({t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS} | WIRED_7P3A)
     assert all(set(v)=={'futures','spot'} for v in WAVEB_GOLDEN['cases'].values())
 
 

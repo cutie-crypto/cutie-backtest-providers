@@ -218,7 +218,8 @@ def test_runtime_disabled_fingerprints(case, warm, explicit, monkeypatch):
 
 def test_unwired_list_names_registered_tools_without_filter_keys():
     unwired = p.FILTER_LAYER_UNWIRED_TOOLS
-    assert len(unwired) == 16 and len(set(unwired)) == 16  # 集成 D：12 + 做空一 2 + 做空二 2
+    # 集成 D：12 + 做空一 2 + 做空二 2 = 16；7-P3a 接入 6 个 K 线形态后剩 10。
+    assert len(unwired) == 10 and len(set(unwired)) == 10
     for tool_id in unwired:
         assert tool_id in p.TOOL_SPECS, tool_id
         assert tool_id.removeprefix('local.backtesting_py.') in EXCLUDED
@@ -292,7 +293,13 @@ def test_explicit_filter_off_preserves_risk_goldens(name, risk_case, warm, risk_
     assert compat.fingerprint(name, risk_case, warm, risk_disabled) == compat.fixture_cases()[f'{name}/{risk_case}/{int(warm)}']
 
 
-@pytest.mark.parametrize('name', SINGLE_NAMES)
+# 7-P3a：K 线形态六模板自带冻结止损 / 目标，拒绝 stop_loss_pct 等风险键，且通用 compat.frame 不产生形态信号；
+# 它们的入场门由 test_7p3a_kline_filter.py 用手造 K 线逐个覆盖。
+CANDLE_FILTER_NAMES = {'bullish_engulfing', 'hammer_pin_bar', 'morning_star', 'three_white_soldiers',
+                       'bullish_doji_reversal', 'inside_bar_breakout'}
+
+
+@pytest.mark.parametrize('name', [n for n in SINGLE_NAMES if n not in CANDLE_FILTER_NAMES])
 @pytest.mark.parametrize('risk_enabled', [False, True])
 def test_each_registered_template_uses_filter_gate(name, risk_enabled, monkeypatch):
     values = {**compat.PARAMS.get(name, {}), **params('ema'),
