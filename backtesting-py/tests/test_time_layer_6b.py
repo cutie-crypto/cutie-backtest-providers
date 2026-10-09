@@ -215,6 +215,9 @@ def test_every_registered_single_template_consumes_holding_bars(name):
     elif name in ('double_top', 'head_shoulders'):
         from test_short_pat1 import compatibility_frame
         data = compatibility_frame(name)
+    elif name in p._SHORT_CANDLE_TOOL_NAMES.values():
+        from test_short_pat4_candles import compatibility_frame
+        data = compatibility_frame(name)
     elif name in ('double_bottom', 'inverse_head_shoulders'):
         from test_9t3_patterns import compatibility_frame
         data = compatibility_frame(name)

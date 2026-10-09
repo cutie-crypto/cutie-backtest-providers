@@ -156,8 +156,9 @@ EARLIER_GATE = {'macd_bearish_divergence': 'bearish divergence requires futures 
 
 
 def test_futures_only_set_is_the_known_five():
-    assert FUTURES_ONLY == ['chan_3sell', 'double_top', 'head_shoulders', 'macd_bearish_divergence',
-                            'rsi_bearish_divergence']
+    # SHORT-PAT-4 adds the three bearish candle patterns => eight.
+    assert FUTURES_ONLY == ['bearish_engulfing', 'chan_3sell', 'double_top', 'evening_star', 'head_shoulders',
+                            'macd_bearish_divergence', 'rsi_bearish_divergence', 'shooting_star']
 
 
 @pytest.mark.parametrize('name', FUTURES_ONLY)

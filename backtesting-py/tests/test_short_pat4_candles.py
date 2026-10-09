@@ -33,12 +33,25 @@ ENTRY = {'bearish_engulfing': '94', 'shooting_star': '94', 'evening_star': '90'}
 FINAL = {'bearish_engulfing': '100', 'shooting_star': '100', 'evening_star': '90'}
 
 
-def frame(name):
-    data = c.CASES[MIRROR[name]]().copy()
+def reflect(data):
+    data = data.copy()
     high, low = data['High'].copy(), data['Low'].copy()
     data['Open'], data['Close'] = 200 - data['Open'], 200 - data['Close']
     data['High'], data['Low'] = 200 - low, 200 - high
     return data
+
+
+def frame(name):
+    return reflect(c.CASES[MIRROR[name]]())
+
+
+def compatibility_frame(name):
+    """Mirror of the long template's compatibility frame, for other suites' per-template loops."""
+    if MIRROR[name] == 'morning_star':
+        from test_9t2_patterns import compatibility_frame as long_frame
+    else:
+        from test_9t1_engulf_pin import compatibility_frame as long_frame
+    return reflect(long_frame(MIRROR[name]))
 
 
 def post(monkeypatch, tmp_path, name, params=None, data=None, market='futures'):
@@ -100,6 +113,29 @@ def test_evening_star_has_no_position_filter():
 
 
 # --- execution --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize('name', ['bearish_engulfing', 'shooting_star'])
+@pytest.mark.parametrize('enabled', [True, False])
+def test_position_filter_switch(monkeypatch, tmp_path, name, enabled):
+    # Mirror of test_9t1_engulf_pin's background=90 frame: prior highs near 110.5, BB/EMA stay above the
+    # pattern's [95, 103], so only the bare shape fires.
+    from test_9t1_engulf_pin import frame as long_frame
+    body, data = post(monkeypatch, tmp_path, name, dict(position_filter=enabled),
+                      reflect(long_frame(MIRROR[name], background=90)))
+    assert body['result_status'] == 'success', body
+    assert [t[:3] for t in trades(body, data)] == ([] if enabled else [(26, 'short', '94')])
+
+
+@pytest.mark.parametrize('name', SHORT)
+def test_filter_layer_wired_as_short_and_off_state_unchanged(monkeypatch, tmp_path, name):
+    build = p.TOOL_SPECS['local.backtesting_py.' + name]['build']
+    assert getattr(build, '_supports_entry_filters', False)
+    cls = build({'filter_layer_enabled': True, 'filter_ema_enabled': True})['strategy']
+    assert cls._filter_direction == 'short' and cls._filter_config.ema_enabled
+    base = post(monkeypatch, tmp_path, name)[0]
+    off = post(monkeypatch, tmp_path, name, dict(filter_layer_enabled=False))[0]
+    assert off['trades'] == base['trades'] and off['metrics'] == base['metrics']
+
 
 @pytest.mark.parametrize('name', SHORT)
 def test_mirror_of_long_fixture_trades_one_short(monkeypatch, tmp_path, name):
