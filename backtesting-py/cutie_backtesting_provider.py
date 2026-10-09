@@ -8661,6 +8661,11 @@ async def run_backtest(
         }}
         ema_warmup_assumptions = {"ema_warmup":
             f"EMA 预热取 10×最长周期（目标 {target} 根，实得 {indicator_warmup_bars} 根）"}
+        if ema_warmup_report["ema_warmup"]["truncated"]:
+            ema_warmup_assumptions["ema_warmup"] += (
+                f"回测已把预热截到 20000 根；实盘自动信号要求 10×最长周期 ≤ 20000 根，"
+                f"本参数（需 {requested} 根）无法布防自动信号，请调小慢线周期"
+            )
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
         strategy_class._warmup_cols = {
