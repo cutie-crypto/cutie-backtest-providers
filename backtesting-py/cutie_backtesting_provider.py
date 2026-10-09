@@ -1119,9 +1119,10 @@ def _fetch_template_warmup(
     都退化成「拿到多少用多少 / 不预热」，绝不让本来能跑的回测因此失败；主区间的取数
     与错误处理不经过这里。只保留早于主区间第一根的行，防止取数源不按区间裁剪时把
     主区间数据当成预热。
-    例外（P-LOW1 / P-LOW2a）：凡开同周期过滤的模板（过滤开启且未设 filter_timeframe），调用方在
-    run_backtest 里要求非空预热段连续且紧挨主区间，有缺口即 INSUFFICIENT_DATA；过滤关闭时不判。
-    本函数本身仍不失败。
+    例外（P-LOW1 / P-LOW2a / P-LOW3）：凡开同周期过滤的模板（过滤开启且未设 filter_timeframe），
+    调用方在 run_backtest 里要求非空预热段连续且紧挨主区间，有缺口即 INSUFFICIENT_DATA；主区间缺口
+    在容差（CENTRAL_GAP_TOLERANCE_RATIO）内则过滤掩码在缺口处重新预热，超出则 INSUFFICIENT_DATA。
+    过滤关闭时都不判。本函数本身仍不失败。
     """
     empty = pd.DataFrame(columns=list(_WARMUP_COLUMNS), dtype="float64")
     if bars <= 0 or main_df.empty:
@@ -1266,11 +1267,18 @@ def _business_failure(
     error_message: str,
     reason: Optional[str] = None,
     market_data_provenance: Optional[dict[str, Any]] = None,
+    details: Optional[dict[str, Any]] = None,
 ) -> JSONResponse:
-    """Business failure with provider metadata (IMPL §6.3)."""
+    """Business failure with provider metadata (IMPL §6.3).
+
+    ``details`` (P-LOW3) is merged into ``limitations`` after ``reason``; None keeps every other
+    caller's body byte-identical.
+    """
     limitations: dict[str, Any] = {}
     if reason:
         limitations["reason"] = reason
+    if details:
+        limitations.update(details)
     provenance = market_data_provenance or {
         "provider_revision": PROVIDER_REVISION,
         "source": None,
@@ -2636,6 +2644,9 @@ class _FilterLayerMixin:
     _filter_config = None
     _filter_context = None
     _filter_direction = "long"
+    # P-LOW3: main-range index of the first bar after each in-tolerance gap (same-timeframe filter
+    # only). run_backtest sets it on the per-request strategy class, like ``_warmup_cols``.
+    _filter_main_gap_starts: tuple[int, ...] = ()
 
     def _filter_init(self) -> None:
         if self._filter_config is None:
@@ -2649,6 +2660,15 @@ class _FilterLayerMixin:
             columns[name] = np.concatenate([prefix, np.asarray(getattr(self.data, name))])
         self._filter_mask = entry_mask(self._filter_config, columns, _supertrend_arrays,
                                        direction=self._filter_direction)
+        # P-LOW3 re-warm after each main-range gap (i = first bar after the gap). Blocked: i - 1, the
+        # last bar before the gap -- its close-time signal would fill at the post-gap open, i.e. an
+        # entry across the gap (the stricter reading of "the gap segment" = the judgment bar whose fill
+        # lands on the gap) -- and i .. i + required_bars - 2, the required_bars - 1 bars entry_mask
+        # also blocks at the head of a series, treating i as bar 0 of a new series. Earliest pass:
+        # i + required_bars - 1. Indicators stay computed over the gapped series; only the mask hides it.
+        for start in self._filter_main_gap_starts:
+            at = self._warmup_bars + start
+            self._filter_mask[max(0, at - 1):at + self._filter_config.required_bars - 1] = False
 
     def _filter_allow_entry(self, bar: Optional[int] = None) -> bool:
         if self._filter_config is None:
@@ -9000,18 +9020,51 @@ async def run_backtest(
                  if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
-    # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1): the warmup
-    # prefix is concatenated in front of the main range for the filter mask, so a non-empty prefix
-    # must be gap-free and end one bar before the main range -- a hole would feed EMA/MACD/Supertrend
-    # a discontinuous series (silent misjudgment). Filter off / filter_timeframe: filter_warmup is 0,
-    # best-effort warmup is never judged. An empty prefix passes (the mask then starts on the main
-    # range only) and falls to the bar-count check below.
-    if filter_warmup and len(warmup_df):
+    # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
+    # since P-LOW3): the warmup prefix is concatenated in front of the main range for the filter mask,
+    # so a non-empty prefix must be gap-free and end one bar before the main range -- a hole would
+    # feed EMA/MACD/Supertrend a discontinuous series (silent misjudgment). A main-range gap within
+    # CENTRAL_GAP_TOLERANCE_RATIO (same formula as the central-source gap check) re-warms the filter
+    # mask after the gap; beyond it the run fails. Filter off / filter_timeframe: filter_warmup is 0,
+    # nothing here is judged. An empty prefix passes (the mask then starts on the main range only)
+    # and falls to the bar-count check below.
+    entry_filter_main_gaps = None
+    if filter_warmup:
         step_ns = _timeframe_milliseconds(timeframe) * 1000000
-        stamps = [pd.Timestamp(t).value for t in warmup_df.index] + [pd.Timestamp(df.index[0]).value]
-        if any(b - a != step_ns for a, b in zip(stamps, stamps[1:])):
-            return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history has gaps",
-                                     reason="filter_history_insufficient")
+
+        def _gap_details(segment, index, gaps):
+            return {"gap_count": len(gaps), "missing_bars": sum(n for _, n in gaps),
+                    "first_gap_after": utc_datetime(pd.Timestamp(index[gaps[0][0] - 1])).isoformat(),
+                    "first_gap_segment": segment}
+
+        if len(warmup_df):
+            index = list(warmup_df.index) + [df.index[0]]
+            stamps = [pd.Timestamp(t).value for t in index]
+            gaps = [(k, max(0, (b - a) // step_ns - 1)) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
+                    if b - a != step_ns]
+            if gaps:
+                segment = "warmup_boundary" if gaps[0][0] == len(stamps) - 1 else "warmup"
+                return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history has gaps",
+                                         reason="filter_history_insufficient",
+                                         details=_gap_details(segment, index, gaps))
+        stamps = [pd.Timestamp(t).value for t in df.index]
+        gaps = [(k, max(1, (b - a) // step_ns - 1)) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
+                if b - a > step_ns]
+        if gaps:
+            missing_bars = sum(n for _, n in gaps)
+            if len(df) < (len(df) + missing_bars) * CENTRAL_GAP_TOLERANCE_RATIO:
+                return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history has gaps",
+                                         reason="filter_history_insufficient",
+                                         details=_gap_details("main", df.index, gaps))
+            strategy_class._filter_main_gap_starts = tuple(k for k, _ in gaps)
+            entry_filter_main_gaps = {
+                "tolerance_ratio": CENTRAL_GAP_TOLERANCE_RATIO,
+                "missing_bars": missing_bars,
+                "segments": [{"after": utc_datetime(pd.Timestamp(df.index[k - 1])).isoformat(),
+                              "before": utc_datetime(pd.Timestamp(df.index[k])).isoformat(),
+                              "missing_bars": n} for k, n in gaps],
+                "masked": "signal_bar_before_gap_plus_required_bars_minus_1_after",
+            }
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
@@ -9272,6 +9325,7 @@ async def run_backtest(
                      "qty_step_source": "provider_parameter_not_exchange_verified"}} if sizing_enabled else {}),
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **ema_warmup_assumptions,
+                **({"entry_filter_main_gaps": entry_filter_main_gaps} if entry_filter_main_gaps else {}),
                 **risk_assumptions(risk),
                 **({"fibonacci_retracement": {
                     "swing_confirmation": "left_right_N_closed_bars_strict_extrema",

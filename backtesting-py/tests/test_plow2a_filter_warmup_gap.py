@@ -49,7 +49,11 @@ def test_filter_on_gapped_warmup_fails_insufficient(tool, monkeypatch, tmp_path)
     assert len(calls) == 1 and _served_gap(tool, calls[0])
     assert (body['result_status'], body['error_type'], body['error_message']) == (
         'failed', 'INSUFFICIENT_DATA', 'Entry filter indicator history has gaps'), body
-    assert 'filter_history_insufficient' in json.dumps(body)
+    # P-LOW3: the failure names the segment and the first gap (the bar before the removed GAP_AT bar).
+    full, _ = cap.series(cap.TIMEFRAME.get(tool, '1h'))
+    assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 1, 'missing_bars': 1,
+                                   'first_gap_after': full.index[cap.GAP_AT - 1].tz_localize('UTC').isoformat(),
+                                   'first_gap_segment': 'warmup'}
 
 
 @pytest.mark.parametrize('tool', TOOLS)

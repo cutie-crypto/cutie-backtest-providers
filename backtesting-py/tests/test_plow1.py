@@ -230,8 +230,13 @@ def test_f12_filter_warmup_with_gap_fails_insufficient(tool, kind, monkeypatch, 
                           prefix_for(kind, data, timeframe))
     assert calls == [10]
     assert body['result_status'] == 'failed' and body['error_type'] == 'INSUFFICIENT_DATA', body
-    assert 'filter_history_insufficient' in json.dumps(body)
     assert body['error_message'] == 'Entry filter indicator history has gaps'
+    # P-LOW3: inner_gap misses prefix bar 5 (gap after bar 4); detached misses the bar before the main range.
+    step = pd.Timedelta(timeframe)
+    after = data.index[0] - (12 - 4) * step if kind == 'inner_gap' else data.index[0] - 2 * step
+    assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 1, 'missing_bars': 1,
+                                   'first_gap_after': after.tz_localize('UTC').isoformat(),
+                                   'first_gap_segment': 'warmup' if kind == 'inner_gap' else 'warmup_boundary'}
 
 
 @pytest.mark.parametrize('tool', sorted(F12))
