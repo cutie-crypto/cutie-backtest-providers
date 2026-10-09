@@ -280,7 +280,7 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         for key in ('assumptions','raw_report'):
             assert digest(json.dumps(result[key],sort_keys=True,separators=(',',':')))==expected[key]
     else:
-        baseline=invoke(p, {}) if name.endswith("_bullish_divergence") else invoke(baseline_provider)
+        baseline=(invoke(p) if name == "chan_3buy" else invoke(p, {}) if name.endswith("_bullish_divergence") else invoke(baseline_provider))
         assert canonical_json({k:result[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
         for key in ('assumptions','raw_report'):
             assert json.dumps(result[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))

@@ -1,0 +1,17 @@
+{
+  "single": {
+    "chan_3buy": {
+      "min_bars": 3,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "9bcffbdebd1911a4afbaa54ab2045d350412f2b9d4cf731166b52fdeaca6b186",
+        "raw_report_sha256": "9d81ffbdc0120c4a0439a9147f0caa52d80dee0126b6b6dee0f2ab6ff43e40cb"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "e70eddf55db20e0841c20890aade8dd5fc4ff7ad8d289fbc930d7fe13fb0c8e2",
+        "raw_report_sha256": "5768d1706ab39dee2d66fd71b70c49c9c6a79268d13b924bd5a9d705e2d8492b"
+      }
+    }
+  }
+}

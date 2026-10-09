@@ -373,6 +373,17 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         params['flatten_at'] = '23:00'  # 1h test grid
     if name == 'calendar_schedule':
         params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
+    if name == 'chan_3buy':
+        build=p.TOOL_SPECS['local.backtesting_py.chan_3buy']['build']
+        if feature != 'holding':
+            with pytest.raises(ValueError, match='INVALID_PARAMS'):
+                build(params)
+            return
+        from test_9t6_chan_3buy import run as chan_run
+        stats=chan_run(params=params)
+        assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[13,14]]
+        assert stats['_strategy'].chan_report['exits'][0]['reason']=='time_expiry'
+        return
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 100
     data=frame()
