@@ -140,7 +140,8 @@ def make_top_strategy(mixin, *, kind, risk, initial_capital, config):
                 return
             if self._risk.get('leverage', 1) > 1 and self._isolated_blocked_bar == len(self.data)-1:
                 return
-            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry():
+            # Judgment bar = the breakdown close; a filtered signal is discarded (signals fire once), not delayed.
+            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():
                 return
             signal = self._signals[self._warmup_bars + len(self.data) - 1]
             if signal is None:

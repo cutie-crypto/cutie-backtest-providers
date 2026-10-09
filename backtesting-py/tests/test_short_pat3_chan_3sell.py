@@ -262,12 +262,14 @@ def test_futures_only_before_any_fetch(market,direction,monkeypatch):
     assert TestClient(p.app).post('/cutie/backtest',json=body).json()['error_type'] == 'INVALID_PARAMS'
 
 
-def test_unwired_filter_rejected_and_not_executed(monkeypatch):
+# 7-P4：缠论三卖接入单仓入场过滤层（镜像规则与开态手算见 test_7p4_short_filter.py）。
+def test_filter_layer_wired_as_short():
     properties = p.TOOL_SPECS[TOOL]['param_schema_properties']
-    assert not any(key.startswith('filter_') for key in properties)
-    monkeypatch.setattr(p._FixedRiskMixin,'_filter_allow_entry',lambda *a: pytest.fail('unwired filter gate called'))
+    assert 'filter_layer_enabled' in properties
+    assert getattr(p.TOOL_SPECS[TOOL]['build'],'_supports_entry_filters',False)
+    cls = p.TOOL_SPECS[TOOL]['build']({'filter_layer_enabled':True,'filter_ema_enabled':True})['strategy']
+    assert cls._filter_direction == 'short' and cls._filter_config.ema_enabled
     assert run()['_strategy'].chan_report['entries']
-    assert not getattr(p.TOOL_SPECS[TOOL]['build'],'_supports_entry_filters',False)
 
 
 def http_response(params=None,data=None,warm=0,tool=TOOL,market='futures'):

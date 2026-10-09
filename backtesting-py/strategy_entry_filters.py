@@ -86,22 +86,38 @@ class FilterConfig:
                    3 * self.macd_slow if self.macd_enabled else 0,
                    self.supertrend_atr_period + 1 if self.supertrend_enabled else 0)
 
-    def report(self) -> dict[str, Any]:
+    def report(self, direction: str = 'long') -> dict[str, Any]:
+        short = _is_short(direction)
         predicates = {}
         if self.ema_enabled:
-            predicates['ema'] = dict(rule='close > ema', period=self.ema_period, smoothing='ewm_adjust_false')
+            predicates['ema'] = dict(rule='close < ema' if short else 'close > ema', period=self.ema_period,
+                                     smoothing='ewm_adjust_false')
         if self.macd_enabled:
-            predicates['macd'] = dict(rule='dif > 0', fast=self.macd_fast, slow=self.macd_slow)
+            predicates['macd'] = dict(rule='dif < 0' if short else 'dif > 0', fast=self.macd_fast, slow=self.macd_slow)
         if self.supertrend_enabled:
-            predicates['supertrend'] = dict(rule='trend == +1', atr_period=self.supertrend_atr_period,
+            predicates['supertrend'] = dict(rule='trend == -1' if short else 'trend == +1',
+                                           atr_period=self.supertrend_atr_period,
                                            multiplier=self.supertrend_multiplier)
-        return dict(combine='AND', direction='long', clock='closed_signal_bar',
+        return dict(combine='AND', direction=direction, clock='closed_signal_bar',
                     scope='entry_only', fill='next_bar_open', required_bars=self.required_bars,
                     blocked_signal='discard_without_replay', predicates=predicates)
 
 
-def entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertrend: Callable) -> np.ndarray:
-    """Compute causal prefixes once; indexing belongs to the signal-close adapter."""
+def _is_short(direction: str) -> bool:
+    if direction not in ('long', 'short'):
+        raise ValueError(f'entry filter direction must be long or short, got {direction!r}')
+    return direction == 'short'
+
+
+def entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertrend: Callable, *,
+               direction: str = 'long') -> np.ndarray:
+    """Compute causal prefixes once; indexing belongs to the signal-close adapter.
+
+    Short mirrors each predicate strictly (close < EMA, DIF < 0, trend == -1);
+    equality passes neither side. Warmup and clock are direction-neutral.
+    """
+    if _is_short(direction):
+        return _short_entry_mask(config, columns, supertrend)
     close = np.asarray(columns['Close'], dtype='float64')
     allowed = np.ones(len(close), dtype=bool)
     series = pd.Series(close)
@@ -120,6 +136,25 @@ def entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertrend: Cal
     return allowed
 
 
+def _short_entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertrend: Callable) -> np.ndarray:
+    close = np.asarray(columns['Close'], dtype='float64')
+    allowed = np.ones(len(close), dtype=bool)
+    series = pd.Series(close)
+    if config.ema_enabled:
+        ema = series.ewm(span=config.ema_period, adjust=False).mean().to_numpy()
+        allowed &= np.isfinite(close) & np.isfinite(ema) & (close < ema)
+    if config.macd_enabled:
+        dif = (series.ewm(span=config.macd_fast, adjust=False).mean()
+               - series.ewm(span=config.macd_slow, adjust=False).mean()).to_numpy()
+        allowed &= np.isfinite(dif) & (dif < 0)
+    if config.supertrend_enabled:
+        trend = supertrend(columns['High'], columns['Low'], close,
+                           config.supertrend_atr_period, config.supertrend_multiplier)['trend']
+        allowed &= np.isfinite(trend) & (trend == -1)
+    allowed[:max(0, config.required_bars - 1)] = False
+    return allowed
+
+
 class FilterHistoryError(ValueError):
     """The requested closed higher-timeframe history cannot be proven complete."""
 
@@ -132,7 +167,7 @@ class HigherTimeframeContext:
     @classmethod
     def build(cls, config: FilterConfig, primary: str, opens: pd.DatetimeIndex,
               fetch: Callable[[int, int], pd.DataFrame], supertrend: Callable,
-              grid_offset_ms: int = 0) -> HigherTimeframeContext:
+              grid_offset_ms: int = 0, direction: str = 'long') -> HigherTimeframeContext:
         """One strict fetch; align indicator values by close <= primary decision.
 
         History includes required_bars already closed at the first decision.
@@ -159,7 +194,7 @@ class HigherTimeframeContext:
             raise FilterHistoryError('Higher-timeframe history has missing or misaligned candles')
         if not np.isfinite(data[['Open', 'High', 'Low', 'Close', 'Volume']].to_numpy(dtype='float64')).all():
             raise FilterHistoryError('Higher-timeframe history has non-finite candles')
-        coarse = entry_mask(config, data, supertrend)
+        coarse = entry_mask(config, data, supertrend, direction=direction)
         closes = expected.as_unit('ns').asi8 // 1000000 + step
         # Exact close boundary is available; the current unfinished candle is not.
         positions = np.searchsorted(closes, decisions, side='right') - 1
