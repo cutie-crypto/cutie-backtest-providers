@@ -185,15 +185,14 @@ def request(params, tool=TOOL):
 
 
 @pytest.mark.parametrize('direction', ['short', 'both'])
-@pytest.mark.parametrize('market', ['spot', 'futures'])
-def test_unavailable_direction_rejected_before_fetch(monkeypatch, direction, market):
+def test_spot_direction_rejected_before_fetch(monkeypatch, direction):
     def fail(*a, **kw):
         pytest.fail('fetch must not be called')
     monkeypatch.setattr(provider, '_fetch_ohlcv', fail)
-    body=request({'direction': direction});body['backtest']['market']=market
+    body=request({'direction': direction})
     result=TestClient(provider.app).post('/cutie/backtest', json=body).json()
     assert result['error_type']=='INVALID_PARAMS'
-    assert result['error_message']=='turtle short/both is not available yet'
+    assert result['error_message']=='Turtle short/both direction requires futures market'
 
 
 @pytest.mark.parametrize('bad', ['LONG', '', True, None, 1, []])
@@ -359,3 +358,234 @@ def test_turtle_groups_empty_evidence_and_stable_order():
     assert provider._build_turtle_groups(stats,result)==[
         dict(group_id='turtle-1',trade_seqs=[1,2,3,4],units=4),
         dict(group_id='turtle-2',trade_seqs=[5],units=1),dict(group_id='turtle-3',trade_seqs=[6],units=1)]
+
+
+def directional_hand(fx):
+    """Scalar 1x margin account, signed PnL, next-open fills and Wilder N.
+
+    Uses only raw OHLC lists and arithmetic, never provider/engine functions.
+    An add consumes open-price notional; existing margin and unrealized PnL
+    are marked at this bar's close, matching the engine's 1x account boundary.
+    """
+    p = fx['params']
+    cash, atr, previous = fx['cash'], None, None
+    held, trades, groups, skipped = [], [], [], 0
+    pending, reason, blocked = None, None, -1
+    n, q, last, side = 0., 0, None, 0
+    for i, close in enumerate(fx['closes']):
+        op, hi, lo = (fx[k][i] for k in ('opens', 'highs', 'lows'))
+        tr = hi-lo if previous is None else max(hi-lo, abs(hi-previous), abs(lo-previous))
+        atr = tr if atr is None else (atr*(p['atr_period']-1)+tr)/p['atr_period']
+        previous = close
+        if reason:
+            groups[-1].update(exit_signal=i-1, exit_bar=i, reason=reason)
+            for t in held:
+                cash += t['size']*(op-t['entry_price'])
+                trades.append({**t, 'exit_bar': i, 'exit_price': op})
+            held, reason, blocked = [], None, i
+        if pending:
+            size, gid = pending
+            equity = cash + sum(t['size']*(close-t['entry_price']) for t in held)
+            margin = max(0, equity-sum(abs(t['size'])*close for t in held))
+            if abs(size)*op <= margin:
+                held.append(dict(entry_bar=i, entry_price=op, size=size, group_id=gid))
+                last = op
+            else:
+                skipped += 1
+            pending = None
+        if i < max(p['entry_period'], p['exit_period'], p['atr_period']) or i == blocked:
+            continue
+        if held:
+            stop = last-side*p['stop_atr_multiplier']*n
+            if (lo <= stop if side == 1 else hi >= stop):
+                reason = 'stop'
+            elif (close < min(fx['lows'][i-p['exit_period']:i]) if side == 1
+                  else close > max(fx['highs'][i-p['exit_period']:i])):
+                reason = 'channel'
+            elif len(held) < p['max_units'] and side*(close-last) >= p['add_step_atr']*n:
+                pending = side*q, held[0]['group_id']
+        else:
+            long = p['direction'] in ('long', 'both') and close > max(fx['highs'][i-p['entry_period']:i])
+            short = p['direction'] in ('short', 'both') and close < min(fx['lows'][i-p['entry_period']:i])
+            assert not (long and short)
+            if long or short:
+                n, side = atr, 1 if long else -1
+                q = math.floor(cash*p['unit_risk_pct']/100/(p['stop_atr_multiplier']*n)) if n else 0
+                if q:
+                    gid = 'turtle-'+str(len(groups)+1)
+                    groups.append(dict(group_id=gid, signal=i, n=n, q=q, side=side))
+                    pending = side*q, gid
+    assert not held and not pending and not reason
+    return dict(trades=trades, groups=groups, units_skipped=skipped)
+
+
+def directional_fixture(direction):
+    return json.loads((FIXTURE.parent / f'turtle_{direction}_golden.json').read_text())
+
+
+def expected_groups(expected):
+    return [dict(group_id=g['group_id'],
+                 trade_seqs=[i+1 for i,t in enumerate(expected['trades']) if t['group_id']==g['group_id']],
+                 units=sum(t['group_id']==g['group_id'] for t in expected['trades']))
+            for g in expected['groups']]
+
+
+@pytest.mark.parametrize('direction', ['short', 'both'])
+def test_directional_scalar_golden(direction):
+    fx=directional_fixture(direction)
+    assert len(fx['closes'])>=120
+    assert directional_hand(fx)==fx['expected']
+    assert [g['reason'] for g in fx['expected']['groups']]==['stop','channel','channel']
+    assert [g['units'] for g in expected_groups(fx['expected'])]==[4,1,1]
+    assert fx['expected']['units_skipped']==1
+    assert [g['side'] for g in fx['expected']['groups']]==([-1,-1,-1] if direction=='short' else [1,-1,-1])
+    assert all(lo<=min(op,c)<=max(op,c)<=hi for op,hi,lo,c in zip(*[fx[k] for k in ('opens','highs','lows','closes')]))
+
+
+@pytest.mark.parametrize('direction', ['short', 'both'])
+def test_directional_engine_golden_and_unique_position_direction(direction):
+    fx=directional_fixture(direction);data=frame(fx)
+    parent=provider._build_turtle(fx['params'])['strategy']
+    seen=[]
+    class Observed(parent):
+        def sell(self, *a, **kw):
+            assert all(t.is_short for t in self.trades), 'sell must never reduce a long group'
+            return super().sell(*a, **kw)
+        def buy(self, *a, **kw):
+            assert all(t.is_long for t in self.trades), 'buy must never reduce a short group'
+            return super().buy(*a, **kw)
+        def next(self):
+            super().next()
+            sides={1 if t.is_long else -1 for t in self.trades}
+            assert len(sides)<=1
+            assert len({t.tag for t in self.trades})<=1
+            seen.append((len(self.data)-1, sides))
+    stats=Backtest(data,Observed,cash=fx['cash'],exclusive_orders=False,finalize_trades=False).run()
+    actual=stats['_trades'].sort_values(['ExitBar','EntryBar'])
+    assert len(actual)==len(fx['expected']['trades'])
+    for (_,t),e in zip(actual.iterrows(),fx['expected']['trades']):
+        assert t.Size==e['size'] and t.Tag==e['group_id']
+        for side in ('entry','exit'):
+            assert t[side.title()+'Bar']==e[side+'_bar']
+            assert t[side.title()+'Time']==data.index[e[side+'_bar']]
+            assert t[side.title()+'Price']==e[side+'_price']
+    assert stats['_strategy'].units_skipped==1
+    assert not stats['_strategy'].position and seen
+    result=provider._build_result_v2_trades(actual,Decimal(1),Decimal(0),Decimal(0))
+    assert provider._build_turtle_groups(actual,result)==expected_groups(fx['expected'])
+    assert all(set(t)==TRADE_KEYS for t in result)
+    assert [t['side'] for t in result]==['long' if t['size']>0 else 'short' for t in fx['expected']['trades']]
+    assert [t['qty'] for t in result]==[str(abs(t['size'])) for t in fx['expected']['trades']]
+
+
+@pytest.mark.parametrize('direction', ['short', 'both'])
+def test_futures_direction_registered_route(monkeypatch,tmp_path,direction):
+    fx=directional_fixture(direction);data=frame(fx)
+    monkeypatch.setattr(provider,'_fetch_ohlcv',lambda *a:data.copy())
+    monkeypatch.setattr(provider,'_fetch_template_warmup',lambda *a:data.iloc[:0].copy())
+    monkeypatch.setattr(provider,'REPORTS_DIR',tmp_path)
+    monkeypatch.setattr(Backtest,'plot',lambda *a,**kw:None)
+    def forbidden(*a,**kw):
+        pytest.fail('Turtle must not build a TimeContext')
+    monkeypatch.setattr(provider.TimeContext,'build',forbidden)
+    body=request(fx['params']);body['backtest']['market']='futures'
+    result=TestClient(provider.app).post('/cutie/backtest',json=body).json()
+    assert result['result_status']=='success',result
+    assert result['raw_report']['provider_summary'].startswith(f'Turtle {direction.title()} (3/2/2) on ')
+    assert 'time_layer' not in result['assumptions']
+    assert result['trades']
+    engine_cash=max(fx['closes'])*100000
+    expected=directional_hand({**fx,'cash':engine_cash})
+    scale=Decimal(100000)/Decimal(str(engine_cash))
+    assert result['raw_report']['turtle_groups']==expected_groups(expected)
+    group_by_seq={seq:g['group_id'] for g in expected_groups(expected) for seq in g['trade_seqs']}
+    assert result['assumptions']['units_skipped']==expected['units_skipped']==1
+    assert len(result['trades'])==len(expected['trades'])
+    for t,e in zip(result['trades'],expected['trades']):
+        assert set(t)==TRADE_KEYS and group_by_seq[t['seq']]==e['group_id']
+        assert t['qty']==provider.canonical_decimal_str(Decimal(abs(e['size']))*scale)
+        assert t['side']==('long' if e['size']>0 else 'short')
+        for side in ('entry','exit'):
+            assert Decimal(t[side+'_price'])==Decimal(str(e[side+'_price']))
+        assert t['opened_at']==int(data.index[e['entry_bar']].timestamp())
+        assert t['closed_at']==int(data.index[e['exit_bar']].timestamp())
+
+
+@pytest.mark.parametrize('direction,name', [('long','Turtle'),('short','Turtle Short'),('both','Turtle Both')])
+def test_executed_names(direction,name):
+    assert provider._build_turtle({'direction':direction})['executed_name']==name+' (20/10/20)'
+
+
+def short_boundary(close=99):
+    fx=boundary_fixture()
+    fx['params']['direction']='short'
+    fx['closes'][10]=close
+    fx['lows'][10]=min(99,close)
+    return fx
+
+
+def test_short_entry_excludes_current_bar_and_equality_is_not_signal():
+    equal=run(short_boundary())
+    assert equal['_trades'].empty and not equal['_strategy'].position
+    fx=short_boundary(98.9);fx['highs'][12]=110
+    assert run(fx)['_trades'].EntryBar.tolist()==[11]
+
+
+def test_short_stop_uses_high_not_low():
+    fx=directional_fixture('short')
+    fx['highs'][18]=88  # fill70, stop87: Low54 misses while High88 touches
+    first=run(fx)['_trades'].query("Tag=='turtle-1'")
+    assert sorted(first.EntryBar.tolist())==[16,18]
+    assert first.ExitBar.tolist()==[19,19]
+    assert fx['lows'][18]<87<=fx['highs'][18]
+
+
+def test_short_add_uses_actual_fill_frozen_n_and_one_per_bar():
+    first=run(directional_fixture('short'))['_trades'].query("Tag=='turtle-1'").sort_values('EntryBar')
+    assert first.EntryBar.tolist()==[16,18,19,21]
+    assert first.EntryPrice.tolist()==[86,70,52,37]
+    assert first.Size.tolist()==[-117]*4
+    assert first.ExitBar.tolist()==[23]*4  # High55 crosses updated stop54
+
+
+def test_short_exit_channel_excludes_current_high():
+    fx=directional_fixture('short')
+    second=run(fx)['_trades'].query("Tag=='turtle-2'")
+    assert second.ExitBar.tolist()==[54]
+    assert fx['closes'][53]>max(fx['highs'][51:53])
+    assert fx['closes'][53]<=fx['highs'][53]
+    assert fx['highs'][53]<91+2*fx['expected']['groups'][1]['n']
+
+
+def test_both_reverse_signal_on_exit_fill_bar_is_blocked():
+    fx=directional_fixture('both');stats=run(fx)
+    assert fx['closes'][23]<min(fx['lows'][20:23])
+    assert 24 not in set(stats['_trades'].EntryBar)
+    assert 23 not in set(stats['_trades'].EntryBar)
+    assert sorted(stats['_trades'].Tag.unique())==['turtle-1','turtle-2','turtle-3']
+    assert stats['_trades'].query("Tag=='turtle-2'").EntryBar.tolist()==[51]
+
+
+def test_both_empty_position_selects_only_one_direction():
+    for close,side in [(101.1,1),(98.9,-1)]:
+        fx=boundary_fixture(close) if side==1 else short_boundary(close)
+        fx['params']['direction']='both'
+        fx['lows'][12]=90;fx['highs'][12]=110
+        stats=run(fx)
+        assert len(stats['_trades'])==1
+        assert stats['_trades'].EntryBar.tolist()==[11]
+        assert (stats['_trades'].Size.iloc[0]>0)==(side==1)
+
+
+@pytest.mark.parametrize('direction', ['short','both'])
+def test_short_channel_exit_precedes_add(direction):
+    fx=directional_fixture('short')
+    fx['params'].update(direction=direction,exit_period=1)
+    # N=8.5 freezes on signal15. First fill86, favorable close80 queues add.
+    # Add gaps up to95; close89 is favorable by6 (>4.25), but also exceeds
+    # prior High85. Channel exit must close both units rather than queue a third.
+    for i,ohlc in {16:(86,87,84,85),17:(85,85,79,80),18:(95,96,88,89)}.items():
+        for k,v in zip(('opens','highs','lows','closes'),ohlc): fx[k][i]=v
+    first=run(fx)['_trades'].query("Tag=='turtle-1'")
+    assert sorted(first.EntryBar.tolist())==[16,18]
+    assert first.ExitBar.tolist()==[19,19]
