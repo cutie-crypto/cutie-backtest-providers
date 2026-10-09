@@ -54,8 +54,8 @@ MONEY_ASSUMPTION_FIELDS = ("fee_bps", "slippage_bps")
 RATIO_METRIC_FIELDS = ("total_return_pct", "win_rate_pct", "max_drawdown_pct", "buy_hold_return_pct")
 
 # 与 cutie-server / connector 的 BACKTEST_TOOL_CATALOG_MAX_TOOLS 两端同值对齐
-# 2026-10-09 放宽到 40
-MAX_TOOLS = 40
+# 2026-10-09 放宽到 40；2026-10-09 Owner 拍板 100 / 1 MiB（L0c）：provider 现 28 个模板、后续批次持续加，按「尽可能多」留足余量
+MAX_TOOLS = 100
 MAX_PROVIDER_ID_LEN = 128
 MAX_TOOL_ID_LEN = 128
 
