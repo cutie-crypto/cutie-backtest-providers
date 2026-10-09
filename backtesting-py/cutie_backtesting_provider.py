@@ -2616,11 +2616,12 @@ def _with_filter_config(build=None, *, default_direction="long"):
     def configured(params, **kwargs):
         config = FilterConfig.parse(params)
         direction = params.get("direction", default_direction)
-        if config.enabled and direction != "long":
-            raise ValueError("INVALID_PARAMS:entry filters support long direction only; short/both are not supported")
+        if config.enabled and direction not in ("long", "short"):
+            raise ValueError("INVALID_PARAMS:entry filters support long or short; both is not supported")
         built = build(params, **kwargs)
         if config.enabled:
             built["strategy"]._filter_config = config
+            built["strategy"]._filter_direction = direction
         return built
     configured._supports_entry_filters = True
     return configured
@@ -2629,6 +2630,7 @@ def _with_filter_config(build=None, *, default_direction="long"):
 class _FilterLayerMixin:
     _filter_config = None
     _filter_context = None
+    _filter_direction = "long"
 
     def _filter_init(self) -> None:
         if self._filter_config is None:
@@ -2640,7 +2642,8 @@ class _FilterLayerMixin:
         for name in _WARMUP_COLUMNS:
             prefix = self._warmup_cols[name] if self._warmup_bars else []
             columns[name] = np.concatenate([prefix, np.asarray(getattr(self.data, name))])
-        self._filter_mask = entry_mask(self._filter_config, columns, _supertrend_arrays)
+        self._filter_mask = entry_mask(self._filter_config, columns, _supertrend_arrays,
+                                       direction=self._filter_direction)
 
     def _filter_allow_entry(self, bar: Optional[int] = None) -> bool:
         if self._filter_config is None:
@@ -3491,16 +3494,9 @@ def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 
 
 TURTLE_RUNNER = "turtle_group"
 # 不接单仓入场过滤层的模板：入场处没有 _filter_allow_entry()，schema 不得出现 filter_* 键。
-# 做空模板：过滤层只支持做多（_with_filter_config 拒非 long），做空过滤口径待新单 7-P4 做空过滤层裁定后接入；
-# 7-P4 合入时本名单必须清空（到期用例 test_filter_unwired_list_only_shrinks_and_expires）。
-# 7-P3a/7-P3b/7-P3b2 已把全部做多单仓模板接入，名单只剩 5 个做空模板。
-FILTER_LAYER_UNWIRED_TOOLS = (
-    "local.backtesting_py.macd_bearish_divergence",
-    "local.backtesting_py.rsi_bearish_divergence",
-    "local.backtesting_py.double_top",
-    "local.backtesting_py.head_shoulders",
-    "local.backtesting_py.chan_3sell",
-)
+# 7-P3a/7-P3b/7-P3b2 接入全部做多单仓模板，7-P4 接入 5 个做空模板（做空镜像：close < EMA、DIF < 0、
+# Supertrend trend == -1），名单已清空；保留空元组供既有用例引用，到期用例断言它为空，不得再加回。
+FILTER_LAYER_UNWIRED_TOOLS: tuple[str, ...] = ()
 _TURTLE_RISK_DESCRIPTION = (
     "单单位到初始止损的风险占权益比；经典海龟是 1%÷N（2N 止损下每单位 2%），本参数填 2 即经典口径"
 )
@@ -4989,11 +4985,13 @@ def _build_top_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
+@_with_filter_config(default_direction="short")
 def _build_double_top(params, *, initial_capital=10000.0):
     return _build_top_pattern(params, kind='double_top', initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config(default_direction="short")
 def _build_head_shoulders(params, *, initial_capital=10000.0):
     return _build_top_pattern(params, kind='head_shoulders', initial_capital=initial_capital)
 
@@ -5768,11 +5766,13 @@ def _build_bearish_divergence(params, *, kind, initial_capital):
 
 
 @_with_time_config
+@_with_filter_config(default_direction="short")
 def _build_macd_bearish_divergence(params, *, initial_capital=10000.0):
     return _build_bearish_divergence(params, kind='macd', initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config(default_direction="short")
 def _build_rsi_bearish_divergence(params, *, initial_capital=10000.0):
     return _build_bearish_divergence(params, kind='rsi', initial_capital=initial_capital)
 
@@ -5879,6 +5879,7 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
 
 
 @_with_time_config
+@_with_filter_config(default_direction="short")
 def _build_chan_3sell(params, *, initial_capital=10000.0):
     """SHORT-PAT-3: strict mirror of chan_3buy, futures short only (market gate in run)."""
     # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
@@ -8937,7 +8938,8 @@ async def run_backtest(
             strategy_class._filter_context = HigherTimeframeContext.build(
                 filter_config, timeframe, df.index,
                 lambda since, until: _fetch_ohlcv(exchange_id, market, symbol, filter_config.timeframe, since, until),
-                _supertrend_arrays, _timeframe_grid_offset_ms(filter_config.timeframe))
+                _supertrend_arrays, _timeframe_grid_offset_ms(filter_config.timeframe),
+                direction=strategy_class._filter_direction)
         except FilterHistoryError as e:
             return _business_failure(run_id, "INSUFFICIENT_DATA", str(e), reason="filter_history_insufficient")
 
@@ -9319,7 +9321,7 @@ async def run_backtest(
                 }} if effective_tool_id == "local.backtesting_py.fibonacci_retracement" else {}),
                 **({built["template_report_key"]: stats["_strategy"]._template_report}
                    if "template_report_key" in built else {}),
-                **({"entry_filters": {**filter_config.report(),
+                **({"entry_filters": {**filter_config.report(strategy_class._filter_direction),
                     **(strategy_class._filter_context.report if strategy_class._filter_context is not None else {})}}
                     if filter_config is not None else {}),
                 **({"calendar_events": stats["_strategy"].calendar_events} if calendar_config is not None else {}),
