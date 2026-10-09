@@ -1119,6 +1119,8 @@ def _fetch_template_warmup(
     都退化成「拿到多少用多少 / 不预热」，绝不让本来能跑的回测因此失败；主区间的取数
     与错误处理不经过这里。只保留早于主区间第一根的行，防止取数源不按区间裁剪时把
     主区间数据当成预热。
+    例外（P-LOW1）：ORB / 亚洲区间 / 日历开同周期过滤时，调用方在 run_backtest 里要求非空预热段
+    连续且紧挨主区间，有缺口即 INSUFFICIENT_DATA；本函数本身仍不失败。
     """
     empty = pd.DataFrame(columns=list(_WARMUP_COLUMNS), dtype="float64")
     if bars <= 0 or main_df.empty:
@@ -5419,11 +5421,13 @@ def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
         return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
-    # 10-B2d: calendar freezes its own stop at the signal close; calendar_stop_enabled=false leaves
-    # none and the fill hook rejects with missing_initial_stop.
+    # 10-B2d: calendar freezes its own stop at the signal close. P-LOW1: calendar_stop_enabled=false
+    # forbids stop_loss_pct, so there is no stop at all and risk sizing is rejected before any fetch
+    # (the fill hook's missing_initial_stop stays as the backstop).
+    if tool_id == "local.backtesting_py.calendar_schedule":
+        return params.get("calendar_stop_enabled", True) is not False
     # 10-B2d: US open always has its frozen window stop; CME always has its intrinsic 2% stop.
-    if tool_id in ("local.backtesting_py.calendar_schedule", "local.backtesting_py.us_open_momentum",
-                   "local.backtesting_py.cme_weekend_gap"):
+    if tool_id in ("local.backtesting_py.us_open_momentum", "local.backtesting_py.cme_weekend_gap"):
         return True
     # 10-B2d: red streak's default 3% stop exists only while no pricing key is supplied.
     if tool_id == "local.backtesting_py.red_streak_rsi":
@@ -8783,7 +8787,7 @@ async def run_backtest(
     if tool_spec.get("long_only_spot") and market != "futures" and params.get("direction", "both") != "long":
         return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     if tool_spec.get("markets") == ["futures"] and market != "futures":
-        return _validation_failure("INVALID_PARAMS", "top pattern templates require futures market")
+        return _validation_failure("INVALID_PARAMS", "this template requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -8981,6 +8985,15 @@ async def run_backtest(
                  if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
+    # F1/F2 filter prefix must be gap-free and end one bar before the main range: a non-empty
+    # prefix with a hole would feed EMA/MACD/Supertrend a discontinuous series. An empty prefix
+    # passes (the mask then starts on the main range only) and falls to the bar-count check below.
+    if (range_config is not None or calendar_config is not None) and filter_warmup and len(warmup_df):
+        step_ns = _timeframe_milliseconds(timeframe) * 1000000
+        stamps = [pd.Timestamp(t).value for t in warmup_df.index] + [pd.Timestamp(df.index[0]).value]
+        if any(b - a != step_ns for a, b in zip(stamps, stamps[1:])):
+            return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history has gaps",
+                                     reason="filter_history_insufficient")
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
@@ -9231,7 +9244,11 @@ async def run_backtest(
                 **({"position_sizing": {"fill": "next_bar_open_market",
                      "capital_base": "pre_fill_net_equity" if risk["compound"] else "initial_capital",
                      "risk_quantity_leverage_multiplier": False,
-                     "initial_stop": ("template_frozen_signal_stop_actual_fill_distance"
+                     # P-LOW1: US open sizes against the nearer of the window stop frozen at the
+                     # signal and the user stop built at the actual fill (strategy_calendar_templates).
+                     "initial_stop": ("nearest_of_window_and_user_stop_actual_fill_distance"
+                                      if effective_tool_id == "local.backtesting_py.us_open_momentum"
+                                      else "template_frozen_signal_stop_actual_fill_distance"
                                       if effective_tool_id in POSITION_SIZING_TEMPLATE_STOP_TOOLS
                                       else "shared_frozen_actual_fill_risk_state"),
                      "qty_step_source": "provider_parameter_not_exchange_verified"}} if sizing_enabled else {}),
