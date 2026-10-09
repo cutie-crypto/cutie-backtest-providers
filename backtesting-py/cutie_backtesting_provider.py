@@ -2310,7 +2310,7 @@ def _rsi_series(values: Any, period: int):
 
 
 # 共用风险参数：旧四键保留；3a 扩展必须显式启用，默认走原收盘覆盖层。
-# 移动/保本/时间/多档留给 3b，不提前声明尚未消费的参数。
+# 3b 动态止损、持仓期限与三档止盈使用扁平键。
 _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "stop_loss_pct": {"type": "number", "minimum": 0, "maximum": 100},
     "take_profit_pct": {"type": "number", "minimum": 0, "maximum": 100},
@@ -2320,7 +2320,17 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "atr_stop_multiplier": {"type": "number", "default": 0, "minimum": 0, "maximum": 100},
     "risk_atr_period": {"type": "integer", "default": 0, "minimum": 0, "maximum": 500},
     "take_profit_r": {"type": "number", "default": 0, "minimum": 0, "maximum": 100},
+    "trailing_stop_pct": {"type": "number", "default": 0, "minimum": 0, "exclusiveMaximum": 100},
+    "breakeven_stop": {"type": "boolean", "default": False},
+    "max_holding_bars": {"type": "integer", "default": 0, "minimum": 0, "maximum": 1000000},
+    **{f"tp{n}_{suffix}": {"type": "number", "default": 0, "minimum": 0, "maximum": 100}
+       for n in (1, 2, 3) for suffix in ("r", "close_pct")},
 }
+
+
+def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
+    """Shared holding-key gate; the later time layer can extend this independently."""
+    return params.get("risk_layer_enabled") is True
 
 
 # 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
@@ -2374,8 +2384,36 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("INVALID_PARAMS:stop_loss_pct and ATR stop are mutually exclusive")
     if profit_r and params.get("take_profit_pct") is not None:
         raise ValueError("INVALID_PARAMS:take_profit_pct and take_profit_r are mutually exclusive")
-    if profit_r and not (multiplier or params.get("stop_loss_pct")):
-        raise ValueError("INVALID_PARAMS:take_profit_r requires an initial stop")
+    trailing = params.get("trailing_stop_pct", 0)
+    holding = params.get("max_holding_bars", 0)
+    if "max_holding_bars" in params and type(holding) is not int:
+        raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+    if trailing >= 100:
+        raise ValueError("INVALID_PARAMS:trailing_stop_pct must be < 100")
+    dynamic_keys = ("trailing_stop_pct", "breakeven_stop",
+                    *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
+    if not enabled and any(params.get(key, 0) for key in dynamic_keys):
+        raise ValueError("INVALID_PARAMS:new risk parameters require risk_layer_enabled=true")
+    if holding and not _consumes_max_holding_bars(params):
+        raise ValueError("INVALID_PARAMS:max_holding_bars requires risk_layer_enabled=true")
+    levels = []
+    for n in (1, 2, 3):
+        r, pct = params.get(f"tp{n}_r", 0), params.get(f"tp{n}_close_pct", 0)
+        if bool(r) != bool(pct):
+            raise ValueError("INVALID_PARAMS:take-profit level r and close_pct must be paired")
+        if r:
+            if n != len(levels) + 1 or (levels and r <= levels[-1][0]):
+                raise ValueError("INVALID_PARAMS:take-profit levels must be continuous and strictly increasing")
+            levels.append((r, pct))
+    total = sum(Decimal(str(pct)) for _, pct in levels)
+    if total > 100 or (levels and total < 100 and not trailing):
+        raise ValueError("INVALID_PARAMS:take-profit allocation must be <= 100; remainder requires trailing")
+    if levels and (profit_r or params.get("take_profit_pct") is not None):
+        raise ValueError("INVALID_PARAMS:take-profit modes are mutually exclusive")
+    if (profit_r or levels or params.get("breakeven_stop")) and not (
+        multiplier or params.get("stop_loss_pct") or trailing
+    ):
+        raise ValueError("INVALID_PARAMS:R targets and breakeven require an initial stop")
     out: dict[str, Any] = {}
     if leverage > 1:
         out["leverage"] = leverage
@@ -2385,6 +2423,9 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
             out.update(atr_stop_multiplier=multiplier, risk_atr_period=int(period))
         if profit_r:
             out["take_profit_r"] = profit_r
+    for key in (*dynamic_keys, "max_holding_bars"):
+        if params.get(key):
+            out[key] = params[key]
     for key in ("stop_loss_pct", "take_profit_pct"):
         raw = params.get(key)
         if raw is None:
@@ -2469,6 +2510,11 @@ class _FixedRiskMixin:
             self._risk_state = None
             self._risk_entry_atr = None
             self._risk_exit_reason = None
+            if self._risk.get("trailing_stop_pct") or self._risk.get("breakeven_stop"):
+                # Timestamp.value is nanoseconds; kernel bars have inclusive ends.
+                self._risk_bar_times = [int(pd.Timestamp(t).value) for t in self.data.index]
+                self._risk_period_ns = getattr(self, "_risk_timeframe_ns", None) or (
+                    self._risk_bar_times[1] - self._risk_bar_times[0])
             if self._risk.get("atr_stop_multiplier"):
                 from strategy_risk_overlay import risk_atr_series
 
@@ -2490,21 +2536,42 @@ class _FixedRiskMixin:
         self._risk_entry_atr = self._risk_atr[count - 1]
 
     def _risk_layer_check_exit(self) -> bool:
-        from strategy_risk_overlay import initial_risk_state, decide_exit
+        from strategy_risk_overlay import initial_risk_state, decide_exit, advance_risk_state, level_exit
 
         trade = self.trades[-1]
+        # Parent orders remain pending until the broker confirms the next-open fill.
+        if any(order.parent_trade is trade for order in self.orders):
+            return True
         if self._risk_trade is not trade:
             self._risk_trade = trade
             self._risk_state = initial_risk_state(
                 risk=self._risk, entry_price=trade.entry_price,
                 direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
+                entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
             )
-        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1])
-        if reason is None:
-            return False
-        self._risk_exit_reason = reason
-        self.position.close()
-        return True
+        bar = len(self.data) - 1
+        holding = self._risk.get("max_holding_bars", 0)
+        due = bool(holding and bar - trade.entry_bar + 1 >= holding)
+        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=due)
+        if reason is not None:
+            self._risk_exit_reason = reason
+            self.position.close()
+            return True
+        self._risk_state, units = level_exit(
+            self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], remaining_units=abs(trade.size))
+        if self._risk_state.stop_state is not None:
+            open_at = self._risk_bar_times[bar]
+            next_open = (self._risk_bar_times[bar + 1] if bar + 1 < len(self._risk_bar_times)
+                         else open_at + self._risk_period_ns)
+            self._risk_state = advance_risk_state(
+                self._risk_state, self._risk, open_at=open_at, close_at=next_open - 1,
+                high=self.data.High[-1], low=self.data.Low[-1], close=self.data.Close[-1])
+        if units:
+            self._risk_exit_reason = "take_profit_levels"
+            # Precompute integer units to bypass Trade.close's minimum-one/round semantics.
+            trade.close(portion=units / abs(trade.size))
+            return True
+        return False
 
     def _risk_entry_size(self) -> Optional[float]:
         """None 表示未配置固定仓位——调用方必须不传 size=，直接吃库内 __FULL_EQUITY
@@ -6440,6 +6507,7 @@ async def run_backtest(
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
     risk = strategy_class._risk
+    strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
     warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df)
     indicator_warmup_bars = len(warmup_df)

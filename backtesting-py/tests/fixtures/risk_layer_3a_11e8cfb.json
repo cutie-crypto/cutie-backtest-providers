@@ -1,0 +1,173 @@
+{
+  "baseline_sha": "11e8cfbfccb68776eeb755aa3ad1296bf4034bce",
+  "cases": {
+    "atr/0": {
+      "trade_count": 6,
+      "trades_sha256": "490f1940209938d1d0055132f9aadc11a4ffb416256f60341665963ae0bb0d69",
+      "equity_sha256": "187a68e036df2ba9dfbd774e89779c43d5eda419ca9bcea0c9fff8807de432a6",
+      "result_v2_sha256": "3bcbb30a606cae6edb69c9cbc545bafcf4a4c959ff13d81d136a2e550846724a",
+      "assumptions": {
+        "risk_layer": {
+          "trigger": "current_bar_high_low",
+          "same_bar_priority": "stop_loss_before_take_profit",
+          "fill": "next_bar_open_market",
+          "fill_price_is_stop_price": false,
+          "final_bar": "engine_finalize_trades_settlement",
+          "atr_seed": "first_true_range",
+          "atr_smoothing": "alpha=1/period, adjust=False",
+          "atr_history": "available_warmup_plus_closed_bars_through_entry_signal",
+          "atr_frozen_at": "entry_signal_close",
+          "initial_levels_based_on": "actual_entry_fill_price",
+          "live_execution_parity": false
+        }
+      }
+    },
+    "atr/1": {
+      "trade_count": 6,
+      "trades_sha256": "656c1f1374e76052befa49ce95bf98ae7509a97ea167b62e5e70e0aa886f8cba",
+      "equity_sha256": "187a68e036df2ba9dfbd774e89779c43d5eda419ca9bcea0c9fff8807de432a6",
+      "result_v2_sha256": "3bcbb30a606cae6edb69c9cbc545bafcf4a4c959ff13d81d136a2e550846724a",
+      "assumptions": {
+        "risk_layer": {
+          "trigger": "current_bar_high_low",
+          "same_bar_priority": "stop_loss_before_take_profit",
+          "fill": "next_bar_open_market",
+          "fill_price_is_stop_price": false,
+          "final_bar": "engine_finalize_trades_settlement",
+          "atr_seed": "first_true_range",
+          "atr_smoothing": "alpha=1/period, adjust=False",
+          "atr_history": "available_warmup_plus_closed_bars_through_entry_signal",
+          "atr_frozen_at": "entry_signal_close",
+          "initial_levels_based_on": "actual_entry_fill_price",
+          "live_execution_parity": false
+        }
+      }
+    },
+    "atr_r/0": {
+      "trade_count": 6,
+      "trades_sha256": "d9ec14c8589a748da3ec5f9b579c112bd9b29a914f2a1df9cd1fb8ae6696f21b",
+      "equity_sha256": "9fa7e713cbb16da2ef76b7eacc98b1c58a3f3ed6ed3f5be439980da8ccff62da",
+      "result_v2_sha256": "5028fb72c7833d2f0d3ac25c76df707f88cb3cb8d2ab53989da2a4572e38aa55",
+      "assumptions": {
+        "risk_layer": {
+          "trigger": "current_bar_high_low",
+          "same_bar_priority": "stop_loss_before_take_profit",
+          "fill": "next_bar_open_market",
+          "fill_price_is_stop_price": false,
+          "final_bar": "engine_finalize_trades_settlement",
+          "atr_seed": "first_true_range",
+          "atr_smoothing": "alpha=1/period, adjust=False",
+          "atr_history": "available_warmup_plus_closed_bars_through_entry_signal",
+          "atr_frozen_at": "entry_signal_close",
+          "initial_levels_based_on": "actual_entry_fill_price",
+          "live_execution_parity": false
+        }
+      }
+    },
+    "atr_r/1": {
+      "trade_count": 6,
+      "trades_sha256": "1af6b8d1374696730205019f29b349daab2389525a104311a0c1f44e76cdafcf",
+      "equity_sha256": "9fa7e713cbb16da2ef76b7eacc98b1c58a3f3ed6ed3f5be439980da8ccff62da",
+      "result_v2_sha256": "5028fb72c7833d2f0d3ac25c76df707f88cb3cb8d2ab53989da2a4572e38aa55",
+      "assumptions": {
+        "risk_layer": {
+          "trigger": "current_bar_high_low",
+          "same_bar_priority": "stop_loss_before_take_profit",
+          "fill": "next_bar_open_market",
+          "fill_price_is_stop_price": false,
+          "final_bar": "engine_finalize_trades_settlement",
+          "atr_seed": "first_true_range",
+          "atr_smoothing": "alpha=1/period, adjust=False",
+          "atr_history": "available_warmup_plus_closed_bars_through_entry_signal",
+          "atr_frozen_at": "entry_signal_close",
+          "initial_levels_based_on": "actual_entry_fill_price",
+          "live_execution_parity": false
+        }
+      }
+    },
+    "fixed_touch/0": {
+      "trade_count": 6,
+      "trades_sha256": "4c5e84b52fcf512fb38918a87fcc56ca3aeb02b96d1945842b1008511cf5d460",
+      "equity_sha256": "a1cc205d9dda5826933b187390cce57dd95199e83640e90868e7b77754396be2",
+      "result_v2_sha256": "9a8cd7e48958ac9c656a89465eb54ad60c4b83ba2ba6c39059ca98b7ec1321ab",
+      "assumptions": {
+        "risk_layer": {
+          "trigger": "current_bar_high_low",
+          "same_bar_priority": "stop_loss_before_take_profit",
+          "fill": "next_bar_open_market",
+          "fill_price_is_stop_price": false,
+          "final_bar": "engine_finalize_trades_settlement",
+          "atr_seed": "first_true_range",
+          "atr_smoothing": "alpha=1/period, adjust=False",
+          "atr_history": "available_warmup_plus_closed_bars_through_entry_signal",
+          "atr_frozen_at": "entry_signal_close",
+          "initial_levels_based_on": "actual_entry_fill_price",
+          "live_execution_parity": false
+        }
+      }
+    },
+    "fixed_touch/1": {
+      "trade_count": 6,
+      "trades_sha256": "c44ec46e6807f9f460e387ce5febe8fa7d5403f570875ee2d5e9d89f6e21228e",
+      "equity_sha256": "a1cc205d9dda5826933b187390cce57dd95199e83640e90868e7b77754396be2",
+      "result_v2_sha256": "9a8cd7e48958ac9c656a89465eb54ad60c4b83ba2ba6c39059ca98b7ec1321ab",
+      "assumptions": {
+        "risk_layer": {
+          "trigger": "current_bar_high_low",
+          "same_bar_priority": "stop_loss_before_take_profit",
+          "fill": "next_bar_open_market",
+          "fill_price_is_stop_price": false,
+          "final_bar": "engine_finalize_trades_settlement",
+          "atr_seed": "first_true_range",
+          "atr_smoothing": "alpha=1/period, adjust=False",
+          "atr_history": "available_warmup_plus_closed_bars_through_entry_signal",
+          "atr_frozen_at": "entry_signal_close",
+          "initial_levels_based_on": "actual_entry_fill_price",
+          "live_execution_parity": false
+        }
+      }
+    },
+    "short_atr/0": {
+      "trade_count": 6,
+      "trades_sha256": "3bce67ebd34bf5f4f0bd9665d4016d91bae3263678072618e752b81dc8cfd375",
+      "equity_sha256": "cac22881043fb29d67db78628d30a04f7cc243cbecf6d049eb8d9ca83d486be9",
+      "result_v2_sha256": "fd513162d737e5adc8f737ff12e91c6691898ffabeabfa9f29f6ef4cd6d5d8f8",
+      "assumptions": {
+        "risk_layer": {
+          "trigger": "current_bar_high_low",
+          "same_bar_priority": "stop_loss_before_take_profit",
+          "fill": "next_bar_open_market",
+          "fill_price_is_stop_price": false,
+          "final_bar": "engine_finalize_trades_settlement",
+          "atr_seed": "first_true_range",
+          "atr_smoothing": "alpha=1/period, adjust=False",
+          "atr_history": "available_warmup_plus_closed_bars_through_entry_signal",
+          "atr_frozen_at": "entry_signal_close",
+          "initial_levels_based_on": "actual_entry_fill_price",
+          "live_execution_parity": false
+        }
+      }
+    },
+    "short_atr/1": {
+      "trade_count": 6,
+      "trades_sha256": "83f4fc07696460f1493d1f291b2dc4d25af269a3a9aeb3d20d941b2fbe5c164e",
+      "equity_sha256": "af9222332323ce7d421843a0f90bc44d4bbe6c538bba506c0cf308ec6d704df6",
+      "result_v2_sha256": "b8d4d215c787eeb22198308f4cc87fdc8a56fbf1921b03e6f50e0b50756f0198",
+      "assumptions": {
+        "risk_layer": {
+          "trigger": "current_bar_high_low",
+          "same_bar_priority": "stop_loss_before_take_profit",
+          "fill": "next_bar_open_market",
+          "fill_price_is_stop_price": false,
+          "final_bar": "engine_finalize_trades_settlement",
+          "atr_seed": "first_true_range",
+          "atr_smoothing": "alpha=1/period, adjust=False",
+          "atr_history": "available_warmup_plus_closed_bars_through_entry_signal",
+          "atr_frozen_at": "entry_signal_close",
+          "initial_levels_based_on": "actual_entry_fill_price",
+          "live_execution_parity": false
+        }
+      }
+    }
+  }
+}
