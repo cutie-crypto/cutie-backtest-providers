@@ -1044,6 +1044,24 @@
       "warmup_bars": 60,
       "assumptions": "88ca5e06855a20b5c861450258c2252c2b48503f655907e397266430ca673a6f",
       "raw_report": "7a2ea3478baa734d3f88886469cb56d8cd0530f7c1ddc47f2f194834700190ad"
+    },
+    "red_streak_rsi/0": {
+      "min_bars": 43,
+      "engine_trades": "4402fb2180edefcaf713dc7fbcc1c55edae703bd1e29b8b4442b8e882a73a2be",
+      "engine_equity": "a399b32dc95a7964a8e1bb5634f4c1eac2128ce962690543464bca43d0923b0f",
+      "result_v2": "b7683a31b8005ecce00b962d7b378fe5852f4e881ba6b21c933841eba430ac66",
+      "warmup_bars": 0,
+      "assumptions": "b1c03ec8fdf30ae62b9040881c5822906cba59a8037247bb6248068767931a29",
+      "raw_report": "7dc57d0930f6495946679d9bb54b3e0bed76f8436037b8743c2715ee9a32f3e2"
+    },
+    "red_streak_rsi/1": {
+      "min_bars": 43,
+      "engine_trades": "b2573342805da66baf5681f7c1457e6be6a838b098608c619fa961dbcc5e9ace",
+      "engine_equity": "a399b32dc95a7964a8e1bb5634f4c1eac2128ce962690543464bca43d0923b0f",
+      "result_v2": "b7683a31b8005ecce00b962d7b378fe5852f4e881ba6b21c933841eba430ac66",
+      "warmup_bars": 60,
+      "assumptions": "1aac81aeb4982bed772b86650bc4f2b5e4b3842db246e1875551f3241d9c0670",
+      "raw_report": "7dc57d0930f6495946679d9bb54b3e0bed76f8436037b8743c2715ee9a32f3e2"
     }
   }
 }
