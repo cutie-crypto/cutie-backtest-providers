@@ -34,7 +34,7 @@ import pandas as pd
 from canonical_json import canonical_decimal_str, canonical_json_sha256
 from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
-    _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime,
+    _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -2333,8 +2333,8 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 
 
 def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
-    """Shared holding-key gate; the later time layer can extend this independently."""
-    return params.get("risk_layer_enabled") is True
+    """Either explicit layer consumes the shared 3b holding-bar limit."""
+    return params.get("risk_layer_enabled") is True or params.get("time_layer_enabled") is True
 
 
 # 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
@@ -2471,6 +2471,19 @@ class _TimeLayerMixin:
     _time_config = None
     _time_context = None
 
+    def _holding_expiry(self):
+        trade = self.trades[-1]
+        return expiry_due(
+            holding_bars=self._risk.get("max_holding_bars", 0),
+            entry_bar=trade.entry_bar, bar=len(self.data) - 1,
+            entry_utc=trade.entry_time, bar_open=self.data.index[-1],
+            context=self._time_context if self._time_config is not None else None)
+
+    def _record_holding_expiry(self, fact) -> None:
+        self._risk_exit_reason = "time_expiry"
+        if fact.flatten_delay_bars is not None:
+            self._time_context.flatten_delays.append(fact.flatten_delay_bars)
+
     def _time_allow_entry(self) -> bool:
         if self._time_config is None:
             return True
@@ -2538,6 +2551,8 @@ class _FixedRiskMixin(_TimeLayerMixin):
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
+        if self._time_config is not None:
+            self._risk_exit_reason = None
         if self._risk.get("risk_layer_enabled"):
             self._risk_trade = None
             self._risk_state = None
@@ -2583,11 +2598,12 @@ class _FixedRiskMixin(_TimeLayerMixin):
                 entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
             )
         bar = len(self.data) - 1
-        holding = self._risk.get("max_holding_bars", 0)
-        due = bool(holding and bar - trade.entry_bar + 1 >= holding)
-        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=due)
+        fact = self._holding_expiry()
+        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
         if reason is not None:
             self._risk_exit_reason = reason
+            if reason == "time_expiry":
+                self._record_holding_expiry(fact)
             self.position.close()
             return True
         self._risk_state, units = level_exit(
@@ -2645,7 +2661,13 @@ class _FixedRiskMixin(_TimeLayerMixin):
             return self._risk_layer_check_exit()
         sl_pct = self._risk.get("stop_loss_pct")
         tp_pct = self._risk.get("take_profit_pct")
-        if sl_pct is None and tp_pct is None:
+        time_enabled = self._time_config is not None
+        if time_enabled:
+            trade = self.trades[-1]
+            if any(order.parent_trade is trade for order in self.orders):
+                return True
+            self._risk_exit_reason = None
+        if sl_pct is None and tp_pct is None and not time_enabled:
             return False
         entry_price = self.trades[-1].entry_price
         close = self.data.Close[-1]
@@ -2653,6 +2675,14 @@ class _FixedRiskMixin(_TimeLayerMixin):
         if sl_pct is not None:
             stop_price = entry_price * (1 - sl_pct) if is_long else entry_price * (1 + sl_pct)
             if (is_long and close <= stop_price) or (not is_long and close >= stop_price):
+                if time_enabled:
+                    self._risk_exit_reason = "stop_loss"
+                self.position.close()
+                return True
+        if time_enabled:
+            fact = self._holding_expiry()
+            if fact.due:
+                self._record_holding_expiry(fact)
                 self.position.close()
                 return True
         if tp_pct is not None:
@@ -5590,6 +5620,184 @@ def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]]) -> 
             for group_id, seqs in groups.items()]
 
 
+def _isolated_liquidation_fills(
+    trades_v2: list[dict[str, Any]],
+    *,
+    leverage: int,
+    df: pd.DataFrame,
+    step: int,
+    liquidations: list[dict[str, int]],
+) -> dict[int, dict[str, Any]]:
+    """已判定爆仓记录的 Decimal 成交事实；不负责触发/止损仲裁，不改输入。
+
+    trades_v2 是库逐笔的等价中间表，价格和 qty 已折回 result.v2 口径。
+    仅接受唯一单仓 opened_at 和真实、对齐的爆仓根；错误记录一律拒绝。
+    """
+    _parse_single_leverage({"leverage": leverage})
+    if leverage <= 1 or isinstance(step, bool) or not isinstance(step, int) or step <= 0:
+        raise ValueError("isolated liquidation requires leverage >1 and a positive integer step")
+    trades_by_open: dict[int, list[dict[str, Any]]] = {}
+    for trade in trades_v2:
+        trades_by_open.setdefault(trade["opened_at"], []).append(trade)
+    bars_by_open: dict[int, list[Any]] = {}
+    for ts, bar in df.iterrows():
+        bars_by_open.setdefault(int(ts.value // 10**9), []).append(bar)
+    fills: dict[int, dict[str, Any]] = {}
+    for record in liquidations:
+        if set(record) != {"opened_at", "liquidation_bar_open_time"}:
+            raise ValueError("invalid isolated liquidation record keys")
+        opened_at = record["opened_at"]
+        bar_open = record["liquidation_bar_open_time"]
+        if any(isinstance(ts, bool) or not isinstance(ts, int) or ts <= 0
+               for ts in (opened_at, bar_open)):
+            raise ValueError("invalid isolated liquidation timestamps")
+        if opened_at in fills:
+            raise ValueError("duplicate isolated liquidation record")
+        matches = trades_by_open.get(opened_at, [])
+        if len(matches) != 1:
+            raise ValueError("isolated liquidation must match exactly one trade")
+        if bar_open % step or bar_open < opened_at - opened_at % step:
+            raise ValueError("liquidation bar is unaligned or precedes entry bar")
+        bars = bars_by_open.get(bar_open, [])
+        if len(bars) != 1:
+            raise ValueError("liquidation bar must exist exactly once")
+        trade, bar = matches[0], bars[0]
+        entry = Decimal(trade["entry_price"])
+        qty = Decimal(trade["qty"])
+        open_price, low, high = (Decimal(str(bar[key])) for key in ("Open", "Low", "High"))
+        if (not all(value.is_finite() and value > 0 for value in (entry, qty, open_price, low, high))
+                or not low <= open_price <= high or trade["side"] not in {"long", "short"}):
+            raise ValueError("invalid isolated liquidation prices, qty or side")
+        inverse_leverage = Decimal(1) / Decimal(leverage)
+        liquidation_price = entry * (Decimal(1) - inverse_leverage if trade["side"] == "long"
+                                     else Decimal(1) + inverse_leverage)
+        gap = (open_price <= liquidation_price if trade["side"] == "long"
+               else open_price >= liquidation_price)
+        fill_price = open_price if gap else liquidation_price
+        if not low <= fill_price <= high:
+            raise ValueError("liquidation fill is outside its bar range")
+        fills[opened_at] = {
+            "closed_at": bar_open,
+            "liquidation_price": liquidation_price,
+            "fill_price": fill_price,
+            "liquidation_gap": gap,
+            "margin_lost": entry * qty / Decimal(leverage),
+            "loss_beyond_margin": abs(fill_price - liquidation_price) * qty if gap else Decimal(0),
+        }
+    return fills
+
+
+def _settle_isolated_liquidations(
+    trades_v2: list[dict[str, Any]],
+    *,
+    leverage: int,
+    df: pd.DataFrame,
+    step: int,
+    liquidations: list[dict[str, int]],
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+) -> list[dict[str, Any]]:
+    """按已判定的爆仓根重算冻结 10 键；跳空损失可超过保证金，费用不进爆仓价。"""
+    if not liquidations:
+        return [dict(trade) for trade in trades_v2]
+    fills = _isolated_liquidation_fills(
+        trades_v2, leverage=leverage, df=df, step=step, liquidations=liquidations,
+    )
+    settled = []
+    for trade in trades_v2:
+        rewritten = dict(trade)
+        fill = fills.get(trade["opened_at"])
+        if fill is not None:
+            entry, qty = Decimal(trade["entry_price"]), Decimal(trade["qty"])
+            exit_price = fill["fill_price"]
+            fee = (entry + exit_price) * qty * fee_bps / Decimal(10000)
+            slippage = (entry + exit_price) * qty * slippage_bps / Decimal(10000)
+            gross = (exit_price - entry if trade["side"] == "long" else entry - exit_price) * qty
+            rewritten.update({
+                "closed_at": fill["closed_at"],
+                "exit_price": canonical_decimal_str(exit_price),
+                "fee": canonical_decimal_str(fee),
+                "slippage": canonical_decimal_str(slippage),
+                "pnl": canonical_decimal_str(gross - fee - slippage),
+            })
+        settled.append(rewritten)
+    ordered = sorted(settled, key=lambda trade: (trade["closed_at"], trade["opened_at"]))
+    if [id(trade) for trade in ordered] != [id(trade) for trade in settled]:
+        raise ValueError("isolated liquidation changed single-position trade order")
+    for seq, trade in enumerate(ordered, start=1):
+        trade["seq"] = seq
+    return ordered
+
+
+def _build_isolated_risk_report(
+    trades_v2: list[dict[str, Any]],
+    *,
+    leverage: int,
+    market: str,
+    df: pd.DataFrame,
+    step: int,
+    liquidations: Optional[list[dict[str, int]]] = None,
+) -> dict[str, Any]:
+    """raw_report 的可合并片段；T2-2b 才接线，seq 取结算后 result.v2。
+
+    futures L>1 即使没有爆仓也输出零计数；spot/L=1 返回空片段。
+    """
+    if market != "futures" or leverage == 1:
+        return {}
+    fills = _isolated_liquidation_fills(
+        trades_v2, leverage=leverage, df=df, step=step, liquidations=liquidations or [],
+    )
+    details = []
+    for trade in trades_v2:
+        fill = fills.get(trade["opened_at"])
+        if fill is None:
+            continue
+        if (trade["closed_at"] != fill["closed_at"]
+                or Decimal(trade["exit_price"]) != fill["fill_price"]):
+            raise ValueError("isolated risk report requires settled result.v2 trades")
+        details.append({
+            "seq": trade["seq"],
+            "liquidation_price": canonical_decimal_str(fill["liquidation_price"]),
+            "fill_price": canonical_decimal_str(fill["fill_price"]),
+            "liquidation_gap": fill["liquidation_gap"],
+            "margin_lost": canonical_decimal_str(fill["margin_lost"]),
+            "loss_beyond_margin": canonical_decimal_str(fill["loss_beyond_margin"]),
+        })
+    return {"isolated_risk": {
+        "leverage": leverage,
+        "liquidation_count": len(details),
+        "liquidated_margin_total": canonical_decimal_str(
+            sum((fill["margin_lost"] for fill in fills.values()), Decimal(0))),
+        "liquidation_gap_count": sum(fill["liquidation_gap"] for fill in fills.values()),
+        "loss_beyond_margin_total": canonical_decimal_str(
+            sum((fill["loss_beyond_margin"] for fill in fills.values()), Decimal(0))),
+        "liquidations": details,
+    }}
+
+
+def _build_isolated_margin_assumptions(
+    *, leverage: int, market: str, stop_loss_pct: Any = None,
+) -> dict[str, Any]:
+    """assumptions 的可合并片段；只判断固定止损，动态止损留给 T2-2b。"""
+    if market != "futures" or leverage == 1:
+        return {}
+    _parse_single_leverage({"leverage": leverage})
+    stop = Decimal(str(stop_loss_pct)) if stop_loss_pct is not None else None
+    if stop is not None and (not stop.is_finite() or not Decimal(0) <= stop <= Decimal(100)):
+        raise ValueError("invalid fixed stop_loss_pct")
+    return {"isolated_margin": {
+        "leverage": leverage,
+        "mmr": "0",
+        "funding_rate_included": False,
+        "fees_in_liquidation_price": False,
+        "liquidation_price_formula": "long: E*(1-1/L); short: E*(1+1/L)",
+        "gap_fill": "跳空按开盘价成交、result.v2 按冻结公式可超保证金、逐仓封顶见 raw_report",
+        "stop_beyond_liquidation": (
+            stop is not None and stop / Decimal(100) >= Decimal(1) / Decimal(leverage)
+        ),
+    }}
+
+
 def _result_v2_bar_closes(df: pd.DataFrame, timeframe: str) -> list[tuple[int, int, Decimal]]:
     """按市值点的 bar 序列：(open_time, close_time, close)，open_time 升序。
 
@@ -5693,12 +5901,22 @@ def _build_result_v2(
     timeframe: str,
     exchange_id: str,
     df: pd.DataFrame,
+    leverage: int = 1,
+    liquidations: Optional[list[dict[str, int]]] = None,
 ) -> dict[str, Any]:
     """组装 SPEC §2 冻结的 result.v2 五键：schema_version/trades/equity_curve/metrics/
     data_manifest。metrics 恰好三键（total_return/max_drawdown/trade_count）——server
     端 _validate_result_v2 对多余键判 evidence_mismatch，不得在此加展示性字段。
     """
     trades_v2 = _build_result_v2_trades(stats_trades, equity_scale_dec, fee_bps, slippage_bps)
+    if liquidations:
+        if market != "futures":
+            raise ValueError("isolated liquidation requires futures market")
+        trades_v2 = _settle_isolated_liquidations(
+            trades_v2, leverage=leverage, df=df,
+            step=_timeframe_milliseconds(timeframe) // 1000,
+            liquidations=liquidations, fee_bps=fee_bps, slippage_bps=slippage_bps,
+        )
     equity_curve_v2 = _build_result_v2_equity_curve(
         trades_v2,
         initial_capital,
@@ -6966,7 +7184,8 @@ async def run_backtest(
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
                 **turtle_assumptions,
-                **(strategy_class._time_context.assumptions() if strategy_class._time_context is not None else {}),
+                **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
+                   if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
                 "no_live_trading": True,
             },
