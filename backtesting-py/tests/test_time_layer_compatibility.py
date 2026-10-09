@@ -29,7 +29,8 @@ assert BASELINE['single'].keys().isdisjoint(F5_BASELINE['single'])
 BASELINE['single'].update(F5_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
-MIXINS = compat.enumerate_mixin_cases()
+MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
+          if name != "red_streak_rsi"}
 LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES}
 
 
@@ -72,7 +73,7 @@ def test_disabled_response_and_start_unchanged(monkeypatch, name, warm):
 def test_schema_only_runtime_single_position_templates():
     actual = {tool.removeprefix('local.backtesting_py.') for tool, spec in provider.TOOL_SPECS.items()
               if 'time_layer_enabled' in spec['param_schema_properties']}
-    assert actual == {compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS)
+    assert actual == {compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS) | {"red_streak_rsi"}
     assert set(BASELINE['single']) | F1_CASES | F2_CASES == set(MIXINS)
 
 
@@ -268,3 +269,13 @@ def test_f2_disabled_bytes_and_no_optional_clock(monkeypatch, tmp_path, configur
     assert not any(key.startswith('time_') for trade in explicit['trades'] for key in trade)
     assert explicit['assumptions']['indicator_warmup_bars'] == 0
     assert F2_CASES <= set(MIXINS)
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_f6_disabled_time_bytes_unchanged(warm):
+    omitted = capture.response("red_streak_rsi", {}, warm)
+    disabled = capture.response("red_streak_rsi", DEFAULTS, warm)
+    assert omitted["trades"]  # Off-state comparison must exercise actual fills.
+    for key in (*capture.V2_KEYS, "assumptions", "raw_report"):
+        assert capture.digest(omitted[key]) == capture.digest(disabled[key])
+    assert "time_layer" not in disabled["assumptions"]

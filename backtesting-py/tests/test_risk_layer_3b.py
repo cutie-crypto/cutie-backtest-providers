@@ -334,6 +334,10 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         data['Open']=data.Close
         data['High']=data.Close+.01
         data['Low']=data.Close-.01
+        if name == 'red_streak_rsi':
+            # Equality intentionally is NOT red. Provide four real red bars
+            # through the trough, followed by rebound bars for 1R activation.
+            data.loc[data.index[43:47], 'Open'] = data.Close.iloc[43:47] + .005
     cls=p.TOOL_SPECS['local.backtesting_py.'+tool_name(name)]['build'](params)['strategy']
     stats=Backtest(data,cls,cash=100000,exclusive_orders=True,finalize_trades=True).run()
     assert not stats['_trades'].empty and observations

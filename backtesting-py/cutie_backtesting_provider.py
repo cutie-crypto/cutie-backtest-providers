@@ -5305,6 +5305,128 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                 executed_name=f"VWAP Reversion (UTC day, {price_source}, -{deviation:g}%)")
 
 
+@_with_time_config
+def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Jessie #18: exact Nth red close + RSI, frozen levels and shared 3b expiry."""
+    properties = TOOL_SPECS["local.backtesting_py.red_streak_rsi"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    for key in ("red_bars", "rsi_period", "max_holding_bars"):
+        if key in params and type(params[key]) is not int:
+            raise ValueError(f"INVALID_PARAMS:{key} must be an integer")
+    red_bars = params.get("red_bars", 4)
+    rsi_period = params.get("rsi_period", 14)
+    oversold = params.get("oversold", 30)
+    # Any caller-supplied stop/target mode suppresses the WHOLE default group.
+    pricing_keys = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier", "take_profit_r",
+                    "trailing_stop_pct", "breakeven_stop",
+                    *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
+    effective = dict(params)
+    if not any(key in params for key in pricing_keys):
+        effective.update(stop_loss_pct=3, take_profit_pct=3)
+    # Parse extension gating before adding this template's intrinsic holding limit.
+    holding = effective.pop("max_holding_bars", 12)
+    risk = _parse_fixed_risk_params(effective)
+    risk["max_holding_bars"] = holding
+    from backtesting import Strategy
+    from strategy_risk_overlay import initial_risk_state, decide_exit
+    from dataclasses import replace
+    from strategy_dynamic_stop import initial_stop_state
+
+    min_bars = max(red_bars, 3 * rsi_period + 1)
+
+    class RedStreakRsiStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            self.rsi = self.I(self._warm(lambda x: _rsi_series(x, rsi_period), "Close"),
+                              self.data.Close, name=f"RSI({rsi_period})")
+            self._risk_init()
+            self._risk_trade = None
+            self._f6_order = None
+            self._f6_frozen = None
+            self._f6_skips = []
+            self._f6_last_open = self.data.index[-1]
+            def red_streak(opens, closes):
+                counts, count = [], 0
+                for open_price, close_price in zip(opens, closes):
+                    count = count + 1 if close_price < open_price else 0
+                    counts.append(count)
+                return counts
+            self.red_count = self.I(self._warm(red_streak, "Open", "Close"),
+                                    self.data.Open, self.data.Close, name="RedStreak")
+            # The broker runs BEFORE next(); inspect only the current execution
+            # open before it fills our pending market order. No future-bar reads.
+            process_orders = self._broker._process_orders
+            def guarded_orders():
+                order = self._f6_order
+                if order is not None and order in self.orders:
+                    stop = self._f6_frozen.initial_stop
+                    if stop is not None and Decimal(str(self.data.Open[-1])) <= stop:
+                        self._f6_skips.append(dict(reason="frozen_stop_wrong_side_of_entry_open",
+                            signal_at=self._f6_signal_at, execution_at=int(self.data.index[-1].timestamp()),
+                            frozen_stop=str(stop), entry_open=str(self.data.Open[-1])))
+                        order.cancel()
+                        self._f6_order = None
+                process_orders()
+            self._broker._process_orders = guarded_orders
+
+        def _risk_check_exit(self):
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            if self._risk_trade is not trade:
+                self._risk_trade = trade
+                state = self._f6_frozen
+                managed = (initial_stop_state(direction="long", entry_price=Decimal(str(trade.entry_price)),
+                    initial_stop=state.initial_stop, entry_at=int(pd.Timestamp(trade.entry_time).value))
+                    if state.stop_state is not None else None)
+                self._risk_state = replace(state, entry_price=Decimal(str(trade.entry_price)),
+                                           stop_state=managed, original_units=abs(trade.size))
+            if self._risk.get("risk_layer_enabled"):
+                return self._risk_layer_check_exit()
+            if any(order.parent_trade is trade for order in self.orders):
+                return True
+            fact = self._holding_expiry()
+            # Disabled risk extension retains close-only triggers; intrinsic
+            # expiry still uses the shared fill-bar-is-1 mechanism.
+            reason = decide_exit(self._risk_state, high=self.data.Close[-1], low=self.data.Close[-1],
+                                 holding_due=fact.due)
+            if reason is None:
+                return False
+            self._risk_exit_reason = reason
+            if reason == "time_expiry":
+                self._record_holding_expiry(fact)
+            self.position.close()
+            return True
+
+        def next(self):
+            if self.position:
+                self._risk_check_exit()
+                return
+            if self.orders or self._warmup_bars + len(self.data) < min_bars:
+                return
+            # Include fetched history but never back-fill a signal or queue a
+            # tail entry that finalize_trades would fill at an earlier open.
+            if self.data.index[-1] == self._f6_last_open:
+                return
+            if self.red_count[-1] != red_bars or not math.isfinite(self.rsi[-1]) or not self.rsi[-1] < oversold:
+                return
+            if not self._time_allow_entry():
+                return
+            self._risk_prepare_entry()
+            self._f6_frozen = initial_risk_state(risk=risk, entry_price=self.data.Close[-1], direction="long",
+                atr_value=getattr(self, "_risk_entry_atr", None))
+            self._f6_signal_at = int(self.data.index[-1].timestamp())
+            size = self._risk_entry_size()
+            self._f6_order = self.buy() if size is None else self.buy(size=size)
+
+    return dict(strategy=RedStreakRsiStrategy, min_bars=min_bars,
+                executed_name=f"Red Streak RSI ({red_bars}, RSI{rsi_period}<{oversold:g}, hold {holding})")
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     "local.backtesting_py.calendar_schedule": {
         "name": "Local Backtesting.py Calendar Schedule",
@@ -5340,6 +5462,19 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "flatten_at": {"type": "string", "default": "20:00"},
             "take_profit_multiple": {"type": "number", "default": 1.5, "minimum": 0.01, "maximum": 100},
             "direction": {"type": "string", "default": "long", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.red_streak_rsi": {
+        "name": "Local Red Streak RSI Rebound",
+        "description": "Long-only rebound: RSI below oversold at the exact Nth red close; next-open entry, frozen signal-close stops/targets, shared holding-bar exit. Default stop/target 3% each unless caller supplies a pricing mode.",
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_red_streak_rsi,
+        "param_schema_properties": {
+            "red_bars": {"type": "integer", "default": 4, "minimum": 3, "maximum": 8},
+            "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
+            "oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -5924,6 +6059,9 @@ for _tool_spec in TOOL_SPECS.values():
         **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     }
 del _tool_spec
+TOOL_SPECS["local.backtesting_py.red_streak_rsi"]["param_schema_properties"]["max_holding_bars"] = {
+    "type": "integer", "default": 12, "minimum": 1, "maximum": 1000000,
+}
 
 # Entry filters are single-position only; ledger/kernel keys remain unknown.
 for _filter_tool_spec in TOOL_SPECS.values():
@@ -8045,6 +8183,22 @@ async def run_backtest(
                     "initial_levels_based_on": "entry_signal_close",
                     "same_bar_priority": "stop_loss_before_time_expiry_before_take_profit_before_template_signal"}}
                     if risk.get("risk_layer_enabled") else {})} if is_vwap else {}),
+                **({"red_streak_rsi": {
+                    "entry": "exact_nth_red_close_rsi_strictly_below_threshold",
+                    "entry_fill": "next_bar_open_market", "exit_fill": "next_bar_open_market",
+                    "risk_trigger": "current_bar_high_low" if risk.get("risk_layer_enabled") else "current_bar_close",
+                    "initial_levels_based_on": "entry_signal_close",
+                    "holding_bar_count_from": "entry_fill_bar_is_1",
+                    "max_holding_bars": risk["max_holding_bars"],
+                    "same_bar_priority": "stop_loss_before_time_expiry_before_take_profit",
+                    "wrong_side_entry": "cancel_before_fill_and_record_in_raw_report",
+                    "stop_loss_pct": risk.get("stop_loss_pct", 0) * 100,
+                    "take_profit_pct": risk.get("take_profit_pct", 0) * 100,
+                    "final_bar": "engine_finalize_trades_settlement",
+                }, **({"risk_layer": {**risk_assumptions(risk)["risk_layer"],
+                    "initial_levels_based_on": "entry_signal_close"}}
+                    if risk.get("risk_layer_enabled") else {})}
+                   if effective_tool_id == "local.backtesting_py.red_streak_rsi" else {}),
                 "real_market_data": True,
                 "no_live_trading": True,
             },
@@ -8087,6 +8241,8 @@ async def run_backtest(
                 **({"range_breakout_days": list(stats["_strategy"].daily_ranges.values())} if range_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
+                **({"red_streak_rsi": {"skipped_entries": stats["_strategy"]._f6_skips}}
+                   if effective_tool_id == "local.backtesting_py.red_streak_rsi" else {}),
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,
                 # 旧版展示性百分比指标（result.v2 迁移前的 metrics 形状），保留兼容旧
