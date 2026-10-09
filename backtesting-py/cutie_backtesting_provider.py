@@ -5037,7 +5037,10 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     },
     "local.backtesting_py.turtle": {
         "name": "Local Backtesting.py Turtle",
-        "description": "Long-only Turtle groups: prior-bar Donchian channels, frozen Wilder N and unit size; next-open fills.",
+        "description": (
+            "Turtle groups: spot supports long only; futures supports long, short, or both directions. "
+            "Prior-bar Donchian channels, frozen Wilder N and unit size; next-open fills."
+        ),
         "strategy_family": "breakout",
         "is_default": False,
         "runner": TURTLE_RUNNER,
