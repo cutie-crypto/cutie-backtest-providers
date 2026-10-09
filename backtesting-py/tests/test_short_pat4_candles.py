@@ -138,6 +138,25 @@ def test_filter_layer_wired_as_short_and_off_state_unchanged(monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize('name', SHORT)
+@pytest.mark.parametrize('period', [2, 30])
+def test_filter_decided_at_signal_bar_on_mirrored_7p3a_bars(monkeypatch, tmp_path, name, period):
+    # 7-P3a's hand bars reflected around 200. Reflection maps "close > EMA" (long allowed) onto
+    # "close < EMA" (short allowed), so the long EMA oracle on the unreflected closes is the short mask.
+    import test_7p3a_kline_filter as f7
+    params, _, k, entry_open = f7.CASES[MIRROR[name]]
+    mask = f7.ema_mask(list(f7.frame(MIRROR[name]).Close), period)
+    if period == 2:  # allowed at the signal bar only: a decision one bar late would block it
+        assert mask[k] and not mask[k + 1]
+    else:  # EMA30 still near the reflected 80 plateau: short blocked at the signal bar
+        assert not mask[k]
+    body, data = post(monkeypatch, tmp_path, name, {**params, **f7.FILTER_ON, 'filter_ema_period': period},
+                      reflect(f7.frame(MIRROR[name])))
+    assert body['result_status'] == 'success', body
+    expected = [(k + 1, 'short', str(Decimal(str(200 - entry_open))))] if period == 2 else []
+    assert [t[:3] for t in trades(body, data)] == expected
+
+
+@pytest.mark.parametrize('name', SHORT)
 def test_mirror_of_long_fixture_trades_one_short(monkeypatch, tmp_path, name):
     body, data = post(monkeypatch, tmp_path, name)
     assert body['result_status'] == 'success', body
