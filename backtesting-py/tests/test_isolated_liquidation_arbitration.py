@@ -266,13 +266,15 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         return out
     result=invoke(p)
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')
-    if name == 'vwap_reversion' or golden:
-        # F5 and the Wave-B tools did not exist at e25886e: compare their independent immutable goldens
+    if name in ('vwap_reversion', 'fibonacci_retracement') or golden:
+        # F5, 9T5 and the Wave-B tools did not exist at e25886e: compare their independent immutable goldens
         # (each captured at its own feature head), keeping the historical-source comparator for every other tool.
         import hashlib
         from pathlib import Path
         if golden:
             expected=golden[market]
+        elif name == 'fibonacci_retracement':
+            expected=json.loads((Path(__file__).parent/'fixtures/isolated_off_9t5_b42210b.json').read_text())['cases'][market]
         else:
             expected=json.loads((Path(__file__).parent/'fixtures/isolated_off_f5_b42210b.json').read_text())['cases'][market]
         digest=lambda value:hashlib.sha256(value.encode()).hexdigest()

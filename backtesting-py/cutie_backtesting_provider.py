@@ -5676,6 +5676,180 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
             'leverage': 'shared_isolated_liquidation_arbitration'}))
 
 
+@_with_time_config
+@_with_filter_config
+def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """9T5: confirmed adjacent low/high events; signal-close frozen risk prices."""
+    error = _validate_params_against_schema(params, TOOL_SPECS["local.backtesting_py.fibonacci_retracement"]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    n = params.get("swing_n", 5)
+    if type(n) is not int:
+        raise ValueError("INVALID_PARAMS:swing_n must be an integer, not a float")
+    level = params.get("fib_level", 0.618)
+    tolerance = Decimal(str(params.get("fib_tolerance_pct", 0.3))) / 100
+    minimum = Decimal(str(params.get("swing_min_gain_pct", 5))) / 100
+    target = params.get("fib_target", "swing_high")
+    pricing_keys = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier", "take_profit_r",
+                    "trailing_stop_pct", "breakeven_stop",
+                    *(f"tp{k}_{suffix}" for k in (1, 2, 3) for suffix in ("r", "close_pct")))
+    intrinsic = not any(key in params for key in pricing_keys)
+    risk = _parse_fixed_risk_params(params)
+    from backtesting import Strategy
+    from dataclasses import replace
+    from strategy_swing_points import swing_points
+    from strategy_risk_overlay import RiskState, initial_risk_state, decide_exit
+    from strategy_dynamic_stop import initial_stop_state
+
+    class FibonacciRetracementStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            self._risk_init()
+            self._risk_trade = None
+            self._fib_order = self._fib_frozen = None
+            self._fib_skips, self._fib_waves, self._fib_exits = [], [], []
+            self._fib_previous = self._fib_active = None
+            self._fib_seen = -1
+            columns = {c: np.concatenate([self._warmup_cols[c] if self._warmup_bars else [],
+                                          np.asarray(getattr(self.data, c))])
+                       for c in ("High", "Low", "Close")}
+            self._fib_series = swing_points(columns["High"], columns["Low"], n=n)
+            self._fib_closes = columns["Close"]
+            self._fib_length = len(self.data)
+            process_orders = self._broker._process_orders
+
+            def guarded_orders():
+                order = self._fib_order
+                if order is not None and order in self.orders:
+                    opening = Decimal(str(self.data.Open[-1]))
+                    state = self._fib_frozen
+                    reason = ("frozen_stop_wrong_side_of_entry_open"
+                              if state.initial_stop is not None and opening <= state.initial_stop else
+                              "entry_open_at_or_above_frozen_target"
+                              if state.take_price is not None and opening >= state.take_price else None)
+                    if reason:
+                        self._fib_skips.append(dict(reason=reason, signal_index=self._fib_signal_index,
+                            execution_index=self._warmup_bars + len(self.data) - 1,
+                            entry_open=str(opening), frozen_stop=str(state.initial_stop),
+                            frozen_target=str(state.take_price)))
+                        order.cancel()
+                        self._fib_order = None
+                process_orders()
+            self._broker._process_orders = guarded_orders
+
+        def _fib_update(self, bar):
+            # Slots are confirmation bars; never inspect a point at its pivot index.
+            for at in range(self._fib_seen + 1, bar + 1):
+                lo, hi = self._fib_series.lows[at], self._fib_series.highs[at]
+                if lo is not None or hi is not None:
+                    self._fib_active = None
+                    previous = self._fib_previous
+                    # A candle can confirm both extrema: its event ordering is unknown.
+                    if lo is not None and hi is not None:
+                        self._fib_previous = None
+                    elif lo is not None:
+                        self._fib_previous = ("low", lo)
+                    else:
+                        if previous is not None and previous[0] == "low":
+                            low = previous[1]
+                            if hi.index > low.index and Decimal(str(hi.price)) / Decimal(str(low.price)) - 1 >= minimum:
+                                L, H = Decimal(str(low.price)), Decimal(str(hi.price))
+                                price = H - Decimal(str(level)) * (H - L)
+                                stop = ((H - Decimal("0.786") * (H - L)) if level < 0.786 else L) * Decimal("0.999")
+                                take = H if target == "swing_high" else L + Decimal(target) * (H - L)
+                                wave = dict(low_index=low.index, high_index=hi.index,
+                                    low_confirmed_at=low.confirmed_at, high_confirmed_at=hi.confirmed_at,
+                                    low_price=str(L), high_price=str(H), level_price=str(price),
+                                    stop_price=str(stop), target_price=str(take), used=False, invalid=False)
+                                self._fib_active = wave
+                                self._fib_waves.append(wave)
+                        self._fib_previous = ("high", hi)
+                wave = self._fib_active
+                if wave is not None and not wave["used"] and Decimal(str(self._fib_closes[at])) < Decimal(wave["stop_price"]):
+                    wave["invalid"] = True
+                    wave["invalidated_at"] = at
+            self._fib_seen = bar
+
+        def _risk_check_exit(self):
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            if self._risk_trade is not trade:
+                self._risk_trade = trade
+                state = self._fib_frozen
+                managed = (initial_stop_state(direction="long", entry_price=Decimal(str(trade.entry_price)),
+                    initial_stop=state.initial_stop, entry_at=int(pd.Timestamp(trade.entry_time).value))
+                    if state.stop_state is not None else None)
+                self._risk_state = replace(state, entry_price=Decimal(str(trade.entry_price)),
+                                           stop_state=managed, original_units=abs(trade.size))
+                if self._risk.get("leverage", 1) > 1 and any(self._risk.get(key) for key in
+                        ("atr_stop_multiplier", "trailing_stop_pct", "breakeven_stop")):
+                    liquidation = _isolated_liquidation_price(Decimal(str(trade.entry_price)), self._risk["leverage"], True)
+                    if state.initial_stop is not None and state.initial_stop <= liquidation:
+                        self._isolated_stop_beyond_trades += 1
+            if self._risk.get("risk_layer_enabled"):
+                exited = self._risk_layer_check_exit()
+            # Frozen intrinsic and user stops both participate in arbitration.
+            # With no configured user stop, initial_stop is None: liquidation only.
+            elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
+                exited = True
+            elif any(order.parent_trade is trade for order in self.orders):
+                return True
+            else:
+                fact = self._holding_expiry()
+                reason = decide_exit(self._risk_state,
+                    high=self.data.High[-1] if intrinsic else self.data.Close[-1],
+                    low=self.data.Low[-1] if intrinsic else self.data.Close[-1], holding_due=fact.due)
+                exited = reason is not None
+                if exited:
+                    self._risk_exit_reason = reason
+                    if reason == "time_expiry":
+                        self._record_holding_expiry(fact)
+                    self.position.close()
+            if exited:
+                self._fib_exits.append(dict(decision_index=self._warmup_bars + len(self.data) - 1,
+                                             reason=self._risk_exit_reason))
+            return exited
+
+        def next(self):
+            bar = self._warmup_bars + len(self.data) - 1
+            self._fib_update(bar)
+            if self.position:
+                self._risk_check_exit()
+                return
+            wave = self._fib_active
+            if self.orders or len(self.data) >= self._fib_length or wave is None or wave["used"] or wave["invalid"]:
+                return
+            if bar <= wave["high_confirmed_at"]:
+                return
+            price = Decimal(wave["level_price"])
+            if not (Decimal(str(self.data.Low[-1])) <= price * (1 + tolerance)
+                    and Decimal(str(self.data.Close[-1])) >= price * (1 - tolerance)
+                    and self.data.Close[-1] > self.data.Open[-1]):
+                return
+            if not self._time_allow_entry() or not self._filter_allow_entry():
+                return
+            self._risk_prepare_entry()
+            if intrinsic:
+                stop, take = Decimal(wave["stop_price"]), Decimal(wave["target_price"])
+                entry = Decimal(str(self.data.Close[-1]))
+                self._fib_frozen = RiskState(entry, stop, take, entry - stop, "long")
+            else:
+                self._fib_frozen = initial_risk_state(risk=risk, entry_price=self.data.Close[-1], direction="long",
+                    atr_value=getattr(self, "_risk_entry_atr", None))
+            wave["used"] = True
+            wave["signal_index"] = self._fib_signal_index = bar
+            wave["frozen_stop"] = str(self._fib_frozen.initial_stop)
+            wave["frozen_target"] = str(self._fib_frozen.take_price)
+            size = self._risk_entry_size()
+            self._fib_order = self.buy() if size is None else self.buy(size=size)
+
+    return dict(strategy=FibonacciRetracementStrategy, min_bars=2 * n + 1,
+                executed_name=f"Fibonacci Retracement ({level:g}, N={n}, target={target})")
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     "local.backtesting_py.calendar_schedule": {
         "name": "Local Backtesting.py Calendar Schedule",
@@ -5874,6 +6048,22 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         },
     },
 
+    "local.backtesting_py.fibonacci_retracement": {
+        "name": "Local Backtesting.py Fibonacci Retracement",
+        "description": "Long-only retracement of adjacent confirmed swing low/high points; bullish close entry, frozen swing stop/target, next-open market fills. Maps to KOL '斐波那契回撤'.",
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_fibonacci_retracement,
+        "param_schema_properties": {
+            "swing_n": {"type": "integer", "default": 5, "minimum": 1, "maximum": 500},
+            "swing_min_gain_pct": {"type": "number", "default": 5, "minimum": 1, "maximum": 50},
+            "fib_level": {"type": "number", "default": 0.618, "enum": [0.382, 0.5, 0.618, 0.786]},
+            "fib_tolerance_pct": {"type": "number", "default": 0.3, "minimum": 0.05, "maximum": 2},
+            "fib_target": {"type": "string", "default": "swing_high", "enum": ["swing_high", "1.272", "1.618"]},
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.stoch_oversold_cross": {
         "name": "Local Backtesting.py Stochastic Oversold Cross",
         "description": (
@@ -8554,6 +8744,17 @@ async def run_backtest(
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
+                **({"fibonacci_retracement": {
+                    "swing_confirmation": "left_right_N_closed_bars_strict_extrema",
+                    "swing_indices": "warmup_plus_main_zero_based",
+                    "pair": "adjacent_low_then_high_simultaneous_extrema_discarded",
+                    "entry": "after_high_confirmation_bullish_close_then_next_open",
+                    "default_prices": "frozen_at_signal_close_whole_group_disabled_by_explicit_pricing_key",
+                    "default_trigger": "high_low_touch_next_open_market",
+                    "same_bar_priority": "stop_before_time_expiry_before_take_profit_before_signal",
+                    "pattern_confirmation": "not_implemented_engulfing_hammer_pending_shared_capability",
+                    "cancelled_entry": "consumes_pair_once",
+                }} if effective_tool_id == "local.backtesting_py.fibonacci_retracement" else {}),
                 **(_build_isolated_margin_assumptions(
                     leverage=leverage, market=market, stop_loss_pct=params.get("stop_loss_pct"),
                     stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
@@ -8638,6 +8839,11 @@ async def run_backtest(
                    if hasattr(stats["_strategy"], "divergence_report") else {}),
                 **({"chan": stats["_strategy"].chan_report}
                    if hasattr(stats["_strategy"], "chan_report") else {}),
+                **({"fibonacci_retracement": {
+                    "waves": stats["_strategy"]._fib_waves,
+                    "skipped_entries": stats["_strategy"]._fib_skips,
+                    "exit_decisions": stats["_strategy"]._fib_exits,
+                }} if effective_tool_id == "local.backtesting_py.fibonacci_retracement" else {}),
                 **({"entry_filters": {**filter_config.report(),
                     **(strategy_class._filter_context.report if strategy_class._filter_context is not None else {})}}
                     if filter_config is not None else {}),
