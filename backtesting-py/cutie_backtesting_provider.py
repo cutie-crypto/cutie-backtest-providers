@@ -2969,6 +2969,10 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         return False
 
 
+EMA_WARMUP_MULTIPLIER = 10
+MAX_EMA_WARMUP_BARS = 20000
+
+
 @_with_time_config
 @_with_filter_config
 def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
@@ -2989,6 +2993,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
     from backtesting.lib import crossover
 
     min_bars = max(ema_fast, ema_slow) + 1
+    ema_warmup_requested_bars = EMA_WARMUP_MULTIPLIER * max(ema_fast, ema_slow)
 
     class EmaCrossStrategy(_FixedRiskMixin, Strategy):
         _ema_fast = ema_fast
@@ -3026,6 +3031,8 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
         "strategy": EmaCrossStrategy,
         "executed_name": f"EMA Cross ({ema_fast}/{ema_slow})",
         "min_bars": min_bars,
+        "ema_warmup_requested_bars": ema_warmup_requested_bars,
+        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
         "trade_on_close": bool(risk),
     }
 
@@ -8904,7 +8911,7 @@ async def run_backtest(
         except FilterHistoryError as e:
             return _business_failure(run_id, "INSUFFICIENT_DATA", str(e), reason="filter_history_insufficient")
 
-    # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
+    # start_at 之前按模板目标取指标预热；min_bars 仍只约束最少可算/主区间长度。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
     risk = getattr(strategy_class, "_risk", {})
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
@@ -8914,13 +8921,34 @@ async def run_backtest(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
     warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
-                                        max(min_bars, risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
+                                        max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
     if is_vwap:
         strategy_class._warmup_index = warmup_df.index
     indicator_warmup_bars = len(warmup_df)
+    ema_warmup_report = {}
+    ema_warmup_assumptions = {}
+    if "ema_warmup_requested_bars" in built:
+        requested = built["ema_warmup_requested_bars"]
+        target = built["ema_warmup_target_bars"]
+        # 回测参考读数允许封顶/不足，首段指标可能未收敛；实盘是钱路径，
+        # 超 20000 根拒绝布防（fail-closed），此处不改变实盘或结果 v2 契约。
+        ema_warmup_report = {"ema_warmup": {
+            "requested_bars": requested,
+            "target_bars": target,
+            "actual_bars": indicator_warmup_bars,
+            "truncated": requested > target,
+            "tenfold_reached": indicator_warmup_bars >= requested,
+        }}
+        ema_warmup_assumptions = {"ema_warmup":
+            f"EMA 预热取 10×最长周期（目标 {target} 根，实得 {indicator_warmup_bars} 根）"}
+        if ema_warmup_report["ema_warmup"]["truncated"]:
+            ema_warmup_assumptions["ema_warmup"] += (
+                f"回测已把预热截到 20000 根；实盘自动信号要求 10×最长周期 ≤ 20000 根，"
+                f"本参数（需 {requested} 根）无法布防自动信号，请调小慢线周期"
+            )
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
         strategy_class._warmup_cols = {
@@ -9149,6 +9177,7 @@ async def run_backtest(
                                       else "shared_frozen_actual_fill_risk_state"),
                      "qty_step_source": "provider_parameter_not_exchange_verified"}} if sizing_enabled else {}),
                 "indicator_warmup_bars": indicator_warmup_bars,
+                **ema_warmup_assumptions,
                 **risk_assumptions(risk),
                 **({"fibonacci_retracement": {
                     "swing_confirmation": "left_right_N_closed_bars_strict_extrema",
@@ -9232,6 +9261,7 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **ema_warmup_report,
                 **(_build_isolated_risk_report(
                     result_v2["trades"], leverage=leverage, market=market, df=df,
                     step=_timeframe_milliseconds(timeframe) // 1000, liquidations=liquidations,

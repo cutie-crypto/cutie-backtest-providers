@@ -63,6 +63,20 @@ flag and trade count use each entry's frozen initial stop, including equality;
 subsequent stop ratchets do not increase this count. These nodes appear only for
 futures L>1. Funding, MMR>0, and exchange-specific liquidation rules are excluded.
 
+### EMA cross indicator warmup
+
+`ema_cross` fetches up to `min(10 × max(ema_fast, ema_slow), 20000)`
+closed candles before the main range through the existing OHLCV cache/fetch path.
+Its minimum calculable/main-range bars remain `max(ema_fast, ema_slow) + 1`.
+Warmup stays best-effort: short or unavailable history does not fail the backtest.
+`raw_report.ema_warmup` records the uncapped `requested_bars`, capped
+`target_bars`, `actual_bars`, `truncated`, and `tenfold_reached` (actual history
+meets the uncapped tenfold request). `assumptions.ema_warmup` discloses the
+capped target and actual count. Result.v2 gains no fields.
+Backtests provide reference readings and may have unconverged opening indicators;
+live EMA arming instead rejects requests above 20000 bars because it manages money.
+Other templates retain their existing warmup depth.
+
 ### Closed higher-timeframe entry filters
 
 Single-position templates support opt-in EMA, MACD zero-axis and Supertrend

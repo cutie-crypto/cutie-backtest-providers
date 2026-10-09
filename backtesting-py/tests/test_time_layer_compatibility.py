@@ -57,6 +57,10 @@ BASELINE['single'].update(SHORTPAT2_BASELINE['single'])
 SHORTPAT3_BASELINE = json.loads((Path(__file__).parent / 'fixtures/shortpat3_time_off.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(SHORTPAT3_BASELINE['single'])
 BASELINE['single'].update(SHORTPAT3_BASELINE['single'])
+# S4b adds EMA-only disclosure; retain every other historical fingerprint.
+EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
+assert set(EMA_WARMUP_BASELINE['single']) == {'ema_cross'}
+BASELINE['single'].update(EMA_WARMUP_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
