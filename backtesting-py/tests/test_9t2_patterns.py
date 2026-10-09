@@ -364,3 +364,23 @@ def test_soldier_filter_off_allows_short_history():
     result = run('three_white_soldiers',data,{'position_filter':False})
     assert result['_strategy'].trades[0].entry_bar == 4
     assert provider.TOOL_SPECS['local.backtesting_py.three_white_soldiers']['build']({'position_filter':False})['min_bars'] == 4
+
+
+@pytest.mark.parametrize('trend_filter', [False, True])
+def test_inside_breakout_and_same_bar_inside_rearms_independently_of_filter(trend_filter):
+    data = frame('inside_bar_breakout')
+    data.iloc[25, :4] = [104,120,96,105]  # no old breakout; large future mother
+    data.iloc[26, :4] = [106,115,98,109]  # > old108, strictly inside25 [96,120]
+    data.iloc[27, :4] = [110,116,90,110]  # first entry at110, stop triggers for exit28
+    data.iloc[28, :4] = [111,121,95,111]  # no containment/replacement, close still<=120
+    data.iloc[29, :4] = [112,123,95,122]  # third/last allowed close > new mother120
+    data.iloc[30:, :4] = [124,125,123,124]
+    result = run('inside_bar_breakout',data,{'trend_filter':trend_filter})
+    # Prior~121 makes EMA20(26)>109 but EMA20(29)<122 (independent price bounds).
+    assert bool(result['_strategy']._signals[26]) is (not trend_filter)
+    assert bool(result['_strategy']._signals[29]) is True
+    assert list(result['_trades'].EntryBar) == ([] if trend_filter else [27])
+    assert list(result['_trades'].ExitBar) == ([] if trend_filter else [28])
+    trade = result['_strategy'].trades[0]
+    assert (trade.entry_bar,trade.entry_price)==(30,124)
+    assert trade.tag.stop==pytest.approx(95.904)  # new mother25 low96*.999
