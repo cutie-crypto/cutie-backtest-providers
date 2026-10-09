@@ -132,12 +132,12 @@ def _compare(op: str, key: str, literal: Decimal) -> dict[str, Any]:
     }
 
 
-def _cross(op: str) -> dict[str, Any]:
+def _cross(op: str, ma_type: str = "sma") -> dict[str, Any]:
     return {
         "node": "cross",
         "op": op,
-        "left": _feature_ref("ratio_sma_fast"),
-        "right": _feature_ref("ratio_sma_slow"),
+        "left": _feature_ref(f"ratio_{ma_type}_fast"),
+        "right": _feature_ref(f"ratio_{ma_type}_slow"),
     }
 
 
@@ -150,6 +150,15 @@ def _family_parts(
         slow = _int(params["slow_window"], "$.params.slow_window", 5, 200)
         if not fast < slow:
             _fail("$.params.fast_window", "must be less than slow_window")
+        ma_type = params.get("ma_type", "sma")
+        if not isinstance(ma_type, str) or ma_type not in ("sma", "ema"):
+            _fail("$.params.ma_type", "must be sma or ema")
+        if ma_type == "ema":
+            features = [
+                _primitive("ratio_ema_fast", "ema", fast, timeframe),
+                _primitive("ratio_ema_slow", "ema", slow, timeframe),
+            ]
+            return features, _cross("crosses_above", "ema"), _cross("crosses_below", "ema")
         features = [
             _primitive("ratio_sum_fast", "rolling_sum", fast, timeframe),
             _primitive("ratio_sum_slow", "rolling_sum", slow, timeframe),
@@ -219,7 +228,8 @@ def _build(
     if strategy_family not in _FAMILY_PARAM_KEYS:
         _fail("$.strategy_family", "unsupported basket strategy family")
     expected = _COMMON_PARAM_KEYS | _FAMILY_PARAM_KEYS[strategy_family]
-    if not isinstance(params, dict) or set(params) != expected:
+    optional = {"ma_type"} if strategy_family == "basket_ratio_sma_cross" else set()
+    if not isinstance(params, dict) or not expected <= set(params) or set(params) - expected - optional:
         _fail("$.params", f"exact keys required: {sorted(expected)}")
     if not isinstance(envelope, dict) or set(envelope) != _ENVELOPE_KEYS:
         _fail("$.envelope", f"exact keys required: {sorted(_ENVELOPE_KEYS)}")

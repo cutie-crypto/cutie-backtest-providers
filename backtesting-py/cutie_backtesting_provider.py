@@ -6597,7 +6597,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": (
             "Two-leg futures basket, trend-following on the leg-a/leg-b close "
             "ratio: go long leg a + short leg b (per each leg's declared side) "
-            "when the fast SMA of the ratio crosses above the slow SMA, exit on "
+            "when the fast MA of the ratio crosses above the slow MA (SMA by default, optional EMA), exit on "
             "the opposite cross. Maps to KOL '组合比价 / 对冲配对'."
         ),
         "strategy_family": "basket_ratio_sma_cross",
@@ -6606,6 +6606,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "param_schema_properties": {
             "fast_window": {"type": "integer", "minimum": 2, "maximum": 50},
             "slow_window": {"type": "integer", "minimum": 5, "maximum": 200},
+            "ma_type": {"type": "string", "enum": ["sma", "ema"], "default": "sma"},
             **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
         },
     },
@@ -8137,6 +8138,11 @@ def _run_basket_backtest(
             "exchange": CENTRAL_SUPPORTED_EXCHANGE,
             "market": market,
             "strategy_family": strategy_family,
+            **({"ema": {
+                "adjust": False,
+                "seed": "SMA of the first N aligned valid values; first output only after N bars",
+                "history": "recurrence starts at the beginning of the fetched aligned series",
+            }} if strategy_family == "basket_ratio_sma_cross" and params.get("ma_type") == "ema" else {}),
             "legs": [leg["symbol"] for leg in plan.legs],
             "real_market_data": True,
             "no_live_trading": True,

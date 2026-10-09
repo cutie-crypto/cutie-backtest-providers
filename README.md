@@ -143,6 +143,18 @@ Existing sizing, leverage=1 and time gates apply. Fixed `stop_loss_pct` or
 are incompatible with these template-owned exits. Disabled risk/time defaults
 remain valid. All new reporting stays outside the frozen result.v2 key sets.
 
+### Basket ratio MA option
+
+`local.backtesting_py.basket_ratio_sma_cross` accepts optional `ma_type=sma|ema`.
+Omitted or explicit `sma` retains the frozen SMA spec, trades and equity bytes.
+EMA is v3-only, uses `adjust=False`, seeds with the first N aligned valid values' SMA,
+and emits its first value after N bars. Later values use `alpha=2/(N+1)` and
+`alpha*x + (1-alpha)*previous` in decimal128. Crosses need `slow_window+1`
+aligned bars; the provider fetches `slow_window` bars before the requested start.
+EMA starts at the fetched history's beginning, so changing that history can
+change signals. EMA-only assumptions disclose this seed/history boundary.
+ROC, zscore, leg directions and the basket runner remain as declared.
+
 ### StrategySpec v2 artifact execution
 
 The backtesting.py service also advertises

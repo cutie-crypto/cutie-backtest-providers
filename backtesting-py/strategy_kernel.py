@@ -125,6 +125,7 @@ _KNOWN_PRIMITIVES = {
     "rsi_wilder",
     "rolling_extreme",
     "rolling_zscore",
+    "ema",
 }
 
 _SPEC_KEYS = {
@@ -626,7 +627,7 @@ def _validate_primitive_params(primitive: Any, raw_params: Any, path: str) -> No
 
 
 def _validate_primitive_params_v3(primitive: Any, raw_params: Any, path: str) -> None:
-    """v3 primitive registry: the four v2 primitives plus ``rolling_zscore``
+    """v3 primitive registry: the four v2 primitives plus ``rolling_zscore`` / ``ema``
     (SPEC_组合策略v3契约 §2.3, params exactly ``{"window_bars": <int>}``).
 
     A one-bar window has population stdev 0 on every bar and could never
@@ -634,7 +635,7 @@ def _validate_primitive_params_v3(primitive: Any, raw_params: Any, path: str) ->
     """
     if not _one_of(primitive, _KNOWN_PRIMITIVES):
         _raise(f"{path}.primitive", "unknown primitive", actual=primitive)
-    if primitive == "rolling_zscore":
+    if primitive in {"rolling_zscore", "ema"}:
         params = _exact(raw_params, {"window_bars"}, f"{path}.params")
         _safe_int(
             params["window_bars"],
@@ -3331,6 +3332,31 @@ def _eval_value_v3(
     return _ctx_op(expr["op"], args), None
 
 
+@in_decimal128
+def _ema_series_v3(source: list[tuple[Any, Optional[str]]], window: int) -> list[tuple[Any, Optional[str]]]:
+    # EMA uses adjust=False; the first output is the SMA of the first N aligned valid values, only after N bars.
+    out: list[tuple[Any, Optional[str]]] = []
+    seed: list[Decimal] = []
+    previous: Optional[Decimal] = None
+    alpha = Decimal(2) / Decimal(window + 1)
+    for value, reason in source:
+        if value is None:
+            seed = []
+            previous = None
+            out.append((None, reason or "insufficient_history"))
+            continue
+        if previous is None:
+            seed.append(value)
+            if len(seed) < window:
+                out.append((None, "insufficient_history"))
+                continue
+            previous = sum(seed, Decimal(0)) / Decimal(window)
+        else:
+            previous = alpha * value + (Decimal(1) - alpha) * previous
+        out.append((+previous, None))
+    return out
+
+
 def _primitive_series_v3(
     feature: dict[str, Any],
     source: list[tuple[Any, Optional[str]]],
@@ -3343,6 +3369,8 @@ def _primitive_series_v3(
     primitive = feature["primitive"]
     params = feature["params"]
     out: list[tuple[Any, Optional[str]]] = []
+    if primitive == "ema":
+        return _ema_series_v3(source, params["window_bars"])
     if primitive == "rsi_wilder":
         first = next(
             (index for index, (value, _r) in enumerate(source) if value is not None),
