@@ -17,9 +17,6 @@ from strategy_position_sizing import POSITION_SIZE_KEYS
 TOOLS = tuple(c.CASES)
 RISK = dict(position_size_risk_pct=1, position_size_qty_step=0.001)
 REPORT_KEY = {**{n: 'candle_pattern' for n in c.CANDLE}, **{n: 'bottom_pattern' for n in c.BOTTOM}}
-REMAINING_10B2D = frozenset('local.backtesting_py.' + n for n in (
-    'opening_range_breakout', 'asia_range_breakout', 'calendar_schedule', 'red_streak_rsi',
-    'us_open_momentum', 'cme_weekend_gap'))
 
 
 def fills(body):
@@ -122,7 +119,7 @@ def test_user_stop_rejected_before_fetch(name, monkeypatch, tmp_path):
     assert 'mutually exclusive' in body['error_message']
 
 
-def test_eight_templates_left_pending_list_and_remaining_six_still_reject(monkeypatch):
+def test_eight_templates_left_pending_list_and_pending_list_empty(monkeypatch):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: pytest.fail('pending tool fetched data'))
     wired = {'local.backtesting_py.' + n for n in TOOLS}
@@ -131,13 +128,5 @@ def test_eight_templates_left_pending_list_and_remaining_six_still_reject(monkey
     assert wired <= p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
     for tool in wired:
         assert POSITION_SIZE_KEYS <= set(p.TOOL_SPECS[tool]['param_schema_properties']), tool
-    assert p.POSITION_SIZING_PENDING_TOOLS == REMAINING_10B2D
-    client = TestClient(p.app)
-    for tool in sorted(REMAINING_10B2D):
-        assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
-        request = dict(run_id='10b2c', provider_tool_id=tool, provider_params=dict(RISK, stop_loss_pct=2),
-                       symbol='BTCUSDT', market='spot', timeframe='1h', start_at=1767225600,
-                       end_at=1767312000, initial_capital='10000', fee_bps='0', slippage_bps='0')
-        body = client.post('/cutie/backtest', json={'backtest': request}).json()
-        assert body['raw_report']['position_sizing'] == {
-            'rejections': [{'reason': 'position sizing is not wired to this template yet'}]}, tool
+    # 10-B2d 接上余下 6 个，名单清空。
+    assert not p.POSITION_SIZING_PENDING_TOOLS
