@@ -189,6 +189,7 @@ def test_range_ignoring_fetch_never_reuses_main_rows_as_warmup(client, monkeypat
         ("local.backtesting_py.adx_di_cross", {"adx_period": 14, "adx_threshold": 25, "adx_exit": 20}),
         ("local.backtesting_py.bollinger_squeeze_breakout", {"bb_period": 20, "bb_std": 2.0, "bandwidth_lookback": 50, "squeeze_pct": 20}),
         ("local.backtesting_py.stoch_oversold_cross", {"stoch_period": 14, "stoch_smooth": 3, "stoch_d": 3, "oversold": 20, "overbought": 80}),
+        ("local.backtesting_py.parabolic_sar", {}),
         ("local.backtesting_py.supertrend", {"atr_period": 10, "multiplier": 3}),
         ("local.backtesting_py.ema_trend_rsi", {"ema_fast": 5, "ema_slow": 20, "rsi_period": 14}),
         ("local.backtesting_py.ema_pullback", {"ema_fast": 5, "ema_slow": 30}),

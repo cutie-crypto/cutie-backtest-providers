@@ -4093,6 +4093,89 @@ def _build_macd_above_zero(params: dict[str, Any], *, initial_capital: float = 1
     }
 
 
+def _parabolic_sar_arrays(high: Any, low: Any, close: Any, af_start: float,
+                          af_step: float, af_max: float) -> dict[str, Any]:
+    """Wilder SAR: each array element depends only on that bar and its prefix."""
+    h, l, c = (np.asarray(x, dtype="float64") for x in (high, low, close))
+    out = {key: np.full(len(c), np.nan) for key in ("sar", "trend", "ep", "af")}
+    if len(c) < 2:
+        return out
+    trend = 1.0 if c[1] > c[0] else -1.0
+    sar, ep = (l[0], h[1]) if trend > 0 else (h[0], l[1])
+    af = af_start
+    for key, value in zip(out, (sar, trend, ep, af)):
+        out[key][1] = value
+    for i in range(2, len(c)):
+        sar = sar + af * (ep - sar)
+        if trend > 0:
+            sar = min(sar, l[i - 1], l[i - 2])
+            if l[i] < sar:
+                trend, sar, ep, af = -1.0, ep, l[i], af_start
+            elif h[i] > ep:
+                ep, af = h[i], min(af + af_step, af_max)
+        else:
+            sar = max(sar, h[i - 1], h[i - 2])
+            if h[i] > sar:
+                trend, sar, ep, af = 1.0, ep, h[i], af_start
+            elif l[i] < ep:
+                ep, af = l[i], min(af + af_step, af_max)
+        for key, value in zip(out, (sar, trend, ep, af)):
+            out[key][i] = value
+    return out
+
+
+def _build_parabolic_sar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    values = {}
+    for key, default, lo, hi in (("af_start", 0.02, 0.01, 0.1),
+                                 ("af_step", 0.02, 0.01, 0.1),
+                                 ("af_max", 0.2, 0.1, 0.5)):
+        value = params.get(key, default)
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not lo <= value <= hi):
+            raise ValueError(f"INVALID_PARAMS:{key} must be a finite number within {lo}-{hi}")
+        values[key] = float(value)
+    af_start, af_step, af_max = (values[k] for k in ("af_start", "af_step", "af_max"))
+    if af_start > af_max or af_step > af_max:
+        raise ValueError("INVALID_PARAMS:af_start and af_step must not exceed af_max")
+
+    from backtesting import Strategy
+
+    min_bars = 3
+
+    class ParabolicSarStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("sar", "trend"):
+                def indicator(high, low, close, key=key):
+                    return _parabolic_sar_arrays(high, low, close, af_start, af_step, af_max)[key]
+                setattr(self, key, self.I(self._warm(indicator, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close,
+                                         name=f"SAR {key}"))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            prev, cur = self.trend[-2], self.trend[-1]
+            if not (math.isfinite(prev) and math.isfinite(cur)):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if prev < 0 and cur > 0:
+                    self._risk_buy()
+            elif prev > 0 and cur < 0:
+                self.position.close()
+
+    return {"strategy": ParabolicSarStrategy,
+            "executed_name": f"Parabolic SAR ({af_start:g}/{af_step:g}/{af_max:g})", "min_bars": min_bars}
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -4500,6 +4583,23 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "dip_multiplier": {"type": "number", "default": 1.5, "minimum": 1, "maximum": 3},
             "max_dip_adds": {"type": "integer", "default": 3, "minimum": 0, "maximum": 10},
             "profit_target_pct": {"type": "number", "default": 10, "minimum": 1, "maximum": 100},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.parabolic_sar": {
+        "name": "Local Backtesting.py Parabolic SAR Flip",
+        "description": (
+            "Long-only Wilder Parabolic SAR: enter on a down-to-up flip and exit on "
+            "an up-to-down flip, confirmed at close and filled at the next open. "
+            "Maps to KOL '抛物线 SAR 翻转'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_parabolic_sar,
+        "param_schema_properties": {
+            "af_start": {"type": "number", "default": 0.02, "minimum": 0.01, "maximum": 0.1},
+            "af_step": {"type": "number", "default": 0.02, "minimum": 0.01, "maximum": 0.1},
+            "af_max": {"type": "number", "default": 0.2, "minimum": 0.1, "maximum": 0.5},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
