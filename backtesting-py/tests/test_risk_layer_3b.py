@@ -298,3 +298,102 @@ def test_unrepresentable_dynamic_levels_fail_closed(extra):
     with pytest.raises(ValueError,match='INVALID_PARAMS:'):
         initial_risk_state(risk=p._parse_fixed_risk_params(dict(risk_layer_enabled=True,**extra)),
                            entry_price=100,direction='long')
+
+from test_risk_overlay_compatibility import enumerate_mixin_cases, frame, PARAMS, tool_name
+from fastapi.testclient import TestClient
+
+FEATURES = {
+    'trailing': dict(stop_loss_pct=50,trailing_stop_pct=.1),
+    'breakeven': dict(stop_loss_pct=.25,breakeven_stop=True),
+    'holding': dict(max_holding_bars=1),
+    'levels': dict(stop_loss_pct=20,tp1_r=.01,tp1_close_pct=50,tp2_r=.02,tp2_close_pct=50),
+}
+
+@pytest.mark.parametrize('name', list(enumerate_mixin_cases()))
+@pytest.mark.parametrize('feature', FEATURES)
+def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
+    observations=[]
+    original=p._FixedRiskMixin._risk_layer_check_exit
+    def observe(self):
+        exited=original(self)
+        observations.append((self._risk_state,self._risk_exit_reason,exited))
+        return exited
+    monkeypatch.setattr(p._FixedRiskMixin,'_risk_layer_check_exit',observe)
+    params=dict(PARAMS.get(name,{}),risk_layer_enabled=True,**FEATURES[feature])
+    if name == 'ema_rsi_pullback':
+        params['rsi_exit'] = 100
+    data=frame()
+    if feature == 'breakeven':
+        # Narrow wicks let close-based 1R activate before initial-stop touches.
+        data['Open']=data.Close
+        data['High']=data.Close+.01
+        data['Low']=data.Close-.01
+    cls=p.TOOL_SPECS['local.backtesting_py.'+tool_name(name)]['build'](params)['strategy']
+    stats=Backtest(data,cls,cash=100000,exclusive_orders=True,finalize_trades=True).run()
+    assert not stats['_trades'].empty and observations
+    assert any(exited or (feature == 'breakeven' and s.stop_state.breakeven_active)
+               for s,_,exited in observations)
+    if feature in ('trailing','breakeven'):
+        assert any(s.stop_state is not None and s.stop_state.last_bar_close is not None for s,_,_ in observations)
+    elif feature == 'holding':
+        assert any(reason == 'time_expiry' for _,reason,_ in observations)
+    else:
+        assert any(reason == 'take_profit_levels' for _,reason,_ in observations)
+
+@pytest.mark.parametrize('template', ['rsi_scale_in_out','grid','dca'])
+@pytest.mark.parametrize('key', KEYS)
+def test_ledger_templates_reject_each_new_key_even_default(template,key,monkeypatch):
+    def forbidden(*args,**kwargs):
+        raise AssertionError('ledger rejection must precede fetch')
+    monkeypatch.setattr(p,'_fetch_ohlcv',forbidden)
+    request=http_request({})
+    request['backtest'].update(provider_tool_id='local.backtesting_py.'+template,
+                               provider_params={key:False if key == 'breakeven_stop' else 0})
+    body=TestClient(p.app).post('/cutie/backtest',json=request).json()
+    assert body['result_status'] == 'failed' and body['error_type'] == 'INVALID_PARAMS',body
+    assert key in body['error_message']
+
+
+def test_http_all_3b_parameters_success(monkeypatch,tmp_path):
+    data=frame()
+    def fetch(exchange,market,symbol,timeframe,start,end):
+        lo,hi=p.pd.to_datetime(start,unit='s'),p.pd.to_datetime(end,unit='s')
+        return data.loc[(data.index>=lo)&(data.index<hi)].copy()
+    monkeypatch.setattr(p,'_fetch_ohlcv',fetch)
+    monkeypatch.setattr(p,'REPORTS_DIR',tmp_path)
+    monkeypatch.setattr(Backtest,'plot',lambda self,**kwargs:None)
+    params=dict(risk_layer_enabled=True,stop_loss_pct=2,trailing_stop_pct=2,breakeven_stop=True,
+                max_holding_bars=5,tp1_r=.25,tp1_close_pct=30,tp2_r=.5,tp2_close_pct=30,
+                tp3_r=.75,tp3_close_pct=40)
+    response=TestClient(p.app).post('/cutie/backtest',json=http_request(params))
+    assert response.status_code == 200
+    body=response.json()
+    assert body['result_status'] == 'success' and body['trades'],body
+    assert all(k in body['assumptions']['risk_layer'] for k in
+               ('trailing_basis','breakeven_trigger','holding_bar_count_from','take_profit_levels_basis'))
+
+
+def test_http_invalid_combination_before_market_fetch(monkeypatch):
+    def forbidden(*args,**kwargs):
+        raise AssertionError('invalid combination fetched market data')
+    monkeypatch.setattr(p,'_fetch_ohlcv',forbidden)
+    params=dict(BASE,tp1_r=1,tp1_close_pct=60,tp2_r=2,tp2_close_pct=50)
+    response=TestClient(p.app).post('/cutie/backtest',json=http_request(params))
+    body=response.json()
+    assert body['result_status'] == 'failed' and body['error_type'] == 'INVALID_PARAMS'
+
+@pytest.mark.parametrize('key',KEYS)
+def test_new_schema_consumed_only_by_runtime_mixins(key):
+    assert p._FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]['default'] == (False if key=='breakeven_stop' else 0)
+    for spec in p.TOOL_SPECS.values():
+        assert (key in spec['param_schema_properties']) == (spec.get('runner') not in ('kernel_v3','scale_in_out_ledger'))
+
+@pytest.mark.parametrize('side',['long','short'])
+def test_partial_fee_accounting_preserves_quantity_and_equity(side):
+    rows=[FLAT]*3+[[100,111,99,110],[111,121,100,120],[121,131,110,130],[131,132,130,131],FLAT]
+    stats=run(rows,LEVELS,side,commission=.001)
+    trades=stats['_trades']
+    assert list(abs(trades.Size)) == [3,3,5]
+    assert stats['Equity Final [$]'] == pytest.approx(100000+trades.PnL.sum())
+    assert trades.Commission.sum() == pytest.approx(sum(abs(t.Size)*(t.EntryPrice+t.ExitPrice)*.001
+                                                       for t in trades.itertuples()))
