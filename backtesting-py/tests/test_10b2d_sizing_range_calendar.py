@@ -107,6 +107,9 @@ def test_us_open_sizes_against_the_stop_that_exits_first(monkeypatch, tmp_path):
 
 
 def test_calendar_without_any_stop_rejects_entry(monkeypatch, tmp_path):
+    # P-LOW1 moved this combination to the pre-fetch validation (test_plow1); the fill hook stays as the
+    # backstop, so bypass the validation gate to keep pinning it.
+    monkeypatch.setattr(p, '_sizing_template_initial_stop', lambda *a, **k: True)
     body = c.post(monkeypatch, tmp_path, 'calendar_schedule', {**RISK, 'calendar_stop_enabled': False})
     assert body['result_status'] == 'success', body.get('error_message')
     assert body['trades'] == []

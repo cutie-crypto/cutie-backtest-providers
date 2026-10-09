@@ -5419,11 +5419,13 @@ def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
         return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
-    # 10-B2d: calendar freezes its own stop at the signal close; calendar_stop_enabled=false leaves
-    # none and the fill hook rejects with missing_initial_stop.
+    # 10-B2d: calendar freezes its own stop at the signal close. P-LOW1: calendar_stop_enabled=false
+    # forbids stop_loss_pct, so there is no stop at all and risk sizing is rejected before any fetch
+    # (the fill hook's missing_initial_stop stays as the backstop).
+    if tool_id == "local.backtesting_py.calendar_schedule":
+        return params.get("calendar_stop_enabled", True) is not False
     # 10-B2d: US open always has its frozen window stop; CME always has its intrinsic 2% stop.
-    if tool_id in ("local.backtesting_py.calendar_schedule", "local.backtesting_py.us_open_momentum",
-                   "local.backtesting_py.cme_weekend_gap"):
+    if tool_id in ("local.backtesting_py.us_open_momentum", "local.backtesting_py.cme_weekend_gap"):
         return True
     # 10-B2d: red streak's default 3% stop exists only while no pricing key is supplied.
     if tool_id == "local.backtesting_py.red_streak_rsi":
