@@ -226,7 +226,7 @@ def test_absent_fields_produce_empty_risk_dict():
 def test_fixed_risk_keys_are_merged_into_every_tool_schema():
     for tool_id, spec in TOOL_SPECS.items():
         props = spec["param_schema_properties"]
-        if spec.get("runner") in ("kernel_v3", "scale_in_out_ledger"):
+        if spec.get("runner") in ("kernel_v3", "scale_in_out_ledger", "turtle_group"):
             # 132 定额分批同样豁免：账本不消费这 4 个键，带上即 INVALID_PARAMS。
             # 123 组合 tool 豁免：组合风险参数走 basket_stop_loss_pct /
             # basket_take_profit_pct / margin_per_leg（SPEC_组合策略v3契约 §6.1），
