@@ -1,0 +1,18 @@
+{
+  "baseline_sha": "da027cdd98c02b6c9735c2e2f4752345423a3f46",
+  "single": {
+    "keltner_breakout": {
+      "min_bars": 21,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "4776bdc7da4b20e96d94427b66be179723750a5f0381246475dcea46fe9c92eb",
+        "raw_report_sha256": "6364eafacea1b35d2dfb961a41e92ed0fd01d1099edc898121c81e9ff1992eaf"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "6c5d00d1c2800207a99e70f297fda9c7891afac6b1e1e095d0b2ce47edd1eedd",
+        "raw_report_sha256": "59d7497986046c83a37c08cca15ef952f78880f1aa50ecd153b0b45dc4b01bc9"
+      }
+    }
+  }
+}
