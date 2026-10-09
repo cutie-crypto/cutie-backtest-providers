@@ -122,10 +122,10 @@ def test_zero_body_and_zero_span_are_not_pin_bars(rows):
     assert not r.bullish_shape[-1] and not r.bearish_shape[-1]
 
 
-def test_star_small_middle_and_third_close_are_both_required():
+def test_star_relative_middle_and_third_close_are_both_required():
     # First body=4; second body=1: <=4*.3, but >previous mean(1.15)*.5.
     suffix = [(104, 104.5, 99.5, 100), (99.5, 100, 98, 98.5), (99, 103.5, 98, 103)]
-    assert not candle_patterns('star', geometry(BASE + suffix)).bullish_shape[-1]
+    assert candle_patterns('star', geometry(BASE + suffix)).bullish_shape[-1]
     suffix = CASES[2][1][:-1] + [(99.2, 103, 99, 102)]  # equals first midpoint
     assert not candle_patterns('star', geometry(BASE + suffix)).bullish_shape[-1]
 
