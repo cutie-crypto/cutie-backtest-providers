@@ -2926,6 +2926,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
             return
         if not self._time_allow_entry(): return
+        # 7-P4: short entries pass the mirrored filter (off => always True, so off-state is unchanged).
+        if not self._filter_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()

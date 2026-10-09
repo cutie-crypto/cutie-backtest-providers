@@ -152,6 +152,11 @@ def make_strategy(mixin, config, risk, initial_capital):
                 self.daily_ranges[self._entry_day]['exit_reason'] = self._risk_exit_reason
             return closed
 
+        def _filter_block_cycle(self, key, decision):
+            # Only reachable with the filter layer on, so off-state daily_ranges stay byte-identical.
+            self._used_days.add(key)
+            self.daily_ranges[key].update(filter_blocked=True, filter_blocked_decision_utc=decision.isoformat())
+
         def next(self):
             opened = self.data.index[-1]
             decision = self._range_clock.decision_utc(opened)
@@ -187,10 +192,14 @@ def make_strategy(mixin, config, risk, initial_capital):
             if config.direction in ('long', 'both') and close > frozen.high:
                 if not self._filter_allow_entry():
                     # Judgment bar = the first closed breakout; a filtered breakout consumes the cycle, not delayed.
-                    self._used_days.add(key)
+                    self._filter_block_cycle(key, decision)
                     return
                 self._risk_buy()
             elif config.direction in ('short', 'both') and close < frozen.low:
+                if not self._filter_allow_entry():
+                    # 7-P4: short mirrors long — the first closed breakdown is the judgment bar.
+                    self._filter_block_cycle(key, decision)
+                    return
                 self._risk_sell()
             else:
                 return
