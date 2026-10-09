@@ -149,3 +149,25 @@ def test_user_stop_closer_than_liquidation_wins_with_wide_window():
     assert stats['_strategy']._risk_exit_reason == 'stop_loss'
     assert not stats['_strategy']._isolated_liquidations
     assert stats['_trades'].iloc[0].ExitTime == pd.Timestamp('2026-03-09 14:15')
+
+
+@pytest.mark.parametrize('side', ['long', 'short'])
+@pytest.mark.parametrize('missing', [True, False])
+def test_entry_fill_bar_must_exist_without_postponement(side, missing):
+    # NY DST: window13:30–14:00 UTC; expected fill1773064800 (14:00).
+    # With that bar removed, the broker first sees1773065700 (14:15).
+    data = frame(side=side)
+    if missing:
+        data = data.drop(pd.Timestamp('2026-03-09 14:00'))
+    result = response(data)
+    assert result['result_status'] == 'success', result
+    report = result['raw_report'][NAME]
+    assert len(report['entries']) == 1
+    assert report['entries'][0]['decision_at'] == 1773064800
+    if missing:
+        assert result['trades'] == []
+        assert report['skipped'] == [dict(reason='entry_fill_bar_missing', at=1773065700)]
+    else:
+        assert len(result['trades']) == 1
+        assert result['trades'][0]['opened_at'] == 1773064800
+        assert report['skipped'] == []
