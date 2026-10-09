@@ -2323,6 +2323,33 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+# 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
+_LEVERAGE_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
+    "leverage": {"type": "integer", "default": 1, "minimum": 1, "maximum": 20},
+}
+
+
+def _parse_single_leverage(params: dict[str, Any]) -> int:
+    leverage = params.get("leverage", 1)
+    if isinstance(leverage, bool) or not isinstance(leverage, int) or not 1 <= leverage <= 20:
+        raise ValueError("INVALID_PARAMS:leverage must be an integer within 1-20")
+    return leverage
+
+
+def _single_leverage_rejection(leverage: int, market: str) -> Optional[str]:
+    """唯一放行门；不能对外返回尚无逐仓爆仓模型的杠杆结果。"""
+    if market == "spot" and leverage > 1:
+        return "leverage above 1 requires futures market"
+    if leverage > 1:
+        return "leverage above 1 requires the isolated liquidation model"
+    return None
+
+
+def _leverage_backtest_kwargs(leverage: int) -> dict[str, float]:
+    # 1 倍完全保留旧构造参数，不能显式传 margin=1.0。
+    return {"margin": 1 / leverage} if leverage > 1 else {}
+
+
 def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
     """解析 stop_loss_pct/take_profit_pct/position_size_pct/position_size_notional。
 
@@ -2330,6 +2357,7 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
     非法值一律 ``INVALID_PARAMS:`` 前缀 ValueError，被 run_backtest() 的既有 except
     分支捕获转成 INVALID_PARAMS 失败响应。
     """
+    leverage = _parse_single_leverage(params)
     risk_params = {key: value for key, value in params.items() if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES}
     error = _validate_params_against_schema(risk_params, _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
     if error:
@@ -2349,6 +2377,8 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
     if profit_r and not (multiplier or params.get("stop_loss_pct")):
         raise ValueError("INVALID_PARAMS:take_profit_r requires an initial stop")
     out: dict[str, Any] = {}
+    if leverage > 1:
+        out["leverage"] = leverage
     if enabled:
         out["risk_layer_enabled"] = True
         if multiplier:
@@ -2486,7 +2516,11 @@ class _FixedRiskMixin:
             return size_pct
         notional = self._risk.get("position_size_notional")
         if notional is not None:
+            # 百分比是保证金预算，库按 margin 放大；固定名义需先除 L。
+            leverage = self._risk.get("leverage", 1)
             fraction = (notional * self._start_equity) / (self._initial_capital * self.equity)
+            if leverage > 1:
+                fraction /= leverage
             return min(0.999999, max(1e-9, fraction))
         return None
 
@@ -4932,6 +4966,7 @@ for _tool_spec in TOOL_SPECS.values():
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
         **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
+        **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     }
 del _tool_spec
 
@@ -5381,6 +5416,8 @@ def _scale_in_out_rejection(params: dict[str, Any], bt_req: dict[str, Any], mark
     """IMPL §3.1 拒绝条件（schema 校验之前判，报错信息比「unknown parameter」直白）。"""
     if market != "spot":
         return "scale-in/out template supports spot market only"
+    if "leverage" in params:
+        return "scale-in/out template does not support leverage"
     risk_keys = sorted(key for key in params if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
     if risk_keys:
         return (
@@ -6304,6 +6341,16 @@ async def run_backtest(
             instrument_rules=bt_req.get("instrument_rules"),
         )
 
+    leverage = 1
+    if "leverage" in tool_spec["param_schema_properties"]:
+        try:
+            leverage = _parse_single_leverage(params)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e).removeprefix("INVALID_PARAMS:"))
+        rejection = _single_leverage_rejection(leverage, market)
+        if rejection:
+            return _validation_failure("INVALID_PARAMS", rejection)
+
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
@@ -6430,6 +6477,7 @@ async def run_backtest(
             # Settle trades still open at the end (close at last bar) so metrics /
             # trade_count reflect them instead of silently dropping unrealized PnL.
             finalize_trades=True,
+            **_leverage_backtest_kwargs(leverage),
         )
         stats = bt.run()
 
