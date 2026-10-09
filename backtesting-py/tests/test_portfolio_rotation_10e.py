@@ -297,6 +297,7 @@ def test_catalog_existing_entries_byte_identical():
         TOOL_ID,
         'local.backtesting_py.macd_bearish_divergence', 'local.backtesting_py.rsi_bearish_divergence',
         'local.backtesting_py.double_top', 'local.backtesting_py.head_shoulders',
+        'local.backtesting_py.chan_3sell',  # SHORT-PAT-3
     }
     entry = api._catalog_tool(TOOL_ID, api.TOOL_SPECS[TOOL_ID], symbols)
     assert entry['markets'] == ['spot']

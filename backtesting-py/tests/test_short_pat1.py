@@ -442,8 +442,8 @@ def test_catalog_short_only_and_tool_count(name):
     catalog=p._catalog_tool('local.backtesting_py.'+name,p.TOOL_SPECS['local.backtesting_py.'+name],['BTCUSDT'])
     assert catalog['markets']==['futures']
     assert catalog['param_schema']['properties']['direction']['enum']==['short']
-    # 集成 D：做空一基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空二 +2 → 53
-    assert len(p.TOOL_SPECS)==53
+    # 集成 D：做空一基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空二 +2 → 53；SHORT-PAT-3 缠论三卖 +1 → 54
+    assert len(p.TOOL_SPECS)==54
 
 
 @pytest.mark.parametrize('name',NAMES)

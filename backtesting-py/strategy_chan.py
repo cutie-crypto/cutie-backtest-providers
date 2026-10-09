@@ -1,8 +1,10 @@
-"""Streaming Chan third-buy recognition and frozen next-open execution.
+"""Streaming Chan third-buy / third-sell recognition and frozen next-open execution.
 
 Historical decisions never rebuild from future merged bars. Centers use three
 completed strokes with no reuse of an existing center's strokes (no extension
-or expansion). Indices refer to warmup + main original bars.
+or expansion). Indices refer to warmup + main original bars. direction='short'
+is the strict mirror of the long third buy (up/down, ZG/ZD, top/bottom,
+low/high swapped); the merged-bar, fractal, stroke and center facts are shared.
 """
 from __future__ import annotations
 
@@ -22,17 +24,28 @@ class ThirdBuy:
     zg: float
 
 
+@dataclass(frozen=True)
+class ThirdSell:
+    stop: float
+    center: int
+    zd: float
+
+
 class ChanEntry(NamedTuple):
     signal_bar: int
     stop: float
     center: int
-    zg: float
+    level: float  # long: center ZG; short: center ZD
 
 
 class ChanRecognizer:
-    def __init__(self, *, bi_mode='new'):
+    def __init__(self, *, bi_mode='new', direction='long'):
         if bi_mode not in ('new', 'old'):
             raise ValueError('INVALID_PARAMS:bi_mode must be new or old')
+        if direction not in ('long', 'short'):
+            raise ValueError('INVALID_PARAMS:Chan direction must be long or short')
+        self.short = direction == 'short'
+        self.facts_key = 'third_sells' if self.short else 'third_buys'
         self.gap = 2 if bi_mode == 'new' else 6
         self.bars = []
         self.direction = None
@@ -41,7 +54,7 @@ class ChanRecognizer:
         self.center = None
         self.departure = None
         self.report = dict(merged_bars=self.bars, merges=[], fractals=[],
-                           replacements=[], rejected_strokes=[], strokes=[], centers=[], third_buys=[])
+                           replacements=[], rejected_strokes=[], strokes=[], centers=[], **{self.facts_key: []})
 
     def push(self, high, low, raw_index):
         if not (math.isfinite(high) and math.isfinite(low) and 0 < low <= high):
@@ -112,7 +125,7 @@ class ChanRecognizer:
                 # updates only the last stroke for future center construction.
                 if self.report['strokes']:
                     self.report['strokes'][-1] = self._stroke(self.report['strokes'][-1]['start'], point)
-                if self.departure is not None and point['kind'] == 'top':
+                if self.departure is not None and point['kind'] == ('bottom' if self.short else 'top'):
                     self.departure = self.report['strokes'][-1]
             return None
         if point['merged_index'] - previous['merged_index'] < self.gap:
@@ -128,7 +141,23 @@ class ChanRecognizer:
         signal = None
         if self.center is not None:
             center = self.center
-            if stroke['direction'] == 'up' and stroke['high'] > center['zg']:
+            if self.short:
+                # Mirror: a down stroke leaves below ZD; the up pullback's high
+                # must stay strictly below ZD; stop sits 0.1% above that high.
+                if stroke['direction'] == 'down' and stroke['low'] < center['zd']:
+                    self.departure = stroke
+                elif stroke['direction'] == 'up' and self.departure is not None:
+                    eligible = stroke['high'] < center['zd']
+                    fact = dict(center=center['id'], departure=self.departure.copy(), pullback=stroke.copy(),
+                        confirmed_at=point['confirmed_at'], zd=center['zd'], pullback_high=stroke['high'],
+                        status='signal' if eligible and not center['used'] else 'invalid_or_consumed')
+                    self.report['third_sells'].append(fact)
+                    if eligible and not center['used']:
+                        center['used'] = True
+                        signal = ThirdSell(stroke['high'] * 1.001, center['id'], center['zd'])
+                        fact['frozen_stop'] = signal.stop
+                    self.departure = None
+            elif stroke['direction'] == 'up' and stroke['high'] > center['zg']:
                 self.departure = stroke
             elif stroke['direction'] == 'down' and self.departure is not None:
                 eligible = stroke['low'] > center['zg']
@@ -164,7 +193,8 @@ class ChanRecognizer:
             confirmed_at=end['confirmed_at'])
 
 
-def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital):
+def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long'):
+    short = direction == 'short'
     class ChanStrategy(mixin, Strategy):
         _risk = risk
         _initial_capital = initial_capital
@@ -176,7 +206,7 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital):
                 prefix = self._warmup_cols[column] if self._warmup_bars else []
                 arrays.append(np.concatenate([prefix, np.asarray(getattr(self.data, column))]))
             high, low = arrays
-            recognizer = ChanRecognizer(bi_mode=bi_mode)
+            recognizer = ChanRecognizer(bi_mode=bi_mode, direction=direction)
             signals = []
             for i, (h, l) in enumerate(zip(high, low)):
                 signals.append(recognizer.push(float(h), float(l), i))
@@ -194,9 +224,10 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital):
                         # Use the broker's effective entry price (including spread)
                         # for gap protection, without peeking at future bars.
                         fill = self._broker._adjusted_price(order.size, opening)
-                        if fill <= order.tag.stop:
+                        if fill >= order.tag.stop if short else fill <= order.tag.stop:
                             self.chan_report['skipped_entries'].append(dict(
-                                reason='entry_open_at_or_below_frozen_stop',
+                                reason=('entry_open_at_or_above_frozen_stop' if short
+                                        else 'entry_open_at_or_below_frozen_stop'),
                                 signal_bar=order.tag.signal_bar, entry_bar=len(self.data)-1,
                                 entry_open=opening, frozen_stop=order.tag.stop))
                             order.cancel()
@@ -204,7 +235,8 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital):
                 for trade in self.trades:
                     tag = trade.tag
                     if isinstance(tag, ChanEntry) and tag not in self._targets:
-                        self._targets[tag] = trade.entry_price + 2 * (trade.entry_price - tag.stop)
+                        self._targets[tag] = (trade.entry_price - 2 * (tag.stop - trade.entry_price) if short
+                                              else trade.entry_price + 2 * (trade.entry_price - tag.stop))
                         self.chan_report['entries'].append(dict(
                             center=tag.center, entry_bar=trade.entry_bar, entry_price=trade.entry_price,
                             frozen_stop=tag.stop, frozen_target=self._targets[tag]))
@@ -217,15 +249,15 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital):
             tag = trade.tag
             if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(tag.stop))):
                 return True
-            if self.data.Low[-1] <= tag.stop:
+            if self.data.High[-1] >= tag.stop if short else self.data.Low[-1] <= tag.stop:
                 reason = 'stop_loss'
             elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
                 self._record_holding_expiry(fact)
                 reason = 'time_expiry'
-            elif self.data.High[-1] >= self._targets[tag]:
+            elif self.data.Low[-1] <= self._targets[tag] if short else self.data.High[-1] >= self._targets[tag]:
                 reason = 'take_profit'
-            elif self.data.Close[-1] < tag.zg:
-                reason = 'close_below_zg'
+            elif self.data.Close[-1] > tag.level if short else self.data.Close[-1] < tag.level:
+                reason = 'close_above_zd' if short else 'close_below_zg'
             else:
                 return False
             self._risk_exit_reason = reason
@@ -238,13 +270,14 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital):
                 self._risk_check_exit()
                 return
             if (self.orders or len(self.data) >= self._main_bars
-                    or not self._time_allow_entry() or not self._filter_allow_entry()):
+                    or not self._time_allow_entry() or (not short and not self._filter_allow_entry())):
                 return
             signal = self._signals[self._warmup_bars + len(self.data) - 1]
             if signal is None:
                 return
-            tag = ChanEntry(len(self.data)-1, signal.stop, signal.center, signal.zg)
+            tag = ChanEntry(len(self.data)-1, signal.stop, signal.center, signal.zd if short else signal.zg)
             size = self._risk_entry_size()
-            self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
+            entry = self.sell if short else self.buy
+            entry(tag=tag) if size is None else entry(size=size, tag=tag)
 
     return ChanStrategy

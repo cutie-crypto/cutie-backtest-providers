@@ -407,6 +407,18 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[13,14]]
         assert stats['_strategy'].chan_report['exits'][0]['reason']=='time_expiry'
         return
+    if name == 'chan_3sell':
+        build=p.TOOL_SPECS['local.backtesting_py.chan_3sell']['build']
+        if feature != 'holding':
+            with pytest.raises(ValueError, match='INVALID_PARAMS'):
+                build(params)
+            return
+        from test_short_pat3_chan_3sell import run as chan_sell_run
+        stats=chan_sell_run(params=params)
+        assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[13,14]]
+        assert stats['_trades'].Size.iloc[0] < 0
+        assert stats['_strategy'].chan_report['exits'][0]['reason']=='time_expiry'
+        return
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 100
     data=frame()
