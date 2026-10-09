@@ -1,0 +1,15 @@
+{
+  "base_sha": "b42210ba1f47a2dcd98c9e2abbf9a0754088a5e5",
+  "cases": {
+    "futures": {
+      "v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "assumptions": "78c73a9c22ff8b8c8ac0090df716ed8f3ab7838102d1902acef7cb2abb186acd",
+      "raw_report": "d21197fb0461a740491ad2da9880b690a19420318b0f0edd652029b3b56ef5b4"
+    },
+    "spot": {
+      "v2": "4545dd76b0e145e0cbc2a77c20767de6262fef95dcb2426ea4a697e1bb6864ea",
+      "assumptions": "6d8e9effc26c7ccf3cecb41413d3df0a4e2f78bb13a70c59a991071ecc64ebd2",
+      "raw_report": "ad5c35b007ff32357783aa42368c71e409d73850605275d8fdddecd7306f7971"
+    }
+  }
+}

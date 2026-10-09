@@ -28,11 +28,26 @@ F5_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_f5
 assert BASELINE['single'].keys().isdisjoint(F5_BASELINE['single'])
 BASELINE['single'].update(F5_BASELINE['single'])
 PATTERN_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t1_candle_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(PATTERN_BASELINE['single'])
 BASELINE['single'].update(PATTERN_BASELINE['single'])
 PATTERN2_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t2_candle_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(PATTERN2_BASELINE['single'])
 BASELINE['single'].update(PATTERN2_BASELINE['single'])
 PATTERN3_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t3_bottom_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(PATTERN3_BASELINE['single'])
 BASELINE['single'].update(PATTERN3_BASELINE['single'])
+DIVERGENCE_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t4_divergence_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(DIVERGENCE_BASELINE['single'])
+BASELINE['single'].update(DIVERGENCE_BASELINE['single'])
+CHAN_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t6_chan_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(CHAN_BASELINE['single'])
+BASELINE['single'].update(CHAN_BASELINE['single'])
+FIB_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_9t5_b42210b.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(FIB_BASELINE['single'])
+BASELINE['single'].update(FIB_BASELINE['single'])
+NEW_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_calendar_templates.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(NEW_BASELINE['single'])
+BASELINE['single'].update(NEW_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -112,10 +127,39 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
     if name in PATTERN_BASELINE['single'] or name in PATTERN2_BASELINE['single'] or name in PATTERN3_BASELINE['single']:
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
+    if name in DIVERGENCE_BASELINE['single']:
+        from test_9t4_divergence import hand_frame, hand_params
+        data = hand_frame()
+        # Signal23 at07:00, fill24 at08:00; MACD exit28 at12:00.
+        data.index = pd.date_range('2026-01-01 08:00', periods=len(data), freq='h')
+        params.update(hand_params(name))
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
+        if name.startswith('rsi'):
+            params['rsi_exit_above'] = 100
+            data.iloc[27, 1] = 150
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
+    if name == 'chan_3buy':
+        from test_9t6_chan_3buy import frame as chan_frame
+        data = chan_frame()
+        data.index = pd.date_range('2026-01-01 18:00', periods=len(data), freq='h')
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
+    if name == 'fibonacci_retracement':
+        from test_9t5_fibonacci import frame as fibonacci_frame
+        data = fibonacci_frame()
+        data.loc[data.index[10], ['High', 'Close']] = [117, 116]
+        params['swing_n'] = 2
+    tf = '1h'
+    if name == 'us_open_momentum':
+        data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
+        params.update(direction='long', time_timezone='America/New_York', time_session_start='09:30', time_session_end='10:30')
+        tf = '15m'
+    if name == 'cme_weekend_gap':
+        params.update(direction='long', time_session_start='21:00', time_session_end='23:30')
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
-    ctx = TimeContext.build(cls._time_config, '1h', data.index)
+    ctx = TimeContext.build(cls._time_config, tf, data.index)
     cls._time_context = ctx
     trades = Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades']
     assert len(trades) > 0, name

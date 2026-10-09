@@ -270,6 +270,13 @@ def test_each_registered_template_uses_filter_gate(name, risk_enabled, monkeypat
               'risk_layer_enabled': risk_enabled, 'stop_loss_pct': 3, 'take_profit_pct': 5}
     if 'direction' in p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']:
         values['direction'] = 'long'
+    if name.endswith('_bullish_divergence'):
+        # These templates own a frozen L2 stop and actual-fill 2R target.
+        values.pop('stop_loss_pct')
+        values.pop('take_profit_pct')
+    if name == 'chan_3buy':
+        values.pop('stop_loss_pct')
+        values.pop('take_profit_pct')
     cls = p.TOOL_SPECS['local.backtesting_py.'+name]['build'](values)['strategy']
     calls = []
     original = p._FilterLayerMixin._filter_allow_entry
@@ -279,7 +286,7 @@ def test_each_registered_template_uses_filter_gate(name, risk_enabled, monkeypat
         return result
     monkeypatch.setattr(p._FilterLayerMixin, '_filter_allow_entry', observe)
     data = pd.concat([compat.frame()]*6, ignore_index=True)
-    data.index = pd.date_range('2026-01-01', periods=len(data), freq='h')
+    data.index = pd.date_range('2026-01-01', periods=len(data), freq=('15min' if name == 'us_open_momentum' else 'h'))
     trades = Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades']
     assert calls, name
     # EMA2 recurrence is independently recomputed using scalar arithmetic.

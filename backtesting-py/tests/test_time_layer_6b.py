@@ -228,13 +228,29 @@ def test_every_registered_single_template_consumes_holding_bars(name):
         params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
     if name.endswith('_short'):
         params['direction'] = 'short'
+    if name.endswith('_bullish_divergence'):
+        from test_9t4_divergence import hand_frame, hand_params
+        data = hand_frame()
+        params.update(hand_params(name))
+        if name.startswith('rsi'):
+            params['rsi_exit_above'] = 100
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 85
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
+    if name == 'chan_3buy':
+        from test_9t6_chan_3buy import frame as chan_frame
+        data = chan_frame()
+    tf = '1h'
+    if name == 'us_open_momentum':
+        data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
+        tf = '15m'
+    if name == 'cme_weekend_gap':
+        from test_f4_cme_gap import frame as cme_frame
+        data = cme_frame()
     cls = p.TOOL_SPECS['local.backtesting_py.'+compat.tool_name(name)]['build'](params)['strategy']
     assert not cls._risk.get('risk_layer_enabled')
-    cls._time_context = TimeContext.build(cls._time_config, '1h', data.index)
+    cls._time_context = TimeContext.build(cls._time_config, tf, data.index)
     reasons = []
     original = cls._record_holding_expiry
     def record(self, fact):
