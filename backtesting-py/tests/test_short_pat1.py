@@ -474,8 +474,20 @@ def test_long_builders_and_tool_spec_source_byte_unchanged():
                 'local.backtesting_py.double_bottom','local.backtesting_py.inverse_head_shoulders'):
                 result[key.value]=ast.get_source_segment(source,value)
         return result
+    expected=fragments(old)
+    # 10-B2c 有意给 _build_bottom_pattern 加了定仓钩子：旧源码只套上这两处已知增量后须逐字节相等，其余改动照拦。
+    for before,after in (
+        ("    risk = _parse_fixed_risk_params(params)\n",
+         "    # Bottom patterns reject user stops; the pattern stop is frozen at the breakout (10-B2c).\n"
+         "    risk = _parse_fixed_risk_params(params, template_initial_stop=True)\n"),
+        ("                               initial_capital=initial_capital, config=config)\n",
+         "                               initial_capital=initial_capital, config=config)\n"
+         "    # 10-B2c: risk distance = |actual fill - last bottom Low * 0.999| frozen in BottomEntry.stop.\n"
+         "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n")):
+        assert expected['_build_bottom_pattern'].count(before)==1
+        expected['_build_bottom_pattern']=expected['_build_bottom_pattern'].replace(before,after)
     assert len(fragments(current))==5
-    assert fragments(current)==fragments(old)
+    assert fragments(current)==expected
 
 
 @pytest.mark.parametrize('name',NAMES)
