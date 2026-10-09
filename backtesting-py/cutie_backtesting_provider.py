@@ -3281,6 +3281,200 @@ def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     }
 
 
+def _stoch_arrays(high: Any, low: Any, close: Any, period: int, smooth: int, d_period: int) -> dict[str, Any]:
+    highest = pd.Series(high, dtype="float64").rolling(period).max()
+    lowest = pd.Series(low, dtype="float64").rolling(period).min()
+    width = highest - lowest
+    raw = ((pd.Series(close, dtype="float64") - lowest) / width.replace(0, np.nan) * 100).mask(width == 0, 50)
+    k = raw.rolling(smooth).mean()
+    d = k.rolling(d_period).mean()
+    return {"raw": raw.to_numpy(), "k": k.to_numpy(), "d": d.to_numpy()}
+
+
+def _build_stoch_oversold_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.stoch_oversold_cross"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("stoch_period", 14))
+    smooth = int(params.get("stoch_smooth", 3))
+    d_period = int(params.get("stoch_d", 3))
+    oversold = float(params.get("oversold", 20))
+    overbought = float(params.get("overbought", 80))
+    if not all(math.isfinite(v) for v in (oversold, overbought)):
+        raise ValueError("INVALID_PARAMS:Stochastic levels must be finite")
+
+    from backtesting import Strategy
+
+    # One complete D value plus its predecessor for the crossover comparison.
+    min_bars = period + smooth + d_period - 1
+
+    class StochOversoldCrossStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("k", "d"):
+                func = lambda h, l, c, key=key: _stoch_arrays(h, l, c, period, smooth, d_period)[key]
+                setattr(self, key, self.I(self._warm(func, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            if not all(math.isfinite(v) for v in (self.k[-1], self.k[-2], self.d[-1], self.d[-2])):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if self.k[-2] <= self.d[-2] and self.k[-1] > self.d[-1] and self.k[-1] < oversold:
+                    self._risk_buy()
+            elif self.k[-2] >= self.d[-2] and self.k[-1] < self.d[-1] and self.k[-1] > overbought:
+                self.position.close()
+
+    return {"strategy": StochOversoldCrossStrategy,
+            "executed_name": f"Stochastic Oversold Cross ({period}/{smooth}/{d_period}, {oversold:g}/{overbought:g})",
+            "min_bars": min_bars}
+
+
+def _bollinger_squeeze_arrays(close: Any, period: int, std_mult: float, lookback: int) -> dict[str, Any]:
+    s = pd.Series(close, dtype="float64")
+    middle = s.rolling(period).mean()
+    sd = s.rolling(period).std(ddof=0)
+    upper, lower = middle + std_mult * sd, middle - std_mult * sd
+    # Undefined bandwidth (zero middle) cannot contribute to a complete window.
+    bandwidth = (upper - lower) / middle.replace(0, np.nan)
+    rank = bandwidth.rolling(lookback).apply(lambda x: np.count_nonzero(x <= x[-1]) / lookback, raw=True)
+    return {"middle": middle.to_numpy(), "upper": upper.to_numpy(), "lower": lower.to_numpy(),
+            "bandwidth": bandwidth.to_numpy(), "previous_rank": rank.shift(1).to_numpy()}
+
+
+def _build_bollinger_squeeze_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.bollinger_squeeze_breakout"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("bb_period", 20))
+    std_mult = float(params.get("bb_std", 2.0))
+    lookback = int(params.get("bandwidth_lookback", 120))
+    squeeze = float(params.get("squeeze_pct", 20))
+    if not all(math.isfinite(v) for v in (std_mult, squeeze)):
+        raise ValueError("INVALID_PARAMS:Bollinger parameters must be finite")
+
+    from backtesting import Strategy
+
+    min_bars = period + lookback
+
+    class BollingerSqueezeBreakoutStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("middle", "upper", "previous_rank"):
+                def func(c, key=key):
+                    values = _bollinger_squeeze_arrays(c, period, std_mult, lookback)[key]
+                    # An incomplete window is never a squeeze. Neutral rank keeps the
+                    # engine from skipping the first eligible signal after NaN warmup.
+                    return np.nan_to_num(values, nan=1.0) if key == "previous_rank" else values
+                setattr(self, key, self.I(self._warm(func, "Close"), self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            price = self.data.Close[-1]
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if self.previous_rank[-1] <= squeeze / 100 and price > self.upper[-1]:
+                    self._risk_buy()
+            elif price < self.middle[-1]:
+                self.position.close()
+
+    return {"strategy": BollingerSqueezeBreakoutStrategy,
+            "executed_name": f"Bollinger Squeeze Breakout ({period}/{std_mult:.1f}, {lookback}/{squeeze:g}%)",
+            "min_bars": min_bars}
+
+
+def _adx_di_arrays(high: Any, low: Any, close: Any, period: int) -> dict[str, Any]:
+    """Wilder RMA seeded at the first value, matching Supertrend's ewm."""
+    h, l, c = (np.asarray(x, dtype="float64") for x in (high, low, close))
+    tr = np.zeros(len(c), dtype="float64")
+    plus_dm, minus_dm = np.zeros_like(tr), np.zeros_like(tr)
+    if len(c):
+        tr[0] = h[0] - l[0]
+        tr[1:] = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+        up, down = h[1:] - h[:-1], l[:-1] - l[1:]
+        plus_dm[1:] = np.where((up > down) & (up > 0), up, 0)
+        minus_dm[1:] = np.where((down > up) & (down > 0), down, 0)
+
+    def rma(values: Any) -> Any:
+        return pd.Series(values).ewm(alpha=1 / period, adjust=False).mean().to_numpy()
+
+    atr = rma(tr)
+    plus = np.divide(100 * rma(plus_dm), atr, out=np.zeros_like(tr), where=atr != 0)
+    minus = np.divide(100 * rma(minus_dm), atr, out=np.zeros_like(tr), where=atr != 0)
+    total = plus + minus
+    dx = np.divide(100 * np.abs(plus - minus), total, out=np.zeros_like(tr), where=total != 0)
+    return {"adx": rma(dx), "plus_di": plus, "minus_di": minus}
+
+
+def _build_adx_di_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.adx_di_cross"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("adx_period", 14))
+    threshold = float(params.get("adx_threshold", 25))
+    exit_level = float(params.get("adx_exit", 20))
+    if not all(math.isfinite(v) for v in (threshold, exit_level)):
+        raise ValueError("INVALID_PARAMS:ADX levels must be finite")
+    if exit_level >= threshold:
+        raise ValueError("INVALID_PARAMS:adx_exit must be < adx_threshold")
+
+    from backtesting import Strategy
+
+    min_bars = 2 * period
+
+    class AdxDiCrossStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("adx", "plus_di", "minus_di"):
+                func = lambda h, l, c, key=key: _adx_di_arrays(h, l, c, period)[key]
+                setattr(self, key, self.I(self._warm(func, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            if not all(math.isfinite(v) for v in (self.adx[-1], self.plus_di[-1], self.plus_di[-2],
+                                                   self.minus_di[-1], self.minus_di[-2])):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if (self.adx[-1] > threshold and self.plus_di[-2] <= self.minus_di[-2]
+                        and self.plus_di[-1] > self.minus_di[-1]):
+                    self._risk_buy()
+            elif ((self.minus_di[-2] <= self.plus_di[-2] and self.minus_di[-1] > self.plus_di[-1])
+                  or self.adx[-1] < exit_level):
+                self.position.close()
+
+    return {"strategy": AdxDiCrossStrategy,
+            "executed_name": f"ADX DI Cross ({period}, {threshold:g}/{exit_level:g})", "min_bars": min_bars}
+
+
 def _supertrend_arrays(high: Any, low: Any, close: Any, atr_period: int, multiplier: float) -> dict[str, Any]:
     """Supertrend：Wilder ATR(RMA, ewm alpha=1/n adjust=False) + 带沿用/重置的 final 上下轨 + trend(+1 up/-1 down)。
 
@@ -3724,6 +3918,57 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.stoch_oversold_cross": {
+        "name": "Local Backtesting.py Stochastic Oversold Cross",
+        "description": (
+            "Long on an SMA-smoothed stochastic K cross above D below oversold; "
+            "exit on a cross below D above overbought. Maps to KOL 'KDJ超卖金叉'."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_stoch_oversold_cross,
+        "param_schema_properties": {
+            "stoch_period": {"type": "integer", "default": 14, "minimum": 5, "maximum": 30},
+            "stoch_smooth": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5},
+            "stoch_d": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5},
+            "oversold": {"type": "number", "default": 20, "minimum": 10, "maximum": 30},
+            "overbought": {"type": "number", "default": 80, "minimum": 70, "maximum": 90},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bollinger_squeeze_breakout": {
+        "name": "Local Backtesting.py Bollinger Squeeze Breakout",
+        "description": (
+            "Long above the current upper Bollinger band only after a prior-bar bandwidth percentile squeeze; "
+            "exit below the middle SMA. Maps to KOL '布林带收口突破'."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "build": _build_bollinger_squeeze_breakout,
+        "param_schema_properties": {
+            "bb_period": {"type": "integer", "default": 20, "minimum": 10, "maximum": 50},
+            "bb_std": {"type": "number", "default": 2.0, "minimum": 1, "maximum": 3},
+            "bandwidth_lookback": {"type": "integer", "default": 120, "minimum": 50, "maximum": 300},
+            "squeeze_pct": {"type": "number", "default": 20, "minimum": 5, "maximum": 40},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.adx_di_cross": {
+        "name": "Local Backtesting.py ADX DI Cross",
+        "description": (
+            "Long on a positive DI cross above negative DI with ADX above the strength threshold; "
+            "exit on the opposite cross or weak ADX. Maps to KOL 'ADX趋势强度 + DI交叉'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_adx_di_cross,
+        "param_schema_properties": {
+            "adx_period": {"type": "integer", "default": 14, "minimum": 7, "maximum": 30},
+            "adx_threshold": {"type": "number", "default": 25, "minimum": 15, "maximum": 40},
+            "adx_exit": {"type": "number", "default": 20, "minimum": 10, "maximum": 30},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.ema_cross": {
         "name": "Local Backtesting.py EMA Cross",
         "description": (
