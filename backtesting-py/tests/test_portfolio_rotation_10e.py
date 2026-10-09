@@ -294,8 +294,11 @@ def test_catalog_existing_entries_byte_identical():
         old = json.dumps(baseline._catalog_tool(tool_id, spec, symbols), ensure_ascii=False, separators=(',', ':')).encode()
         entry = api._catalog_tool(tool_id, api.TOOL_SPECS[tool_id], symbols)
         properties = entry['param_schema']['properties']
-        if tool_id in api.POSITION_SIZING_TEMPLATE_STOP_TOOLS:
+        if tool_id in api.POSITION_SIZING_TEMPLATE_STOP_TOOLS or (
+                tool_id in getattr(baseline, 'POSITION_SIZING_PENDING_TOOLS', ())
+                and tool_id not in api.POSITION_SIZING_PENDING_TOOLS):
             # 10-B2a：这 4 个模板接了按风险定仓，schema 恢复定仓键是唯一允许的差异；去掉后仍须逐字节相同。
+            # 10-B2d：基线待核名单里、现已移出的模板（含走共享止损路径的 CME 缺口）同此口径。
             assert set(api.POSITION_SIZE_KEYS) <= set(properties), tool_id
             for key in api.POSITION_SIZE_KEYS:
                 properties.pop(key)
