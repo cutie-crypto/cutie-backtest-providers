@@ -3281,6 +3281,66 @@ def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     }
 
 
+def _bollinger_squeeze_arrays(close: Any, period: int, std_mult: float, lookback: int) -> dict[str, Any]:
+    s = pd.Series(close, dtype="float64")
+    middle = s.rolling(period).mean()
+    sd = s.rolling(period).std(ddof=0)
+    upper, lower = middle + std_mult * sd, middle - std_mult * sd
+    # Undefined bandwidth (zero middle) cannot contribute to a complete window.
+    bandwidth = (upper - lower) / middle.replace(0, np.nan)
+    rank = bandwidth.rolling(lookback).apply(lambda x: np.count_nonzero(x <= x[-1]) / lookback, raw=True)
+    return {"middle": middle.to_numpy(), "upper": upper.to_numpy(), "lower": lower.to_numpy(),
+            "bandwidth": bandwidth.to_numpy(), "previous_rank": rank.shift(1).to_numpy()}
+
+
+def _build_bollinger_squeeze_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.bollinger_squeeze_breakout"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("bb_period", 20))
+    std_mult = float(params.get("bb_std", 2.0))
+    lookback = int(params.get("bandwidth_lookback", 120))
+    squeeze = float(params.get("squeeze_pct", 20))
+    if not all(math.isfinite(v) for v in (std_mult, squeeze)):
+        raise ValueError("INVALID_PARAMS:Bollinger parameters must be finite")
+
+    from backtesting import Strategy
+
+    min_bars = period + lookback
+
+    class BollingerSqueezeBreakoutStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("middle", "upper", "previous_rank"):
+                def func(c, key=key):
+                    values = _bollinger_squeeze_arrays(c, period, std_mult, lookback)[key]
+                    # An incomplete window is never a squeeze. Neutral rank keeps the
+                    # engine from skipping the first eligible signal after NaN warmup.
+                    return np.nan_to_num(values, nan=1.0) if key == "previous_rank" else values
+                setattr(self, key, self.I(self._warm(func, "Close"), self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            price = self.data.Close[-1]
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if self.previous_rank[-1] <= squeeze / 100 and price > self.upper[-1]:
+                    self._risk_buy()
+            elif price < self.middle[-1]:
+                self.position.close()
+
+    return {"strategy": BollingerSqueezeBreakoutStrategy,
+            "executed_name": f"Bollinger Squeeze Breakout ({period}/{std_mult:.1f}, {lookback}/{squeeze:g}%)",
+            "min_bars": min_bars}
+
+
 def _adx_di_arrays(high: Any, low: Any, close: Any, period: int) -> dict[str, Any]:
     """Wilder RMA seeded at the first value, matching Supertrend's ewm."""
     h, l, c = (np.asarray(x, dtype="float64") for x in (high, low, close))
@@ -3798,6 +3858,23 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.bollinger_squeeze_breakout": {
+        "name": "Local Backtesting.py Bollinger Squeeze Breakout",
+        "description": (
+            "Long above the current upper Bollinger band only after a prior-bar bandwidth percentile squeeze; "
+            "exit below the middle SMA. Maps to KOL '布林带收口突破'."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "build": _build_bollinger_squeeze_breakout,
+        "param_schema_properties": {
+            "bb_period": {"type": "integer", "default": 20, "minimum": 10, "maximum": 50},
+            "bb_std": {"type": "number", "default": 2.0, "minimum": 1, "maximum": 3},
+            "bandwidth_lookback": {"type": "integer", "default": 120, "minimum": 50, "maximum": 300},
+            "squeeze_pct": {"type": "number", "default": 20, "minimum": 5, "maximum": 40},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.adx_di_cross": {
         "name": "Local Backtesting.py ADX DI Cross",
         "description": (
