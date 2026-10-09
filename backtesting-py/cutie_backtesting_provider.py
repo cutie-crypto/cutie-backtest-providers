@@ -3835,9 +3835,90 @@ def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: floa
     }
 
 
+def _build_macd_above_zero(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Separate long-only MACD template; both DIF and DEA must be above zero."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        fast = int(params.get("fast", 12))
+        slow = int(params.get("slow", 26))
+        signal_period = int(params.get("signal", 9))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:fast/slow/signal must be integers")
+    if fast < 2:
+        raise ValueError(f"INVALID_PARAMS:fast must be >= 2 (got {fast})")
+    if slow <= fast:
+        raise ValueError("INVALID_PARAMS:slow must be greater than fast")
+    if signal_period < 1:
+        raise ValueError(f"INVALID_PARAMS:signal must be >= 1 (got {signal_period})")
+    if fast > 100 or slow > 300 or signal_period > 100:
+        raise ValueError("INVALID_PARAMS:fast/slow/signal exceed schema maximums 100/300/100")
+
+    from backtesting import Strategy
+
+    min_bars = slow * 3 + signal_period + 1
+
+    def _macd_line(values: Any) -> Any:
+        s = pd.Series(values, dtype="float64")
+        return s.ewm(span=fast, adjust=False).mean() - s.ewm(span=slow, adjust=False).mean()
+
+    class MacdAboveZeroStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            close = self.data.Close
+            self.macd = self.I(self._warm(lambda x: _macd_line(x).to_numpy(), "Close"), close, name="MACD")
+            self.signal = self.I(
+                self._warm(lambda x: _macd_line(x).ewm(span=signal_period, adjust=False).mean().to_numpy(), "Close"),
+                close,
+                name="Signal",
+            )
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            dif, dea = self.macd[-1], self.signal[-1]
+            prev_dif, prev_dea = self.macd[-2], self.signal[-2]
+            if not all(math.isfinite(v) for v in (dif, dea, prev_dif, prev_dea)):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if prev_dif <= prev_dea and dif > dea and dif > 0 and dea > 0:
+                    self._risk_buy()
+            elif prev_dif >= prev_dea and dif < dea:
+                self.position.close()
+
+    return {
+        "strategy": MacdAboveZeroStrategy,
+        "executed_name": f"MACD Above-Zero Cross ({fast}/{slow}/{signal_period})",
+        "min_bars": min_bars,
+    }
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.macd_above_zero": {
+        "name": "Local Backtesting.py MACD Above-Zero Cross",
+        "description": (
+            "Long-only MACD: buy on a DIF cross above DEA only when both lines are "
+            "strictly above zero; exit on the opposite cross regardless of the zero axis. "
+            "Signals confirm at close and fill at the next open — maps to KOL 'MACD 零轴上金叉'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_macd_above_zero,
+        "param_schema_properties": {
+            "fast": {"type": "integer", "default": 12, "minimum": 2, "maximum": 100},
+            "slow": {"type": "integer", "default": 26, "minimum": 3, "maximum": 300},
+            "signal": {"type": "integer", "default": 9, "minimum": 1, "maximum": 100},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.ema_triple_alignment": {
         "name": "Local Backtesting.py EMA Triple Alignment",
         "description": (
