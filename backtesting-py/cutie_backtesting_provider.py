@@ -5210,6 +5210,14 @@ for _tool_spec in TOOL_SPECS.values():
     }
 del _tool_spec
 
+# F1 owns its frozen range prices; publish only shared risk parameters it consumes.
+for _range_tool in ("local.backtesting_py.opening_range_breakout", "local.backtesting_py.asia_range_breakout"):
+    _range_properties = TOOL_SPECS[_range_tool]["param_schema_properties"]
+    for _range_key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
+        if _range_key not in {"position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}:
+            _range_properties.pop(_range_key, None)
+del _range_tool, _range_properties, _range_key
+
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
 
 # F10: connector silently downgrades multiple defaults — enforce exactly one at import.
