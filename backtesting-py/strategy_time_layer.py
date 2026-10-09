@@ -15,6 +15,9 @@ _TIME_PARAM_SCHEMA_PROPERTIES = {
     'time_session_start': {'type': 'string', 'default': ''},
     'time_session_end': {'type': 'string', 'default': ''},
     'time_weekdays': {'type': 'integer', 'default': 127, 'minimum': 1, 'maximum': 127},
+    'time_max_holding_minutes': {'type': 'integer', 'default': 0, 'minimum': 0, 'maximum': 525600},
+    'time_flatten_at': {'type': 'string', 'default': ''},
+    'time_flatten_weekdays': {'type': 'integer', 'default': 127, 'minimum': 1, 'maximum': 127},
 }
 
 
@@ -25,6 +28,9 @@ class TimeConfig:
     session_start: str = ''
     session_end: str = ''
     weekdays: int = 127
+    max_holding_minutes: int = 0
+    flatten_at: str = ''
+    flatten_weekdays: int = 127
 
     @classmethod
     def parse(cls, params: Mapping[str, Any]) -> TimeConfig:
@@ -36,25 +42,29 @@ class TimeConfig:
             expected = {'boolean': bool, 'integer': int, 'string': str}[spec['type']]
             if type(values[key]) is not expected:
                 raise ValueError(f'INVALID_PARAMS:{key} must be a {spec["type"]}')
-        if not 1 <= values['time_weekdays'] <= 127:
-            raise ValueError('INVALID_PARAMS:time_weekdays must be within 1-127')
+        for key, spec in _TIME_PARAM_SCHEMA_PROPERTIES.items():
+            if 'minimum' in spec and not spec['minimum'] <= values[key] <= spec['maximum']:
+                raise ValueError(f'INVALID_PARAMS:{key} must be within {spec["minimum"]}-{spec["maximum"]}')
         name = values['time_timezone']
         try:
             ZoneInfo(name)
         except (ZoneInfoNotFoundError, ValueError):
             raise ValueError(f'INVALID_PARAMS:unknown IANA timezone {name}') from None
         start, end = values['time_session_start'], values['time_session_end']
-        for key in ('time_session_start', 'time_session_end'):
+        for key in ('time_session_start', 'time_session_end', 'time_flatten_at'):
             value = values[key]
             if value and not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value):
                 raise ValueError(f'INVALID_PARAMS:{key} must be HH:MM (00:00-23:59)')
         if bool(start) != bool(end) or (start and start == end):
             raise ValueError('INVALID_PARAMS:session bounds must be paired and different')
+        if values['time_flatten_weekdays'] != 127 and not values['time_flatten_at']:
+            raise ValueError('INVALID_PARAMS:time_flatten_weekdays requires time_flatten_at')
         if not values['time_layer_enabled'] and any(
             values[key] != spec['default'] for key, spec in _TIME_PARAM_SCHEMA_PROPERTIES.items()
         ):
             raise ValueError('INVALID_PARAMS:non-default time parameters require time_layer_enabled=true')
-        return cls(values['time_layer_enabled'], name, start, end, values['time_weekdays'])
+        return cls(values['time_layer_enabled'], name, start, end, values['time_weekdays'],
+                   values['time_max_holding_minutes'], values['time_flatten_at'], values['time_flatten_weekdays'])
 
 
 class TimeDataGapError(ValueError):
