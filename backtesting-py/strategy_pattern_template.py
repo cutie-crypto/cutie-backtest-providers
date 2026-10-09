@@ -73,7 +73,9 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
                             self._signals[i] = not trend_filter or geometry.close[i] > ema[i]
                             self._anchors[i] = geometry.low[mother]
                             armed = None  # one breakout consumes the candidate, even if filtered
-                    if candidates[i] and not self._signals[i]:
+                    if candidates[i]:
+                        # A breakout candle can itself be inside a newer mother.
+                        # Always arm it, regardless of breakout/trend-filter outcome.
                         armed = (i, i - 1)  # latest inside bar replaces an unbroken candidate
             self._geometry = geometry
             self._main_bars = len(self.data)
