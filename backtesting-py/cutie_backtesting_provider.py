@@ -5382,7 +5382,7 @@ _TEMPLATE_PRICING_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multipli
 # 10-B2b: short templates are sized the same way; direction only signs the order quantity.
 # Templates whose own frozen stop is always used (they reject user stop/take-profit keys).
 _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
-    "macd_bullish_divergence", "rsi_bullish_divergence",
+    "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
     "double_top", "head_shoulders"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
     "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
@@ -5700,7 +5700,8 @@ _DIVERGENCE_EXIT_KEYS = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplie
 
 
 def _build_bearish_divergence(params, *, kind, initial_capital):
-    risk = _parse_fixed_risk_params(params)
+    # Divergence rejects user stops; its H2 stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     properties = TOOL_SPECS['local.backtesting_py.' + kind + '_bearish_divergence']['param_schema_properties']
     error = _validate_params_against_schema(params, properties)
     if error:
@@ -5733,6 +5734,8 @@ def _build_bearish_divergence(params, *, kind, initial_capital):
     from strategy_divergence import make_divergence_strategy
     cls = make_divergence_strategy(_FixedRiskMixin, kind=kind, config=config, risk=risk,
                                   initial_capital=initial_capital, rsi_series=_rsi_series, direction="short")
+    # 10-B2b: risk distance = |actual fill - High(H2) * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name=kind.upper()+' Bearish Divergence',
         min_bars=config['indicator_bars']+2*config['n']+lo,
         warmup_bars=config['indicator_bars']+2*config['n']+hi,
@@ -7027,7 +7030,6 @@ POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for nam
     "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
     "double_bottom inverse_head_shoulders chan_3buy "
-    "macd_bearish_divergence rsi_bearish_divergence "
     "us_open_momentum cme_weekend_gap chan_3sell").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
