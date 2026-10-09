@@ -18,7 +18,7 @@ from canonical_json import canonical_json
 def cases():
     result = {}
     for tool_id, spec in provider.TOOL_SPECS.items():
-        if spec.get('runner') in ('kernel_v3', provider.SCALE_IN_OUT_RUNNER):
+        if spec.get('runner') in ('kernel_v3', provider.SCALE_IN_OUT_RUNNER, provider.TURTLE_RUNNER):
             continue
         name = tool_id.removeprefix('local.backtesting_py.')
         result[name] = (name, {})
