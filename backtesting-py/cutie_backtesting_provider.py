@@ -3915,6 +3915,184 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Long-only close-confirmed BIAS reversion, filled at the next open."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        period = int(params.get("ema_period", 20))
+        entry = float(params.get("bias_entry_pct", 3))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:ema_period/bias_entry_pct must be numbers")
+    if not 10 <= period <= 60:
+        raise ValueError("INVALID_PARAMS:ema_period must be within 10-60")
+    if not 1 <= entry <= 10:
+        raise ValueError("INVALID_PARAMS:bias_entry_pct must be within 1-10")
+
+    from backtesting import Strategy
+
+    min_bars = period
+
+    class BiasReversionStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            def bias(values):
+                close = pd.Series(values, dtype="float64")
+                ema = close.ewm(span=period, adjust=False).mean()
+                return ((close - ema) / ema * 100).to_numpy()
+
+            self.bias = self.I(self._warm(bias, "Close"), self.data.Close, name="BIAS")
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            value = self.bias[-1]
+            if not math.isfinite(value):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if value <= -entry:
+                    self._risk_buy()
+            elif value >= 0:
+                self.position.close()
+
+    return {
+        "strategy": BiasReversionStrategy,
+        "executed_name": f"BIAS Reversion ({period}/-{entry:g}%)",
+        "min_bars": min_bars,
+    }
+
+
+def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Long-only entry on the first bar forming short > mid > long EMA alignment."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        short = int(params.get("ema_short", 20))
+        mid = int(params.get("ema_mid", 60))
+        long = int(params.get("ema_long", 120))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:ema_short/ema_mid/ema_long must be integers")
+    if not 5 <= short <= 50:
+        raise ValueError("INVALID_PARAMS:ema_short must be within 5-50")
+    if not 20 <= mid <= 150:
+        raise ValueError("INVALID_PARAMS:ema_mid must be within 20-150")
+    if not 60 <= long <= 300:
+        raise ValueError("INVALID_PARAMS:ema_long must be within 60-300")
+    if not short < mid < long:
+        raise ValueError("INVALID_PARAMS:require ema_short < ema_mid < ema_long")
+
+    from backtesting import Strategy
+
+    min_bars = long
+
+    class EmaTripleAlignmentStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            def ema(period):
+                return self.I(
+                    self._warm(lambda x: pd.Series(x).ewm(span=period, adjust=False).mean(), "Close"),
+                    self.data.Close, name=f"EMA({period})",
+                )
+
+            self.ema_short = ema(short)
+            self.ema_mid = ema(mid)
+            self.ema_long = ema(long)
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            short_now, mid_now, long_now = self.ema_short[-1], self.ema_mid[-1], self.ema_long[-1]
+            if not all(math.isfinite(v) for v in (short_now, mid_now, long_now)):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                aligned = short_now > mid_now > long_now
+                was_aligned = self.ema_short[-2] > self.ema_mid[-2] > self.ema_long[-2]
+                if aligned and not was_aligned:
+                    self._risk_buy()
+            elif short_now < mid_now:
+                self.position.close()
+
+    return {
+        "strategy": EmaTripleAlignmentStrategy,
+        "executed_name": f"EMA Triple Alignment ({short}/{mid}/{long})",
+        "min_bars": min_bars,
+    }
+
+
+def _build_macd_above_zero(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """Separate long-only MACD template; both DIF and DEA must be above zero."""
+    risk = _parse_fixed_risk_params(params)
+    try:
+        fast = int(params.get("fast", 12))
+        slow = int(params.get("slow", 26))
+        signal_period = int(params.get("signal", 9))
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("INVALID_PARAMS:fast/slow/signal must be integers")
+    if fast < 2:
+        raise ValueError(f"INVALID_PARAMS:fast must be >= 2 (got {fast})")
+    if slow <= fast:
+        raise ValueError("INVALID_PARAMS:slow must be greater than fast")
+    if signal_period < 1:
+        raise ValueError(f"INVALID_PARAMS:signal must be >= 1 (got {signal_period})")
+    if fast > 100 or slow > 300 or signal_period > 100:
+        raise ValueError("INVALID_PARAMS:fast/slow/signal exceed schema maximums 100/300/100")
+
+    from backtesting import Strategy
+
+    min_bars = slow * 3 + signal_period + 1
+
+    def _macd_line(values: Any) -> Any:
+        s = pd.Series(values, dtype="float64")
+        return s.ewm(span=fast, adjust=False).mean() - s.ewm(span=slow, adjust=False).mean()
+
+    class MacdAboveZeroStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            close = self.data.Close
+            self.macd = self.I(self._warm(lambda x: _macd_line(x).to_numpy(), "Close"), close, name="MACD")
+            self.signal = self.I(
+                self._warm(lambda x: _macd_line(x).ewm(span=signal_period, adjust=False).mean().to_numpy(), "Close"),
+                close,
+                name="Signal",
+            )
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            dif, dea = self.macd[-1], self.signal[-1]
+            prev_dif, prev_dea = self.macd[-2], self.signal[-2]
+            if not all(math.isfinite(v) for v in (dif, dea, prev_dif, prev_dea)):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if prev_dif <= prev_dea and dif > dea and dif > 0 and dea > 0:
+                    self._risk_buy()
+            elif prev_dif >= prev_dea and dif < dea:
+                self.position.close()
+
+    return {
+        "strategy": MacdAboveZeroStrategy,
+        "executed_name": f"MACD Above-Zero Cross ({fast}/{slow}/{signal_period})",
+        "min_bars": min_bars,
+    }
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -3966,6 +4144,56 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "adx_period": {"type": "integer", "default": 14, "minimum": 7, "maximum": 30},
             "adx_threshold": {"type": "number", "default": 25, "minimum": 15, "maximum": 40},
             "adx_exit": {"type": "number", "default": 20, "minimum": 10, "maximum": 30},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.macd_above_zero": {
+        "name": "Local Backtesting.py MACD Above-Zero Cross",
+        "description": (
+            "Long-only MACD: buy on a DIF cross above DEA only when both lines are "
+            "strictly above zero; exit on the opposite cross regardless of the zero axis. "
+            "Signals confirm at close and fill at the next open — maps to KOL 'MACD 零轴上金叉'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_macd_above_zero,
+        "param_schema_properties": {
+            "fast": {"type": "integer", "default": 12, "minimum": 2, "maximum": 100},
+            "slow": {"type": "integer", "default": 26, "minimum": 3, "maximum": 300},
+            "signal": {"type": "integer", "default": 9, "minimum": 1, "maximum": 100},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.ema_triple_alignment": {
+        "name": "Local Backtesting.py EMA Triple Alignment",
+        "description": (
+            "Long-only trend following: buy when short > mid > long EMA alignment "
+            "first forms; exit when the short EMA is below the mid EMA. "
+            "Signals confirm at close and fill at the next open — maps to KOL 'EMA 三线多头排列'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_ema_triple_alignment,
+        "param_schema_properties": {
+            "ema_short": {"type": "integer", "default": 20, "minimum": 5, "maximum": 50},
+            "ema_mid": {"type": "integer", "default": 60, "minimum": 20, "maximum": 150},
+            "ema_long": {"type": "integer", "default": 120, "minimum": 60, "maximum": 300},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bias_reversion": {
+        "name": "Local Backtesting.py BIAS Reversion",
+        "description": (
+            "Long-only mean reversion: buy when close-to-EMA BIAS is at or below "
+            "the negative entry percentage, exit when BIAS reaches zero or above. "
+            "Signals confirm at close and fill at the next open — maps to KOL '均线乖离率 BIAS 回归'."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_bias_reversion,
+        "param_schema_properties": {
+            "ema_period": {"type": "integer", "default": 20, "minimum": 10, "maximum": 60},
+            "bias_entry_pct": {"type": "number", "default": 3, "minimum": 1, "maximum": 10},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
