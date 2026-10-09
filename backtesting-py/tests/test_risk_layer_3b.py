@@ -314,7 +314,7 @@ FEATURE_CASES = [(name, feature) for name in enumerate_mixin_cases() for feature
 
 @pytest.mark.parametrize('name,feature', FEATURE_CASES)
 def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
-    if name in (*p._CANDLE_TOOL_NAMES.values(), 'double_bottom', 'inverse_head_shoulders'):
+    if name in (*p._CANDLE_TOOL_NAMES.values(), 'double_bottom', 'inverse_head_shoulders', 'double_top', 'head_shoulders'):
         build = p.TOOL_SPECS['local.backtesting_py.'+name]['build']
         params = dict(risk_layer_enabled=True, **FEATURES[feature])
         if feature != 'holding':
@@ -324,6 +324,8 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
             return
         if name in ('bullish_engulfing', 'hammer_pin_bar'):
             from test_9t1_engulf_pin import compatibility_frame
+        elif name in ('double_top', 'head_shoulders'):
+            from test_short_pat1 import compatibility_frame
         elif name in ('double_bottom', 'inverse_head_shoulders'):
             from test_9t3_patterns import compatibility_frame
         else:
@@ -339,6 +341,27 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
                           exclusive_orders=True, finalize_trades=True).run()['_trades']
         assert len(trades) == 1 and reasons == ['time_expiry']
         assert trades.iloc[0].ExitBar - trades.iloc[0].EntryBar == 1
+        return
+    if name.endswith('_bearish_divergence'):
+        from test_short_pat2 import hand_frame, hand_params
+        build = p.TOOL_SPECS['local.backtesting_py.'+name]['build']
+        params = dict(hand_params(name), risk_layer_enabled=True, **FEATURES[feature])
+        if feature != 'holding':
+            # Frozen H2/2R exits reject incompatible generic overlay overrides.
+            with pytest.raises(ValueError, match='INVALID_PARAMS:'):
+                build(params)
+            return
+        reasons = []
+        cls = build(params)['strategy']
+        original = cls._record_holding_expiry
+        def record(self, fact):
+            reasons.append('time_expiry')
+            original(self, fact)
+        cls._record_holding_expiry = record
+        trades = Backtest(hand_frame(), cls, cash=100000,
+                          exclusive_orders=True, finalize_trades=True).run()['_trades']
+        assert trades[['EntryBar','ExitBar']].values.tolist() == [[24,25]]
+        assert reasons == ['time_expiry']
         return
     if name.endswith('_bullish_divergence'):
         from test_9t4_divergence import hand_frame, hand_params
@@ -463,7 +486,7 @@ def test_new_schema_consumed_only_by_runtime_mixins(key):
     for tool_id, spec in p.TOOL_SPECS.items():
         runner = spec.get('runner')
         included = (
-            runner not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group') or
+            runner not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group', p.ROTATION_RUNNER) or
             (runner in ('scale_in_out_ledger', p.TURTLE_RUNNER) and key == 'max_holding_bars'))
         if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout', 'local.backtesting_py.calendar_schedule'):
             included = key == 'max_holding_bars'

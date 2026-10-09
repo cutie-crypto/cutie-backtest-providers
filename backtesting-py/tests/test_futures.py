@@ -79,9 +79,14 @@ def test_catalog_declares_futures_market(client):
     body = resp.json()
     for tool in body["tools"]:
         assert "MARKET_UNSUPPORTED" in tool["failure_codes"]
-        if provider.TOOL_SPECS[tool["tool_id"]].get("runner") == provider.SCALE_IN_OUT_RUNNER:
+        if provider.TOOL_SPECS[tool["tool_id"]].get("runner") in (provider.SCALE_IN_OUT_RUNNER, provider.ROTATION_RUNNER):
             # 分批账本模板（132 RSI 定额分批、R3 网格 / DCA）只做现货，服务端按单个 tool 的 markets 拒绝合约
             assert tool["markets"] == ["spot"]
+            continue
+        # 做空形态一 / 二（集成 D 合并）只做合约：spot 不得出现在 catalog
+        if tool["tool_id"] in ("local.backtesting_py.macd_bearish_divergence", "local.backtesting_py.rsi_bearish_divergence",
+                               "local.backtesting_py.double_top", "local.backtesting_py.head_shoulders"):
+            assert tool["markets"] == ["futures"]
             continue
         assert "spot" in tool["markets"]
         assert "futures" in tool["markets"]

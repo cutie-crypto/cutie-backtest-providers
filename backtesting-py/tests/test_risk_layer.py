@@ -47,7 +47,7 @@ def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
     assert fixture_names() <= actual
     assert len(actual) >= 19
     for tool_id, spec in p.TOOL_SPECS.items():
-        included = spec.get('runner') not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group')
+        included = spec.get('runner') not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group', p.ROTATION_RUNNER)
         for key in NEW:
             supported = included or (spec.get('runner') == p.TURTLE_RUNNER and key in p._TURTLE_RISK_KEYS)
             if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout', 'local.backtesting_py.calendar_schedule'):
