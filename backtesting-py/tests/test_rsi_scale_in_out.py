@@ -478,7 +478,7 @@ def test_catalog_entry_is_spot_only_without_fixed_risk_fields():
     assert set(props) == {"rsi_period", "oversold", "overbought", "buy_notional", "sell_notional", "exchange",
                           "time_layer_enabled", "time_timezone", "time_session_start", "time_session_end",
                           "time_weekdays", "time_max_holding_minutes", "time_flatten_at",
-                          "time_flatten_weekdays", "max_holding_bars"}
+                          "time_flatten_weekdays", "time_calendar", "max_holding_bars"}
     assert not set(props) & (set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) - {"max_holding_bars"})
     assert entry["markets"] == ["spot"]
     old = provider._catalog_tool("local.backtesting_py.rsi_reversal",
