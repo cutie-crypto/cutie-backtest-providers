@@ -27,7 +27,8 @@ def build_us_open(p, params, initial_capital):
     error = p._validate_params_against_schema(params, schema)
     if error:
         raise ValueError('INVALID_PARAMS:' + error)
-    risk = p._parse_fixed_risk_params(params)
+    # 10-B2d: the frozen window stop always exists, so risk sizing never lacks an initial stop.
+    risk = p._parse_fixed_risk_params(params, template_initial_stop=True)
     from backtesting import Strategy
 
     class UsOpenMomentum(p._FixedRiskMixin, Strategy):
@@ -81,6 +82,23 @@ def build_us_open(p, params, initial_capital):
             stops = [value for value in (stop, user_stop, Decimal(str(self._window_stop))) if value is not None]
             closest = max(stops) if trade.is_long else min(stops)
             return super()._risk_isolated_exit(closest)
+
+        def _sizing_template_stop(self, order):
+            # 10-B2d: only consulted by position_size_risk_pct, after the wrong-side guard above.
+            # Size against the stop that triggers first: the window stop frozen at the signal or the
+            # optional user stop (shared risk state at the actual fill, as _risk_layer_check_exit
+            # builds it), nearest to price exactly like _risk_isolated_exit.
+            from strategy_risk_overlay import initial_risk_state
+            from strategy_position_sizing import SizingRejected
+            fill = self._broker._adjusted_price(order.size, self.data.Open[-1])
+            try:
+                user = initial_risk_state(risk=self._risk, entry_price=fill,
+                    direction='long' if order.is_long else 'short', atr_value=self._risk_entry_atr,
+                    entry_at=int(pd.Timestamp(self.data.index[-1]).value)).initial_stop
+            except ValueError:
+                raise SizingRejected('invalid_initial_stop')
+            stops = [value for value in (user, Decimal(str(self._window_stop))) if value is not None]
+            return max(stops) if order.is_long else min(stops)
 
         def _holding_expiry(self):
             user = super()._holding_expiry()
@@ -150,7 +168,9 @@ def build_cme_gap(p, params, initial_capital):
     error = p._validate_params_against_schema(params, schema)
     if error:
         raise ValueError('INVALID_PARAMS:' + error)
-    risk = p._parse_fixed_risk_params(params)
+    # 10-B2d: the intrinsic 2% stop below always backs risk sizing; the shared fill-time risk
+    # state is the stop the exit uses, so no template hook is needed.
+    risk = p._parse_fixed_risk_params(params, template_initial_stop=True)
     # An explicitly chosen stop mechanism overrides the intrinsic 2% stop.
     if not any(risk.get(k) for k in ('stop_loss_pct', 'atr_stop_multiplier', 'trailing_stop_pct')):
         risk['stop_loss_pct'] = .02

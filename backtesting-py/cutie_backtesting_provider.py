@@ -5403,7 +5403,7 @@ _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name
     "opening_range_breakout", "asia_range_breakout"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
     "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion",
-                                                 "calendar_schedule", "red_streak_rsi"))
+                                                 "calendar_schedule", "red_streak_rsi", "us_open_momentum"))
 
 
 def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -5421,7 +5421,9 @@ def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
         return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
     # 10-B2d: calendar freezes its own stop at the signal close; calendar_stop_enabled=false leaves
     # none and the fill hook rejects with missing_initial_stop.
-    if tool_id == "local.backtesting_py.calendar_schedule":
+    # 10-B2d: US open always has its frozen window stop; CME always has its intrinsic 2% stop.
+    if tool_id in ("local.backtesting_py.calendar_schedule", "local.backtesting_py.us_open_momentum",
+                   "local.backtesting_py.cme_weekend_gap"):
         return True
     # 10-B2d: red streak's default 3% stop exists only while no pricing key is supplied.
     if tool_id == "local.backtesting_py.red_streak_rsi":
@@ -7067,13 +7069,13 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
 # 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空。
-# 10-B2c 移出 K 线六个与双底、头肩底（按信号根冻结的形态止损定仓）；余下 6 个由 10-B2d 接上并清空名单。
-POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
-    "us_open_momentum cme_weekend_gap").split())
+# 10-B2c 移出 K 线六个与双底、头肩底（按信号根冻结的形态止损定仓）。
+# 10-B2d 移出最后 6 个（ORB、亚洲区间、日历定时、red_streak_rsi、美股开盘、CME 缺口），名单清空；
+# 常量保留为空集（请求校验与测试仍引用），新单仓模板不得再进本名单，须接好定仓再注册。
+POSITION_SIZING_PENDING_TOOLS: frozenset[str] = frozenset()
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
         TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)
-del _pending_tool, _sizing_key
 
 
 def _position_sizing_failure(message):
