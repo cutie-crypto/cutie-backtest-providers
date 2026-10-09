@@ -2568,6 +2568,10 @@ class _FixedRiskMixin(_TimeLayerMixin):
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
+        if self._risk.get("leverage", 1) > 1:
+            self._isolated_liquidations = []
+            self._isolated_blocked_bar = -1
+            self._isolated_stop_beyond_trades = 0
         if self._time_config is not None:
             self._risk_exit_reason = None
         if self._risk.get("risk_layer_enabled"):
@@ -2600,6 +2604,31 @@ class _FixedRiskMixin(_TimeLayerMixin):
         # Only the signal close is available when the market entry is queued.
         self._risk_entry_atr = self._risk_atr[count - 1]
 
+    def _risk_isolated_exit(self, stop: Optional[Decimal] = None) -> bool:
+        trade = self.trades[-1]
+        if any(order.parent_trade is trade for order in self.orders):
+            return True
+        candidate = _isolated_liquidation_candidate(
+            entry_price=trade.entry_price, leverage=self._risk["leverage"],
+            is_long=trade.is_long, open_price=self.data.Open[-1],
+            high=self.data.High[-1], low=self.data.Low[-1])
+        if candidate is None:
+            return False
+        price = candidate["liquidation_price"]
+        # Non-gap intrabar stops closer to entry are crossed before liquidation.
+        if not candidate["liquidation_gap"] and stop is not None and (
+            stop > price if trade.is_long else stop < price
+        ):
+            return False
+        self._isolated_liquidations.append({
+            "opened_at": int(pd.Timestamp(trade.entry_time).value // 10**9),
+            "liquidation_bar_open_time": int(pd.Timestamp(self.data.index[-1]).value // 10**9),
+        })
+        self._isolated_blocked_bar = len(self.data) - 1
+        self._risk_exit_reason = "liquidation"
+        self.position.close()
+        return True
+
     def _risk_layer_check_exit(self) -> bool:
         from strategy_risk_overlay import initial_risk_state, decide_exit, advance_risk_state, level_exit
 
@@ -2614,6 +2643,19 @@ class _FixedRiskMixin(_TimeLayerMixin):
                 direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
                 entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
             )
+            if self._risk.get("leverage", 1) > 1 and any(self._risk.get(key) for key in (
+                "atr_stop_multiplier", "trailing_stop_pct", "breakeven_stop"
+            )):
+                stop = self._risk_state.initial_stop
+                price = _isolated_liquidation_price(
+                    Decimal(str(trade.entry_price)), self._risk["leverage"], trade.is_long)
+                if stop is not None and (stop <= price if trade.is_long else stop >= price):
+                    self._isolated_stop_beyond_trades += 1
+        if self._risk.get("leverage", 1) > 1:
+            stop = (self._risk_state.stop_state.effective_stop
+                    if self._risk_state.stop_state is not None else self._risk_state.initial_stop)
+            if self._risk_isolated_exit(stop):
+                return True
         bar = len(self.data) - 1
         fact = self._holding_expiry()
         reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
@@ -2658,6 +2700,8 @@ class _FixedRiskMixin(_TimeLayerMixin):
         return None
 
     def _risk_buy(self) -> None:
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+            return
         if not self._time_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
@@ -2665,6 +2709,8 @@ class _FixedRiskMixin(_TimeLayerMixin):
         self.buy() if size is None else self.buy(size=size)
 
     def _risk_sell(self) -> None:
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+            return
         if not self._time_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
@@ -2676,6 +2722,9 @@ class _FixedRiskMixin(_TimeLayerMixin):
             return False
         if self._risk.get("risk_layer_enabled"):
             return self._risk_layer_check_exit()
+        # Legacy stops are close-only; any intrabar liquidation precedes them.
+        if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit():
+            return True
         sl_pct = self._risk.get("stop_loss_pct")
         tp_pct = self._risk.get("take_profit_pct")
         time_enabled = self._time_config is not None
