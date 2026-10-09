@@ -54,6 +54,13 @@ BASELINE['single'].update(NEW_BASELINE['single'])
 SHORTPAT2_BASELINE = json.loads((Path(__file__).parent / 'fixtures/shortpat2_time_off.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(SHORTPAT2_BASELINE['single'])
 BASELINE['single'].update(SHORTPAT2_BASELINE['single'])
+SHORTPAT3_BASELINE = json.loads((Path(__file__).parent / 'fixtures/shortpat3_time_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(SHORTPAT3_BASELINE['single'])
+BASELINE['single'].update(SHORTPAT3_BASELINE['single'])
+# S4b adds EMA-only disclosure; retain every other historical fingerprint.
+EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
+assert set(EMA_WARMUP_BASELINE['single']) == {'ema_cross'}
+BASELINE['single'].update(EMA_WARMUP_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -162,6 +169,13 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
     if name == 'chan_3buy':
         from test_9t6_chan_3buy import frame as chan_frame
         data = chan_frame()
+        data.index = pd.date_range('2026-01-01 18:00', periods=len(data), freq='h')
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
+    if name == 'chan_3sell':
+        # Signal12 at 06:00, short fill13 at 07:00; take-profit exit16 at 10:00 (outside).
+        from test_short_pat3_chan_3sell import frame as chan_sell_frame
+        data = chan_sell_frame()
         data.index = pd.date_range('2026-01-01 18:00', periods=len(data), freq='h')
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')

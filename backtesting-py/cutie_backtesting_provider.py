@@ -2436,7 +2436,7 @@ def _leverage_backtest_kwargs(leverage: int) -> dict[str, float]:
     return {"margin": 1 / leverage} if leverage > 1 else {}
 
 
-def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
+def _parse_fixed_risk_params(params: dict[str, Any], *, template_initial_stop: bool = False) -> dict[str, Any]:
     """解析 stop_loss_pct/take_profit_pct/position_size_pct/position_size_notional。
 
     全部缺省时返回空 dict（13 模板原有 buy()/sell() 行为逐字节不变——回归底线）。
@@ -2536,7 +2536,7 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
         if notional <= 0:
             raise ValueError("INVALID_PARAMS:position_size_notional must be > 0")
         out["position_size_notional"] = notional
-    out.update(parse_position_sizing(params))
+    out.update(parse_position_sizing(params, template_initial_stop=template_initial_stop))
     return out
 
 
@@ -2969,6 +2969,10 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         return False
 
 
+EMA_WARMUP_MULTIPLIER = 10
+MAX_EMA_WARMUP_BARS = 20000
+
+
 @_with_time_config
 @_with_filter_config
 def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
@@ -2989,6 +2993,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
     from backtesting.lib import crossover
 
     min_bars = max(ema_fast, ema_slow) + 1
+    ema_warmup_requested_bars = EMA_WARMUP_MULTIPLIER * max(ema_fast, ema_slow)
 
     class EmaCrossStrategy(_FixedRiskMixin, Strategy):
         _ema_fast = ema_fast
@@ -3026,6 +3031,8 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
         "strategy": EmaCrossStrategy,
         "executed_name": f"EMA Cross ({ema_fast}/{ema_slow})",
         "min_bars": min_bars,
+        "ema_warmup_requested_bars": ema_warmup_requested_bars,
+        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
         "trade_on_close": bool(risk),
     }
 
@@ -3488,18 +3495,13 @@ FILTER_LAYER_UNWIRED_TOOLS = (
     "local.backtesting_py.asia_range_breakout",
     "local.backtesting_py.calendar_schedule",
     "local.backtesting_py.red_streak_rsi",
-    "local.backtesting_py.bullish_engulfing",
-    "local.backtesting_py.hammer_pin_bar",
-    "local.backtesting_py.morning_star",
-    "local.backtesting_py.three_white_soldiers",
-    "local.backtesting_py.bullish_doji_reversal",
-    "local.backtesting_py.inside_bar_breakout",
     "local.backtesting_py.double_bottom",
     "local.backtesting_py.inverse_head_shoulders",
     "local.backtesting_py.macd_bearish_divergence",
     "local.backtesting_py.rsi_bearish_divergence",
     "local.backtesting_py.double_top",
     "local.backtesting_py.head_shoulders",
+    "local.backtesting_py.chan_3sell",
 )
 _TURTLE_RISK_DESCRIPTION = (
     "单单位到初始止损的风险占权益比；经典海龟是 1%÷N（2N 止损下每单位 2%），本参数填 2 即经典口径"
@@ -4849,31 +4851,37 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bullish_engulfing(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="engulfing", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_hammer_pin_bar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="pin_bar", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_morning_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="star", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_three_white_soldiers(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="soldiers", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bullish_doji_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="doji", initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_inside_bar_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="inside_bar", initial_capital=initial_capital)
 
@@ -4954,10 +4962,13 @@ def _build_top_pattern(params, *, kind, initial_capital):
         config.update(head_height=params.get('head_height_pct', 2)/100,
                       shoulder_tolerance=params.get('shoulder_tolerance_pct', 3)/100)
         min_bars = 4*n + 3
-    risk = _parse_fixed_risk_params(params)
+    # Top patterns reject user stops; the pattern stop is frozen at the breakout (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     from strategy_top_patterns import make_top_strategy
     cls = make_top_strategy(_FixedRiskMixin, kind=kind, risk=risk,
                             initial_capital=initial_capital, config=config)
+    # 10-B2b: risk distance = |actual fill - last top High * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, min_bars=min_bars, executed_name=kind.replace('_', ' ').title(),
         pattern_assumptions=dict(pattern_execution=
             'Only adjacent highs confirmed by swing_n closed bars on each side are used; '
@@ -5363,6 +5374,36 @@ def _build_calendar_schedule(params, *, initial_capital=10000.0):
 
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
+# Explicit pricing keys switch VWAP / Fibonacci off their built-in frozen price group.
+_TEMPLATE_PRICING_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier", "take_profit_r",
+                          "trailing_stop_pct", "breakeven_stop",
+                          *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
+# 10-B2a: sizing distance = |actual fill - the template's own initial stop frozen at the signal|.
+# 10-B2b: short templates are sized the same way; direction only signs the order quantity.
+# Templates whose own frozen stop is always used (they reject user stop/take-profit keys).
+_SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
+    "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
+    "double_top", "head_shoulders", "chan_3sell", "chan_3buy"))
+POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
+    "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
+
+
+def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
+    effective = dict(params)
+    if not any(key in params for key in _TEMPLATE_PRICING_KEYS):
+        effective["stop_loss_pct"] = 2
+    return effective
+
+
+def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
+    """Whether the template supplies its own frozen stop when the user gives none."""
+    if tool_id in _SIZING_INTRINSIC_STOP_TOOLS:
+        return True
+    if tool_id == "local.backtesting_py.fibonacci_retracement":
+        return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
+    return False
+
+
 @_with_time_config
 @_with_filter_config
 def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
@@ -5373,13 +5414,7 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
         raise ValueError(f"INVALID_PARAMS:{error}")
     deviation = params.get("vwap_deviation_pct", 1.5)
     price_source = params.get("time_vwap_price", "hlc3")
-    pricing_keys = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier", "take_profit_r",
-                    "trailing_stop_pct", "breakeven_stop",
-                    *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
-    effective = dict(params)
-    if not any(key in params for key in pricing_keys):
-        effective["stop_loss_pct"] = 2
-    risk = _parse_fixed_risk_params(effective)
+    risk = _parse_fixed_risk_params(_vwap_effective_params(params))
     from backtesting import Strategy
     from datetime import timedelta
     from zoneinfo import ZoneInfo
@@ -5452,6 +5487,10 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                         self._f5_order = None
                 process_orders()
             self._broker._process_orders = guarded_orders
+
+        def _sizing_template_stop(self, order):
+            # 10-B2a: risk distance uses the stop frozen at the signal close (|fill - stop|).
+            return self._f5_frozen.initial_stop
 
         def _holding_expiry(self):
             optional = super()._holding_expiry()
@@ -5527,6 +5566,8 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
             self._f5_signal_at = int(self.data.index[-1].timestamp())
             size = self._risk_entry_size()
             self._f5_order = self.buy() if size is None else self.buy(size=size)
+            if self._risk.get("position_sizing_enabled"):
+                self._f5_order._sizing_signal_bar = len(self.data) - 1
 
     return dict(strategy=VwapReversionStrategy, min_bars=2,
                 executed_name=f"VWAP Reversion (UTC day, {price_source}, -{deviation:g}%)")
@@ -5659,7 +5700,8 @@ _DIVERGENCE_EXIT_KEYS = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplie
 
 
 def _build_bearish_divergence(params, *, kind, initial_capital):
-    risk = _parse_fixed_risk_params(params)
+    # Divergence rejects user stops; its H2 stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     properties = TOOL_SPECS['local.backtesting_py.' + kind + '_bearish_divergence']['param_schema_properties']
     error = _validate_params_against_schema(params, properties)
     if error:
@@ -5692,6 +5734,8 @@ def _build_bearish_divergence(params, *, kind, initial_capital):
     from strategy_divergence import make_divergence_strategy
     cls = make_divergence_strategy(_FixedRiskMixin, kind=kind, config=config, risk=risk,
                                   initial_capital=initial_capital, rsi_series=_rsi_series, direction="short")
+    # 10-B2b: risk distance = |actual fill - High(H2) * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name=kind.upper()+' Bearish Divergence',
         min_bars=config['indicator_bars']+2*config['n']+lo,
         warmup_bars=config['indicator_bars']+2*config['n']+hi,
@@ -5720,7 +5764,8 @@ def _build_rsi_bearish_divergence(params, *, initial_capital=10000.0):
 
 
 def _build_divergence(params, *, kind, initial_capital):
-    risk = _parse_fixed_risk_params(params)
+    # Divergence rejects user stops; its L2 stop is frozen at the signal (10-B2a).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     properties = TOOL_SPECS['local.backtesting_py.' + kind + '_bullish_divergence']['param_schema_properties']
     error = _validate_params_against_schema(params, properties)
     if error:
@@ -5753,6 +5798,8 @@ def _build_divergence(params, *, kind, initial_capital):
     from strategy_divergence import make_divergence_strategy
     cls = make_divergence_strategy(_FixedRiskMixin, kind=kind, config=config, risk=risk,
                                   initial_capital=initial_capital, rsi_series=_rsi_series)
+    # 10-B2a: risk distance = |actual fill - Low(L2) * 0.999| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name=kind.upper()+' Bullish Divergence',
         min_bars=config['indicator_bars']+2*config['n']+lo,
         warmup_bars=config['indicator_bars']+2*config['n']+hi,
@@ -5785,7 +5832,8 @@ def _build_rsi_bullish_divergence(params, *, initial_capital=10000.0):
 @_with_time_config
 @_with_filter_config
 def _build_chan_3buy(params, *, initial_capital=10000.0):
-    risk = _parse_fixed_risk_params(params)
+    # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     if params.get('direction', 'long') != 'long':
         raise ValueError('INVALID_PARAMS:Chan third buy supports long only')
     bi_mode = params.get('bi_mode', 'new')
@@ -5799,6 +5847,8 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
         raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
     from strategy_chan import make_chan_strategy
     cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)
+    # 10-B2b: risk distance = |actual fill - pullback Low * 0.999| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name='Chan Third Buy ('+bi_mode+')', min_bars=3,
         chan_assumptions=dict(chan_execution={
             'direction': 'long_only', 'bi_mode': bi_mode,
@@ -5809,6 +5859,45 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
             'fill': 'next_bar_open_market', 'stop': 'pullback_low_times_0.999',
             'target': 'actual_fill_plus_2_times_fill_minus_stop_frozen',
             'priority': 'stop_before_time_expiry_before_take_profit_before_close_below_zg',
+            'consumption': 'one_opportunity_per_center_even_if_entry_blocked',
+            'final_bar': 'engine_finalize_trades_settlement',
+            'leverage': 'shared_isolated_liquidation_arbitration'}))
+
+
+@_with_time_config
+def _build_chan_3sell(params, *, initial_capital=10000.0):
+    """SHORT-PAT-3: strict mirror of chan_3buy, futures short only (market gate in run)."""
+    # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
+    if params.get('direction', 'short') != 'short':
+        raise ValueError('INVALID_PARAMS:Chan third sell supports short only')
+    bi_mode = params.get('bi_mode', 'new')
+    if bi_mode not in ('new', 'old'):
+        raise ValueError('INVALID_PARAMS:bi_mode must be new or old')
+    frozen_exit_keys = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplier',
+        'take_profit_r', 'trailing_stop_pct', 'breakeven_stop',
+        *(f'tp{n}_{suffix}' for n in (1,2,3) for suffix in ('r','close_pct')))
+    if any((key in params if key in ('stop_loss_pct','take_profit_pct') else params.get(key))
+           for key in frozen_exit_keys):
+        raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
+    from strategy_chan import make_chan_strategy
+    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital,
+                             direction='short')
+    # 10-B2b: risk distance = |actual fill - pullback High * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
+    return dict(strategy=cls, executed_name='Chan Third Sell ('+bi_mode+')', min_bars=3,
+        chan_assumptions=dict(chan_execution={
+            'direction': 'short_only', 'market': 'futures_only', 'bi_mode': bi_mode,
+            'independent_bars_between_endpoints': 1 if bi_mode=='new' else 5,
+            'confirmation': 'right_independent_bar_close_facts_never_revised',
+            'initial_inclusion': 'defer_merge_until_direction_observable',
+            'centers': 'latest_three_completed_strokes_no_reuse_extension_or_expansion',
+            'departure': 'down_stroke_low_strictly_below_zd',
+            'pullback': 'up_stroke_high_strictly_below_zd_confirmed_by_top_fractal',
+            'fill': 'next_bar_open_market', 'stop': 'pullback_high_times_1.001',
+            'target': 'actual_fill_minus_2_times_stop_minus_fill_frozen',
+            'priority': 'stop_before_time_expiry_before_take_profit_before_close_above_zd',
+            'gap': 'entry_open_at_or_above_frozen_stop_is_skipped',
             'consumption': 'one_opportunity_per_center_even_if_entry_blocked',
             'final_bar': 'engine_finalize_trades_settlement',
             'leverage': 'shared_isolated_liquidation_arbitration'}))
@@ -5828,11 +5917,9 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
     tolerance = Decimal(str(params.get("fib_tolerance_pct", 0.3))) / 100
     minimum = Decimal(str(params.get("swing_min_gain_pct", 5))) / 100
     target = params.get("fib_target", "swing_high")
-    pricing_keys = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier", "take_profit_r",
-                    "trailing_stop_pct", "breakeven_stop",
-                    *(f"tp{k}_{suffix}" for k in (1, 2, 3) for suffix in ("r", "close_pct")))
-    intrinsic = not any(key in params for key in pricing_keys)
-    risk = _parse_fixed_risk_params(params)
+    intrinsic = not any(key in params for key in _TEMPLATE_PRICING_KEYS)
+    # Intrinsic wave stop is frozen at the signal, so risk sizing needs no user stop.
+    risk = _parse_fixed_risk_params(params, template_initial_stop=intrinsic)
     from backtesting import Strategy
     from dataclasses import replace
     from strategy_swing_points import swing_points
@@ -5876,6 +5963,10 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                         self._fib_order = None
                 process_orders()
             self._broker._process_orders = guarded_orders
+
+        def _sizing_template_stop(self, order):
+            # 10-B2a: wave stop (intrinsic) or user stop, both frozen at the signal close.
+            return self._fib_frozen.initial_stop
 
         def _fib_update(self, bar):
             # Slots are confirmation bars; never inspect a point at its pivot index.
@@ -5983,6 +6074,8 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
             wave["frozen_target"] = str(self._fib_frozen.take_price)
             size = self._risk_entry_size()
             self._fib_order = self.buy() if size is None else self.buy(size=size)
+            if self._risk.get("position_sizing_enabled"):
+                self._fib_order._sizing_signal_bar = len(self.data) - 1
 
     return dict(strategy=FibonacciRetracementStrategy, min_bars=2 * n + 1,
                 executed_name=f"Fibonacci Retracement ({level:g}, N={n}, target={target})")
@@ -6260,6 +6353,16 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         'strategy_family': 'breakout', 'is_default': False, 'build': _build_chan_3buy,
         'param_schema_properties': {
             'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'bi_mode': {'type': 'string', 'default': 'new', 'enum': ['new', 'old']},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+        },
+    },
+    'local.backtesting_py.chan_3sell': {
+        'name': 'Local Backtesting.py Chan Third Sell',
+        'description': 'Futures short-only simplified Chan third sell, the strict mirror of chan_3buy: confirmed fractals, alternating strokes and a three-stroke center; a down stroke leaves below ZD and the up pullback high stays below ZD. Next-open entry and frozen pullback stop / actual-fill 2R target.',
+        'strategy_family': 'breakout', 'is_default': False, 'markets': ['futures'], 'build': _build_chan_3sell,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'short', 'enum': ['short']},
             'bi_mode': {'type': 'string', 'default': 'new', 'enum': ['new', 'old']},
             'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
         },
@@ -6929,12 +7032,12 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
+# 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空；余下 14 个：10-B2c 接 K 线六 + 双底 + 头肩底，10-B2d 接其余 6 个并清空名单。
 POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
-    "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi vwap_reversion "
+    "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
-    "double_bottom inverse_head_shoulders macd_bullish_divergence rsi_bullish_divergence chan_3buy "
-    "macd_bearish_divergence rsi_bearish_divergence "
-    "fibonacci_retracement us_open_momentum cme_weekend_gap double_top head_shoulders").split())
+    "double_bottom inverse_head_shoulders "
+    "us_open_momentum cme_weekend_gap").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
         TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)
@@ -8584,7 +8687,11 @@ async def run_backtest(
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
-            _parse_fixed_risk_params(params)
+            if effective_tool_id == "local.backtesting_py.vwap_reversion":
+                _parse_fixed_risk_params(_vwap_effective_params(params))
+            else:
+                _parse_fixed_risk_params(params, template_initial_stop=_sizing_template_initial_stop(
+                    effective_tool_id, params))
         except ValueError as exc:
             return _position_sizing_failure(str(exc).removeprefix("INVALID_PARAMS:"))
     if tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
@@ -8821,7 +8928,7 @@ async def run_backtest(
         except FilterHistoryError as e:
             return _business_failure(run_id, "INSUFFICIENT_DATA", str(e), reason="filter_history_insufficient")
 
-    # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
+    # start_at 之前按模板目标取指标预热；min_bars 仍只约束最少可算/主区间长度。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
     risk = getattr(strategy_class, "_risk", {})
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
@@ -8831,13 +8938,34 @@ async def run_backtest(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
     warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
-                                        max(min_bars, risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
+                                        max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
     if is_vwap:
         strategy_class._warmup_index = warmup_df.index
     indicator_warmup_bars = len(warmup_df)
+    ema_warmup_report = {}
+    ema_warmup_assumptions = {}
+    if "ema_warmup_requested_bars" in built:
+        requested = built["ema_warmup_requested_bars"]
+        target = built["ema_warmup_target_bars"]
+        # 回测参考读数允许封顶/不足，首段指标可能未收敛；实盘是钱路径，
+        # 超 20000 根拒绝布防（fail-closed），此处不改变实盘或结果 v2 契约。
+        ema_warmup_report = {"ema_warmup": {
+            "requested_bars": requested,
+            "target_bars": target,
+            "actual_bars": indicator_warmup_bars,
+            "truncated": requested > target,
+            "tenfold_reached": indicator_warmup_bars >= requested,
+        }}
+        ema_warmup_assumptions = {"ema_warmup":
+            f"EMA 预热取 10×最长周期（目标 {target} 根，实得 {indicator_warmup_bars} 根）"}
+        if ema_warmup_report["ema_warmup"]["truncated"]:
+            ema_warmup_assumptions["ema_warmup"] += (
+                f"回测已把预热截到 20000 根；实盘自动信号要求 10×最长周期 ≤ 20000 根，"
+                f"本参数（需 {requested} 根）无法布防自动信号，请调小慢线周期"
+            )
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
         strategy_class._warmup_cols = {
@@ -9061,9 +9189,12 @@ async def run_backtest(
                 **({"position_sizing": {"fill": "next_bar_open_market",
                      "capital_base": "pre_fill_net_equity" if risk["compound"] else "initial_capital",
                      "risk_quantity_leverage_multiplier": False,
-                     "initial_stop": "shared_frozen_actual_fill_risk_state",
+                     "initial_stop": ("template_frozen_signal_stop_actual_fill_distance"
+                                      if effective_tool_id in POSITION_SIZING_TEMPLATE_STOP_TOOLS
+                                      else "shared_frozen_actual_fill_risk_state"),
                      "qty_step_source": "provider_parameter_not_exchange_verified"}} if sizing_enabled else {}),
                 "indicator_warmup_bars": indicator_warmup_bars,
+                **ema_warmup_assumptions,
                 **risk_assumptions(risk),
                 **({"fibonacci_retracement": {
                     "swing_confirmation": "left_right_N_closed_bars_strict_extrema",
@@ -9147,6 +9278,7 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **ema_warmup_report,
                 **(_build_isolated_risk_report(
                     result_v2["trades"], leverage=leverage, market=market, df=df,
                     step=_timeframe_milliseconds(timeframe) // 1000, liquidations=liquidations,

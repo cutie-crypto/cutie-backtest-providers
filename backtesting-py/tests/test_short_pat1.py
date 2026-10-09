@@ -442,8 +442,8 @@ def test_catalog_short_only_and_tool_count(name):
     catalog=p._catalog_tool('local.backtesting_py.'+name,p.TOOL_SPECS['local.backtesting_py.'+name],['BTCUSDT'])
     assert catalog['markets']==['futures']
     assert catalog['param_schema']['properties']['direction']['enum']==['short']
-    # 集成 D：做空一基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空二 +2 → 53
-    assert len(p.TOOL_SPECS)==53
+    # 集成 D：做空一基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空二 +2 → 53；SHORT-PAT-3 缠论三卖 +1 → 54
+    assert len(p.TOOL_SPECS)==54
 
 
 @pytest.mark.parametrize('name',NAMES)
@@ -482,12 +482,19 @@ def test_long_builders_and_tool_spec_source_byte_unchanged():
 @pytest.mark.parametrize('key,value',[
     ('position_size_risk_pct',1),('compound',False),('position_size_qty_step',.1),
 ])
-def test_pending_sizing_futures_rejected_before_fetch(monkeypatch,name,key,value):
+def test_sizing_keys_wired_after_10b2b(monkeypatch,tmp_path,name,key,value):
+    # 10-B2b: top patterns left the pending list; sizing keys are in the schema and no longer
+    # hit the "not wired" rejection. Sizing arithmetic lives in test_10b2b_sizing_short_chan.py.
+    assert key in p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']
+    data=frame(name)
     monkeypatch.setattr(p,'AUTH_TOKEN','')
-    monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a,**kw:pytest.fail('pending sizing fetched main data'))
-    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *a,**kw:pytest.fail('pending sizing fetched warmup'))
-    assert key not in p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']
-    body=TestClient(p.app).post('/cutie/backtest',json=request(name,{key:value},frame(name))).json()
-    assert body['error_type']=='INVALID_PARAMS'
-    assert body['raw_report']['position_sizing']['rejections']==[
-        {'reason':'position sizing is not wired to this template yet'}]
+    monkeypatch.setattr(p,'REPORTS_DIR',tmp_path)
+    monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a,**kw:data.copy())
+    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *a,**kw:data.iloc[:0].copy())
+    monkeypatch.setattr(Backtest,'plot',lambda *a,**kw:None)
+    body=TestClient(p.app).post('/cutie/backtest',json=request(name,{key:value},data)).json()
+    if key=='position_size_risk_pct':
+        assert body['result_status']=='success' and len(body['raw_report']['position_sizing']['fills'])==1
+    else:   # a sizing mode is still required; the rejection is the parser's, not the pending list's
+        assert body['error_type']=='INVALID_PARAMS'
+        assert 'exactly one position_size mode is required' in body['error_message']
