@@ -176,7 +176,8 @@ def test_six_templates_left_pending_list_and_others_still_reject(monkeypatch):
     assert wired <= p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
     for tool in wired:
         assert POSITION_SIZE_KEYS <= set(p.TOOL_SPECS[tool]['param_schema_properties']), tool
-    assert len(p.POSITION_SIZING_PENDING_TOOLS) == 14
+    # 10-B2c 又移出 8 个（K 线六 + 双底 + 头肩底），余 6 个。
+    assert len(p.POSITION_SIZING_PENDING_TOOLS) == 6
     client = TestClient(p.app)
     for tool in sorted(p.POSITION_SIZING_PENDING_TOOLS):
         assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
