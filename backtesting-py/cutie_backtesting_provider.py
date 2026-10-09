@@ -4962,10 +4962,13 @@ def _build_top_pattern(params, *, kind, initial_capital):
         config.update(head_height=params.get('head_height_pct', 2)/100,
                       shoulder_tolerance=params.get('shoulder_tolerance_pct', 3)/100)
         min_bars = 4*n + 3
-    risk = _parse_fixed_risk_params(params)
+    # Top patterns reject user stops; the pattern stop is frozen at the breakout (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     from strategy_top_patterns import make_top_strategy
     cls = make_top_strategy(_FixedRiskMixin, kind=kind, risk=risk,
                             initial_capital=initial_capital, config=config)
+    # 10-B2b: risk distance = |actual fill - last top High * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, min_bars=min_bars, executed_name=kind.replace('_', ' ').title(),
         pattern_assumptions=dict(pattern_execution=
             'Only adjacent highs confirmed by swing_n closed bars on each side are used; '
@@ -5376,8 +5379,13 @@ _TEMPLATE_PRICING_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multipli
                           "trailing_stop_pct", "breakeven_stop",
                           *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
 # 10-B2a: sizing distance = |actual fill - the template's own initial stop frozen at the signal|.
-POSITION_SIZING_TEMPLATE_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
-    "macd_bullish_divergence", "rsi_bullish_divergence", "fibonacci_retracement", "vwap_reversion"))
+# 10-B2b: short templates are sized the same way; direction only signs the order quantity.
+# Templates whose own frozen stop is always used (they reject user stop/take-profit keys).
+_SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
+    "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
+    "double_top", "head_shoulders", "chan_3sell", "chan_3buy"))
+POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
+    "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
 
 
 def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -5389,7 +5397,7 @@ def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     """Whether the template supplies its own frozen stop when the user gives none."""
-    if tool_id in ("local.backtesting_py.macd_bullish_divergence", "local.backtesting_py.rsi_bullish_divergence"):
+    if tool_id in _SIZING_INTRINSIC_STOP_TOOLS:
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
         return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
@@ -5692,7 +5700,8 @@ _DIVERGENCE_EXIT_KEYS = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplie
 
 
 def _build_bearish_divergence(params, *, kind, initial_capital):
-    risk = _parse_fixed_risk_params(params)
+    # Divergence rejects user stops; its H2 stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     properties = TOOL_SPECS['local.backtesting_py.' + kind + '_bearish_divergence']['param_schema_properties']
     error = _validate_params_against_schema(params, properties)
     if error:
@@ -5725,6 +5734,8 @@ def _build_bearish_divergence(params, *, kind, initial_capital):
     from strategy_divergence import make_divergence_strategy
     cls = make_divergence_strategy(_FixedRiskMixin, kind=kind, config=config, risk=risk,
                                   initial_capital=initial_capital, rsi_series=_rsi_series, direction="short")
+    # 10-B2b: risk distance = |actual fill - High(H2) * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name=kind.upper()+' Bearish Divergence',
         min_bars=config['indicator_bars']+2*config['n']+lo,
         warmup_bars=config['indicator_bars']+2*config['n']+hi,
@@ -5821,7 +5832,8 @@ def _build_rsi_bullish_divergence(params, *, initial_capital=10000.0):
 @_with_time_config
 @_with_filter_config
 def _build_chan_3buy(params, *, initial_capital=10000.0):
-    risk = _parse_fixed_risk_params(params)
+    # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     if params.get('direction', 'long') != 'long':
         raise ValueError('INVALID_PARAMS:Chan third buy supports long only')
     bi_mode = params.get('bi_mode', 'new')
@@ -5835,6 +5847,8 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
         raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
     from strategy_chan import make_chan_strategy
     cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)
+    # 10-B2b: risk distance = |actual fill - pullback Low * 0.999| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name='Chan Third Buy ('+bi_mode+')', min_bars=3,
         chan_assumptions=dict(chan_execution={
             'direction': 'long_only', 'bi_mode': bi_mode,
@@ -5853,7 +5867,8 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
 @_with_time_config
 def _build_chan_3sell(params, *, initial_capital=10000.0):
     """SHORT-PAT-3: strict mirror of chan_3buy, futures short only (market gate in run)."""
-    risk = _parse_fixed_risk_params(params)
+    # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     if params.get('direction', 'short') != 'short':
         raise ValueError('INVALID_PARAMS:Chan third sell supports short only')
     bi_mode = params.get('bi_mode', 'new')
@@ -5868,6 +5883,8 @@ def _build_chan_3sell(params, *, initial_capital=10000.0):
     from strategy_chan import make_chan_strategy
     cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital,
                              direction='short')
+    # 10-B2b: risk distance = |actual fill - pullback High * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name='Chan Third Sell ('+bi_mode+')', min_bars=3,
         chan_assumptions=dict(chan_execution={
             'direction': 'short_only', 'market': 'futures_only', 'bi_mode': bi_mode,
@@ -7015,12 +7032,12 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
+# 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空；余下 14 个留给 10-B2c。
 POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
     "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
-    "double_bottom inverse_head_shoulders chan_3buy "
-    "macd_bearish_divergence rsi_bearish_divergence "
-    "us_open_momentum cme_weekend_gap double_top head_shoulders chan_3sell").split())
+    "double_bottom inverse_head_shoulders "
+    "us_open_momentum cme_weekend_gap").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
         TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)
