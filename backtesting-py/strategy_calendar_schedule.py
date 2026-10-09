@@ -117,7 +117,15 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
                         order.cancel()
                         record.update(status='skipped', reason='gap_stop_wrong_side', fill_open=price)
                         self._pending_entry = None
+                trades_before = len(self._broker.trades)
                 original()
+                # P-LOW1: the sizing hook (installed under original) drops a rejected entry from the
+                # queue without a fill; the reason itself is already in position_sizing.rejections.
+                pending = self._pending_entry
+                if (self._risk.get('position_sizing_enabled') and pending is not None
+                        and pending[0] not in self.orders and len(self._broker.trades) <= trades_before):
+                    pending[1].update(status='skipped', reason='sizing_rejected')
+                    self._pending_entry = None
             self._broker._process_orders = guarded_orders
 
         def _sizing_template_stop(self, order):
