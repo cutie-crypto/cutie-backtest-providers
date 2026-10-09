@@ -66,7 +66,7 @@ def test_disabled_response_and_start_unchanged(monkeypatch, name, warm):
 def test_schema_only_runtime_single_position_templates():
     actual = {tool.removeprefix('local.backtesting_py.') for tool, spec in provider.TOOL_SPECS.items()
               if 'time_layer_enabled' in spec['param_schema_properties']}
-    assert actual == {compat.tool_name(name) for name in MIXINS}
+    assert actual == {compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS)
     assert set(BASELINE['single']) == set(MIXINS)
 
 
@@ -135,7 +135,7 @@ def test_http_invalid_time_before_fetch(client, params):
 
 
 EXCLUDED = [name.removeprefix('local.backtesting_py.') for name, spec in provider.TOOL_SPECS.items()
-            if spec.get('runner') in ('kernel_v3', provider.SCALE_IN_OUT_RUNNER)]
+            if spec.get('runner') == 'kernel_v3']
 
 
 @pytest.mark.parametrize('name', EXCLUDED)

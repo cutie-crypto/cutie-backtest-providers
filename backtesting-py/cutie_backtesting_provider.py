@@ -2966,6 +2966,26 @@ def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 1000
 SCALE_IN_OUT_RUNNER = "scale_in_out_ledger"
 
 
+def _with_ledger_time_config(build):
+    @functools.wraps(build)
+    def configured(params, **kwargs):
+        time = TimeConfig.parse(params)
+        holding = params.get("max_holding_bars", 0)
+        spec = _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"]
+        if type(holding) is not int:
+            raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+        if not spec["minimum"] <= holding <= spec["maximum"]:
+            raise ValueError("INVALID_PARAMS:max_holding_bars must be within 0-1000000")
+        if holding and not time.enabled:
+            raise ValueError("INVALID_PARAMS:max_holding_bars requires risk_layer_enabled=true or time_layer_enabled=true")
+        built = build(params, **kwargs)
+        if time.enabled:
+            built["scale_in_out"].update(time_config=time, max_holding_bars=holding)
+        return built
+    return configured
+
+
+@_with_ledger_time_config
 def _build_rsi_scale_in_out(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """132 RSI 定额分批：参数校验 + 指标函数，不产出 backtesting.py Strategy。
 
@@ -3014,6 +3034,7 @@ def _build_rsi_scale_in_out(params: dict[str, Any], *, initial_capital: float = 
     }
 
 
+@_with_ledger_time_config
 def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Close-based grid; references advance on signals, lots only on actual fills."""
     from decimal import Context, localcontext
@@ -3071,14 +3092,15 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
 
     stats = {"grid_fills": 0, "stop_loss_triggered": 0, "sell_lot_ts": set()}
 
-    def signal_factory(bars):
+    def signal_factory(bars, *, time_context=None):
         ref_level = level(bars[0].close) if bars else 0
         holdings = 0
         reset_pending = False
+        entry_ref_before = ref_level
         stats.update(grid_fills=0, stop_loss_triggered=0, sell_lot_ts=set())
 
         def signal(index):
-            nonlocal ref_level, reset_pending
+            nonlocal ref_level, reset_pending, entry_ref_before
             if index == 0:
                 return "hold"
             lv = level(bars[index].close)
@@ -3093,6 +3115,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 reset_pending = False
                 return "hold"
             if 0 <= lv <= n and lv < ref_level:
+                entry_ref_before = ref_level
                 ref_level -= 1  # Advance even if the next-open buy lacks cash.
                 return ("buy", amount)
             if lv > ref_level:
@@ -3102,8 +3125,11 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 ref_level = min(lv, n)
             return "hold"
 
-        def on_fill(index, action, filled, price):
-            nonlocal holdings
+        def on_fill(index, action, filled, price, *, reason=None):
+            nonlocal holdings, ref_level, reset_pending
+            if reason == "time_entry_blocked":
+                ref_level = entry_ref_before
+                return
             if not filled:
                 return
             if action == "buy":
@@ -3115,7 +3141,11 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 stats["sell_lot_ts"].add(bars[index].open_time)
             elif action == "sell_all":
                 holdings = 0
-                stats["stop_loss_triggered"] += 1
+                if reason == "time_expiry":
+                    ref_level = level(price)
+                    reset_pending = False
+                else:
+                    stats["stop_loss_triggered"] += 1
 
         return signal, on_fill
 
@@ -4420,6 +4450,7 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
     }
 
 
+@_with_ledger_time_config
 def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Calendar buys, bounded dip attempts and whole-round profit taking."""
     from datetime import datetime, timezone
@@ -4472,14 +4503,16 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     if dip_amount <= 0:
         raise ValueError("INVALID_PARAMS:dip amount must remain positive after cash quantization")
 
-    def period(ts):
+    def period(ts, time_context=None):
         day = datetime.fromtimestamp(ts, timezone.utc)
+        if time_context is not None:
+            day = day.astimezone(time_context.zone)
         return day.date() if interval == "daily" else day.isocalendar()[:2]
 
     # Reporting mirror only. Trading state belongs to each signal/on_fill closure.
     stats = {"avg_cost": None, "rounds_completed": 0, "dip_adds_total": 0}
 
-    def signal_factory(bars):
+    def signal_factory(bars, *, time_context=None):
         round_notional = Decimal(0)
         round_qty = Decimal(0)
         last_buy_price = None
@@ -4487,6 +4520,7 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
         last_round_avg_cost = None
         pending_amount = amount
         pending_dip = False
+        entry_state_before = None
         stats.update(avg_cost=None, rounds_completed=0, dip_adds_total=0)
 
         def avg_cost():
@@ -4496,7 +4530,8 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
                 return canonical_decimal_str(round_cash(round_notional / round_qty)) if round_qty else None
 
         def signal(index):
-            nonlocal dip_adds_this_round, pending_amount, pending_dip
+            nonlocal dip_adds_this_round, pending_amount, pending_dip, entry_state_before
+            entry_state_before = (dip_adds_this_round, pending_amount, pending_dip)
             pending_dip = False
             if index + 1 >= len(bars):
                 return "hold"
@@ -4508,13 +4543,17 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
                     dip_adds_this_round += 1  # A skipped buy still consumes this attempt.
                     pending_amount, pending_dip = dip_amount, True
                     return ("buy", pending_amount)
-            if period(bars[index + 1].open_time) != period(bars[index].open_time):
+            if period(bars[index + 1].open_time, time_context) != period(bars[index].open_time, time_context):
                 pending_amount = amount
                 return ("buy", pending_amount)
             return "hold"
 
-        def on_fill(index, action, filled, price):
+        def on_fill(index, action, filled, price, *, reason=None):
             nonlocal round_notional, round_qty, last_buy_price, dip_adds_this_round, last_round_avg_cost
+            nonlocal pending_amount, pending_dip
+            if reason == "time_entry_blocked":
+                dip_adds_this_round, pending_amount, pending_dip = entry_state_before
+                return
             if not filled:
                 return
             with localcontext(exact):
@@ -5484,11 +5523,18 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 # param_schema_properties（而不是逐个手写 13 遍），新工具接入 TOOL_SPECS 时自动带上。
 # runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
 # 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
-# 132：定额分批（runner=scale_in_out_ledger）同样不合并——账本不消费固定止损止盈/仓位，
+# 132：定额分批（runner=scale_in_out_ledger）只合并时间键与共享持仓根数；不消费固定止损止盈/仓位，
 # 带这些参数的请求直接 INVALID_PARAMS（IMPL §3.1）。
 # 海龟单独声明组级风控三键，自管定量与退出；不声明杠杆及 time_* 键。
 for _tool_spec in TOOL_SPECS.values():
-    if _tool_spec.get("runner") in ("kernel_v3", SCALE_IN_OUT_RUNNER, TURTLE_RUNNER):
+    if _tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
+        _tool_spec["param_schema_properties"] = {
+            **_tool_spec["param_schema_properties"],
+            **_TIME_PARAM_SCHEMA_PROPERTIES,
+            "max_holding_bars": _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"],
+        }
+        continue
+    if _tool_spec.get("runner") in ("kernel_v3", TURTLE_RUNNER):
         continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
@@ -6204,7 +6250,7 @@ def _scale_in_out_rejection(params: dict[str, Any], bt_req: dict[str, Any], mark
         return "scale-in/out template supports spot market only"
     if "leverage" in params:
         return "scale-in/out template does not support leverage"
-    risk_keys = sorted(key for key in params if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    risk_keys = sorted(key for key in params if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES and key != "max_holding_bars")
     if risk_keys:
         return (
             "scale-in/out template does not support fixed risk parameters: "
@@ -6266,6 +6312,12 @@ def _run_scale_in_out_backtest(
     config = built["scale_in_out"]
     executed_name = str(built["executed_name"])
     min_bars = int(built["min_bars"])
+    time_context = None
+    if "time_config" in config:
+        try:
+            time_context = TimeContext.build(config["time_config"], timeframe, df.index)
+        except TimeDataGapError as e:
+            return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
     warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, min_bars, df)
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars < min_bars:
@@ -6287,7 +6339,8 @@ def _run_scale_in_out_backtest(
         ]
         if "signal_factory" in config:
             # R3 分批账本模板（网格 / DCA）：信号与成交回调由模板自带，策略状态只在其闭包里。
-            signal, on_fill = config["signal_factory"](bars)
+            signal, on_fill = config["signal_factory"](
+                bars, **(dict(time_context=time_context) if time_context is not None else {}))
         else:
             closes = np.concatenate([
                 warmup_df["Close"].to_numpy(dtype="float64"),
@@ -6310,6 +6363,8 @@ def _run_scale_in_out_backtest(
             end_at=end_at,
             lot_order=config.get("lot_order", "fifo"),
             on_fill=on_fill,
+            **(dict(time_context=time_context, max_holding_bars=config["max_holding_bars"])
+               if time_context is not None else {}),
         )
     except LedgerInvariantError as e:
         logger.exception("scale-in/out ledger invariant violated run_id=%s", run_id)
@@ -6383,6 +6438,12 @@ def _run_scale_in_out_backtest(
         )
         # 模板自报的统计（网格成交次数、DCA 平均成本等）排在固定字段之后，可覆盖 position_mode。
         template_assumptions = config["extra_assumptions"](ledger) if "extra_assumptions" in config else {}
+        time_assumptions = {}
+        if time_context is not None:
+            time_assumptions = time_context.assumptions(config["max_holding_bars"])
+            holding = time_assumptions["time_layer"].setdefault("holding", {})
+            holding.update(clock="round_first_fill", same_bar_priority="time_expiry_before_template_signal",
+                           final_bar="ledger_end_liquidation_without_callback")
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
@@ -6419,6 +6480,7 @@ def _run_scale_in_out_backtest(
                 "real_market_data": True,
                 "no_live_trading": True,
                 **template_assumptions,
+                **time_assumptions,
             },
             "limitations": {
                 "verification": "external_unverified",
@@ -6432,6 +6494,7 @@ def _run_scale_in_out_backtest(
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,
                 "legacy_metrics": legacy_metrics,
+                **(dict(time_expiry_fills=ledger.time_expiry_fills) if time_context is not None else {}),
                 "market_data_provenance": {
                     "provider_revision": PROVIDER_REVISION,
                     "source": df.attrs.get("cutie_data_source", DATA_SOURCE),
@@ -7159,7 +7222,8 @@ async def run_backtest(
     min_bars = int(built["min_bars"])
     executed_name = str(built["executed_name"])
     strategy_class = built["strategy"]
-    time_config = getattr(strategy_class, "_time_config", None)
+    time_config = (built.get("scale_in_out", {}).get("time_config")
+                   or getattr(strategy_class, "_time_config", None))
     if time_config is not None:
         try:
             fixed_timeframe_milliseconds(timeframe)
