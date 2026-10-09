@@ -386,7 +386,9 @@ def test_http_invalid_combination_before_market_fetch(monkeypatch):
 def test_new_schema_consumed_only_by_runtime_mixins(key):
     assert p._FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]['default'] == (False if key=='breakeven_stop' else 0)
     for spec in p.TOOL_SPECS.values():
-        assert (key in spec['param_schema_properties']) == (spec.get('runner') not in ('kernel_v3','scale_in_out_ledger','turtle_group'))
+        included = spec.get('runner') not in ('kernel_v3','scale_in_out_ledger','turtle_group')
+        assert (key in spec['param_schema_properties']) == (
+            included or (spec.get('runner') == p.TURTLE_RUNNER and key == 'max_holding_bars'))
 
 @pytest.mark.parametrize('side',['long','short'])
 def test_partial_fee_accounting_preserves_quantity_and_equity(side):

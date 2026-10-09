@@ -209,7 +209,7 @@ def test_turtle_group_time_exemption_preserves_disabled_golden(name, direction):
 
 @pytest.mark.parametrize('name', compat.enumerate_turtle_cases())
 @pytest.mark.parametrize('key,value', list(DEFAULTS.items()) + [
-    ('time_max_holding_minutes', 0), ('time_flatten_at', ''), ('time_flatten_weekdays', 127)])
+    ('time_max_holding_minutes', 1), ('time_flatten_at', '12:00'), ('time_flatten_weekdays', 1)])
 def test_turtle_time_keys_rejected_even_with_group_risk(client, name, key, value):
     body = capture.request_body(name, {'risk_layer_enabled': True, key: value})
     body['backtest']['market'] = 'futures'
