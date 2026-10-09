@@ -37,6 +37,9 @@ DIVERGENCE_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t4_divergen
 assert BASELINE['single'].keys().isdisjoint(DIVERGENCE_BASELINE['single'])
 BASELINE['single'].update(DIVERGENCE_BASELINE['single'])
 BASELINE['single'].update(json.loads((Path(__file__).parent / 'fixtures/9t6_chan_off.json').read_text())['single'])
+FIB_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_9t5_b42210b.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(FIB_BASELINE['single'])
+BASELINE['single'].update(FIB_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -135,6 +138,11 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         data.index = pd.date_range('2026-01-01 18:00', periods=len(data), freq='h')
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
+    if name == 'fibonacci_retracement':
+        from test_9t5_fibonacci import frame as fibonacci_frame
+        data = fibonacci_frame()
+        data.loc[data.index[10], ['High', 'Close']] = [117, 116]
+        params['swing_n'] = 2
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
     ctx = TimeContext.build(cls._time_config, '1h', data.index)
     cls._time_context = ctx
