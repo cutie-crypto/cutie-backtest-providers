@@ -214,6 +214,12 @@ def test_every_registered_single_template_consumes_holding_bars(name):
     params = dict(compat.PARAMS.get(name, {}), time_layer_enabled=True, max_holding_bars=3)
     if name.endswith('_short'):
         params['direction'] = 'short'
+    if name.endswith('_bullish_divergence'):
+        from test_9t4_divergence import hand_frame, hand_params
+        data = hand_frame()
+        params.update(hand_params(name))
+        if name.startswith('rsi'):
+            params['rsi_exit_above'] = 100
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 85
     if name == 'ichimoku_cloud_breakout':

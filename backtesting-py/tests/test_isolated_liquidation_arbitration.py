@@ -247,7 +247,7 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
     monkeypatch.setattr(p,'_isolated_liquidation_candidate',forbidden)
     monkeypatch.setattr(p._FixedRiskMixin,'_isolated_install_settlement',forbidden)
     monkeypatch.setattr(Backtest,'plot',lambda *a,**k:None)
-    def invoke(module):
+    def invoke(module, extra=extra):
         monkeypatch.setattr(module,'_fetch_ohlcv',lambda *a,**k:data.copy())
         monkeypatch.setattr(module,'_fetch_template_warmup',lambda *a,**k:pd.DataFrame())
         monkeypatch.setattr(module,'REPORTS_DIR',tmp_path)
@@ -256,7 +256,12 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         out=TestClient(module.app).post('/cutie/backtest',json=req).json()
         assert out['result_status']=='success',out
         return out
-    baseline,result=invoke(baseline_provider),invoke(p)
+    if name.endswith('_bullish_divergence'):
+        # The historical e25886e provider predates these tool ids. Their frozen
+        # off-state goldens live in 9t4 fixtures; prove explicit L=1 equivalence here.
+        baseline,result=invoke(p, {}),invoke(p)
+    else:
+        baseline,result=invoke(baseline_provider),invoke(p)
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')
     assert canonical_json({k:result[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
     for key in ('assumptions','raw_report'):

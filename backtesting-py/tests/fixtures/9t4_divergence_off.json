@@ -1,0 +1,31 @@
+{
+  "base_sha": "b42210b",
+  "single": {
+    "macd_bullish_divergence": {
+      "min_bars": 103,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "1ad656725611cdb56ca867207cad36a234c9cefa81404127c0d17db0031f9cf7",
+        "raw_report_sha256": "d3f51f9eec6a3151bbfaf33a25af07cb21749b2464a35ecdce9fa78bffb83cd6"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "43e1f13caaa46419e98f1f2e156d39b31ab6747f40e05d7a2848de10b4d2b004",
+        "raw_report_sha256": "071c814582aa2fcc4835bee82979166cc55cd7b9912165b8b3d5847860b690cc"
+      }
+    },
+    "rsi_bullish_divergence": {
+      "min_bars": 58,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "77a6c74c99db374ed52af79197017f6aeeb32e2fa11751017505db7cb5b9f336",
+        "raw_report_sha256": "72f24e428b94862ae01c8bdb719c430f08bc5ceb26d3c35fb74eca6a6dde6346"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "2a8fd878baff3cb7cf26aacf52fdf8566bcea77ba2ab878ac9618f1f3a618b15",
+        "raw_report_sha256": "1a7f22e3ef9ed138bc30f760d2ce322d7bba8ed6cde3dffc01109d2faf03e352"
+      }
+    }
+  }
+}
