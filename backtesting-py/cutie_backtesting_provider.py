@@ -36,6 +36,7 @@ from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
+from strategy_entry_filters import FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, entry_mask
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from strategy_execution import (
@@ -2585,7 +2586,47 @@ def _isolated_liquidation_candidate(*, entry_price, leverage: int, is_long: bool
             "fill_price": opening if gap else price}
 
 
-class _FixedRiskMixin(_TimeLayerMixin):
+def _with_filter_config(build=None, *, default_direction="long"):
+    if build is None:
+        return functools.partial(_with_filter_config, default_direction=default_direction)
+
+    @functools.wraps(build)
+    def configured(params, **kwargs):
+        config = FilterConfig.parse(params)
+        direction = params.get("direction", default_direction)
+        if config.enabled and direction != "long":
+            raise ValueError("INVALID_PARAMS:entry filters support long direction only; short/both are not supported")
+        built = build(params, **kwargs)
+        if config.enabled:
+            built["strategy"]._filter_config = config
+        return built
+    configured._supports_entry_filters = True
+    return configured
+
+
+class _FilterLayerMixin:
+    _filter_config = None
+
+    def _filter_init(self) -> None:
+        if self._filter_config is None:
+            return
+        columns = {}
+        for name in _WARMUP_COLUMNS:
+            prefix = self._warmup_cols[name] if self._warmup_bars else []
+            columns[name] = np.concatenate([prefix, np.asarray(getattr(self.data, name))])
+        self._filter_mask = entry_mask(self._filter_config, columns, _supertrend_arrays)
+
+    def _filter_allow_entry(self) -> bool:
+        if self._filter_config is None:
+            return True
+        # No next open exists at the tail; do not let finalize_trades back-fill.
+        index = self._warmup_bars + len(self.data) - 1
+        if index >= len(self._filter_mask) - 1:
+            return False
+        return bool(self._filter_mask[index])
+
+
+class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
     """单仓模板共用覆盖层；1 倍且 risk_layer_enabled=false 完整保留旧层。
 
     3a 显式开启时用 High/Low 判触发，仍提交下一根开盘市价平仓。
@@ -2633,6 +2674,7 @@ class _FixedRiskMixin(_TimeLayerMixin):
             self._isolated_blocked_bar = -1
             self._isolated_stop_beyond_trades = 0
             self._isolated_install_settlement()
+        self._filter_init()
         if self._time_config is not None:
             self._risk_exit_reason = None
         if self._risk.get("risk_layer_enabled"):
@@ -2831,6 +2873,7 @@ class _FixedRiskMixin(_TimeLayerMixin):
         if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
             return
         if not self._time_allow_entry(): return
+        if not self._filter_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
@@ -2888,6 +2931,7 @@ class _FixedRiskMixin(_TimeLayerMixin):
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -2948,6 +2992,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
 
 
 @_with_time_config
+@_with_filter_config
 def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3222,6 +3267,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3275,6 +3321,7 @@ def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float 
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3341,6 +3388,7 @@ def _keltner_arrays(high: Any, low: Any, close: Any, ema_period: int,
 
 
 @_with_time_config
+@_with_filter_config
 def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     values = {}
@@ -3584,6 +3632,7 @@ def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -
 
 
 @_with_time_config
+@_with_filter_config
 def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3656,6 +3705,7 @@ def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3737,6 +3787,7 @@ def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 1
 
 
 @_with_time_config
+@_with_filter_config
 def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3809,6 +3860,7 @@ def _cci_series(high: Any, low: Any, close: Any, period: int):
 
 
 @_with_time_config
+@_with_filter_config(default_direction="both")
 def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3888,6 +3940,7 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """R1-T4：EMA 趋势过滤 + RSI 回调（Jessie #3）。只做多。
 
@@ -3965,6 +4018,7 @@ def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 
 
 
 @_with_time_config
+@_with_filter_config
 def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -4024,6 +4078,7 @@ def _stoch_arrays(high: Any, low: Any, close: Any, period: int, smooth: int, d_p
 
 
 @_with_time_config
+@_with_filter_config
 def _build_stoch_oversold_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.stoch_oversold_cross"]["param_schema_properties"]
@@ -4087,6 +4142,7 @@ def _bollinger_squeeze_arrays(close: Any, period: int, std_mult: float, lookback
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bollinger_squeeze_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.bollinger_squeeze_breakout"]["param_schema_properties"]
@@ -4159,6 +4215,7 @@ def _adx_di_arrays(high: Any, low: Any, close: Any, period: int) -> dict[str, An
 
 
 @_with_time_config
+@_with_filter_config
 def _build_adx_di_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.adx_di_cross"]["param_schema_properties"]
@@ -4248,6 +4305,7 @@ def _supertrend_arrays(high: Any, low: Any, close: Any, atr_period: int, multipl
 
 
 @_with_time_config
+@_with_filter_config
 def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """R1-T2：Supertrend 翻转，本批只做多。down→up 翻转那一根收盘确认、下一根开盘买入；
     up→down 翻转那一根收盘确认、下一根开盘平仓。"""
@@ -4312,6 +4370,7 @@ def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """108 顺序 5a-P：两条件 AND（EMA 趋势过滤 + RSI 入场）。契约唯一权威见 TokenBeep 仓
     docs/features/108_策略自动发信号执行器扩容/IMPL_顺序5a_两条件AND回测.md §2/§3。
@@ -4404,6 +4463,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Directional EMA pullback; rearm only on a later flat bar beyond the zone."""
     risk = _parse_fixed_risk_params(params)
@@ -4677,6 +4737,7 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 
 
 @_with_time_config
+@_with_filter_config
 def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only close-confirmed BIAS reversion, filled at the next open."""
     risk = _parse_fixed_risk_params(params)
@@ -4729,6 +4790,7 @@ def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only entry on the first bar forming short > mid > long EMA alignment."""
     risk = _parse_fixed_risk_params(params)
@@ -4793,6 +4855,7 @@ def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: floa
 
 
 @_with_time_config
+@_with_filter_config
 def _build_macd_above_zero(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Separate long-only MACD template; both DIF and DEA must be above zero."""
     risk = _parse_fixed_risk_params(params)
@@ -4889,6 +4952,7 @@ def _parabolic_sar_arrays(high: Any, low: Any, close: Any, af_start: float,
 
 
 @_with_time_config
+@_with_filter_config
 def _build_parabolic_sar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     values = {}
@@ -4958,6 +5022,7 @@ def _ichimoku_arrays(high: Any, low: Any, tenkan_period: int,
 
 
 @_with_time_config
+@_with_filter_config
 def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     periods = {}
@@ -5581,6 +5646,12 @@ for _tool_spec in TOOL_SPECS.values():
         **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     }
 del _tool_spec
+
+# Entry filters are single-position only in 7P-1; ledger/kernel keys remain unknown.
+for _filter_tool_spec in TOOL_SPECS.values():
+    if getattr(_filter_tool_spec.get("build"), "_supports_entry_filters", False):
+        _filter_tool_spec["param_schema_properties"].update(FILTER_PARAM_SCHEMA_PROPERTIES)
+del _filter_tool_spec
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
 
@@ -7268,6 +7339,15 @@ async def run_backtest(
         except ValueError as e:
             return _validation_failure("INVALID_PARAMS", str(e))
 
+    filter_config = getattr(strategy_class, "_filter_config", None)
+    if filter_config is not None:
+        if bt_req.get("signal_execution") is not None:
+            return _validation_failure("INVALID_PARAMS", "entry filters do not support signal_execution")
+        try:
+            filter_step_ms = fixed_timeframe_milliseconds(timeframe)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e).replace("time layer", "entry filters"))
+
     # --- Fetch OHLCV ---
     try:
         df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
@@ -7305,6 +7385,11 @@ async def run_backtest(
     except Exception as e:
         logger.exception("OHLCV fetch unexpected error")
         return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch market data: {e}")
+
+    if filter_config is not None:
+        # Only completed signal candles are visible, including when time is disabled.
+        cutoff = min(end_at * 1000, int(time.time() * 1000))
+        df = df.loc[df.index.map(lambda value: pd.Timestamp(value).value // 1000000) + filter_step_ms <= cutoff].copy()
 
     if len(df) < min_bars:
         return _business_failure(
@@ -7345,7 +7430,11 @@ async def run_backtest(
     risk = getattr(strategy_class, "_risk", {})
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
-    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df)
+    filter_warmup = filter_config.required_bars if filter_config is not None else 0
+    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup), df)
+    if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
+        return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
+                                 reason="filter_history_insufficient")
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
@@ -7587,6 +7676,7 @@ async def run_backtest(
                     equity_scale_dec=equity_scale_dec)
                    if isolated else {}),
                 **turtle_raw_report,
+                **({"entry_filters": filter_config.report()} if filter_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
