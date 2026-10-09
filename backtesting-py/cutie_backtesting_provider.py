@@ -39,6 +39,9 @@ from strategy_time_layer import (
 from strategy_entry_filters import (
     FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, entry_mask, HigherTimeframeContext, FilterHistoryError,
 )
+from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
+from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
+from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from strategy_execution import (
@@ -2560,14 +2563,19 @@ class _TimeLayerMixin:
         return context.allow_entry(context.decision_utc(bar_open))
 
 
-def _with_time_config(build):
+def _with_time_config(build=None, *, intrinsic_keys=()):
+    if build is None:
+        return lambda function: _with_time_config(function, intrinsic_keys=intrinsic_keys)
     @functools.wraps(build)
     def configured(params, **kwargs):
         # VWAP price is intrinsic to that template, including when the optional
         # time gate is disabled; other templates still reject this unknown key.
         time_params = ({k: v for k, v in params.items() if k != "time_vwap_price"}
                        if build.__name__ == "_build_vwap_reversion" else params)
-        config = TimeConfig.parse(time_params)
+        optional = {key: value for key, value in time_params.items() if key not in intrinsic_keys}
+        if intrinsic_keys and params.get("time_layer_enabled") is True:
+            optional["time_timezone"] = params.get("time_timezone", "UTC")
+        config = TimeConfig.parse(optional)
         built = build(params, **kwargs)
         if config.enabled:
             built["strategy"]._time_config = config
@@ -5085,6 +5093,47 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
             "executed_name": f"Ichimoku Cloud Breakout ({tenkan}/{kijun}/{senkou_b})", "min_bars": min_bars}
 
 
+def _build_range_breakout(params, profile, initial_capital):
+    config = RangeConfig.parse(params, profile)
+    risk = _parse_fixed_risk_params(params)
+    return dict(strategy=make_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Opening Range Breakout" if profile == "orb" else "Asia Range Breakout",
+                min_bars=2, range_config=config)
+
+
+@_with_time_config
+def _build_opening_range_breakout(params, *, initial_capital=10000.0):
+    return _build_range_breakout(params, "orb", initial_capital)
+
+
+@_with_time_config
+def _build_asia_range_breakout(params, *, initial_capital=10000.0):
+    return _build_range_breakout(params, "asia", initial_capital)
+
+
+@_with_time_config(intrinsic_keys=INTRINSIC_KEYS)
+def _build_calendar_schedule(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS["local.backtesting_py.calendar_schedule"]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = CalendarConfig.parse(params)
+    enabled = params.get("calendar_stop_enabled", True)
+    if type(enabled) is not bool:
+        raise ValueError("INVALID_PARAMS:calendar_stop_enabled must be boolean")
+    effective = dict(params)
+    if enabled:
+        effective.setdefault("stop_loss_pct", 3)
+    elif "stop_loss_pct" in params:
+        raise ValueError("INVALID_PARAMS:stop_loss_pct conflicts with calendar_stop_enabled=false")
+    risk = _parse_fixed_risk_params(effective)
+    for key in ("stop_loss_pct", "take_profit_pct"):
+        fraction = risk.get(key)
+        if fraction is not None and (fraction <= 0 or 1 + fraction == 1 or 1 - fraction == 1):
+            raise ValueError(f"INVALID_PARAMS:{key} is too small for engine prices")
+    return dict(strategy=make_calendar_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Calendar Schedule", min_bars=2, calendar_config=config)
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 @_with_time_config
@@ -5257,6 +5306,43 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
 
 
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.calendar_schedule": {
+        "name": "Local Backtesting.py Calendar Schedule",
+        "description": "Weekly/monthly wall-clock entries and timed exits; next-open market fills; default 3% frozen stop.",
+        "strategy_family": "calendar", "is_default": False, "build": _build_calendar_schedule,
+        "param_schema_properties": {
+            **ENTRY_SCHEMA,
+            "direction": {"type": "string", "default": "long", "enum": ["long", "short"]},
+            "calendar_stop_enabled": {"type": "boolean", "default": True},
+        },
+    },
+    "local.backtesting_py.opening_range_breakout": {
+        "name": "Local Backtesting.py Opening Range Breakout",
+        "description": "One daily close-confirmed frozen opening-range breakout; next-open market exits.",
+        "strategy_family": "breakout", "is_default": False, "build": _build_opening_range_breakout,
+        "param_schema_properties": {
+            "range_start": {"type": "string", "default": "00:00"},
+            "range_minutes": {"type": "integer", "default": 60, "minimum": 15, "maximum": 240},
+            "flatten_at": {"type": "string", "default": "23:45"},
+            "take_profit_multiple": {"type": "number", "default": 2.0, "minimum": 0.01, "maximum": 100},
+            "direction": {"type": "string", "default": "long", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.asia_range_breakout": {
+        "name": "Local Backtesting.py Asia Range Breakout",
+        "description": "One daily frozen Asia-range breakout in the European opening window; next-open market exits.",
+        "strategy_family": "breakout", "is_default": False, "build": _build_asia_range_breakout,
+        "param_schema_properties": {
+            "range_start": {"type": "string", "default": "00:00"},
+            "range_end": {"type": "string", "default": "07:00"},
+            "breakout_start": {"type": "string", "default": "07:00"},
+            "flatten_at": {"type": "string", "default": "20:00"},
+            "take_profit_multiple": {"type": "number", "default": 1.5, "minimum": 0.01, "maximum": 100},
+            "direction": {"type": "string", "default": "long", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.stoch_oversold_cross": {
         "name": "Local Backtesting.py Stochastic Oversold Cross",
         "description": (
@@ -5844,6 +5930,22 @@ for _filter_tool_spec in TOOL_SPECS.values():
     if getattr(_filter_tool_spec.get("build"), "_supports_entry_filters", False):
         _filter_tool_spec["param_schema_properties"].update(FILTER_PARAM_SCHEMA_PROPERTIES)
 del _filter_tool_spec
+
+# F1 owns its frozen range prices; publish only shared risk parameters it consumes.
+for _range_tool in ("local.backtesting_py.opening_range_breakout", "local.backtesting_py.asia_range_breakout"):
+    _range_properties = TOOL_SPECS[_range_tool]["param_schema_properties"]
+    for _range_key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
+        if _range_key not in {"position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}:
+            _range_properties.pop(_range_key, None)
+del _range_tool, _range_properties, _range_key
+
+# Calendar consumes fixed prices/sizing and shared clocks, without advertising unused dynamic stops.
+_calendar_properties = TOOL_SPECS["local.backtesting_py.calendar_schedule"]["param_schema_properties"]
+for _calendar_key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
+    if _calendar_key not in {"stop_loss_pct", "take_profit_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}:
+        _calendar_properties.pop(_calendar_key, None)
+_calendar_properties["stop_loss_pct"] = {**_calendar_properties["stop_loss_pct"], "default": 3}
+del _calendar_properties, _calendar_key
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
 
@@ -7506,6 +7608,10 @@ async def run_backtest(
     if (effective_tool_id == "local.backtesting_py.turtle"
             and params.get("direction") in ("short", "both") and market != "futures"):
         return _validation_failure("INVALID_PARAMS", "Turtle short/both direction requires futures market")
+    if effective_tool_id in ("local.backtesting_py.opening_range_breakout", "local.backtesting_py.asia_range_breakout") and market == "spot" and params.get("direction", "long") != "long":
+        return _validation_failure("INVALID_PARAMS", "range breakout short/both requires futures market")
+    if effective_tool_id == "local.backtesting_py.calendar_schedule" and market == "spot" and params.get("direction", "long") != "long":
+        return _validation_failure("INVALID_PARAMS", "calendar short requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -7550,9 +7656,38 @@ async def run_backtest(
             return _validation_failure("INVALID_PARAMS", str(e))
         strategy_class._f5_step_ms = vwap_step_ms
 
+    range_config = built.get("range_config")
+    if range_config is not None:
+        from datetime import datetime, timezone
+        try:
+            range_config.validate_grid(timeframe, datetime.fromtimestamp(start_at, timezone.utc), datetime.fromtimestamp(end_at, timezone.utc))
+        except ValueError as exc:
+            return _validation_failure("INVALID_PARAMS", str(exc))
+
+    calendar_config = built.get("calendar_config")
+    if calendar_config is not None:
+        from datetime import datetime, timezone
+        try:
+            calendar_config.validate_grid(timeframe, datetime.fromtimestamp(start_at, timezone.utc), datetime.fromtimestamp(end_at, timezone.utc))
+        except ValueError as exc:
+            return _validation_failure("INVALID_PARAMS", str(exc))
+        strategy_class._calendar_timeframe = timeframe
+
     # --- Fetch OHLCV ---
     try:
-        df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
+        if range_config is not None:
+            history = _fetch_strict_time_history(exchange_id, market, symbol, timeframe, start_at, end_at, range_config.definition)
+            start = datetime.fromtimestamp(start_at, timezone.utc)
+            prefix = history.loc[[utc_datetime(value) < start for value in history.index]]
+            df = history.loc[[utc_datetime(value) >= start for value in history.index]].copy()
+            strategy_class._range_prefix = tuple(SeriesBar(t, h, lo, c, v) for t, h, lo, c, v in
+                zip(prefix.index, prefix.High, prefix.Low, prefix.Close, prefix.Volume))
+            strategy_class._range_timeframe = timeframe
+            strategy_class._range_backtest_start = start
+        else:
+            df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
+    except TimeHistoryError as exc:
+        return _business_failure(run_id, exc.error_type, str(exc), reason=exc.reason)
     except MarketDataFetchError as e:
         return _business_failure(
             run_id,
@@ -7631,6 +7766,12 @@ async def run_backtest(
         except TimeDataGapError as e:
             return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
 
+    if calendar_config is not None:
+        try:
+            TimeContext.build(calendar_config.clock, timeframe, df.index)
+        except TimeDataGapError as exc:
+            return _business_failure(run_id, "TIME_DATA_GAP", str(exc), reason="time_data_gap")
+
     if time_config is not None:
         try:
             strategy_class._time_context = TimeContext.build(time_config, timeframe, df.index)
@@ -7654,7 +7795,8 @@ async def run_backtest(
     filter_warmup = filter_config.required_bars if filter_config is not None and not filter_config.timeframe else 0
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
-    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup, vwap_warmup), df)
+    warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
+                 _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup, vwap_warmup), df))
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
@@ -7704,6 +7846,14 @@ async def run_backtest(
             **_leverage_backtest_kwargs(leverage),
         )
         stats = bt.run()
+        if calendar_config is not None:
+            for event in stats["_strategy"].calendar_events:
+                if event["status"] == "filled" and "exit_reason" not in event:
+                    event["exit_reason"] = "engine_finalize_trades_settlement"
+        if range_config is not None:
+            for daily in stats["_strategy"].daily_ranges.values():
+                if daily["triggered"] and daily["exit_reason"] is None:
+                    daily["exit_reason"] = "engine_finalize_trades_settlement"
 
         # Generate HTML report
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -7875,6 +8025,8 @@ async def run_backtest(
                    if isolated else {}),
                 **f5_isolated_assumptions,
                 **turtle_assumptions,
+                **(range_assumptions(range_config) if range_config is not None else {}),
+                **(calendar_assumptions(calendar_config) if calendar_config is not None else {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 **({"vwap_reversion": {
@@ -7931,6 +8083,8 @@ async def run_backtest(
                 **({"entry_filters": {**filter_config.report(),
                     **(strategy_class._filter_context.report if strategy_class._filter_context is not None else {})}}
                     if filter_config is not None else {}),
+                **({"calendar_events": stats["_strategy"].calendar_events} if calendar_config is not None else {}),
+                **({"range_breakout_days": list(stats["_strategy"].daily_ranges.values())} if range_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,

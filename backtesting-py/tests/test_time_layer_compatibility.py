@@ -27,7 +27,10 @@ BASELINE['single'] = {**BASELINE['single'], **ADDED_BASELINE['single']}
 F5_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_f5_b42210b.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(F5_BASELINE['single'])
 BASELINE['single'].update(F5_BASELINE['single'])
+F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
+F2_CASES = {'calendar_schedule'}
 MIXINS = compat.enumerate_mixin_cases()
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES}
 
 
 @pytest.mark.parametrize('name', compat.PARAMS)
@@ -46,7 +49,7 @@ def test_ledger_unchanged(name):
     assert capture.ledger_fingerprint(name) == BASELINE['ledger'][name]
 
 
-@pytest.mark.parametrize('name', MIXINS)
+@pytest.mark.parametrize('name', LEGACY_MIXINS)
 @pytest.mark.parametrize('warm', [False, True])
 def test_disabled_response_and_start_unchanged(monkeypatch, name, warm):
     params = {'direction': 'short'} if name.endswith('_short') else {}
@@ -70,7 +73,7 @@ def test_schema_only_runtime_single_position_templates():
     actual = {tool.removeprefix('local.backtesting_py.') for tool, spec in provider.TOOL_SPECS.items()
               if 'time_layer_enabled' in spec['param_schema_properties']}
     assert actual == {compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS)
-    assert set(BASELINE['single']) == set(MIXINS)
+    assert set(BASELINE['single']) | F1_CASES | F2_CASES == set(MIXINS)
 
 
 @pytest.mark.parametrize('name', MIXINS)
@@ -81,6 +84,14 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
     params = {**compat.PARAMS.get(name, {}), 'stop_loss_pct': 3, 'take_profit_pct': 5,
               'risk_layer_enabled': risk_enabled, 'time_layer_enabled': True,
               'time_session_start': '06:00', 'time_session_end': '10:00'}
+    if name in F1_CASES:
+        params['flatten_at'] = '23:00'  # this test uses 1h candles
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
+    if name in F2_CASES:
+        params.update(time_entry_at='07:00', time_max_holding_minutes=240, calendar_stop_enabled=False)
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
@@ -217,3 +228,43 @@ def test_turtle_time_keys_rejected_even_with_group_risk(client, name, key, value
     body = capture.request_body(name, {'risk_layer_enabled': True, key: value})
     body['backtest']['market'] = 'futures'
     assert client.post('/cutie/backtest', json=body).json()['error_type'] == 'INVALID_PARAMS'
+
+
+@pytest.mark.parametrize('name', sorted(F1_CASES))
+@pytest.mark.parametrize('warm', [False, True])
+def test_f1_disabled_fingerprints(monkeypatch, tmp_path, name, warm):
+    from test_f1_range_breakout import market_frame, http_run
+    data = market_frame(count=100 if name == 'asia_range_breakout' else 16,
+                        signal=28 if name == 'asia_range_breakout' else 4)
+    start = data.index[8] if warm else None
+    absent = http_run(monkeypatch, tmp_path, data, tool=name, start=start)
+    explicit = http_run(monkeypatch, tmp_path, data, tool=name, params=DEFAULTS, start=start)
+    assert absent['trades']
+    for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
+        assert capture.digest(absent[key]) == capture.digest(explicit[key]), key
+    assert 'time_layer' not in explicit['assumptions']
+    assert not any(key.startswith('time_') for trade in explicit['trades'] for key in trade)
+    assert explicit['assumptions']['indicator_warmup_bars'] == 0
+    assert F1_CASES <= set(MIXINS)
+
+
+@pytest.mark.parametrize('configured', [False, True])
+def test_f2_disabled_bytes_and_no_optional_clock(monkeypatch, tmp_path, configured):
+    from test_f2_calendar import frame, http_run, SCHEDULE
+    data = frame()
+    params = SCHEDULE if configured else {}
+    absent = http_run(monkeypatch, tmp_path, data, params)
+    original = TimeContext.build.__func__
+    def intrinsic_only(cls, config, *args, **kwargs):
+        assert config.enabled and config.session_start == '' and config.session_end == ''
+        return original(cls, config, *args, **kwargs)
+    monkeypatch.setattr(TimeContext, 'build', classmethod(intrinsic_only))
+    explicit = http_run(monkeypatch, tmp_path, data, {**DEFAULTS, **params})
+    assert absent['result_status'] == explicit['result_status'] == 'success'
+    assert bool(absent['trades']) == configured
+    for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
+        assert capture.digest(absent[key]) == capture.digest(explicit[key]), key
+    assert 'time_layer' not in explicit['assumptions']
+    assert not any(key.startswith('time_') for trade in explicit['trades'] for key in trade)
+    assert explicit['assumptions']['indicator_warmup_bars'] == 0
+    assert F2_CASES <= set(MIXINS)
