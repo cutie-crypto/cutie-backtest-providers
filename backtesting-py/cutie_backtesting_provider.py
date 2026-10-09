@@ -8785,7 +8785,7 @@ async def run_backtest(
     if tool_spec.get("long_only_spot") and market != "futures" and params.get("direction", "both") != "long":
         return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     if tool_spec.get("markets") == ["futures"] and market != "futures":
-        return _validation_failure("INVALID_PARAMS", "top pattern templates require futures market")
+        return _validation_failure("INVALID_PARAMS", "this template requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:

@@ -1,5 +1,7 @@
 """P-LOW1 provider low-severity closure.
 
+2. calendar event rejected by sizing ends `skipped/sizing_rejected`; sizing off keeps calendar_events.
+3. futures-only templates reject spot with a text that names no template family, before any fetch.
 4. US open sizing assumption names the nearest-of-window-and-user-stop rule; other labels unchanged.
 5. calendar_stop_enabled=false + risk sizing is rejected before any fetch (same shape as red streak).
 """
@@ -130,3 +132,27 @@ def test_calendar_sizing_off_two_day_events_hand_expected(monkeypatch, tmp_path)
     body = c.post(monkeypatch, tmp_path, 'calendar_schedule', {}, data=two_day_calendar())
     assert [(e['status'], e['reason']) for e in body['raw_report']['calendar_events']] == [
         ('filled', None), ('filled', None)]
+
+
+# --- 3. futures-only templates: spot rejection text names no template family ------------------------
+
+FUTURES_ONLY = sorted(t.removeprefix('local.backtesting_py.') for t, s in p.TOOL_SPECS.items()
+                      if s.get('markets') == ['futures'])
+# The bearish divergences hit their own earlier spot gate (cutie_backtesting_provider.py, "bearish
+# divergence requires futures market") before the generic markets gate; that text is unchanged.
+EARLIER_GATE = {'macd_bearish_divergence': 'bearish divergence requires futures market',
+                'rsi_bearish_divergence': 'bearish divergence requires futures market'}
+
+
+def test_futures_only_set_is_the_known_five():
+    assert FUTURES_ONLY == ['chan_3sell', 'double_top', 'head_shoulders', 'macd_bearish_divergence',
+                            'rsi_bearish_divergence']
+
+
+@pytest.mark.parametrize('name', FUTURES_ONLY)
+def test_futures_only_template_spot_rejected_before_fetch(name, monkeypatch, tmp_path):
+    body, calls = _post_without_fetch(monkeypatch, tmp_path, name, {}, market='spot')
+    assert body['result_status'] == 'failed' and body['error_type'] == 'INVALID_PARAMS'
+    assert body['error_message'] == EARLIER_GATE.get(name, 'this template requires futures market')
+    assert 'top pattern' not in body['error_message']
+    assert calls == []
