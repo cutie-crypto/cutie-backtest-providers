@@ -6100,7 +6100,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         'name': 'Local Backtesting.py MACD Bearish Divergence',
         'description': 'Futures short-only adjacent confirmed swing highs: higher price and lower MACD at the high bar. '
                        'Next-open entry, frozen H2 stop plus 0.1 percent and actual-fill 2R target.',
-        'strategy_family': 'mean_reversion', 'is_default': False,
+        'strategy_family': 'mean_reversion', 'is_default': False, 'markets': ['futures'],
         'build': _build_macd_bearish_divergence,
         'param_schema_properties': {
             'direction': {'type': 'string', 'default': 'short', 'enum': ['short']},
@@ -6118,7 +6118,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         'name': 'Local Backtesting.py RSI Bearish Divergence',
         'description': 'Futures short-only adjacent confirmed swing highs: higher price and lower RSI at the high bar. '
                        'Next-open entry, frozen H2 stop plus 0.1 percent and actual-fill 2R target.',
-        'strategy_family': 'mean_reversion', 'is_default': False,
+        'strategy_family': 'mean_reversion', 'is_default': False, 'markets': ['futures'],
         'build': _build_rsi_bearish_divergence,
         'param_schema_properties': {
             'direction': {'type': 'string', 'default': 'short', 'enum': ['short']},
