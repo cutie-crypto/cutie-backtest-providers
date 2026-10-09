@@ -341,7 +341,7 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         assert any(reason == 'take_profit_levels' for _,reason,_ in observations)
 
 @pytest.mark.parametrize('template', ['rsi_scale_in_out','grid','dca'])
-@pytest.mark.parametrize('key', KEYS)
+@pytest.mark.parametrize('key', [key for key in KEYS if key != 'max_holding_bars'])
 def test_ledger_templates_reject_each_new_key_even_default(template,key,monkeypatch):
     def forbidden(*args,**kwargs):
         raise AssertionError('ledger rejection must precede fetch')
@@ -386,9 +386,10 @@ def test_http_invalid_combination_before_market_fetch(monkeypatch):
 def test_new_schema_consumed_only_by_runtime_mixins(key):
     assert p._FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]['default'] == (False if key=='breakeven_stop' else 0)
     for spec in p.TOOL_SPECS.values():
-        included = spec.get('runner') not in ('kernel_v3','scale_in_out_ledger','turtle_group')
+        runner = spec.get('runner')
         assert (key in spec['param_schema_properties']) == (
-            included or (spec.get('runner') == p.TURTLE_RUNNER and key == 'max_holding_bars'))
+            runner not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group') or
+            (runner in ('scale_in_out_ledger', p.TURTLE_RUNNER) and key == 'max_holding_bars'))
 
 @pytest.mark.parametrize('side',['long','short'])
 def test_partial_fee_accounting_preserves_quantity_and_equity(side):
