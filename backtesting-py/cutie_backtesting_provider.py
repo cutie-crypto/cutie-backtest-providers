@@ -2642,11 +2642,14 @@ class _FilterLayerMixin:
             columns[name] = np.concatenate([prefix, np.asarray(getattr(self.data, name))])
         self._filter_mask = entry_mask(self._filter_config, columns, _supertrend_arrays)
 
-    def _filter_allow_entry(self) -> bool:
+    def _filter_allow_entry(self, bar: Optional[int] = None) -> bool:
         if self._filter_config is None:
             return True
         # No next open exists at the tail; do not let finalize_trades back-fill.
-        index = (0 if self._filter_context is not None else self._warmup_bars) + len(self.data) - 1
+        # bar: explicit main-range judgment bar when the decision is submitted later
+        # (calendar's bar-0 event is placed at broker step 1); default = current bar.
+        index = (0 if self._filter_context is not None else self._warmup_bars) + (
+            len(self.data) - 1 if bar is None else bar)
         if index >= len(self._filter_mask) - 1:
             return False
         return bool(self._filter_mask[index])
@@ -3490,14 +3493,8 @@ TURTLE_RUNNER = "turtle_group"
 # 不接单仓入场过滤层的模板：入场处没有 _filter_allow_entry()，schema 不得出现 filter_* 键。
 # 做空模板：过滤层只支持做多（_with_filter_config 拒非 long），做空过滤口径待新单 7-P4 做空过滤层裁定后接入；
 # 7-P4 合入时本名单必须清空（到期用例 test_filter_unwired_list_only_shrinks_and_expires）。
-# 名单里仍有的做多模板是 7-P3 在途项（K 线六个归 7-P3a；双底、头肩底、ORB、亚洲区间、日历归 7-P3b 续单，
-# 其中 F1/F2 的 runner 预热对区间与日历强制为空，接线时须同时补过滤预热），接完即删。
+# 7-P3a/7-P3b/7-P3b2 已把全部做多单仓模板接入，名单只剩 5 个做空模板。
 FILTER_LAYER_UNWIRED_TOOLS = (
-    "local.backtesting_py.opening_range_breakout",
-    "local.backtesting_py.asia_range_breakout",
-    "local.backtesting_py.calendar_schedule",
-    "local.backtesting_py.double_bottom",
-    "local.backtesting_py.inverse_head_shoulders",
     "local.backtesting_py.macd_bearish_divergence",
     "local.backtesting_py.rsi_bearish_divergence",
     "local.backtesting_py.double_top",
@@ -4929,11 +4926,13 @@ def _build_bottom_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
+@_with_filter_config
 def _build_double_bottom(params, *, initial_capital=10000.0):
     return _build_bottom_pattern(params, kind='double_bottom', initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_inverse_head_shoulders(params, *, initial_capital=10000.0):
     return _build_bottom_pattern(params, kind='inverse_head_shoulders', initial_capital=initial_capital)
 
@@ -5338,16 +5337,19 @@ def _build_range_breakout(params, profile, initial_capital):
 
 
 @_with_time_config
+@_with_filter_config
 def _build_opening_range_breakout(params, *, initial_capital=10000.0):
     return _build_range_breakout(params, "orb", initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_asia_range_breakout(params, *, initial_capital=10000.0):
     return _build_range_breakout(params, "asia", initial_capital)
 
 
 @_with_time_config(intrinsic_keys=INTRINSIC_KEYS)
+@_with_filter_config
 def _build_calendar_schedule(params, *, initial_capital=10000.0):
     error = _validate_params_against_schema(params, TOOL_SPECS["local.backtesting_py.calendar_schedule"]["param_schema_properties"])
     if error:
@@ -8922,7 +8924,11 @@ async def run_backtest(
     filter_warmup = filter_config.required_bars if filter_config is not None and not filter_config.timeframe else 0
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
-    warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
+    # F1/F2 have no indicators of their own: only an enabled same-timeframe filter fetches
+    # its required_bars prefix; off-state (and filter_timeframe) stays empty.
+    warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
+                  if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
+                 if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:

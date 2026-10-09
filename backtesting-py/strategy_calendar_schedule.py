@@ -108,7 +108,7 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
                     event = config.event(utc_datetime(self.data.index[-1]).astimezone(self._calendar_clock.zone).date())
                     if event is not None and event == utc_datetime(self.data.index[-1]) and event not in self._seen_events:
                         self._seen_events.add(event)
-                        self._submit_entry(event, float(self.data.Close[-2]), has_next=True)
+                        self._submit_entry(event, float(self.data.Close[-2]), has_next=True, bar=0)
                 pending = self._pending_entry
                 if pending and pending[0] in self.orders:
                     order, record, stop = pending
@@ -167,9 +167,9 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
             if not due or self.orders:
                 return
             self._submit_entry(event, float(self.data.Close[-1]),
-                has_next=utc_datetime(opened) < self._calendar_clock.last_open_utc)
+                has_next=utc_datetime(opened) < self._calendar_clock.last_open_utc, bar=len(self.data)-1)
 
-        def _submit_entry(self, event, signal_close, *, has_next):
+        def _submit_entry(self, event, signal_close, *, has_next, bar):
             record = dict(event_utc=event.isoformat(), status='skipped', reason=None)
             self.calendar_events.append(record)
             if not has_next:
@@ -177,6 +177,10 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
                 return
             if self._time_config is not None and not self._time_context.allow_entry(event):
                 record['reason'] = 'entry_gate'
+                return
+            # Judgment bar = the event's closed bar (bar 0's event is submitted at broker step 1).
+            if not self._filter_allow_entry(bar):
+                record['reason'] = 'entry_filter'
                 return
             pct = self._risk.get('stop_loss_pct')
             stop = signal_close * (1 - pct if config.direction == 'long' else 1 + pct) if pct else None
