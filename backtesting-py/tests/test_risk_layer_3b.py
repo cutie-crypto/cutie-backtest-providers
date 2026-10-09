@@ -322,6 +322,8 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         return exited
     monkeypatch.setattr(p._FixedRiskMixin,'_risk_layer_check_exit',observe)
     params=dict(PARAMS.get(name,{}),risk_layer_enabled=True,**FEATURES[feature])
+    if name == 'calendar_schedule':
+        params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 100
     data=frame()
@@ -389,7 +391,7 @@ def test_new_schema_consumed_only_by_runtime_mixins(key):
     assert p._FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]['default'] == (False if key=='breakeven_stop' else 0)
     for tool_id, spec in p.TOOL_SPECS.items():
         included = spec.get('runner') not in ('kernel_v3','scale_in_out_ledger')
-        if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout'):
+        if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout', 'local.backtesting_py.calendar_schedule'):
             included = key == 'max_holding_bars'
         assert (key in spec['param_schema_properties']) == included
 

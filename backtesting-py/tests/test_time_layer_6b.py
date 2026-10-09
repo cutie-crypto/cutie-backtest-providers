@@ -212,6 +212,8 @@ def test_every_registered_single_template_consumes_holding_bars(name):
     data = pd.concat([compat.frame()]*3, ignore_index=True)
     data.index = pd.date_range('2026-01-01', periods=len(data), freq='h')
     params = dict(compat.PARAMS.get(name, {}), time_layer_enabled=True, max_holding_bars=3)
+    if name == 'calendar_schedule':
+        params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
     if name.endswith('_short'):
         params['direction'] = 'short'
     if name == 'ema_rsi_pullback':

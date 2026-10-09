@@ -50,7 +50,7 @@ def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
         included = spec.get('runner') not in ('kernel_v3', 'scale_in_out_ledger')
         for key in NEW:
             supported = included
-            if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout'):
+            if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout', 'local.backtesting_py.calendar_schedule'):
                 supported = key == 'risk_layer_enabled'
             assert (key in spec['param_schema_properties']) == supported
 
