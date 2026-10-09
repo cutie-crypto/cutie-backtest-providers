@@ -185,6 +185,10 @@ def make_strategy(mixin, config, risk, initial_capital):
                 return
             close = self.data.Close[-1]
             if config.direction in ('long', 'both') and close > frozen.high:
+                if not self._filter_allow_entry():
+                    # Judgment bar = the first closed breakout; a filtered breakout consumes the cycle, not delayed.
+                    self._used_days.add(key)
+                    return
                 self._risk_buy()
             elif config.direction in ('short', 'both') and close < frozen.low:
                 self._risk_sell()
