@@ -1,0 +1,32 @@
+10D final verification; interpreter=/usr/bin/python3; base=09bd963
+
+FOCUS EXIT=0
+31 passed in 0.33s
+
+ALL EXIT=0
+6403 passed, 107 warnings in 114.55s (0:01:54)
+
+MUTATIONS EXIT=0
+decision_close: EXIT=1; 1 failed in 0.15s
+decision_close: RESTORE_CMP=0 SHA256=2cc637c984cd0983cd78619279fe3ac0f348c63160346e2e095c160a4704d750
+buy_first: EXIT=1; 1 failed in 0.16s
+buy_first: RESTORE_CMP=0 SHA256=114911e37a4e453ef8a5cc7c211b3bc9a50cc4b49e329a8ade3b83960a21e861
+ceil_qty: EXIT=1; 1 failed in 0.18s
+ceil_qty: RESTORE_CMP=0 SHA256=114911e37a4e453ef8a5cc7c211b3bc9a50cc4b49e329a8ade3b83960a21e861
+tolerant_nav: EXIT=1; 1 failed in 0.13s
+tolerant_nav: RESTORE_CMP=0 SHA256=114911e37a4e453ef8a5cc7c211b3bc9a50cc4b49e329a8ade3b83960a21e861
+RESTORED EXIT=0; 31 passed in 0.13s
+
+SERVER EXIT=0
+validate_result_v4(golden) = None
+validate_result_v4(runner_with_btc_d) = None
+C1 34-digit payload/default context = 'result.v4 invalid arithmetic or shape'
+C1 34-digit payload/decimal128 context = None
+
+DIFF_CHECK EXIT=0; only new files permitted
+
+COMPILEALL EXIT=0
+
+BASELINE_CHECK=0 existing tracked files changed
+
+FOOTER_COUNT=0 (checked again after final commit)

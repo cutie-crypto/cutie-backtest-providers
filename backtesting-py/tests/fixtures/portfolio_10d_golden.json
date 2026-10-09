@@ -1,0 +1,28 @@
+{
+  "schema_version": "cutie.backtest_result.v4",
+  "fills": [
+    {"seq": 1, "ts": 1735776000, "symbol": "ETHUSDT", "side": "buy", "qty": "40", "price": "100", "fee": "4", "slippage": "0"},
+    {"seq": 2, "ts": 1735776000, "symbol": "SOLUSDT", "side": "buy", "qty": "80", "price": "50", "fee": "4", "slippage": "0"},
+    {"seq": 3, "ts": 1735862400, "symbol": "ETHUSDT", "side": "sell", "qty": "40", "price": "120", "fee": "4.8", "slippage": "0"},
+    {"seq": 4, "ts": 1735862400, "symbol": "SOLUSDT", "side": "buy", "qty": "113", "price": "60", "fee": "6.78", "slippage": "0"},
+    {"seq": 5, "ts": 1735948800, "symbol": "SOLUSDT", "side": "sell", "qty": "193", "price": "50", "fee": "9.65", "slippage": "0"},
+    {"seq": 6, "ts": 1735948800, "symbol": "ETHUSDT", "side": "buy", "qty": "34", "price": "140", "fee": "4.76", "slippage": "0"}
+  ],
+  "snapshots": [
+    {"ts": 1735689600, "cash": "10000", "positions": [{"symbol": "ETHUSDT", "qty": "0", "close_price": "90"}, {"symbol": "SOLUSDT", "qty": "0", "close_price": "45"}]},
+    {"ts": 1735776000, "cash": "1992", "positions": [{"symbol": "ETHUSDT", "qty": "40", "close_price": "110"}, {"symbol": "SOLUSDT", "qty": "80", "close_price": "55"}]},
+    {"ts": 1735862400, "cash": "0.42", "positions": [{"symbol": "ETHUSDT", "qty": "0", "close_price": "130"}, {"symbol": "SOLUSDT", "qty": "193", "close_price": "58"}]},
+    {"ts": 1735948800, "cash": "4876.01", "positions": [{"symbol": "ETHUSDT", "qty": "34", "close_price": "150"}, {"symbol": "SOLUSDT", "qty": "0", "close_price": "52"}]}
+  ],
+  "equity_curve": [{"ts": 1735689600, "equity": "10000"}, {"ts": 1735776000, "equity": "10792"}, {"ts": 1735862400, "equity": "11194.42"}, {"ts": 1735948800, "equity": "9976.01"}],
+  "btc_benchmark": [{"ts": 1735689600, "close_price": "100", "equity": "10000"}, {"ts": 1735776000, "close_price": "110", "equity": "11000"}, {"ts": 1735862400, "close_price": "105", "equity": "10500"}, {"ts": 1735948800, "close_price": "120", "equity": "12000"}],
+  "metrics": {"total_return": "-0.002399", "max_drawdown": "0.10884083", "fill_count": "6"},
+  "input_manifests": {
+    "prices": [
+      {"source": "handwritten.fixture", "symbol": "BTCUSDT", "market": "spot", "timeframe": "1d", "start_at": 1735689600, "end_at": 1735948800, "kline_count": 4, "checksum_algo": "sha256", "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      {"source": "handwritten.fixture", "symbol": "ETHUSDT", "market": "spot", "timeframe": "1d", "start_at": 1735689600, "end_at": 1735948800, "kline_count": 4, "checksum_algo": "sha256", "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      {"source": "handwritten.fixture", "symbol": "SOLUSDT", "market": "spot", "timeframe": "1d", "start_at": 1735689600, "end_at": 1735948800, "kline_count": 4, "checksum_algo": "sha256", "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    ],
+    "metric_series": null
+  }
+}
