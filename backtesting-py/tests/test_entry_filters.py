@@ -251,7 +251,7 @@ def test_each_registered_template_uses_filter_gate(name, risk_enabled, monkeypat
         return result
     monkeypatch.setattr(p._FilterLayerMixin, '_filter_allow_entry', observe)
     data = pd.concat([compat.frame()]*6, ignore_index=True)
-    data.index = pd.date_range('2026-01-01', periods=len(data), freq='h')
+    data.index = pd.date_range('2026-01-01', periods=len(data), freq=('15min' if name == 'us_open_momentum' else 'h'))
     trades = Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades']
     assert calls, name
     # EMA2 recurrence is independently recomputed using scalar arithmetic.

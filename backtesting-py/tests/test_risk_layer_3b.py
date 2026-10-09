@@ -323,6 +323,9 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 100
     data=frame()
+    if name == 'us_open_momentum':
+        import pandas as pd
+        data.index=pd.date_range('2026-01-01',periods=len(data),freq='15min')
     if feature == 'breakeven':
         # Narrow wicks let close-based 1R activate before initial-stop touches.
         data['Open']=data.Close

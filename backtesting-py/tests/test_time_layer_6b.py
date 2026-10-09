@@ -218,9 +218,13 @@ def test_every_registered_single_template_consumes_holding_bars(name):
         params['rsi_exit'] = 85
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
+    tf = '1h'
+    if name == 'us_open_momentum':
+        data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
+        tf = '15m'
     cls = p.TOOL_SPECS['local.backtesting_py.'+compat.tool_name(name)]['build'](params)['strategy']
     assert not cls._risk.get('risk_layer_enabled')
-    cls._time_context = TimeContext.build(cls._time_config, '1h', data.index)
+    cls._time_context = TimeContext.build(cls._time_config, tf, data.index)
     reasons = []
     original = cls._record_holding_expiry
     def record(self, fact):

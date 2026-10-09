@@ -5077,7 +5077,27 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
 
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
+@_with_time_config
+@_with_filter_config(default_direction="both")
+def _build_us_open_momentum(params, *, initial_capital=10000.0):
+    import sys
+    import strategy_calendar_templates as templates
+    return templates.build_us_open(sys.modules[__name__], params, initial_capital)
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.us_open_momentum": {
+        "name": "Local Backtesting.py US Open Momentum",
+        "description": "Regular New York weekday opening-window momentum; frozen opposite-window stop and 16:00 flatten. Regular calendar excludes holiday and half-day modeling.",
+        "strategy_family": "momentum", "is_default": False,
+        "build": _build_us_open_momentum, "long_only_spot": True,
+        "param_schema_properties": {
+            "window_minutes": {"type": "integer", "default": 30, "minimum": 15, "maximum": 60},
+            "threshold_pct": {"type": "number", "default": 0.3, "minimum": 0.05, "maximum": 5},
+            "direction": {"type": "string", "default": "both", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.stoch_oversold_cross": {
         "name": "Local Backtesting.py Stochastic Oversold Cross",
         "description": (
@@ -7314,6 +7334,8 @@ async def run_backtest(
     if (effective_tool_id == "local.backtesting_py.turtle"
             and params.get("direction") in ("short", "both") and market != "futures"):
         return _validation_failure("INVALID_PARAMS", "Turtle short/both direction requires futures market")
+    if tool_spec.get("long_only_spot") and market != "futures" and params.get("direction", "both") != "long":
+        return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -7328,6 +7350,11 @@ async def run_backtest(
     except Exception as e:  # F8: don't let build bugs become bare 500s with lost context
         logger.exception("strategy build failed tool=%s", effective_tool_id)
         return _business_failure(run_id, "ENGINE_ERROR", f"Strategy build failed: {e}")
+    if "validate_timeframe" in built:
+        try:
+            built["validate_timeframe"](timeframe)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e))
     min_bars = int(built["min_bars"])
     executed_name = str(built["executed_name"])
     strategy_class = built["strategy"]
@@ -7642,6 +7669,7 @@ async def run_backtest(
                     stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
                    if isolated else {}),
                 **turtle_assumptions,
+                **built.get("template_assumptions", {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -7676,6 +7704,8 @@ async def run_backtest(
                     equity_scale_dec=equity_scale_dec)
                    if isolated else {}),
                 **turtle_raw_report,
+                **({built["template_report_key"]: stats["_strategy"]._template_report}
+                   if "template_report_key" in built else {}),
                 **({"entry_filters": filter_config.report()} if filter_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
