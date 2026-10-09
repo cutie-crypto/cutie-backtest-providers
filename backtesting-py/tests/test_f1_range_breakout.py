@@ -290,3 +290,28 @@ def test_unconsumed_price_keys_not_declared_and_rejected_before_fetch(monkeypatc
     response = TestClient(p.app).post('/cutie/backtest', json=req).json()
     assert response['error_type'] == 'INVALID_PARAMS'
     assert key in response['error_message']
+
+
+@pytest.mark.parametrize('tool', ['opening_range_breakout', 'asia_range_breakout'])
+@pytest.mark.parametrize('flatten,accepted', [('23:47', False), ('23:45', True)])
+def test_flatten_grid_pre_fetch(monkeypatch, tmp_path, tool, flatten, accepted):
+    monkeypatch.setattr(p, 'AUTH_TOKEN', '')
+    calls = []
+    def fetch(*args):
+        calls.append(args)
+        if not accepted:
+            pytest.fail('off-grid flatten fetched market data')
+        return market_frame(count=96, signal=28 if tool == 'asia_range_breakout' else 4)
+    monkeypatch.setattr(p, '_fetch_ohlcv', fetch)
+    monkeypatch.setattr(p, 'REPORTS_DIR', Path(tmp_path))
+    monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
+    request = dict(run_id='flatten_grid', provider_tool_id='local.backtesting_py.'+tool,
+        provider_params={'flatten_at': flatten}, symbol='BTCUSDT', market='spot', timeframe='15m',
+        start_at=1767225600, end_at=1767312000)
+    response = TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json()
+    if accepted:
+        assert response['result_status'] == 'success', response
+        assert calls
+    else:
+        assert response['error_type'] == 'INVALID_PARAMS', response
+        assert not calls

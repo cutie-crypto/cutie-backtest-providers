@@ -235,3 +235,19 @@ def test_first_event_respects_optional_entry_gate():
         time_layer_enabled=True, time_session_start='02:00', time_session_end='03:00'))
     assert stats['_trades'].empty
     assert stats['_strategy'].calendar_events[0]['reason'] == 'entry_gate'
+
+
+@pytest.mark.parametrize('flatten,accepted', [('23:47', False), ('23:45', True)])
+def test_f2_flatten_grid_pre_fetch(monkeypatch, tmp_path, flatten, accepted):
+    data = frame(count=96, freq='15min')
+    if not accepted:
+        monkeypatch.setattr(p, 'AUTH_TOKEN', '')
+        monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a: pytest.fail('off-grid F2 flatten fetched'))
+        req = dict(provider_tool_id=TOOL, provider_params=dict(time_entry_at='02:00', time_flatten_at=flatten),
+            symbol='BTCUSDT', market='spot', timeframe='15m', start_at=1767225600, end_at=1767312000)
+        response = TestClient(p.app).post('/cutie/backtest', json={'backtest': req}).json()
+        assert response['error_type'] == 'INVALID_PARAMS', response
+    else:
+        response = http_run(monkeypatch, tmp_path, data, dict(time_entry_at='02:00', time_flatten_at=flatten), timeframe='15m')
+        assert response['result_status'] == 'success', response
+        assert response['trades'][0]['closed_at'] == 1767311100

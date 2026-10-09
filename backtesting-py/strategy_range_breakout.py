@@ -77,7 +77,9 @@ class RangeConfig:
             window = self.window(cycle)
             if (window.start_utc-first) % step or (window.end_utc-first) % step:
                 raise ValueError('INVALID_PARAMS:range endpoint cuts through a candle')
-            self.entry_window(cycle)  # reject nonexistent local endpoints
+            entry_window = self.entry_window(cycle)  # reject nonexistent local endpoints
+            if (entry_window.end_utc-first) % step:
+                raise ValueError('INVALID_PARAMS:flatten endpoint cuts through a candle')
             cycle = period_bounds(cycle.end_utc, self.definition)
 
 
