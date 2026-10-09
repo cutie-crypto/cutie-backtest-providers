@@ -1,7 +1,7 @@
-"""Request-local entry clock. No engine, indicator or market-data dependencies."""
+"""Request-local entry clock and holding expiry facts. No engine, indicator or market-data dependencies."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from importlib import metadata
 from pathlib import Path
@@ -104,6 +104,7 @@ class TimeContext:
     zone: ZoneInfo
     period: timedelta
     last_open_utc: datetime
+    flatten_delays: list[float] = field(default_factory=list, compare=False)
 
     @classmethod
     def build(cls, config: TimeConfig, timeframe: str, opens: Sequence[datetime]) -> TimeContext:
@@ -139,7 +140,60 @@ class TimeContext:
                     weekday = (local.date() - timedelta(days=1)).weekday()
         return bool(self.config.weekdays & (1 << weekday))
 
-    def assumptions(self) -> dict[str, Any]:
-        return {'time_layer': dict(timezone=self.config.timezone_name, tzdata_version=tzdata_version(),
+    def assumptions(self, holding_bars: int = 0) -> dict[str, Any]:
+        result = {'time_layer': dict(timezone=self.config.timezone_name, tzdata_version=tzdata_version(),
             session_start=self.config.session_start, session_end=self.config.session_end,
             weekdays=self.config.weekdays, decision_time='bar_close', gate='entry_only', fill='next_bar_open')}
+        if holding_bars or self.config.max_holding_minutes or self.config.flatten_at:
+            result['time_layer']['holding'] = dict(
+                bars=holding_bars, minutes=self.config.max_holding_minutes,
+                flatten_at=self.config.flatten_at, flatten_weekdays=self.config.flatten_weekdays,
+                bars_count_from='entry_fill_bar_is_1', minutes_count_from='actual_entry_fill_utc',
+                same_bar_priority='stop_loss_before_time_expiry_before_take_profit_before_template_signal',
+                final_bar='engine_finalize_trades_settlement',
+                flatten_dst='nonexistent_skip_day_repeated_first_only',
+                flatten_delay_bars=dict(
+                    definition='(submission_decision_utc - cutoff_utc) / bar_period; fractional bars; '
+                               'only flatten-due facts winning expiry arbitration; excludes next-open fill wait',
+                    count=len(self.flatten_delays), max=max(self.flatten_delays, default=0.0)))
+        return result
+
+
+@dataclass(frozen=True)
+class HoldingExpiry:
+    """One fact shared by both price-risk paths; it never places an order."""
+    due: bool
+    flatten_delay_bars: float | None = None
+
+
+def expiry_due(*, holding_bars: int, entry_bar: int, bar: int,
+               entry_utc: datetime, bar_open: datetime,
+               context: TimeContext | None = None) -> HoldingExpiry:
+    """3b fill-bar count plus actual elapsed UTC minutes and first local cutoff.
+
+    fold=0 selects the first repeated instant; UTC roundtrip rejects nonexistent
+    wall times. A cutoff equal to entry is within the holding interval.
+    """
+    bars_due = bool(holding_bars and bar - entry_bar + 1 >= holding_bars)
+    if context is None:
+        return HoldingExpiry(bars_due)
+    entry = utc_datetime(entry_utc)
+    decision = context.decision_utc(bar_open)
+    config = context.config
+    minutes_due = bool(config.max_holding_minutes and
+                       (decision - entry).total_seconds() >= config.max_holding_minutes * 60)
+    delay = None
+    if config.flatten_at:
+        day = entry.astimezone(context.zone).date()
+        last_day = decision.astimezone(context.zone).date()
+        hour, minute = map(int, config.flatten_at.split(':'))
+        while day <= last_day:
+            if config.flatten_weekdays & (1 << day.weekday()):
+                wall = datetime(day.year, day.month, day.day, hour, minute)
+                cutoff = wall.replace(tzinfo=context.zone, fold=0).astimezone(timezone.utc)
+                if (cutoff.astimezone(context.zone).replace(tzinfo=None) == wall
+                        and entry <= cutoff <= decision):
+                    delay = (decision - cutoff) / context.period
+                    break
+            day += timedelta(days=1)
+    return HoldingExpiry(bars_due or minutes_due or delay is not None, delay)
