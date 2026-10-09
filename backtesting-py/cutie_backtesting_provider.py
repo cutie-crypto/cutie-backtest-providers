@@ -2337,7 +2337,7 @@ def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
     return params.get("risk_layer_enabled") is True or params.get("time_layer_enabled") is True
 
 
-# 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
+# 单仓杠杆独立于风控层与组合杠杆；futures >1 使用逐仓结算。
 _LEVERAGE_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "leverage": {"type": "integer", "default": 1, "minimum": 1, "maximum": 20},
 }
@@ -2351,11 +2351,9 @@ def _parse_single_leverage(params: dict[str, Any]) -> int:
 
 
 def _single_leverage_rejection(leverage: int, market: str) -> Optional[str]:
-    """唯一放行门；不能对外返回尚无逐仓爆仓模型的杠杆结果。"""
+    """唯一放行门；现货保持 1 倍，期货接入逐仓模型。"""
     if market == "spot" and leverage > 1:
         return "leverage above 1 requires futures market"
-    if leverage > 1:
-        return "leverage above 1 requires the isolated liquidation model"
     return None
 
 
@@ -2509,8 +2507,25 @@ def _with_time_config(build):
     return configured
 
 
+def _isolated_liquidation_price(entry: Decimal, leverage: int, is_long: bool) -> Decimal:
+    # One division avoids rounding 1/L before multiplying by E.
+    return entry * Decimal(leverage - 1 if is_long else leverage + 1) / Decimal(leverage)
+
+
+def _isolated_liquidation_candidate(*, entry_price, leverage: int, is_long: bool,
+                                    open_price, high, low) -> Optional[dict[str, Any]]:
+    """MMR=0; fees excluded. Shared by both exit arbitration paths."""
+    price = _isolated_liquidation_price(Decimal(str(entry_price)), leverage, is_long)
+    opening, high, low = (Decimal(str(value)) for value in (open_price, high, low))
+    if not (low <= price if is_long else high >= price):
+        return None
+    gap = opening <= price if is_long else opening >= price
+    return {"liquidation_price": price, "liquidation_gap": gap,
+            "fill_price": opening if gap else price}
+
+
 class _FixedRiskMixin(_TimeLayerMixin):
-    """13 模板共用覆盖层；risk_layer_enabled=false 完整保留旧层。
+    """单仓模板共用覆盖层；1 倍且 risk_layer_enabled=false 完整保留旧层。
 
     3a 显式开启时用 High/Low 判触发，仍提交下一根开盘市价平仓。
 
@@ -2551,6 +2566,12 @@ class _FixedRiskMixin(_TimeLayerMixin):
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
+        if self._risk.get("leverage", 1) > 1:
+            self._isolated_liquidations = []
+            self._isolated_liquidation_units = {}
+            self._isolated_blocked_bar = -1
+            self._isolated_stop_beyond_trades = 0
+            self._isolated_install_settlement()
         if self._time_config is not None:
             self._risk_exit_reason = None
         if self._risk.get("risk_layer_enabled"):
@@ -2583,6 +2604,98 @@ class _FixedRiskMixin(_TimeLayerMixin):
         # Only the signal close is available when the market entry is queued.
         self._risk_entry_atr = self._risk_atr[count - 1]
 
+    def _isolated_install_settlement(self) -> None:
+        """Reconcile before the broker processes another order or its insolvency check.
+
+        Only leveraged single-position runs install this per-request callback.
+        Never edit the library or merely repair report equity after sizing.
+        """
+        broker = self._broker
+        close_trade = broker._close_trade
+        scale = getattr(self, "_isolated_equity_scale", Decimal(1))
+        capital = getattr(self, "_isolated_initial_capital", Decimal(str(self._start_equity)) * scale)
+        fee = getattr(self, "_isolated_fee_bps", Decimal(str(broker._commission_relative)) * 10000)
+        slip = getattr(self, "_isolated_slippage_bps", Decimal(0))
+        data = self.data.df.copy()
+        step = getattr(self, "_isolated_step", int((data.index[1].value - data.index[0].value) // 10**9))
+        self._isolated_realized = Decimal(0)
+
+        def settle_close(trade, price, time_index):
+            close_trade(trade, price, time_index)
+            closed = broker.closed_trades[-1]
+            rows = pd.DataFrame([dict(Size=closed.size, EntryPrice=closed.entry_price,
+                                      ExitPrice=closed.exit_price, EntryTime=closed.entry_time,
+                                      ExitTime=closed.exit_time)])
+            trades = _build_result_v2_trades(rows, scale, fee, slip)
+            records = [record for record in self._isolated_liquidations
+                       if record["opened_at"] == trades[0]["opened_at"]]
+            if records:
+                trades = _settle_isolated_liquidations(
+                    trades, leverage=self._risk["leverage"], df=data, step=step,
+                    liquidations=records, fee_bps=fee, slippage_bps=slip)
+            self._isolated_realized += Decimal(trades[0]["pnl"])
+            # A partial close leaves entry costs allocated to the remaining units.
+            open_cost = sum((Decimal(abs(t.size)) * scale * Decimal(str(t.entry_price))
+                             * (fee + slip) / 10000 for t in broker.trades), Decimal(0))
+            broker._cash = float((capital + self._isolated_realized - open_cost) / scale)
+
+        broker._close_trade = settle_close
+        process_orders = broker._process_orders
+
+        def process_before_insolvency():
+            process_orders()
+            if broker.equity > 0 or not self.trades:
+                return
+            # Broker.next checks account insolvency BEFORE Strategy.next. A low
+            # close can consume unallocated cash although this isolated trade
+            # should already have liquidated. Reuse the SAME arbitration point,
+            # then bridge its pending settlement until the next-open close.
+            count = len(self._isolated_liquidations)
+            self._risk_check_exit()
+            if len(self._isolated_liquidations) == count:
+                return
+            trade = self.trades[-1]
+            rows = pd.DataFrame([dict(Size=trade.size, EntryPrice=trade.entry_price,
+                ExitPrice=self.data.Close[-1], EntryTime=trade.entry_time,
+                ExitTime=self.data.index[-1])])
+            projected = _settle_isolated_liquidations(
+                _build_result_v2_trades(rows, scale, fee, slip), leverage=self._risk["leverage"],
+                df=data, step=step, liquidations=self._isolated_liquidations[-1:],
+                fee_bps=fee, slippage_bps=slip)
+            target = capital + self._isolated_realized + Decimal(projected[0]["pnl"])
+            if target > 0:
+                broker._cash = float(target / scale) - sum(t.pl for t in broker.trades)
+            # Genuine exhaustion still goes through the library's existing check.
+
+        broker._process_orders = process_before_insolvency
+
+    def _risk_isolated_exit(self, stop: Optional[Decimal] = None) -> bool:
+        trade = self.trades[-1]
+        if any(order.parent_trade is trade for order in self.orders):
+            return True
+        candidate = _isolated_liquidation_candidate(
+            entry_price=trade.entry_price, leverage=self._risk["leverage"],
+            is_long=trade.is_long, open_price=self.data.Open[-1],
+            high=self.data.High[-1], low=self.data.Low[-1])
+        if candidate is None:
+            return False
+        price = candidate["liquidation_price"]
+        # Non-gap intrabar stops closer to entry are crossed before liquidation.
+        if not candidate["liquidation_gap"] and stop is not None and (
+            stop > price if trade.is_long else stop < price
+        ):
+            return False
+        opened_at = int(pd.Timestamp(trade.entry_time).value // 10**9)
+        self._isolated_liquidation_units[opened_at] = abs(trade.size)
+        self._isolated_liquidations.append({
+            "opened_at": opened_at,
+            "liquidation_bar_open_time": int(pd.Timestamp(self.data.index[-1]).value // 10**9),
+        })
+        self._isolated_blocked_bar = len(self.data) - 1
+        self._risk_exit_reason = "liquidation"
+        self.position.close()
+        return True
+
     def _risk_layer_check_exit(self) -> bool:
         from strategy_risk_overlay import initial_risk_state, decide_exit, advance_risk_state, level_exit
 
@@ -2597,6 +2710,19 @@ class _FixedRiskMixin(_TimeLayerMixin):
                 direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
                 entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
             )
+            if self._risk.get("leverage", 1) > 1 and any(self._risk.get(key) for key in (
+                "atr_stop_multiplier", "trailing_stop_pct", "breakeven_stop"
+            )):
+                stop = self._risk_state.initial_stop
+                price = _isolated_liquidation_price(
+                    Decimal(str(trade.entry_price)), self._risk["leverage"], trade.is_long)
+                if stop is not None and (stop <= price if trade.is_long else stop >= price):
+                    self._isolated_stop_beyond_trades += 1
+        if self._risk.get("leverage", 1) > 1:
+            stop = (self._risk_state.stop_state.effective_stop
+                    if self._risk_state.stop_state is not None else self._risk_state.initial_stop)
+            if self._risk_isolated_exit(stop):
+                return True
         bar = len(self.data) - 1
         fact = self._holding_expiry()
         reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
@@ -2641,6 +2767,8 @@ class _FixedRiskMixin(_TimeLayerMixin):
         return None
 
     def _risk_buy(self) -> None:
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+            return
         if not self._time_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
@@ -2648,6 +2776,8 @@ class _FixedRiskMixin(_TimeLayerMixin):
         self.buy() if size is None else self.buy(size=size)
 
     def _risk_sell(self) -> None:
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+            return
         if not self._time_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
@@ -2659,6 +2789,9 @@ class _FixedRiskMixin(_TimeLayerMixin):
             return False
         if self._risk.get("risk_layer_enabled"):
             return self._risk_layer_check_exit()
+        # Legacy stops are close-only; any intrabar liquidation precedes them.
+        if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit():
+            return True
         sl_pct = self._risk.get("stop_loss_pct")
         tp_pct = self._risk.get("take_profit_pct")
         time_enabled = self._time_config is not None
@@ -5461,9 +5594,7 @@ def _isolated_liquidation_fills(
         if (not all(value.is_finite() and value > 0 for value in (entry, qty, open_price, low, high))
                 or not low <= open_price <= high or trade["side"] not in {"long", "short"}):
             raise ValueError("invalid isolated liquidation prices, qty or side")
-        inverse_leverage = Decimal(1) / Decimal(leverage)
-        liquidation_price = entry * (Decimal(1) - inverse_leverage if trade["side"] == "long"
-                                     else Decimal(1) + inverse_leverage)
+        liquidation_price = _isolated_liquidation_price(entry, leverage, trade["side"] == "long")
         gap = (open_price <= liquidation_price if trade["side"] == "long"
                else open_price >= liquidation_price)
         fill_price = open_price if gap else liquidation_price
@@ -5522,6 +5653,23 @@ def _settle_isolated_liquidations(
     return ordered
 
 
+def _isolated_liquidation_trades(trades, liquidations, units, scale):
+    """Runtime sidecar identifies the remaining lot after earlier partial exits.
+
+    Records retain their frozen two keys. Dormant helpers still reject ambiguous
+    opened_at inputs; only the live engine can supply authoritative remaining units.
+    """
+    latest = {trade["opened_at"]: trade for trade in trades}
+    selected = []
+    for record in liquidations:
+        opened = record["opened_at"]
+        trade = latest.get(opened)
+        if trade is None or Decimal(trade["qty"]) != Decimal(units[opened]) * scale:
+            raise ValueError("isolated liquidation remaining units mismatch")
+        selected.append(trade)
+    return selected
+
+
 def _build_isolated_risk_report(
     trades_v2: list[dict[str, Any]],
     *,
@@ -5530,13 +5678,18 @@ def _build_isolated_risk_report(
     df: pd.DataFrame,
     step: int,
     liquidations: Optional[list[dict[str, int]]] = None,
+    liquidation_units: Optional[dict[int, int]] = None,
+    equity_scale_dec: Decimal = Decimal(1),
 ) -> dict[str, Any]:
-    """raw_report 的可合并片段；T2-2b 才接线，seq 取结算后 result.v2。
+    """raw_report 的可合并片段；seq 取结算后 result.v2。
 
     futures L>1 即使没有爆仓也输出零计数；spot/L=1 返回空片段。
     """
     if market != "futures" or leverage == 1:
         return {}
+    if liquidation_units is not None:
+        trades_v2 = _isolated_liquidation_trades(
+            trades_v2, liquidations or [], liquidation_units, equity_scale_dec)
     fills = _isolated_liquidation_fills(
         trades_v2, leverage=leverage, df=df, step=step, liquidations=liquidations or [],
     )
@@ -5570,14 +5723,23 @@ def _build_isolated_risk_report(
 
 def _build_isolated_margin_assumptions(
     *, leverage: int, market: str, stop_loss_pct: Any = None,
+    stop_beyond_liquidation_trades: Optional[int] = None,
 ) -> dict[str, Any]:
-    """assumptions 的可合并片段；只判断固定止损，动态止损留给 T2-2b。"""
+    """原始百分数判固定距离；可选计数来自开仓冻结的动态初始止损。"""
     if market != "futures" or leverage == 1:
         return {}
     _parse_single_leverage({"leverage": leverage})
     stop = Decimal(str(stop_loss_pct)) if stop_loss_pct is not None else None
     if stop is not None and (not stop.is_finite() or not Decimal(0) <= stop <= Decimal(100)):
         raise ValueError("invalid fixed stop_loss_pct")
+    dynamic = {}
+    if stop_beyond_liquidation_trades is not None:
+        dynamic = {
+            "stop_beyond_liquidation_trades": stop_beyond_liquidation_trades,
+            "stop_beyond_liquidation_trades_definition": (
+                "启用 ATR/移动/保本的开仓笔数：初始止损价在爆仓价之外（含相等）；不计后续移动止损"
+            ),
+        }
     return {"isolated_margin": {
         "leverage": leverage,
         "mmr": "0",
@@ -5586,8 +5748,10 @@ def _build_isolated_margin_assumptions(
         "liquidation_price_formula": "long: E*(1-1/L); short: E*(1+1/L)",
         "gap_fill": "跳空按开盘价成交、result.v2 按冻结公式可超保证金、逐仓封顶见 raw_report",
         "stop_beyond_liquidation": (
-            stop is not None and stop / Decimal(100) >= Decimal(1) / Decimal(leverage)
+            (stop is not None and stop / Decimal(100) >= Decimal(1) / Decimal(leverage))
+            or bool(stop_beyond_liquidation_trades)
         ),
+        **dynamic,
     }}
 
 
@@ -5696,6 +5860,7 @@ def _build_result_v2(
     df: pd.DataFrame,
     leverage: int = 1,
     liquidations: Optional[list[dict[str, int]]] = None,
+    liquidation_units: Optional[dict[int, int]] = None,
 ) -> dict[str, Any]:
     """组装 SPEC §2 冻结的 result.v2 五键：schema_version/trades/equity_curve/metrics/
     data_manifest。metrics 恰好三键（total_return/max_drawdown/trade_count）——server
@@ -5705,11 +5870,21 @@ def _build_result_v2(
     if liquidations:
         if market != "futures":
             raise ValueError("isolated liquidation requires futures market")
-        trades_v2 = _settle_isolated_liquidations(
-            trades_v2, leverage=leverage, df=df,
+        selected = (_isolated_liquidation_trades(trades_v2, liquidations, liquidation_units, equity_scale_dec)
+                    if liquidation_units is not None else trades_v2)
+        settled = _settle_isolated_liquidations(
+            selected, leverage=leverage, df=df,
             step=_timeframe_milliseconds(timeframe) // 1000,
             liquidations=liquidations, fee_bps=fee_bps, slippage_bps=slippage_bps,
         )
+        if liquidation_units is None:
+            trades_v2 = settled
+        else:
+            replacements = {old["seq"]: {**new, "seq": old["seq"]}
+                            for old, new in zip(selected, settled)}
+            trades_v2 = [replacements.get(trade["seq"], trade) for trade in trades_v2]
+            if trades_v2 != sorted(trades_v2, key=lambda trade: (trade["closed_at"], trade["opened_at"])):
+                raise ValueError("isolated liquidation changed single-position trade order")
     equity_curve_v2 = _build_result_v2_equity_curve(
         trades_v2,
         initial_capital,
@@ -6824,6 +6999,12 @@ async def run_backtest(
         # float，不受此契约约束），两条路径分道扬镳，互不干扰。
         internal_cash_dec = _internal_cash_dec(initial_capital, float(df["Close"].max()))
         equity_scale_dec = initial_capital / internal_cash_dec
+        if leverage > 1 and market == "futures":
+            StrategyClass._isolated_equity_scale = equity_scale_dec
+            StrategyClass._isolated_initial_capital = initial_capital
+            StrategyClass._isolated_fee_bps = fee_bps
+            StrategyClass._isolated_slippage_bps = slippage_bps
+            StrategyClass._isolated_step = _timeframe_milliseconds(timeframe) // 1000
         bt = Backtest(
             df,
             StrategyClass,
@@ -6856,6 +7037,8 @@ async def run_backtest(
         # 的权威形状，取代旧版自由格式 trades/equity_curve。旧展示性百分比指标全部移入
         # raw_report.legacy_metrics，不再留在顶层 metrics（server 端 _validate_result_v2
         # 对 metrics 做"恰好三键"严格校验，多一个键就判 evidence_mismatch）。
+        isolated = leverage > 1 and market == "futures"
+        liquidations = stats["_strategy"]._isolated_liquidations if isolated else None
         result_v2 = _build_result_v2(
             stats_trades=getattr(stats, "_trades", None),
             equity_scale_dec=equity_scale_dec,
@@ -6869,6 +7052,8 @@ async def run_backtest(
             timeframe=timeframe,
             exchange_id=exchange_id,
             df=df,
+            **({"leverage": leverage, "liquidations": liquidations,
+                "liquidation_units": stats["_strategy"]._isolated_liquidation_units} if isolated else {}),
         )
 
         signal_result = None
@@ -6965,6 +7150,10 @@ async def run_backtest(
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
+                **(_build_isolated_margin_assumptions(
+                    leverage=leverage, market=market, stop_loss_pct=params.get("stop_loss_pct"),
+                    stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
+                   if isolated else {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -6992,6 +7181,12 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **(_build_isolated_risk_report(
+                    result_v2["trades"], leverage=leverage, market=market, df=df,
+                    step=_timeframe_milliseconds(timeframe) // 1000, liquidations=liquidations,
+                    liquidation_units=stats["_strategy"]._isolated_liquidation_units,
+                    equity_scale_dec=equity_scale_dec)
+                   if isolated else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
