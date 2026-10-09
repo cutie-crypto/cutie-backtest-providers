@@ -238,6 +238,10 @@ def test_fixed_risk_keys_are_merged_into_every_tool_schema():
             supported = {"position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
             assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
             continue
+        if tool_id == "local.backtesting_py.calendar_schedule":
+            supported = {"stop_loss_pct", "take_profit_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
+            assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
+            continue
         for key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
             assert key in props, f"{tool_id} missing {key} in param_schema_properties"
 

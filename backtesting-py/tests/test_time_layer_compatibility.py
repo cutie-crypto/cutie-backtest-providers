@@ -25,8 +25,9 @@ ADDED_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single
 assert BASELINE['single'].keys().isdisjoint(ADDED_BASELINE['single'])
 BASELINE['single'] = {**BASELINE['single'], **ADDED_BASELINE['single']}
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
+F2_CASES = {'calendar_schedule'}
 MIXINS = compat.enumerate_mixin_cases()
-LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES}
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES}
 
 
 @pytest.mark.parametrize('name', compat.PARAMS)
@@ -69,7 +70,7 @@ def test_schema_only_runtime_single_position_templates():
     actual = {tool.removeprefix('local.backtesting_py.') for tool, spec in provider.TOOL_SPECS.items()
               if 'time_layer_enabled' in spec['param_schema_properties']}
     assert actual == {compat.tool_name(name) for name in MIXINS}
-    assert set(BASELINE['single']) | F1_CASES == set(MIXINS)
+    assert set(BASELINE['single']) | F1_CASES | F2_CASES == set(MIXINS)
 
 
 @pytest.mark.parametrize('name', MIXINS)
@@ -81,6 +82,10 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
               'risk_layer_enabled': risk_enabled, 'time_layer_enabled': True,
               'time_session_start': '06:00', 'time_session_end': '10:00'}
     if name in F1_CASES:
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
+    if name in F2_CASES:
+        params.update(time_entry_at='07:00', time_max_holding_minutes=240, calendar_stop_enabled=False)
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
     if name == 'ichimoku_cloud_breakout':
@@ -219,3 +224,25 @@ def test_f1_disabled_fingerprints(monkeypatch, tmp_path, name, warm):
     assert not any(key.startswith('time_') for trade in explicit['trades'] for key in trade)
     assert explicit['assumptions']['indicator_warmup_bars'] == 0
     assert F1_CASES <= set(MIXINS)
+
+
+@pytest.mark.parametrize('configured', [False, True])
+def test_f2_disabled_bytes_and_no_optional_clock(monkeypatch, tmp_path, configured):
+    from test_f2_calendar import frame, http_run, SCHEDULE
+    data = frame()
+    params = SCHEDULE if configured else {}
+    absent = http_run(monkeypatch, tmp_path, data, params)
+    original = TimeContext.build.__func__
+    def intrinsic_only(cls, config, *args, **kwargs):
+        assert config.enabled and config.session_start == '' and config.session_end == ''
+        return original(cls, config, *args, **kwargs)
+    monkeypatch.setattr(TimeContext, 'build', classmethod(intrinsic_only))
+    explicit = http_run(monkeypatch, tmp_path, data, {**DEFAULTS, **params})
+    assert absent['result_status'] == explicit['result_status'] == 'success'
+    assert bool(absent['trades']) == configured
+    for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
+        assert capture.digest(absent[key]) == capture.digest(explicit[key]), key
+    assert 'time_layer' not in explicit['assumptions']
+    assert not any(key.startswith('time_') for trade in explicit['trades'] for key in trade)
+    assert explicit['assumptions']['indicator_warmup_bars'] == 0
+    assert F2_CASES <= set(MIXINS)

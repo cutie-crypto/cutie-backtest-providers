@@ -37,6 +37,7 @@ from strategy_time_layer import (
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
 from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
+from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
 from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -2538,10 +2539,15 @@ class _TimeLayerMixin:
         return context.allow_entry(context.decision_utc(bar_open))
 
 
-def _with_time_config(build):
+def _with_time_config(build=None, *, intrinsic_keys=()):
+    if build is None:
+        return lambda function: _with_time_config(function, intrinsic_keys=intrinsic_keys)
     @functools.wraps(build)
     def configured(params, **kwargs):
-        config = TimeConfig.parse(params)
+        optional = {key: value for key, value in params.items() if key not in intrinsic_keys}
+        if intrinsic_keys and params.get("time_layer_enabled") is True:
+            optional["time_timezone"] = params.get("time_timezone", "UTC")
+        config = TimeConfig.parse(optional)
         built = build(params, **kwargs)
         if config.enabled:
             built["strategy"]._time_config = config
@@ -4644,9 +4650,42 @@ def _build_asia_range_breakout(params, *, initial_capital=10000.0):
     return _build_range_breakout(params, "asia", initial_capital)
 
 
+@_with_time_config(intrinsic_keys=INTRINSIC_KEYS)
+def _build_calendar_schedule(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS["local.backtesting_py.calendar_schedule"]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = CalendarConfig.parse(params)
+    enabled = params.get("calendar_stop_enabled", True)
+    if type(enabled) is not bool:
+        raise ValueError("INVALID_PARAMS:calendar_stop_enabled must be boolean")
+    effective = dict(params)
+    if enabled:
+        effective.setdefault("stop_loss_pct", 3)
+    elif "stop_loss_pct" in params:
+        raise ValueError("INVALID_PARAMS:stop_loss_pct conflicts with calendar_stop_enabled=false")
+    risk = _parse_fixed_risk_params(effective)
+    for key in ("stop_loss_pct", "take_profit_pct"):
+        fraction = risk.get(key)
+        if fraction is not None and (fraction <= 0 or 1 + fraction == 1 or 1 - fraction == 1):
+            raise ValueError(f"INVALID_PARAMS:{key} is too small for engine prices")
+    return dict(strategy=make_calendar_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Calendar Schedule", min_bars=2, calendar_config=config)
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.calendar_schedule": {
+        "name": "Local Backtesting.py Calendar Schedule",
+        "description": "Weekly/monthly wall-clock entries and timed exits; next-open market fills; default 3% frozen stop.",
+        "strategy_family": "calendar", "is_default": False, "build": _build_calendar_schedule,
+        "param_schema_properties": {
+            **ENTRY_SCHEMA,
+            "direction": {"type": "string", "default": "long", "enum": ["long", "short"]},
+            "calendar_stop_enabled": {"type": "boolean", "default": True},
+        },
+    },
     "local.backtesting_py.opening_range_breakout": {
         "name": "Local Backtesting.py Opening Range Breakout",
         "description": "One daily close-confirmed frozen opening-range breakout; next-open market exits.",
@@ -5217,6 +5256,14 @@ for _range_tool in ("local.backtesting_py.opening_range_breakout", "local.backte
         if _range_key not in {"position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}:
             _range_properties.pop(_range_key, None)
 del _range_tool, _range_properties, _range_key
+
+# Calendar consumes fixed prices/sizing and shared clocks, without advertising unused dynamic stops.
+_calendar_properties = TOOL_SPECS["local.backtesting_py.calendar_schedule"]["param_schema_properties"]
+for _calendar_key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
+    if _calendar_key not in {"stop_loss_pct", "take_profit_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}:
+        _calendar_properties.pop(_calendar_key, None)
+_calendar_properties["stop_loss_pct"] = {**_calendar_properties["stop_loss_pct"], "default": 3}
+del _calendar_properties, _calendar_key
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
 
@@ -6791,6 +6838,8 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
     if effective_tool_id in ("local.backtesting_py.opening_range_breakout", "local.backtesting_py.asia_range_breakout") and market == "spot" and params.get("direction", "long") != "long":
         return _validation_failure("INVALID_PARAMS", "range breakout short/both requires futures market")
+    if effective_tool_id == "local.backtesting_py.calendar_schedule" and market == "spot" and params.get("direction", "long") != "long":
+        return _validation_failure("INVALID_PARAMS", "calendar short requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -6822,6 +6871,15 @@ async def run_backtest(
             range_config.validate_grid(timeframe, datetime.fromtimestamp(start_at, timezone.utc), datetime.fromtimestamp(end_at, timezone.utc))
         except ValueError as exc:
             return _validation_failure("INVALID_PARAMS", str(exc))
+
+    calendar_config = built.get("calendar_config")
+    if calendar_config is not None:
+        from datetime import datetime, timezone
+        try:
+            calendar_config.validate_grid(timeframe, datetime.fromtimestamp(start_at, timezone.utc), datetime.fromtimestamp(end_at, timezone.utc))
+        except ValueError as exc:
+            return _validation_failure("INVALID_PARAMS", str(exc))
+        strategy_class._calendar_timeframe = timeframe
 
     # --- Fetch OHLCV ---
     try:
@@ -6901,6 +6959,12 @@ async def run_backtest(
             exchange_id=exchange_id,
         )
 
+    if calendar_config is not None:
+        try:
+            TimeContext.build(calendar_config.clock, timeframe, df.index)
+        except TimeDataGapError as exc:
+            return _business_failure(run_id, "TIME_DATA_GAP", str(exc), reason="time_data_gap")
+
     if time_config is not None:
         try:
             strategy_class._time_context = TimeContext.build(time_config, timeframe, df.index)
@@ -6912,7 +6976,7 @@ async def run_backtest(
     risk = strategy_class._risk
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
-    warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None else
+    warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df))
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars:
@@ -6952,6 +7016,10 @@ async def run_backtest(
             **_leverage_backtest_kwargs(leverage),
         )
         stats = bt.run()
+        if calendar_config is not None:
+            for event in stats["_strategy"].calendar_events:
+                if event["status"] == "filled" and "exit_reason" not in event:
+                    event["exit_reason"] = "engine_finalize_trades_settlement"
         if range_config is not None:
             for daily in stats["_strategy"].daily_ranges.values():
                 if daily["triggered"] and daily["exit_reason"] is None:
@@ -7086,6 +7154,7 @@ async def run_backtest(
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
                 **(range_assumptions(range_config) if range_config is not None else {}),
+                **(calendar_assumptions(calendar_config) if calendar_config is not None else {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -7113,6 +7182,7 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **({"calendar_events": stats["_strategy"].calendar_events} if calendar_config is not None else {}),
                 **({"range_breakout_days": list(stats["_strategy"].daily_ranges.values())} if range_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
