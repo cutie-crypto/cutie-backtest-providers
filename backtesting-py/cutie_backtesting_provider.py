@@ -2309,26 +2309,52 @@ def _rsi_series(values: Any, period: int):
     return rsi.fillna(50.0).to_numpy()
 
 
-# A6 二层（0917 会议清单）：给 7 个内置模板统一接固定百分比止损/止盈 + 固定仓位
-# （固定百分比仓位 / 固定名义金额）。范围明确排除 ATR、移动止损、保本止损、
-# fixed_risk（按风险算仓位）、加仓/金字塔——这些字段不出现在下面的 schema 里，
-# 闸门/build 都不认，交给 TokenBeep server 侧 backtest_tool_router.py 继续拒绝。
+# 共用风险参数：旧四键保留；3a 扩展必须显式启用，默认走原收盘覆盖层。
+# 移动/保本/时间/多档留给 3b，不提前声明尚未消费的参数。
 _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "stop_loss_pct": {"type": "number", "minimum": 0, "maximum": 100},
     "take_profit_pct": {"type": "number", "minimum": 0, "maximum": 100},
     "position_size_pct": {"type": "number", "minimum": 0, "maximum": 100},
     "position_size_notional": {"type": "number", "minimum": 0},
+    "risk_layer_enabled": {"type": "boolean", "default": False},
+    "atr_stop_multiplier": {"type": "number", "default": 0, "minimum": 0, "maximum": 100},
+    "risk_atr_period": {"type": "integer", "default": 0, "minimum": 0, "maximum": 500},
+    "take_profit_r": {"type": "number", "default": 0, "minimum": 0, "maximum": 100},
 }
 
 
-def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, float]:
+def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
     """解析 stop_loss_pct/take_profit_pct/position_size_pct/position_size_notional。
 
-    全部缺省时返回空 dict（7 模板原有 buy()/sell() 行为逐字节不变——回归底线）。
+    全部缺省时返回空 dict（13 模板原有 buy()/sell() 行为逐字节不变——回归底线）。
     非法值一律 ``INVALID_PARAMS:`` 前缀 ValueError，被 run_backtest() 的既有 except
-    分支捕获转成 400。
+    分支捕获转成 INVALID_PARAMS 失败响应。
     """
-    out: dict[str, float] = {}
+    risk_params = {key: value for key, value in params.items() if key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES}
+    error = _validate_params_against_schema(risk_params, _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    enabled = params.get("risk_layer_enabled", False)
+    multiplier = params.get("atr_stop_multiplier", 0)
+    period = params.get("risk_atr_period", 0)
+    profit_r = params.get("take_profit_r", 0)
+    if not enabled and any((multiplier, period, profit_r)):
+        raise ValueError("INVALID_PARAMS:new risk parameters require risk_layer_enabled=true")
+    if (multiplier > 0) != (period >= 2) or period == 1:
+        raise ValueError("INVALID_PARAMS:ATR requires multiplier > 0 and risk_atr_period within 2-500")
+    if multiplier and params.get("stop_loss_pct") is not None:
+        raise ValueError("INVALID_PARAMS:stop_loss_pct and ATR stop are mutually exclusive")
+    if profit_r and params.get("take_profit_pct") is not None:
+        raise ValueError("INVALID_PARAMS:take_profit_pct and take_profit_r are mutually exclusive")
+    if profit_r and not (multiplier or params.get("stop_loss_pct")):
+        raise ValueError("INVALID_PARAMS:take_profit_r requires an initial stop")
+    out: dict[str, Any] = {}
+    if enabled:
+        out["risk_layer_enabled"] = True
+        if multiplier:
+            out.update(atr_stop_multiplier=multiplier, risk_atr_period=int(period))
+        if profit_r:
+            out["take_profit_r"] = profit_r
     for key in ("stop_loss_pct", "take_profit_pct"):
         raw = params.get(key)
         if raw is None:
@@ -2367,9 +2393,11 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, float]:
 
 
 class _FixedRiskMixin:
-    """7 模板共用的固定百分比止损/止盈 + 固定仓位覆盖层（A6 二层）。
+    """13 模板共用覆盖层；risk_layer_enabled=false 完整保留旧层。
 
-    决策时钟只认收盘价（不看当根 High/Low 触碰）：``_risk_check_exit`` 在 next() 每根
+    3a 显式开启时用 High/Low 判触发，仍提交下一根开盘市价平仓。
+
+    旧层决策时钟只认收盘价（不看当根 High/Low 触碰）：``_risk_check_exit`` 在 next() 每根
     K 线收盘后判定，同一根先判止损、后判止盈；命中即调用现有 position.close()，与
     模板原有信号出场走同一条成交路径（backtesting.py 默认 trade_on_close=False，两者
     都在下一根开盘价成交——不改动整条 Backtest 的全局成交时机，否则连 SL/TP 都没触发
@@ -2377,7 +2405,7 @@ class _FixedRiskMixin:
     高价资产做的 internal_cash 放大，避免固定名义金额随放大倍数漂移。
     """
 
-    _risk: dict[str, float] = {}
+    _risk: dict[str, Any] = {}
     _initial_capital: float = 10000.0
     _start_equity: float = 0.0
     # 1008 指标预热：run_backtest 把 start_at 之前取到的 K 线（列名 -> float 数组）挂在
@@ -2406,6 +2434,47 @@ class _FixedRiskMixin:
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
+        if self._risk.get("risk_layer_enabled"):
+            self._risk_trade = None
+            self._risk_state = None
+            self._risk_entry_atr = None
+            self._risk_exit_reason = None
+            if self._risk.get("atr_stop_multiplier"):
+                from strategy_risk_overlay import risk_atr_series
+
+                # Pure causal recurrence, calculated once without registering a new
+                # engine indicator or altering the strategy's first next() bar.
+                arrays = []
+                for column in ("High", "Low", "Close"):
+                    prefix = self._warmup_cols[column] if self._warmup_bars else []
+                    arrays.append(np.concatenate([prefix, np.asarray(getattr(self.data, column))]))
+                self._risk_atr = risk_atr_series(*arrays, self._risk["risk_atr_period"])
+
+    def _risk_prepare_entry(self) -> None:
+        if not self._risk.get("atr_stop_multiplier"):
+            return
+        count = self._warmup_bars + len(self.data)
+        if count < self._risk["risk_atr_period"]:
+            raise ValueError("INVALID_PARAMS:ATR entry history is shorter than risk_atr_period")
+        # Only the signal close is available when the market entry is queued.
+        self._risk_entry_atr = self._risk_atr[count - 1]
+
+    def _risk_layer_check_exit(self) -> bool:
+        from strategy_risk_overlay import initial_risk_state, decide_exit
+
+        trade = self.trades[-1]
+        if self._risk_trade is not trade:
+            self._risk_trade = trade
+            self._risk_state = initial_risk_state(
+                risk=self._risk, entry_price=trade.entry_price,
+                direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
+            )
+        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1])
+        if reason is None:
+            return False
+        self._risk_exit_reason = reason
+        self.position.close()
+        return True
 
     def _risk_entry_size(self) -> Optional[float]:
         """None 表示未配置固定仓位——调用方必须不传 size=，直接吃库内 __FULL_EQUITY
@@ -2422,16 +2491,22 @@ class _FixedRiskMixin:
         return None
 
     def _risk_buy(self) -> None:
+        if self._risk.get("risk_layer_enabled"):
+            self._risk_prepare_entry()
         size = self._risk_entry_size()
         self.buy() if size is None else self.buy(size=size)
 
     def _risk_sell(self) -> None:
+        if self._risk.get("risk_layer_enabled"):
+            self._risk_prepare_entry()
         size = self._risk_entry_size()
         self.sell() if size is None else self.sell(size=size)
 
     def _risk_check_exit(self) -> bool:
         if not self.position or not self.trades:
             return False
+        if self._risk.get("risk_layer_enabled"):
+            return self._risk_layer_check_exit()
         sl_pct = self._risk.get("stop_loss_pct")
         tp_pct = self._risk.get("take_profit_pct")
         if sl_pct is None and tp_pct is None:
@@ -4146,12 +4221,21 @@ def _validate_params_against_schema(
         if typ in ("integer", "number"):
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 return f"{key} must be a {typ}"
+            try:
+                finite = math.isfinite(val)
+            except OverflowError:
+                finite = False
+            if not finite:
+                return f"{key} must be finite"
             if typ == "integer" and not float(val).is_integer():
                 return f"{key} must be an integer (got {val})"
             if "minimum" in spec and val < spec["minimum"]:
                 return f"{key} must be >= {spec['minimum']} (got {val})"
             if "maximum" in spec and val > spec["maximum"]:
                 return f"{key} must be <= {spec['maximum']} (got {val})"
+        elif typ == "boolean":
+            if type(val) is not bool:
+                return f"{key} must be a boolean"
         elif typ == "string":
             if not isinstance(val, str):
                 return f"{key} must be a string"
@@ -5552,7 +5636,9 @@ async def run_backtest(
 
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
-    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, min_bars, df)
+    risk = strategy_class._risk
+    risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
+    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df)
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
@@ -5686,6 +5772,8 @@ async def run_backtest(
             executed_name,
         )
 
+        from strategy_risk_overlay import risk_assumptions
+
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
@@ -5714,6 +5802,7 @@ async def run_backtest(
                 "market": market,
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
+                **risk_assumptions(risk),
                 "real_market_data": True,
                 "no_live_trading": True,
             },
