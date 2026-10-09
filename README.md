@@ -23,6 +23,26 @@ POST /cutie/backtest      # Bearer auth. JSON body. Returns backtest result.
 
 See the Cutie Feature 37 W3.8 Provider Bridge IMPL in `cutie-docs` for the full schema specification. The provider source in this repository is a reference implementation of that contract.
 
+### Single-position template leverage
+
+The single-position `backtesting.py` templates that use the fixed-risk overlay
+advertise `leverage` as an integer from 1 to 20, defaulting to 1. Booleans,
+floats (including `2.0`), strings, and non-finite values are invalid. Explicit
+`leverage=1` preserves the omitted parameter's trades, equity, and result.v2;
+it adds no leverage-related report fields and passes no `margin` engine option.
+Spot requests above 1 are rejected before market data access. Futures requests
+above 1 are also rejected for now with
+`leverage above 1 requires the isolated liquidation model`; leveraged execution
+will require the later isolated-liquidation implementation.
+
+The internal sizing preparation treats `position_size_pct` as a margin budget:
+the engine's `margin=1/L` applies leverage once. `position_size_notional` retains
+its nominal amount by dividing its engine allocation fraction by L. Unconfigured
+sizing continues to use the library's full-equity sentinel. These L>1 semantics
+are currently tested only through direct engine construction, not public runs.
+The `rsi_scale_in_out`, `grid`, and `dca` ledger templates do not advertise or
+accept `leverage`, even 1. Basket `kernel_v3` leverage remains in [1, 3].
+
 ### StrategySpec v2 artifact execution
 
 The backtesting.py service also advertises

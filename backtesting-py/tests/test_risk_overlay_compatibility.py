@@ -139,3 +139,44 @@ def test_compatibility_covers_baseline_templates_among_runtime_mixins():
     assert fixture_names() <= actual
     assert len(actual) >= 19
     assert set(PARAMS) == fixture_names()
+
+
+@pytest.mark.parametrize('name', PARAMS)
+@pytest.mark.parametrize('risk_case', RISK_CASES)
+@pytest.mark.parametrize('warm', [False, True])
+@pytest.mark.parametrize('disabled', [False, True])
+def test_explicit_leverage_one_matches_immutable_baselines(monkeypatch, name, risk_case, warm, disabled):
+    spec = provider.TOOL_SPECS['local.backtesting_py.' + tool_name(name)]
+    build = spec['build']
+    def explicit_one(params):
+        assert 'leverage' not in params
+        return build({**params, 'leverage': 1})
+    monkeypatch.setitem(spec, 'build', explicit_one)
+    expected = fixture_cases()[f'{name}/{risk_case}/{int(warm)}']
+    assert expected['trade_count'] > 0
+    assert fingerprint(name, risk_case, warm, disabled) == expected
+
+
+@pytest.mark.parametrize('side', ['long', 'short'])
+def test_ema_pullback_golden_with_explicit_leverage_one(side):
+    from test_ema_pullback_template import _frame
+    path = Path(__file__).parent / 'fixtures' / (
+        'ema_pullback_short_golden.json' if side == 'short' else 'ema_pullback_golden.json')
+    f = json.loads(path.read_text())
+    data = _frame(f['closes'], f['lows'], f['highs'])
+    params = {**PARAMS['ema_pullback'], 'direction': side}
+    def run(extra):
+        cls = provider._build_ema_pullback({**params, **extra})['strategy']
+        return Backtest(data, cls, cash=100000, finalize_trades=False).run()
+    absent, explicit = run({}), run({'leverage': 1})
+    assert absent['_trades'].to_json() == explicit['_trades'].to_json()
+    assert absent['_equity_curve'].to_json() == explicit['_equity_curve'].to_json()
+    assert len(explicit['_trades']) == 2
+    assert explicit['_trades'][['EntryBar', 'ExitBar']].values.tolist() == [[30, 33], [37, 39]]
+    if side == 'long':
+        serialized = explicit['_trades'].to_json() + '\n' + explicit['_equity_curve'].to_json()
+        assert hashlib.sha256(serialized.encode()).hexdigest() == '10fa8ac990f6d360f693ab1c16e1a98a54080f1c62bfebe7a36c0fd5478f03d0'
+    else:
+        for (_, trade), expected in zip(explicit['_trades'].iterrows(), f['expected_trades']):
+            assert [trade.EntryBar, trade.ExitBar, trade.EntryPrice, trade.ExitPrice,
+                    trade.Size, trade.PnL] == pytest.approx(list(expected.values()), rel=0, abs=1e-10)
