@@ -414,3 +414,20 @@ def test_explicit_close_only_stop_yields_to_intrabar_liquidation(monkeypatch, tm
     assert float(body['trades'][0]['entry_price']) == 109
     assert float(body['trades'][0]['exit_price']) == exit_price
     assert body['raw_report']['isolated_risk']['liquidation_count'] == liquidations
+
+
+def test_intrinsic_stop_still_joins_liquidation_arbitration(monkeypatch, tmp_path):
+    # Default (intrinsic) 0.618 stop 104.28 * .999 = 104.17572 is judged intrabar, so it keeps the
+    # frozen stop in T2-2b arbitration. Fill109/L10 => L98.1; Low95 crosses both, no gap, the stop is
+    # nearer => stop_loss at the next open (hand-set 104.17572), no liquidation (pi 1010 review LOW).
+    data = frame()
+    data.loc[data.index[9], ['Open', 'High', 'Low', 'Close']] = [109, 110, 95, 96]
+    data.loc[data.index[10], ['Open', 'High', 'Low', 'Close']] = [104.17572, 108, 104, 107]
+    body = response(monkeypatch, tmp_path, params={'leverage': 10, 'position_size_pct': 20},
+                    data=data, market='futures')
+    assert body['result_status'] == 'success', body
+    assert len(body['trades']) == 1
+    assert body['raw_report']['fibonacci_retracement']['exit_decisions'][0]['reason'] == 'stop_loss'
+    assert float(body['trades'][0]['entry_price']) == 109
+    assert float(body['trades'][0]['exit_price']) == 104.17572
+    assert body['raw_report']['isolated_risk']['liquidation_count'] == 0
