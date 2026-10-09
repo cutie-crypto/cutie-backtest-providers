@@ -9233,7 +9233,11 @@ async def run_backtest(
                 **({"position_sizing": {"fill": "next_bar_open_market",
                      "capital_base": "pre_fill_net_equity" if risk["compound"] else "initial_capital",
                      "risk_quantity_leverage_multiplier": False,
-                     "initial_stop": ("template_frozen_signal_stop_actual_fill_distance"
+                     # P-LOW1: US open sizes against the nearer of the window stop frozen at the
+                     # signal and the user stop built at the actual fill (strategy_calendar_templates).
+                     "initial_stop": ("nearest_of_window_and_user_stop_actual_fill_distance"
+                                      if effective_tool_id == "local.backtesting_py.us_open_momentum"
+                                      else "template_frozen_signal_stop_actual_fill_distance"
                                       if effective_tool_id in POSITION_SIZING_TEMPLATE_STOP_TOOLS
                                       else "shared_frozen_actual_fill_risk_state"),
                      "qty_step_source": "provider_parameter_not_exchange_verified"}} if sizing_enabled else {}),
