@@ -155,6 +155,8 @@ def test_four_templates_left_pending_list_and_pending_list_empty(monkeypatch):
         'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell', 'chan_3buy',
         'bullish_engulfing', 'hammer_pin_bar', 'morning_star', 'three_white_soldiers', 'bullish_doji_reversal',
         'inside_bar_breakout', 'double_bottom', 'inverse_head_shoulders',
+        # SHORT-PAT-4：三个做空 K 线按冻结形态止损定仓。
+        'bearish_engulfing', 'shooting_star', 'evening_star',
         # 10-B2d：ORB、亚洲区间、日历定时、red_streak_rsi、美股开盘按模板冻结止损定仓（CME 走共享路径不在内）。
         'opening_range_breakout', 'asia_range_breakout', 'calendar_schedule', 'red_streak_rsi', 'us_open_momentum')}
     for tool in wired:

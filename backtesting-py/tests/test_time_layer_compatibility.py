@@ -65,7 +65,9 @@ F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
           if name != "red_streak_rsi"}
-LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES}
+# SHORT-PAT-4 tools postdate the 11e8cfb baseline; their off state is pinned in test_short_pat4_candles.py.
+SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star'}
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4}
 
 
 @pytest.mark.parametrize('name', compat.PARAMS)
@@ -108,7 +110,7 @@ def test_schema_only_runtime_single_position_templates():
     actual = {tool.removeprefix('local.backtesting_py.') for tool, spec in provider.TOOL_SPECS.items()
               if 'time_layer_enabled' in spec['param_schema_properties']}
     assert actual == {compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS) | {"red_streak_rsi"}
-    assert set(BASELINE['single']) | F1_CASES | F2_CASES == set(MIXINS)
+    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 == set(MIXINS)
 
 
 @pytest.mark.parametrize('name', MIXINS)
@@ -116,6 +118,9 @@ def test_schema_only_runtime_single_position_templates():
 def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled):
     if name in SHORT_PAT1_BASELINE['single']:
         from test_short_pat1 import compatibility_frame
+        data = compatibility_frame(name)
+    elif name in SHORT_PAT4:
+        from test_short_pat4_candles import compatibility_frame
         data = compatibility_frame(name)
     elif name in PATTERN3_BASELINE['single']:
         from test_9t3_patterns import compatibility_frame
@@ -140,7 +145,7 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         params.update(time_entry_at='07:00', time_max_holding_minutes=240, calendar_stop_enabled=False)
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
-    if name in PATTERN_BASELINE['single'] or name in PATTERN2_BASELINE['single'] or name in PATTERN3_BASELINE['single'] or name in SHORT_PAT1_BASELINE['single']:
+    if name in PATTERN_BASELINE['single'] or name in PATTERN2_BASELINE['single'] or name in PATTERN3_BASELINE['single'] or name in SHORT_PAT1_BASELINE['single'] or name in SHORT_PAT4:
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
     if name in DIVERGENCE_BASELINE['single']:

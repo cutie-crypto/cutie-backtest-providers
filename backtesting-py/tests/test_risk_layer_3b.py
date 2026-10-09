@@ -314,7 +314,8 @@ FEATURE_CASES = [(name, feature) for name in enumerate_mixin_cases() for feature
 
 @pytest.mark.parametrize('name,feature', FEATURE_CASES)
 def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
-    if name in (*p._CANDLE_TOOL_NAMES.values(), 'double_bottom', 'inverse_head_shoulders', 'double_top', 'head_shoulders'):
+    if name in (*p._CANDLE_TOOL_NAMES.values(), *p._SHORT_CANDLE_TOOL_NAMES.values(),
+                'double_bottom', 'inverse_head_shoulders', 'double_top', 'head_shoulders'):
         build = p.TOOL_SPECS['local.backtesting_py.'+name]['build']
         params = dict(risk_layer_enabled=True, **FEATURES[feature])
         if feature != 'holding':
@@ -326,6 +327,8 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
             from test_9t1_engulf_pin import compatibility_frame
         elif name in ('double_top', 'head_shoulders'):
             from test_short_pat1 import compatibility_frame
+        elif name in p._SHORT_CANDLE_TOOL_NAMES.values():
+            from test_short_pat4_candles import compatibility_frame
         elif name in ('double_bottom', 'inverse_head_shoulders'):
             from test_9t3_patterns import compatibility_frame
         else:
