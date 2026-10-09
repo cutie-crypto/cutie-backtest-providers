@@ -26,6 +26,17 @@ def fills(body):
 @pytest.mark.parametrize('name,label', [(n, v) for n in c.GOLDEN_VARIANTS for v in c.GOLDEN_VARIANTS[n]])
 def test_omitted_sizing_keys_match_5d0f9ac_bytes(name, label, monkeypatch, tmp_path):
     golden = (c.GOLDEN_DIR / f'{name}.{label}.json').read_text()
+    if c.GOLDEN_VARIANTS[name][label].get('leverage', 1) > 1:
+        # P-LIQ1：leverage > 1 时假设说明多一句 T2-2b 仲裁；金样只套这一处已知增量，其余字节照比。
+        allowed = (('frozen stop is skipped. New confirmed low or close below stop invalidates setup. Stop precedes',
+                    'frozen stop is skipped. New confirmed low or close below stop invalidates setup. Isolated liquidation'
+                    ' uses T2-2b gap/distance arbitration against the frozen stop; stop precedes')
+                   if name in c.BOTTOM else
+                   ('an entry open at or below the frozen stop is skipped.',
+                    'an entry open at or below the frozen stop is skipped. Isolated liquidation uses T2-2b'
+                    ' gap/distance arbitration against the frozen stop.'))
+        assert golden.count(allowed[0]) == 1
+        golden = golden.replace(*allowed)
     body = c.post(monkeypatch, tmp_path, name, c.GOLDEN_VARIANTS[name][label])
     assert body['result_status'] == 'success'
     assert c.canonical(body) + '\n' == golden

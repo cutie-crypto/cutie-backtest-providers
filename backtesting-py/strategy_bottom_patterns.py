@@ -1,5 +1,6 @@
 """Causal confirmed-swing bottom setups and next-open orders."""
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 
 import numpy as np
 from backtesting import Strategy
@@ -111,20 +112,32 @@ def make_bottom_strategy(mixin, *, kind, risk, initial_capital, config):
                 process_orders()
             self._broker._process_orders = guarded_process_orders
 
+        def _risk_check_exit(self):
+            # Also used by the shared broker insolvency bridge. Supply the frozen
+            # pattern stop to T2-2b arbitration before checking expiry/target.
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            if any(order.parent_trade is trade for order in self.orders):
+                return True
+            if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(trade.tag.stop))):
+                return True
+            if self.data.Low[-1] <= trade.tag.stop:
+                self._risk_exit_reason = 'stop_loss'
+            elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
+                self._record_holding_expiry(fact)
+            elif self.data.High[-1] >= trade.tag.target:
+                self._risk_exit_reason = 'take_profit'
+            else:
+                return False
+            self.position.close()
+            return True
+
         def next(self):
             if self.position:
-                trade = self.trades[-1]
-                if any(order.parent_trade is trade for order in self.orders):
-                    return
-                if self.data.Low[-1] <= trade.tag.stop:
-                    self._risk_exit_reason = 'stop_loss'
-                elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
-                    self._record_holding_expiry(fact)
-                elif self.data.High[-1] >= trade.tag.target:
-                    self._risk_exit_reason = 'take_profit'
-                else:
-                    return
-                self.position.close()
+                self._risk_check_exit()
+                return
+            if self._risk.get('leverage', 1) > 1 and self._isolated_blocked_bar == len(self.data)-1:
                 return
             # Judgment bar = the breakout close; a filtered signal is discarded (signals fire once), not delayed.
             if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():
