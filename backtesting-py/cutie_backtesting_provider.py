@@ -5492,6 +5492,75 @@ def _settle_isolated_liquidations(
     return ordered
 
 
+def _build_isolated_risk_report(
+    trades_v2: list[dict[str, Any]],
+    *,
+    leverage: int,
+    market: str,
+    df: pd.DataFrame,
+    step: int,
+    liquidations: Optional[list[dict[str, int]]] = None,
+) -> dict[str, Any]:
+    """raw_report 的可合并片段；T2-2b 才接线，seq 取结算后 result.v2。
+
+    futures L>1 即使没有爆仓也输出零计数；spot/L=1 返回空片段。
+    """
+    if market != "futures" or leverage == 1:
+        return {}
+    fills = _isolated_liquidation_fills(
+        trades_v2, leverage=leverage, df=df, step=step, liquidations=liquidations or [],
+    )
+    details = []
+    for trade in trades_v2:
+        fill = fills.get(trade["opened_at"])
+        if fill is None:
+            continue
+        if (trade["closed_at"] != fill["closed_at"]
+                or Decimal(trade["exit_price"]) != fill["fill_price"]):
+            raise ValueError("isolated risk report requires settled result.v2 trades")
+        details.append({
+            "seq": trade["seq"],
+            "liquidation_price": canonical_decimal_str(fill["liquidation_price"]),
+            "fill_price": canonical_decimal_str(fill["fill_price"]),
+            "liquidation_gap": fill["liquidation_gap"],
+            "margin_lost": canonical_decimal_str(fill["margin_lost"]),
+            "loss_beyond_margin": canonical_decimal_str(fill["loss_beyond_margin"]),
+        })
+    return {"isolated_risk": {
+        "leverage": leverage,
+        "liquidation_count": len(details),
+        "liquidated_margin_total": canonical_decimal_str(
+            sum((fill["margin_lost"] for fill in fills.values()), Decimal(0))),
+        "liquidation_gap_count": sum(fill["liquidation_gap"] for fill in fills.values()),
+        "loss_beyond_margin_total": canonical_decimal_str(
+            sum((fill["loss_beyond_margin"] for fill in fills.values()), Decimal(0))),
+        "liquidations": details,
+    }}
+
+
+def _build_isolated_margin_assumptions(
+    *, leverage: int, market: str, stop_loss_pct: Any = None,
+) -> dict[str, Any]:
+    """assumptions 的可合并片段；只判断固定止损，动态止损留给 T2-2b。"""
+    if market != "futures" or leverage == 1:
+        return {}
+    _parse_single_leverage({"leverage": leverage})
+    stop = Decimal(str(stop_loss_pct)) if stop_loss_pct is not None else None
+    if stop is not None and (not stop.is_finite() or not Decimal(0) <= stop <= Decimal(100)):
+        raise ValueError("invalid fixed stop_loss_pct")
+    return {"isolated_margin": {
+        "leverage": leverage,
+        "mmr": "0",
+        "funding_rate_included": False,
+        "fees_in_liquidation_price": False,
+        "liquidation_price_formula": "long: E*(1-1/L); short: E*(1+1/L)",
+        "gap_fill": "跳空按开盘价成交、result.v2 按冻结公式可超保证金、逐仓封顶见 raw_report",
+        "stop_beyond_liquidation": (
+            stop is not None and stop / Decimal(100) >= Decimal(1) / Decimal(leverage)
+        ),
+    }}
+
+
 def _result_v2_bar_closes(df: pd.DataFrame, timeframe: str) -> list[tuple[int, int, Decimal]]:
     """按市值点的 bar 序列：(open_time, close_time, close)，open_time 升序。
 
