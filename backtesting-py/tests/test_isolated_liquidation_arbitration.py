@@ -255,7 +255,7 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
     monkeypatch.setattr(p,'_isolated_liquidation_candidate',forbidden)
     monkeypatch.setattr(p._FixedRiskMixin,'_isolated_install_settlement',forbidden)
     monkeypatch.setattr(Backtest,'plot',lambda *a,**k:None)
-    def invoke(module):
+    def invoke(module, extra=extra):
         monkeypatch.setattr(module,'_fetch_ohlcv',lambda *a,**k:data.copy())
         monkeypatch.setattr(module,'_fetch_template_warmup',lambda *a,**k:pd.DataFrame())
         monkeypatch.setattr(module,'REPORTS_DIR',tmp_path)
@@ -280,7 +280,7 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         for key in ('assumptions','raw_report'):
             assert digest(json.dumps(result[key],sort_keys=True,separators=(',',':')))==expected[key]
     else:
-        baseline=invoke(baseline_provider)
+        baseline=invoke(p, {}) if name.endswith("_bullish_divergence") else invoke(baseline_provider)
         assert canonical_json({k:result[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
         for key in ('assumptions','raw_report'):
             assert json.dumps(result[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))

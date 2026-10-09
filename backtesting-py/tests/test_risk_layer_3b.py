@@ -340,6 +340,27 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         assert len(trades) == 1 and reasons == ['time_expiry']
         assert trades.iloc[0].ExitBar - trades.iloc[0].EntryBar == 1
         return
+    if name.endswith('_bullish_divergence'):
+        from test_9t4_divergence import hand_frame, hand_params
+        build = p.TOOL_SPECS['local.backtesting_py.'+name]['build']
+        params = dict(hand_params(name), risk_layer_enabled=True, **FEATURES[feature])
+        if feature != 'holding':
+            # Frozen L2/2R exits reject incompatible generic overlay overrides.
+            with pytest.raises(ValueError, match='INVALID_PARAMS:'):
+                build(params)
+            return
+        reasons = []
+        cls = build(params)['strategy']
+        original = cls._record_holding_expiry
+        def record(self, fact):
+            reasons.append('time_expiry')
+            original(self, fact)
+        cls._record_holding_expiry = record
+        trades = Backtest(hand_frame(), cls, cash=100000,
+                          exclusive_orders=True, finalize_trades=True).run()['_trades']
+        assert trades[['EntryBar','ExitBar']].values.tolist() == [[24,25]]
+        assert reasons == ['time_expiry']
+        return
     observations=[]
     original=p._FixedRiskMixin._risk_layer_check_exit
     def observe(self):
