@@ -6173,6 +6173,8 @@ async def run_backtest(
         _enforce_reports_retention()
 
     except Exception as e:
+        if str(e).startswith("INVALID_PARAMS:"):
+            return _validation_failure("INVALID_PARAMS", str(e))
         logger.exception("Backtest execution failed")
         return _business_failure(run_id, "ENGINE_ERROR", f"Backtest execution failed: {e}")
 

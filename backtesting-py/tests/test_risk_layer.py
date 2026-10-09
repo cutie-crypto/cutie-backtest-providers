@@ -266,3 +266,45 @@ def test_unrepresentable_levels_cannot_silently_disable_opt_in_protection(params
 def test_new_numeric_bounds_are_enforced(params):
     with pytest.raises(ValueError, match='INVALID_PARAMS:'):
         p._parse_fixed_risk_params(dict(risk_layer_enabled=True, **params))
+
+
+def short_breakout_response(monkeypatch):
+    # Exactly five warmup bars plus 25 main bars; ATR(50) cannot arm an entry.
+    closes = [100 + 2 * i for i in range(30)]
+    data = bars_frame([[c, c + 1, c - 1, c] for c in closes])
+    fetched_counts = []
+    def fetch(exchange, market, symbol, timeframe, start, end):
+        lo, hi = pd.to_datetime(start, unit='s'), pd.to_datetime(end, unit='s')
+        result = data.loc[(data.index >= lo) & (data.index < hi)].copy()
+        fetched_counts.append(len(result))
+        return result
+    monkeypatch.setattr(p, '_fetch_ohlcv', fetch)
+    request = http_request({})
+    request['backtest'].update(
+        provider_tool_id='local.backtesting_py.breakout',
+        provider_params=dict(lookback=2, exit_lookback=2, risk_layer_enabled=True,
+                             atr_stop_multiplier=1, risk_atr_period=50),
+        start_at=int(data.index[5].timestamp()), end_at=int(data.index[-1].timestamp()) + 3600)
+    response = TestClient(p.app).post('/cutie/backtest', json=request)
+    assert response.status_code == 200
+    assert fetched_counts == [25, 5]
+    return response.json()
+
+
+def test_enabled_layer_invalid_params_message_passes_through_unchanged(monkeypatch):
+    """启用层非法参数 ⇒ INVALID_PARAMS 原样透出。"""
+    body = short_breakout_response(monkeypatch)
+    assert body['result_status'] == 'failed'
+    assert body['error_type'] == 'INVALID_PARAMS'
+    assert body['error_message'] == 'INVALID_PARAMS:ATR entry history is shorter than risk_atr_period'
+    assert body['limitations']['reason'] == 'validation_failure'
+
+
+def test_plain_engine_exception_remains_engine_error(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError('plain engine failure')
+    monkeypatch.setattr(Backtest, 'run', fail)
+    body = short_breakout_response(monkeypatch)
+    assert body['result_status'] == 'failed'
+    assert body['error_type'] == 'ENGINE_ERROR'
+    assert body['error_message'] == 'Backtest execution failed: plain engine failure'
