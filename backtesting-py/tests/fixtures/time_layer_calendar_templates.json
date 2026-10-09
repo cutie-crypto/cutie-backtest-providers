@@ -1,0 +1,30 @@
+{
+  "single": {
+    "us_open_momentum": {
+      "min_bars": 2,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "209da140518a962a4fc2a8fbf239efdf14531b13c5bdd7833af99c75c66dfa19",
+        "raw_report_sha256": "278ccc6c1aed51d95cb1a4d1ad5031521fbafdc1a4448d93006f27fe384771d7"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "2ca9a9b5430e062759405dba1fd5b60213284e3245b35672de4cb5158b429803",
+        "raw_report_sha256": "278ccc6c1aed51d95cb1a4d1ad5031521fbafdc1a4448d93006f27fe384771d7"
+      }
+    },
+    "cme_weekend_gap": {
+      "min_bars": 2,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "3a1c7847f5226ea6349812e5f2f7512dfd1113f1dbdbd28f831fb39d3a02d7bb",
+        "raw_report_sha256": "9dce5903c584493a546f546353f076c63175980e1e15e3ed3d4f68d4377c4830"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "3424f46e43c1d0693170211622e301699cb9ca687356b8b585c0042f1c833d3d",
+        "raw_report_sha256": "9dce5903c584493a546f546353f076c63175980e1e15e3ed3d4f68d4377c4830"
+      }
+    }
+  }
+}

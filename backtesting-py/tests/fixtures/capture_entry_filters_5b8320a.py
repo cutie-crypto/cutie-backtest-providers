@@ -30,7 +30,7 @@ def cases():
 
 
 def snapshot(name, params, warm):
-    full = compat.frame()
+    full = capture.template_frame(name)
     prefix, data = full.iloc[:60], full.iloc[60:].copy()
     built = provider.TOOL_SPECS['local.backtesting_py.' + name]['build'](params)
     cls = built['strategy']
