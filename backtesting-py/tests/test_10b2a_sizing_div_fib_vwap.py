@@ -145,7 +145,7 @@ def test_rejected_before_fetch_without_frozen_stop(name, params, message, monkey
     assert message in body['error_message']
 
 
-def test_four_templates_left_pending_list_and_others_still_reject(monkeypatch):
+def test_four_templates_left_pending_list_and_pending_list_empty(monkeypatch):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a: pytest.fail('pending tool fetched data'))
     wired = {'local.backtesting_py.' + n for n in TOOLS}
@@ -154,17 +154,11 @@ def test_four_templates_left_pending_list_and_others_still_reject(monkeypatch):
     assert p.POSITION_SIZING_TEMPLATE_STOP_TOOLS - wired == {'local.backtesting_py.' + n for n in (
         'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell', 'chan_3buy',
         'bullish_engulfing', 'hammer_pin_bar', 'morning_star', 'three_white_soldiers', 'bullish_doji_reversal',
-        'inside_bar_breakout', 'double_bottom', 'inverse_head_shoulders')}
+        'inside_bar_breakout', 'double_bottom', 'inverse_head_shoulders',
+        # 10-B2d：ORB、亚洲区间、日历定时、red_streak_rsi、美股开盘按模板冻结止损定仓（CME 走共享路径不在内）。
+        'opening_range_breakout', 'asia_range_breakout', 'calendar_schedule', 'red_streak_rsi', 'us_open_momentum')}
     for tool in wired:
         assert POSITION_SIZE_KEYS <= set(p.TOOL_SPECS[tool]['param_schema_properties']), tool
     # 集成 E：10-B2a 移出 4 个后 19，SHORT-PAT-3 新增 chan_3sell 进待接名单，合并后 20；10-B2b 移出 6 个后 14；10-B2c 移出 8 个后 6
-    assert len(p.POSITION_SIZING_PENDING_TOOLS) == 6
-    client = TestClient(p.app)
-    for tool in sorted(p.POSITION_SIZING_PENDING_TOOLS):
-        assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
-        request = dict(run_id='10b2a', provider_tool_id=tool, provider_params=dict(RISK, stop_loss_pct=2),
-                       symbol='BTCUSDT', market='spot', timeframe='1h', start_at=1767225600,
-                       end_at=1767312000, initial_capital='10000', fee_bps='0', slippage_bps='0')
-        body = client.post('/cutie/backtest', json={'backtest': request}).json()
-        assert body['raw_report']['position_sizing'] == {
-            'rejections': [{'reason': 'position sizing is not wired to this template yet'}]}, tool
+    # 10-B2d 移出最后 6 个，名单清空。
+    assert not p.POSITION_SIZING_PENDING_TOOLS

@@ -8,6 +8,7 @@ from backtesting import Strategy
 from strategy_time_layer import TimeConfig, TimeContext, HoldingExpiry, expiry_due, utc_datetime, fixed_timeframe_milliseconds
 from strategy_time_series import PeriodDefinition, SeriesBar, period_bounds, range_window, freeze_range, TimeHistoryError
 from strategy_risk_overlay import RiskState
+from strategy_position_sizing import SizingRejected
 
 
 def minute(clock):
@@ -129,6 +130,18 @@ def make_strategy(mixin, config, risk, initial_capital):
 
         def _risk_check_exit(self):
             return self._risk_layer_check_exit() if self.position and self.trades else False
+
+        def _sizing_template_stop(self, order):
+            # 10-B2d: only consulted by position_size_risk_pct. The stop is the opposite side of the
+            # range frozen before the signal (the same value _risk_layer_check_exit installs after the
+            # fill); distance = |actual fill - stop|. This engine has no gap guard, so a fill on the
+            # wrong side of the frozen stop cannot carry a risk distance: reject (fail-closed).
+            frozen = self._entry_range
+            stop = Decimal(str(frozen.low if order.is_long else frozen.high))
+            fill = Decimal(str(self._broker._adjusted_price(order.size, self.data.Open[-1])))
+            if fill <= stop if order.is_long else fill >= stop:
+                raise SizingRejected('stop_wrong_side_of_fill')
+            return stop
 
         def _risk_layer_check_exit(self):
             trade = self.trades[-1]
