@@ -416,6 +416,12 @@ BOTTOM_7P3B2_GATE = (
     b"            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry():\n",
     b"            # Judgment bar = the breakout close; a filtered signal is discarded (signals fire once), not delayed.\n"
     b"            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():\n")
+# P-LOW2b：开定仓时入场单补 _sizing_signal_bar（与 _risk_buy 同写法），这是底部源文件第二处允许的差异。
+BOTTOM_PLOW2B_SIGNAL_BAR = (
+    b"            self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)\n",
+    b"            order = self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)\n"
+    b"            if self._risk.get(\"position_sizing_enabled\"):\n"
+    b"                order._sizing_signal_bar = len(self.data) - 1\n")
 
 
 def test_long_source_and_golden_files_byte_unchanged():
@@ -424,8 +430,9 @@ def test_long_source_and_golden_files_byte_unchanged():
                      'backtesting-py/tests/fixtures/9t3_bottom_off.json'):
         expected=subprocess.check_output(['git','show','32ae030:'+relative],cwd=root)
         if relative.endswith('strategy_bottom_patterns.py'):
-            assert expected.count(BOTTOM_7P3B2_GATE[0])==1
-            expected=expected.replace(*BOTTOM_7P3B2_GATE)
+            for allowed in (BOTTOM_7P3B2_GATE, BOTTOM_PLOW2B_SIGNAL_BAR):
+                assert expected.count(allowed[0])==1
+                expected=expected.replace(*allowed)
         assert (root/relative).read_bytes()==expected
 
 
