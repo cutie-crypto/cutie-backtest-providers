@@ -20,6 +20,8 @@ def cases():
     for tool_id, spec in provider.TOOL_SPECS.items():
         if spec.get('runner') in ('kernel_v3', provider.SCALE_IN_OUT_RUNNER, provider.TURTLE_RUNNER):
             continue
+        if tool_id in getattr(provider, 'FILTER_LAYER_UNWIRED_TOOLS', ()):
+            continue
         name = tool_id.removeprefix('local.backtesting_py.')
         result[name] = (name, {})
         for direction in spec['param_schema_properties'].get('direction', {}).get('enum', []):
@@ -33,6 +35,7 @@ def snapshot(name, params, warm):
     built = provider.TOOL_SPECS['local.backtesting_py.' + name]['build'](params)
     cls = built['strategy']
     if warm:
+        cls._warmup_index = prefix.index
         cls._warmup_bars = len(prefix)
         cls._warmup_cols = {c: prefix[c].to_numpy() for c in provider._WARMUP_COLUMNS}
     stats = Backtest(data, cls, cash=100000, commission=.001, exclusive_orders=True,

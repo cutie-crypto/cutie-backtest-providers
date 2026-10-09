@@ -309,9 +309,37 @@ FEATURES = {
     'levels': dict(stop_loss_pct=20,tp1_r=.01,tp1_close_pct=50,tp2_r=.02,tp2_close_pct=50),
 }
 
-@pytest.mark.parametrize('name', list(enumerate_mixin_cases()))
-@pytest.mark.parametrize('feature', FEATURES)
+FEATURE_CASES = [(name, feature) for name in enumerate_mixin_cases() for feature, values in FEATURES.items()
+                 if set(values) <= set(p.TOOL_SPECS['local.backtesting_py.'+tool_name(name)]['param_schema_properties'])]
+
+@pytest.mark.parametrize('name,feature', FEATURE_CASES)
 def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
+    if name in (*p._CANDLE_TOOL_NAMES.values(), 'double_bottom', 'inverse_head_shoulders'):
+        build = p.TOOL_SPECS['local.backtesting_py.'+name]['build']
+        params = dict(risk_layer_enabled=True, **FEATURES[feature])
+        if feature != 'holding':
+            # Template-owned exits deliberately reject the generic overlay modes.
+            with pytest.raises(ValueError, match='INVALID_PARAMS:.*mutually exclusive'):
+                build(params)
+            return
+        if name in ('bullish_engulfing', 'hammer_pin_bar'):
+            from test_9t1_engulf_pin import compatibility_frame
+        elif name in ('double_bottom', 'inverse_head_shoulders'):
+            from test_9t3_patterns import compatibility_frame
+        else:
+            from test_9t2_patterns import compatibility_frame
+        cls = build(params)['strategy']
+        reasons = []
+        original = cls._record_holding_expiry
+        def record(self, fact):
+            reasons.append('time_expiry')
+            original(self, fact)
+        cls._record_holding_expiry = record
+        trades = Backtest(compatibility_frame(name), cls, cash=100000,
+                          exclusive_orders=True, finalize_trades=True).run()['_trades']
+        assert len(trades) == 1 and reasons == ['time_expiry']
+        assert trades.iloc[0].ExitBar - trades.iloc[0].EntryBar == 1
+        return
     observations=[]
     original=p._FixedRiskMixin._risk_layer_check_exit
     def observe(self):
@@ -320,6 +348,10 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         return exited
     monkeypatch.setattr(p._FixedRiskMixin,'_risk_layer_check_exit',observe)
     params=dict(PARAMS.get(name,{}),risk_layer_enabled=True,**FEATURES[feature])
+    if name == 'opening_range_breakout':
+        params['flatten_at'] = '23:00'  # 1h test grid
+    if name == 'calendar_schedule':
+        params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 100
     data=frame()
@@ -328,6 +360,10 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         data['Open']=data.Close
         data['High']=data.Close+.01
         data['Low']=data.Close-.01
+        if name == 'red_streak_rsi':
+            # Equality intentionally is NOT red. Provide four real red bars
+            # through the trough, followed by rebound bars for 1R activation.
+            data.loc[data.index[43:47], 'Open'] = data.Close.iloc[43:47] + .005
     cls=p.TOOL_SPECS['local.backtesting_py.'+tool_name(name)]['build'](params)['strategy']
     stats=Backtest(data,cls,cash=100000,exclusive_orders=True,finalize_trades=True).run()
     assert not stats['_trades'].empty and observations
@@ -385,11 +421,14 @@ def test_http_invalid_combination_before_market_fetch(monkeypatch):
 @pytest.mark.parametrize('key',KEYS)
 def test_new_schema_consumed_only_by_runtime_mixins(key):
     assert p._FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]['default'] == (False if key=='breakeven_stop' else 0)
-    for spec in p.TOOL_SPECS.values():
+    for tool_id, spec in p.TOOL_SPECS.items():
         runner = spec.get('runner')
-        assert (key in spec['param_schema_properties']) == (
+        included = (
             runner not in ('kernel_v3', 'scale_in_out_ledger', 'turtle_group') or
             (runner in ('scale_in_out_ledger', p.TURTLE_RUNNER) and key == 'max_holding_bars'))
+        if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout', 'local.backtesting_py.calendar_schedule'):
+            included = key == 'max_holding_bars'
+        assert (key in spec['param_schema_properties']) == included
 
 @pytest.mark.parametrize('side',['long','short'])
 def test_partial_fee_accounting_preserves_quantity_and_equity(side):

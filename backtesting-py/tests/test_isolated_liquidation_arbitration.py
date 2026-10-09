@@ -19,6 +19,12 @@ from test_isolated_liquidation_settlement import server_recompute
 from test_leverage_params import request
 
 START, STEP = 1800000000, 3600
+WAVEB_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_waveb_e698d26_6b85dbf_9f8a6b0.json').read_text())
+
+
+def test_waveb_golden_covers_exactly_the_filter_unwired_tools():
+    assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
+    assert all(set(v)=={'futures','spot'} for v in WAVEB_GOLDEN['cases'].values())
 FLAT = [100, 101, 99, 100]
 SIDES = ['long', 'short']
 
@@ -240,8 +246,10 @@ def baseline_provider():
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
-    data=compat.frame().iloc[60:].copy()
+    golden=WAVEB_GOLDEN['cases'].get(name)
+    data=compat.frame().iloc[WAVEB_GOLDEN['data_offset'].get(name,60):].copy()
     params={'direction':'short'} if name.endswith('_short') else {}
+    params.update(WAVEB_GOLDEN['tool_params'].get(name,{}))
     def forbidden(*a,**k):
         pytest.fail('L=1 called liquidation arbitration or settlement installation')
     monkeypatch.setattr(p,'_isolated_liquidation_candidate',forbidden)
@@ -256,11 +264,26 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         out=TestClient(module.app).post('/cutie/backtest',json=req).json()
         assert out['result_status']=='success',out
         return out
-    baseline,result=invoke(baseline_provider),invoke(p)
+    result=invoke(p)
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')
-    assert canonical_json({k:result[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
-    for key in ('assumptions','raw_report'):
-        assert json.dumps(result[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))
+    if name == 'vwap_reversion' or golden:
+        # F5 and the Wave-B tools did not exist at e25886e: compare their independent immutable goldens
+        # (each captured at its own feature head), keeping the historical-source comparator for every other tool.
+        import hashlib
+        from pathlib import Path
+        if golden:
+            expected=golden[market]
+        else:
+            expected=json.loads((Path(__file__).parent/'fixtures/isolated_off_f5_b42210b.json').read_text())['cases'][market]
+        digest=lambda value:hashlib.sha256(value.encode()).hexdigest()
+        assert digest(canonical_json({k:result[k] for k in v2}))==expected['v2']
+        for key in ('assumptions','raw_report'):
+            assert digest(json.dumps(result[key],sort_keys=True,separators=(',',':')))==expected[key]
+    else:
+        baseline=invoke(baseline_provider)
+        assert canonical_json({k:result[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
+        for key in ('assumptions','raw_report'):
+            assert json.dumps(result[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))
     assert 'isolated_margin' not in result['assumptions'] and 'isolated_risk' not in result['raw_report']
 
 
