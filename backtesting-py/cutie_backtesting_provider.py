@@ -3201,6 +3201,7 @@ class _TurtleGroupMixin:
     """One frozen-N, frozen-quantity group; reconcile only actual broker fills."""
 
     _time_context = None
+    _turtle_risk: dict[str, Any] = {}
 
     _warmup_bars: int = 0
     _warmup_cols: dict[str, Any] = {}
@@ -3228,6 +3229,9 @@ class _TurtleGroupMixin:
         self._group_units = 0
         self._pending_unit = None
         self._closing_group = False
+        self._group_entry_bar = None
+        self._group_take = None
+        self._group_exit_reasons = {}
 
     def _turtle_sync(self) -> bool:
         # Called after broker.next(): a queued market order has either filled or
@@ -3235,6 +3239,14 @@ class _TurtleGroupMixin:
         if self._pending_unit is not None and self._pending_unit not in self.orders:
             filled = len(self.trades) > self._group_units
             if filled:
+                if self._group_units == 0:
+                    self._group_entry_bar = self.trades[0].entry_bar
+                if self._turtle_risk.get("take_profit_pct") is not None:
+                    quantity = sum(abs(trade.size) for trade in self.trades)
+                    vwap = sum(Decimal(str(trade.entry_price)) * abs(trade.size)
+                               for trade in self.trades) / quantity
+                    pct = Decimal(str(self._turtle_risk["take_profit_pct"])) / 100
+                    self._group_take = vwap * (1 + self._group_side * pct)
                 self._group_units = len(self.trades)
                 self._last_fill = self.trades[-1].entry_price
                 self._group_stop = self._last_fill - self._group_side * self._stop_multiple * self._group_n
@@ -3253,8 +3265,9 @@ class _TurtleGroupMixin:
             return True  # No new group on the exit-fill bar either.
         return False
 
-    def _turtle_close(self) -> None:
+    def _turtle_close(self, reason: str) -> None:
         self.position.close()
+        self._group_exit_reasons[self._group_id] = reason
         self._closing_group = True
 
     def _turtle_next(self) -> None:
@@ -3264,11 +3277,26 @@ class _TurtleGroupMixin:
         if self.position:
             if (self.data.Low[-1] <= self._group_stop if self._group_side == 1
                     else self.data.High[-1] >= self._group_stop):
-                self._turtle_close()
+                self._turtle_close("stop")
                 return
+            if self._turtle_risk.get("risk_layer_enabled"):
+                first = self.trades[0]
+                due = expiry_due(
+                    holding_bars=self._turtle_risk.get("max_holding_bars", 0),
+                    entry_bar=self._group_entry_bar, bar=len(self.data) - 1,
+                    entry_utc=first.entry_time, bar_open=self.data.index[-1], context=None)
+                if due.due:
+                    self._turtle_close("time_expiry")
+                    return
+                if self._group_take is not None and (
+                    Decimal(str(self.data.High[-1])) >= self._group_take if self._group_side == 1
+                    else Decimal(str(self.data.Low[-1])) <= self._group_take
+                ):
+                    self._turtle_close("take_profit")
+                    return
             if (price < self.exit_low[-1] if self._group_side == 1
                     else price > self.exit_high[-1]):
-                self._turtle_close()
+                self._turtle_close("channel")
                 return
             if (self._group_units < self._max_units
                     and self._group_side * (price - self._last_fill) >= self._add_step * self._group_n):
@@ -3293,6 +3321,8 @@ class _TurtleGroupMixin:
             self._group_side = 1 if long_signal else -1
             self._group_n, self._group_q = n, q
             self._group_units = 0
+            self._group_entry_bar = None
+            self._group_take = None
             order = self.buy if self._group_side == 1 else self.sell
             self._pending_unit = order(size=q, tag=self._group_id)
 
