@@ -242,6 +242,10 @@ def test_each_registered_template_uses_filter_gate(name, risk_enabled, monkeypat
               'risk_layer_enabled': risk_enabled, 'stop_loss_pct': 3, 'take_profit_pct': 5}
     if 'direction' in p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']:
         values['direction'] = 'long'
+    if name.endswith('_bullish_divergence'):
+        # These templates own a frozen L2 stop and actual-fill 2R target.
+        values.pop('stop_loss_pct')
+        values.pop('take_profit_pct')
     cls = p.TOOL_SPECS['local.backtesting_py.'+name]['build'](values)['strategy']
     calls = []
     original = p._FilterLayerMixin._filter_allow_entry

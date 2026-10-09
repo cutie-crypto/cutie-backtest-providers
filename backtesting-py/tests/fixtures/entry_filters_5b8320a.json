@@ -522,6 +522,78 @@
       "warmup_bars": 60,
       "assumptions": "3d94df38fffd3519f1231ee48977e779795c24a4e5aefba04dad21983fa0e774",
       "raw_report": "00c70fd2624bfd356e89a5084215d16a9c63726b4c7f992e412f3e132662e456"
+    },
+    "macd_bullish_divergence/0": {
+      "min_bars": 103,
+      "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
+      "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
+      "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "warmup_bars": 0,
+      "assumptions": "1ad656725611cdb56ca867207cad36a234c9cefa81404127c0d17db0031f9cf7",
+      "raw_report": "d3f51f9eec6a3151bbfaf33a25af07cb21749b2464a35ecdce9fa78bffb83cd6"
+    },
+    "macd_bullish_divergence/1": {
+      "min_bars": 103,
+      "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
+      "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
+      "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "warmup_bars": 60,
+      "assumptions": "43e1f13caaa46419e98f1f2e156d39b31ab6747f40e05d7a2848de10b4d2b004",
+      "raw_report": "071c814582aa2fcc4835bee82979166cc55cd7b9912165b8b3d5847860b690cc"
+    },
+    "macd_bullish_divergence@long/0": {
+      "min_bars": 103,
+      "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
+      "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
+      "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "warmup_bars": 0,
+      "assumptions": "1ad656725611cdb56ca867207cad36a234c9cefa81404127c0d17db0031f9cf7",
+      "raw_report": "d3f51f9eec6a3151bbfaf33a25af07cb21749b2464a35ecdce9fa78bffb83cd6"
+    },
+    "macd_bullish_divergence@long/1": {
+      "min_bars": 103,
+      "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
+      "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
+      "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+      "warmup_bars": 60,
+      "assumptions": "43e1f13caaa46419e98f1f2e156d39b31ab6747f40e05d7a2848de10b4d2b004",
+      "raw_report": "071c814582aa2fcc4835bee82979166cc55cd7b9912165b8b3d5847860b690cc"
+    },
+    "rsi_bullish_divergence/0": {
+      "min_bars": 58,
+      "engine_trades": "84d3de78dd2b13aa5e3b020ff7609a2b03f76403cdc8eb7016f3d30ffe821d05",
+      "engine_equity": "d40889445cd3950023d7ab46c3e43ec6a945b3e55d01f509ad79ee6c4b2825e1",
+      "result_v2": "8a759015339ef7e598edaec05e7f99458a754e6a2e9a5e79822cc506cbc3f80c",
+      "warmup_bars": 0,
+      "assumptions": "77a6c74c99db374ed52af79197017f6aeeb32e2fa11751017505db7cb5b9f336",
+      "raw_report": "72f24e428b94862ae01c8bdb719c430f08bc5ceb26d3c35fb74eca6a6dde6346"
+    },
+    "rsi_bullish_divergence/1": {
+      "min_bars": 58,
+      "engine_trades": "84d3de78dd2b13aa5e3b020ff7609a2b03f76403cdc8eb7016f3d30ffe821d05",
+      "engine_equity": "d40889445cd3950023d7ab46c3e43ec6a945b3e55d01f509ad79ee6c4b2825e1",
+      "result_v2": "8a759015339ef7e598edaec05e7f99458a754e6a2e9a5e79822cc506cbc3f80c",
+      "warmup_bars": 60,
+      "assumptions": "2a8fd878baff3cb7cf26aacf52fdf8566bcea77ba2ab878ac9618f1f3a618b15",
+      "raw_report": "1a7f22e3ef9ed138bc30f760d2ce322d7bba8ed6cde3dffc01109d2faf03e352"
+    },
+    "rsi_bullish_divergence@long/0": {
+      "min_bars": 58,
+      "engine_trades": "84d3de78dd2b13aa5e3b020ff7609a2b03f76403cdc8eb7016f3d30ffe821d05",
+      "engine_equity": "d40889445cd3950023d7ab46c3e43ec6a945b3e55d01f509ad79ee6c4b2825e1",
+      "result_v2": "8a759015339ef7e598edaec05e7f99458a754e6a2e9a5e79822cc506cbc3f80c",
+      "warmup_bars": 0,
+      "assumptions": "77a6c74c99db374ed52af79197017f6aeeb32e2fa11751017505db7cb5b9f336",
+      "raw_report": "72f24e428b94862ae01c8bdb719c430f08bc5ceb26d3c35fb74eca6a6dde6346"
+    },
+    "rsi_bullish_divergence@long/1": {
+      "min_bars": 58,
+      "engine_trades": "84d3de78dd2b13aa5e3b020ff7609a2b03f76403cdc8eb7016f3d30ffe821d05",
+      "engine_equity": "d40889445cd3950023d7ab46c3e43ec6a945b3e55d01f509ad79ee6c4b2825e1",
+      "result_v2": "8a759015339ef7e598edaec05e7f99458a754e6a2e9a5e79822cc506cbc3f80c",
+      "warmup_bars": 60,
+      "assumptions": "2a8fd878baff3cb7cf26aacf52fdf8566bcea77ba2ab878ac9618f1f3a618b15",
+      "raw_report": "1a7f22e3ef9ed138bc30f760d2ce322d7bba8ed6cde3dffc01109d2faf03e352"
     }
   }
 }
