@@ -49,6 +49,10 @@ def response(name, params, warm=True):
         import pandas as pd
         frozen = json.loads(Path(__file__).with_name('9t2_candle_off.json').read_text())['inputs'][name]
         full = pd.DataFrame(frozen['columns'], index=pd.to_datetime(frozen['index']))
+    elif name in ('double_top', 'head_shoulders'):
+        import pandas as pd
+        frozen = json.loads(Path(__file__).with_name('short_pat1_off.json').read_text())['inputs'][name]
+        full = pd.DataFrame(frozen['columns'], index=pd.to_datetime(frozen['index']))
     elif name in ('double_bottom', 'inverse_head_shoulders'):
         import pandas as pd
         frozen = json.loads(Path(__file__).with_name('9t3_bottom_off.json').read_text())['inputs'][name]
