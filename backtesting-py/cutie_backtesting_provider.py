@@ -2562,6 +2562,7 @@ class _FixedRiskMixin(_TimeLayerMixin):
         return False
 
 
+@_with_time_config
 def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -2621,6 +2622,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
     }
 
 
+@_with_time_config
 def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -2864,6 +2866,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
     }
 
 
+@_with_time_config
 def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -2916,6 +2919,7 @@ def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float 
     }
 
 
+@_with_time_config
 def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -2967,6 +2971,7 @@ def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float 
     }
 
 
+@_with_time_config
 def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3038,6 +3043,7 @@ def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0)
     }
 
 
+@_with_time_config
 def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3118,6 +3124,7 @@ def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 1
     }
 
 
+@_with_time_config
 def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3189,6 +3196,7 @@ def _cci_series(high: Any, low: Any, close: Any, period: int):
     return ((tp - sma) / (0.015 * mad)).to_numpy()
 
 
+@_with_time_config
 def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3267,6 +3275,7 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
     }
 
 
+@_with_time_config
 def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """R1-T4：EMA 趋势过滤 + RSI 回调（Jessie #3）。只做多。
 
@@ -3343,6 +3352,7 @@ def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 
     }
 
 
+@_with_time_config
 def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3401,6 +3411,7 @@ def _stoch_arrays(high: Any, low: Any, close: Any, period: int, smooth: int, d_p
     return {"raw": raw.to_numpy(), "k": k.to_numpy(), "d": d.to_numpy()}
 
 
+@_with_time_config
 def _build_stoch_oversold_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.stoch_oversold_cross"]["param_schema_properties"]
@@ -3463,6 +3474,7 @@ def _bollinger_squeeze_arrays(close: Any, period: int, std_mult: float, lookback
             "bandwidth": bandwidth.to_numpy(), "previous_rank": rank.shift(1).to_numpy()}
 
 
+@_with_time_config
 def _build_bollinger_squeeze_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.bollinger_squeeze_breakout"]["param_schema_properties"]
@@ -3534,6 +3546,7 @@ def _adx_di_arrays(high: Any, low: Any, close: Any, period: int) -> dict[str, An
     return {"adx": rma(dx), "plus_di": plus, "minus_di": minus}
 
 
+@_with_time_config
 def _build_adx_di_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.adx_di_cross"]["param_schema_properties"]
@@ -3622,6 +3635,7 @@ def _supertrend_arrays(high: Any, low: Any, close: Any, atr_period: int, multipl
     return {"atr": atr, "final_ub": fub, "final_lb": flb, "trend": trend}
 
 
+@_with_time_config
 def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """R1-T2：Supertrend 翻转，本批只做多。down→up 翻转那一根收盘确认、下一根开盘买入；
     up→down 翻转那一根收盘确认、下一根开盘平仓。"""
@@ -3685,6 +3699,7 @@ def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.
     }
 
 
+@_with_time_config
 def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """108 顺序 5a-P：两条件 AND（EMA 趋势过滤 + RSI 入场）。契约唯一权威见 TokenBeep 仓
     docs/features/108_策略自动发信号执行器扩容/IMPL_顺序5a_两条件AND回测.md §2/§3。
@@ -3776,6 +3791,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
     }
 
 
+@_with_time_config
 def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Directional EMA pullback; rearm only on a later flat bar beyond the zone."""
     risk = _parse_fixed_risk_params(params)
@@ -4039,6 +4055,7 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+@_with_time_config
 def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only close-confirmed BIAS reversion, filled at the next open."""
     risk = _parse_fixed_risk_params(params)
@@ -4090,6 +4107,7 @@ def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10
     }
 
 
+@_with_time_config
 def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only entry on the first bar forming short > mid > long EMA alignment."""
     risk = _parse_fixed_risk_params(params)
@@ -4153,6 +4171,7 @@ def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: floa
     }
 
 
+@_with_time_config
 def _build_macd_above_zero(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Separate long-only MACD template; both DIF and DEA must be above zero."""
     risk = _parse_fixed_risk_params(params)
@@ -4248,6 +4267,7 @@ def _parabolic_sar_arrays(high: Any, low: Any, close: Any, af_start: float,
     return out
 
 
+@_with_time_config
 def _build_parabolic_sar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     values = {}
@@ -4316,6 +4336,7 @@ def _ichimoku_arrays(high: Any, low: Any, tenkan_period: int,
             "cloud_top": np.maximum(a.to_numpy(), b.to_numpy())}
 
 
+@_with_time_config
 def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     periods = {}
@@ -4887,7 +4908,6 @@ for _tool_spec in TOOL_SPECS.values():
         **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
         **_TIME_PARAM_SCHEMA_PROPERTIES,
     }
-    _tool_spec["build"] = _with_time_config(_tool_spec["build"])
 del _tool_spec
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
