@@ -5462,6 +5462,19 @@ def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     return False
 
 
+def _time_context_allowing_gaps(config: TimeConfig, timeframe: str, opens) -> TimeContext:
+    """P-LOW5-VWAP: TimeContext.build minus its contiguity check; TimeContext.build itself stays strict.
+
+    Only VWAP uses it, after its run-level grid gate masked every UTC day holding a missing candle;
+    VWAP flattens at 00:00 UTC, so no position spans a masked day.
+    """
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    config.validate_timeframe(timeframe)
+    return TimeContext(config, ZoneInfo(config.timezone_name),
+                       timedelta(milliseconds=fixed_timeframe_milliseconds(timeframe)), utc_datetime(opens[-1]))
+
+
 @_with_time_config
 @_with_filter_config
 def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
@@ -5487,6 +5500,7 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
         _initial_capital = initial_capital
         _f5_step_ms = None
         _warmup_index = ()
+        _f5_gap_days = ()  # P-LOW5-VWAP: UTC dates holding a missing main-range candle (set by the run)
 
         def init(self):
             self._risk_init()
@@ -5501,8 +5515,12 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
             if step <= timedelta(0) or step >= timedelta(days=1) or timedelta(days=1) % step:
                 raise ValueError("INVALID_PARAMS:VWAP requires an intraday timeframe dividing the UTC day")
             midnight = main_index[0].replace(hour=0, minute=0, second=0, microsecond=0)
+            gap_days = set(self._f5_gap_days)
+            # P-LOW5-VWAP: a jump is allowed only when every missing candle falls on a masked UTC day.
             if any((t - midnight) % step for t in main_index) or any(
-                    b != a + step for a, b in zip(main_index, main_index[1:])):
+                    b != a + step and not (b > a + step and all((a + k * step).date() in gap_days
+                                                                for k in range(1, (b - a) // step)))
+                    for a, b in zip(main_index, main_index[1:])):
                 raise TimeDataGapError("TIME_DATA_GAP:VWAP requires a complete UTC candle grid")
             # This intrinsic UTC clock is independent of the optional time gate.
             # Reuse expiry_due(flatten_at=00:00); never turn on time_layer_enabled.
@@ -5514,8 +5532,9 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
             columns = {c: np.concatenate([np.asarray(self._warmup_cols[c])[selected],
                         np.asarray(getattr(self.data, c))]) if selected else np.asarray(getattr(self.data, c))
                        for c in _WARMUP_COLUMNS}
+            first_day = [t for t in history_index if t < midnight + timedelta(days=1)]
             complete_prefix = (history_index[0] == midnight and all(
-                b == a + step for a, b in zip(history_index, history_index[1:])))
+                b == a + step for a, b in zip(first_day, first_day[1:])))
             if not complete_prefix:
                 self._f5_history.append(dict(reason="opening_utc_day_history_incomplete",
                     day=midnight.date().isoformat(), action="skip_entries_until_next_utc_day"))
@@ -5526,11 +5545,21 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                 offset = next((i for i, t in enumerate(main_index) if t >= midnight + timedelta(days=1)), len(main_index))
             else:
                 offset = 0
-            bars = [SeriesBar(t, columns["High"][i], columns["Low"][i], columns["Close"][i], columns["Volume"][i])
-                    for i, t in enumerate(history_index) if i >= offset]
-            points = prefix_vwap(bars, self._f5_clock, PeriodDefinition(),
-                                 backtest_start=main_index[0], price_source=price_source)
-            values = [float("nan")] * offset + [p.value if p.value is not None else float("nan") for p in points]
+            # P-LOW5-VWAP: masked UTC days stay NaN (no entry, no accumulation); each run of unmasked
+            # days is accumulated on its own, so VWAP restarts at 00:00 of the day after a masked day.
+            values = [float("nan")] * len(history_index)
+            run = []
+            for i, t in enumerate(history_index + [None]):
+                if t is not None and i >= offset and t.date() not in gap_days:
+                    run.append((i, SeriesBar(t, columns["High"][i], columns["Low"][i], columns["Close"][i],
+                                             columns["Volume"][i])))
+                    continue
+                if run:
+                    points = prefix_vwap([bar for _, bar in run], self._f5_clock, PeriodDefinition(),
+                                         backtest_start=main_index[0], price_source=price_source)
+                    for (k, _), point in zip(run, points):
+                        values[k] = point.value if point.value is not None else float("nan")
+                    run = []
             self._f5_vwap = np.asarray(values[-len(main_index):])
             process_orders = self._broker._process_orders
             def guarded_orders():
@@ -8975,15 +9004,33 @@ async def run_backtest(
             exchange_id=exchange_id,
         )
 
+    vwap_main_gaps = None
     if is_vwap:
-        try:
-            # Check the main grid even when the optional time layer is off.
-            opens = [utc_datetime(t) for t in df.index]
-            if any(int(pd.Timestamp(t).value // 1000000) % vwap_step_ms for t in df.index) or any(
-                    int((b-a).total_seconds()*1000) != vwap_step_ms for a,b in zip(opens, opens[1:])):
-                raise TimeDataGapError("TIME_DATA_GAP:VWAP requires a complete UTC candle grid")
-        except TimeDataGapError as e:
-            return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
+        # Check the main grid even when the optional time layer is off. P-LOW5-VWAP: off-grid or
+        # duplicate opens still fail; missing candles within CENTRAL_GAP_TOLERANCE_RATIO (the P-LOW3
+        # formula) mask every UTC day holding one -- no entries, VWAP restarts the next UTC day.
+        stamps = [pd.Timestamp(t).value // 1000000 for t in df.index]
+        if any(s % vwap_step_ms for s in stamps) or any(b - a < vwap_step_ms for a, b in zip(stamps, stamps[1:])):
+            return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:VWAP requires a complete UTC candle grid",
+                                     reason="time_data_gap")
+        vwap_gaps = [(k, (b - a) // vwap_step_ms - 1) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
+                     if b - a > vwap_step_ms]
+        if vwap_gaps:
+            missing_bars = sum(n for _, n in vwap_gaps)
+            segments = [{"after": utc_datetime(pd.Timestamp(df.index[k - 1])).isoformat(),
+                         "before": utc_datetime(pd.Timestamp(df.index[k])).isoformat(),
+                         "missing_bars": n} for k, n in vwap_gaps]
+            if len(df) < (len(df) + missing_bars) * CENTRAL_GAP_TOLERANCE_RATIO:
+                return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:VWAP main range gaps exceed tolerance",
+                                         reason="time_data_gap", details={"gap_count": len(vwap_gaps),
+                                         "missing_bars": missing_bars, "segments": segments})
+            gap_days = sorted({utc_datetime(pd.Timestamp(stamps[k - 1] + j * vwap_step_ms, unit="ms")).date()
+                               for k, n in vwap_gaps for j in range(1, n + 1)})
+            strategy_class._f5_gap_days = tuple(gap_days)
+            vwap_main_gaps = {"tolerance_ratio": CENTRAL_GAP_TOLERANCE_RATIO, "gap_count": len(vwap_gaps),
+                              "missing_bars": missing_bars, "segments": segments,
+                              "masked_utc_days": [day.isoformat() for day in gap_days],
+                              "masked": "whole_utc_day_no_entry_vwap_restarts_next_utc_day"}
 
     if calendar_config is not None:
         try:
@@ -8993,7 +9040,8 @@ async def run_backtest(
 
     if time_config is not None:
         try:
-            strategy_class._time_context = TimeContext.build(time_config, timeframe, df.index)
+            strategy_class._time_context = (_time_context_allowing_gaps(time_config, timeframe, df.index)
+                                            if vwap_main_gaps else TimeContext.build(time_config, timeframe, df.index))
         except TimeDataGapError as e:
             return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
 
@@ -9328,6 +9376,7 @@ async def run_backtest(
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **ema_warmup_assumptions,
                 **({"entry_filter_main_gaps": entry_filter_main_gaps} if entry_filter_main_gaps else {}),
+                **({"vwap_main_gaps": vwap_main_gaps} if vwap_main_gaps else {}),
                 **risk_assumptions(risk),
                 **({"fibonacci_retracement": {
                     "swing_confirmation": "left_right_N_closed_bars_strict_extrema",

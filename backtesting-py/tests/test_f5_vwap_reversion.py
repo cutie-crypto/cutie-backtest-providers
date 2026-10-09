@@ -252,9 +252,12 @@ def test_http_warmup_requested_back_to_utc_midnight(monkeypatch,tmp_path):
 
 
 def test_http_gap_rejected_before_warmup(monkeypatch,tmp_path):
+    # P-LOW5-VWAP: 1 missing of 9 (8 < 9 * 0.9) is beyond the tolerance; within it see test_plow5_vwap_gap_day_mask.
     data=frame().drop(frame().index[3])
     body=response(monkeypatch,tmp_path,data=data)
     assert body['error_type']=='TIME_DATA_GAP',body
+    assert body['limitations']=={'reason':'time_data_gap','gap_count':1,'missing_bars':1,'segments':[
+        {'after':'2026-01-01T12:00:00+00:00','before':'2026-01-02T00:00:00+00:00','missing_bars':1}]}
 
 
 def test_optional_time_and_filter_entry_gates_preserve_exits():
