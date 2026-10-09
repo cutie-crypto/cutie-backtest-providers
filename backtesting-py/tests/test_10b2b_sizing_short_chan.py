@@ -168,7 +168,7 @@ def test_leverage3_short_liquidation_detail_matches_unsized_basis(monkeypatch, t
     assert [signed_qty(t) for t in sized['trades']] == [-qty]
 
 
-def test_six_templates_left_pending_list_and_others_still_reject(monkeypatch):
+def test_six_templates_left_pending_list_and_pending_list_empty(monkeypatch):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: pytest.fail('pending tool fetched data'))
     wired = {'local.backtesting_py.' + n for n in TOOLS}
@@ -176,14 +176,5 @@ def test_six_templates_left_pending_list_and_others_still_reject(monkeypatch):
     assert wired <= p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
     for tool in wired:
         assert POSITION_SIZE_KEYS <= set(p.TOOL_SPECS[tool]['param_schema_properties']), tool
-    # 10-B2c 又移出 8 个（K 线六 + 双底 + 头肩底），余 6 个。
-    assert len(p.POSITION_SIZING_PENDING_TOOLS) == 6
-    client = TestClient(p.app)
-    for tool in sorted(p.POSITION_SIZING_PENDING_TOOLS):
-        assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
-        request = dict(run_id='10b2b', provider_tool_id=tool, provider_params=dict(RISK, stop_loss_pct=2),
-                       symbol='BTCUSDT', market='spot', timeframe='1h', start_at=1767225600,
-                       end_at=1767312000, initial_capital='10000', fee_bps='0', slippage_bps='0')
-        body = client.post('/cutie/backtest', json={'backtest': request}).json()
-        assert body['raw_report']['position_sizing'] == {
-            'rejections': [{'reason': 'position sizing is not wired to this template yet'}]}, tool
+    # 10-B2c 又移出 8 个（K 线六 + 双底 + 头肩底），10-B2d 移出最后 6 个，名单清空。
+    assert not p.POSITION_SIZING_PENDING_TOOLS

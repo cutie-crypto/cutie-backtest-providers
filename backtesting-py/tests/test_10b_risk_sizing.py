@@ -161,106 +161,16 @@ def test_invalid_sizing_rejected_before_fetch_with_reason(monkeypatch, params):
     assert result['raw_report']['position_sizing']['rejections']
 
 
-@pytest.mark.parametrize('tool', sorted(p.POSITION_SIZING_PENDING_TOOLS))
-@pytest.mark.parametrize('key,value', [('position_size_risk_pct',1),('compound',False),('position_size_qty_step',.1)])
-def test_pending_template_rejected_before_fetch(monkeypatch, tool, key, value):
-    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: pytest.fail('data fetched'))
-    result = TestClient(p.app).post('/cutie/backtest', json=request({key:value}, name=tool.split('.')[-1])).json()
-    assert result['error_type'] == 'INVALID_PARAMS'
-    assert result['raw_report']['position_sizing']['rejections'] == [
-        {'reason': 'position sizing is not wired to this template yet'}]
+def test_pending_list_is_empty_and_every_single_position_template_has_sizing_keys():
+    """10-B2d closed the pending list: every single-position template is wired to sizing.
 
-
-# INTEG-C: single-position templates merged after the 10-B start b42210b. The list may only shrink.
-FROZEN_PENDING_INTEG_C = frozenset('local.backtesting_py.' + n for n in (
-    'opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi vwap_reversion '
-    'bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout '
-    'double_bottom inverse_head_shoulders macd_bullish_divergence rsi_bullish_divergence chan_3buy '
-    'fibonacci_retracement us_open_momentum cme_weekend_gap').split())
-
-
-# 集成 D：做空形态一 FROZEN_PENDING_SHORT_PAT1、做空形态二 FROZEN_PENDING_SHORT_PAT2 合并为一份；只比 INTEG-C 多 4 个做空 id。
-FROZEN_PENDING_SHORT_PAT12 = frozenset({
-    "local.backtesting_py.opening_range_breakout",
-    "local.backtesting_py.asia_range_breakout",
-    "local.backtesting_py.calendar_schedule",
-    "local.backtesting_py.red_streak_rsi",
-    "local.backtesting_py.vwap_reversion",
-    "local.backtesting_py.bullish_engulfing",
-    "local.backtesting_py.hammer_pin_bar",
-    "local.backtesting_py.morning_star",
-    "local.backtesting_py.three_white_soldiers",
-    "local.backtesting_py.bullish_doji_reversal",
-    "local.backtesting_py.inside_bar_breakout",
-    "local.backtesting_py.double_bottom",
-    "local.backtesting_py.inverse_head_shoulders",
-    "local.backtesting_py.macd_bullish_divergence",
-    "local.backtesting_py.rsi_bullish_divergence",
-    "local.backtesting_py.chan_3buy",
-    "local.backtesting_py.fibonacci_retracement",
-    "local.backtesting_py.us_open_momentum",
-    "local.backtesting_py.cme_weekend_gap",
-    "local.backtesting_py.macd_bearish_divergence",
-    "local.backtesting_py.rsi_bearish_divergence",
-    "local.backtesting_py.double_top",
-    "local.backtesting_py.head_shoulders",
-})
-
-
-# SHORT-PAT-3：缠论三卖与 chan_3buy 同口径（冻结出场、未核定仓）进待接名单；只比 SHORT_PAT12 多本批 1 个 id。
-FROZEN_PENDING_SHORT_PAT3 = FROZEN_PENDING_SHORT_PAT12 | {"local.backtesting_py.chan_3sell"}
-
-
-# 10-B2b：做空 5 个（集成 D 的 4 个 + SHORT-PAT-3 的 chan_3sell）全部接定仓，做空部分到期。
-SHORT_PENDING_EXPIRED_10B2B = frozenset("local.backtesting_py." + n for n in (
-    "macd_bearish_divergence", "rsi_bearish_divergence", "double_top", "head_shoulders", "chan_3sell"))
-WIRED_10B2B = SHORT_PENDING_EXPIRED_10B2B | {"local.backtesting_py.chan_3buy"}
-# 10-B2a 已移出的 4 个（PAT3 冻结时它们仍在名单里，故上界同时减去，24 - 4 - 6 = 14）。
-WIRED_10B2A = frozenset("local.backtesting_py." + n for n in (
-    "macd_bullish_divergence", "rsi_bullish_divergence", "fibonacci_retracement", "vwap_reversion"))
-# 10-B2b 之后的唯一上界；SHORT_PAT12 / PAT3 只保留作历史推导，不再作上界。
-FROZEN_PENDING_AFTER_10B2B = FROZEN_PENDING_SHORT_PAT3 - WIRED_10B2A - WIRED_10B2B
-# 10-B2c：K 线形态六个与双底、头肩底按信号根冻结的形态止损定仓（14 - 8 = 6）。
-WIRED_10B2C = frozenset("local.backtesting_py." + n for n in (
-    "bullish_engulfing", "hammer_pin_bar", "morning_star", "three_white_soldiers", "bullish_doji_reversal",
-    "inside_bar_breakout", "double_bottom", "inverse_head_shoulders"))
-# 10-B2c 之后的唯一上界；FROZEN_PENDING_AFTER_10B2B 只保留作历史推导。
-FROZEN_PENDING_AFTER_10B2C = FROZEN_PENDING_AFTER_10B2B - WIRED_10B2C
-
-
-def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
-    """Pending tools may only shrink; tools with sizing keys must leave this list.
-
-    10-B2b expired the short part: the five short ids must be absent and wired to
-    their own frozen stop. 10-B2c wired the six candle patterns, double bottom and inverse
-    head-and-shoulders the same way; the remaining 6 may only shrink below
-    FROZEN_PENDING_AFTER_10B2C. At 10-B2d (the last close-out batch) the whole list must be
-    empty: replace the subset assertion with `assert not p.POSITION_SIZING_PENDING_TOOLS`
-    and retire every frozen set here.
+    The frozen upper bounds (INTEG-C, SHORT-PAT-1/2/3, after 10-B2b / 10-B2c) are retired; a new
+    single-position template must be wired before registration, never parked in this list.
     """
-    assert len(FROZEN_PENDING_SHORT_PAT12) == 23
-    assert FROZEN_PENDING_SHORT_PAT12 - FROZEN_PENDING_INTEG_C == {
-        "local.backtesting_py.macd_bearish_divergence",
-        "local.backtesting_py.rsi_bearish_divergence",
-        "local.backtesting_py.double_top",
-        "local.backtesting_py.head_shoulders",
-    }
-    assert len(FROZEN_PENDING_SHORT_PAT3) == 24
-    assert FROZEN_PENDING_SHORT_PAT3 - FROZEN_PENDING_SHORT_PAT12 == {"local.backtesting_py.chan_3sell"}
-    assert SHORT_PENDING_EXPIRED_10B2B == (FROZEN_PENDING_SHORT_PAT3 - FROZEN_PENDING_INTEG_C)
-    assert len(FROZEN_PENDING_AFTER_10B2B) == 14
-    # 做空部分到期：交集为空，且本批 6 个都按模板冻结止损定仓。
-    assert not (SHORT_PENDING_EXPIRED_10B2B & p.POSITION_SIZING_PENDING_TOOLS)
-    assert WIRED_10B2B <= p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
-    assert len(WIRED_10B2C) == 8 and WIRED_10B2C <= FROZEN_PENDING_AFTER_10B2B
-    assert len(FROZEN_PENDING_AFTER_10B2C) == 6
-    assert not (WIRED_10B2C & p.POSITION_SIZING_PENDING_TOOLS)
-    assert WIRED_10B2C <= p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
-    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_AFTER_10B2C
-    assert p.POSITION_SIZING_PENDING_TOOLS.isdisjoint(p.POSITION_SIZING_UNWIRED_TOOLS)
-    for tool in p.POSITION_SIZING_PENDING_TOOLS:
-        assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
-        assert issubclass(p.TOOL_SPECS[tool]['build']({})['strategy'], p._FixedRiskMixin), tool
+    assert not p.POSITION_SIZING_PENDING_TOOLS
+    for tool, spec in p.TOOL_SPECS.items():
+        if tool not in p.POSITION_SIZING_UNWIRED_TOOLS:
+            assert POSITION_SIZE_KEYS <= set(spec['param_schema_properties']), tool
 
 
 def test_catalog_and_builders_cover_actual_mixins():
