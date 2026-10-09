@@ -209,9 +209,23 @@ def test_time_only_retains_close_price_stop_semantics():
 
 @pytest.mark.parametrize('name', compat.enumerate_mixin_cases())
 def test_every_registered_single_template_consumes_holding_bars(name):
-    data = pd.concat([compat.frame()]*3, ignore_index=True)
+    if name in ('bullish_engulfing', 'hammer_pin_bar'):
+        from test_9t1_engulf_pin import compatibility_frame
+        data = compatibility_frame(name)
+    elif name in ('double_bottom', 'inverse_head_shoulders'):
+        from test_9t3_patterns import compatibility_frame
+        data = compatibility_frame(name)
+    elif name in p._CANDLE_TOOL_NAMES.values():
+        from test_9t2_patterns import compatibility_frame
+        data = compatibility_frame(name)
+    else:
+        data = pd.concat([compat.frame()]*3, ignore_index=True)
     data.index = pd.date_range('2026-01-01', periods=len(data), freq='h')
     params = dict(compat.PARAMS.get(name, {}), time_layer_enabled=True, max_holding_bars=3)
+    if name == 'opening_range_breakout':
+        params['flatten_at'] = '23:00'  # 1h test grid
+    if name == 'calendar_schedule':
+        params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
     if name.endswith('_short'):
         params['direction'] = 'short'
     if name == 'ema_rsi_pullback':
