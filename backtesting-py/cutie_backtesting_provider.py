@@ -6738,6 +6738,18 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
     tool for tool, spec in TOOL_SPECS.items()
     if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3")
 }, "Every unwired runner must be explicitly listed"
+# 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
+# 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
+# schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
+POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
+    "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi vwap_reversion "
+    "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
+    "double_bottom inverse_head_shoulders macd_bullish_divergence rsi_bullish_divergence chan_3buy "
+    "fibonacci_retracement us_open_momentum cme_weekend_gap").split())
+for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
+    for _sizing_key in POSITION_SIZE_KEYS:
+        TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)
+del _pending_tool, _sizing_key
 
 
 def _position_sizing_failure(message):
@@ -8373,6 +8385,8 @@ async def run_backtest(
     if set(params) & POSITION_SIZE_KEYS:
         if effective_tool_id in POSITION_SIZING_UNWIRED_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this runner")
+        if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
+            return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
             _parse_fixed_risk_params(params)
         except ValueError as exc:

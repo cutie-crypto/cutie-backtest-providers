@@ -161,9 +161,35 @@ def test_invalid_sizing_rejected_before_fetch_with_reason(monkeypatch, params):
     assert result['raw_report']['position_sizing']['rejections']
 
 
+@pytest.mark.parametrize('tool', sorted(p.POSITION_SIZING_PENDING_TOOLS))
+@pytest.mark.parametrize('key,value', [('position_size_risk_pct',1),('compound',False),('position_size_qty_step',.1)])
+def test_pending_template_rejected_before_fetch(monkeypatch, tool, key, value):
+    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: pytest.fail('data fetched'))
+    result = TestClient(p.app).post('/cutie/backtest', json=request({key:value}, name=tool.split('.')[-1])).json()
+    assert result['error_type'] == 'INVALID_PARAMS'
+    assert result['raw_report']['position_sizing']['rejections'] == [
+        {'reason': 'position sizing is not wired to this template yet'}]
+
+
+# INTEG-C: single-position templates merged after the 10-B start b42210b. The list may only shrink.
+FROZEN_PENDING_INTEG_C = frozenset('local.backtesting_py.' + n for n in (
+    'opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi vwap_reversion '
+    'bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout '
+    'double_bottom inverse_head_shoulders macd_bullish_divergence rsi_bullish_divergence chan_3buy '
+    'fibonacci_retracement us_open_momentum cme_weekend_gap').split())
+
+
+def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
+    assert len(FROZEN_PENDING_INTEG_C) == 19
+    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_INTEG_C
+    assert p.POSITION_SIZING_PENDING_TOOLS.isdisjoint(p.POSITION_SIZING_UNWIRED_TOOLS)
+    for tool in p.POSITION_SIZING_PENDING_TOOLS:
+        assert issubclass(p.TOOL_SPECS[tool]['build']({})['strategy'], p._FixedRiskMixin), tool
+
+
 def test_catalog_and_builders_cover_actual_mixins():
     for tool, spec in p.TOOL_SPECS.items():
-        wired = tool not in p.POSITION_SIZING_UNWIRED_TOOLS
+        wired = tool not in p.POSITION_SIZING_UNWIRED_TOOLS | p.POSITION_SIZING_PENDING_TOOLS
         assert POSITION_SIZE_KEYS <= set(spec['param_schema_properties']) if wired else POSITION_SIZE_KEYS.isdisjoint(spec['param_schema_properties'])
         if wired:
             cls = spec['build'](PARAMS)['strategy']
