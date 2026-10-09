@@ -228,7 +228,7 @@ def test_catalog_and_builders_cover_actual_mixins():
             assert issubclass(cls, p._FixedRiskMixin)
             assert cls._risk['compound'] is False
     assert p.POSITION_SIZING_UNWIRED_TOOLS == {tool for tool,spec in p.TOOL_SPECS.items()
-        if spec.get('runner') in (p.TURTLE_RUNNER,p.SCALE_IN_OUT_RUNNER,'kernel_v3')}
+        if spec.get('runner') in (p.TURTLE_RUNNER,p.SCALE_IN_OUT_RUNNER,'kernel_v3',p.ROTATION_RUNNER)}
 
 
 @pytest.mark.parametrize('risk_case', ['pct','notional'])
