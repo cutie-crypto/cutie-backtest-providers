@@ -5456,10 +5456,7 @@ def _build_result_v2_trades(
         else:
             gross_dec = (entry_price_dec - exit_price_dec) * qty_dec
         pnl_dec = gross_dec - fee_dec - slippage_dec
-        tag = trade.get("Tag")
-        group = {"group_id": str(tag)} if tag is not None and not pd.isna(tag) and str(tag) else {}
         raw.append({
-            **group,
             "opened_at": opened_at,
             "closed_at": closed_at,
             "side": side,
@@ -5476,7 +5473,6 @@ def _build_result_v2_trades(
     trades: list[dict[str, Any]] = []
     for idx, t in enumerate(raw, start=1):
         trades.append({
-            **({"group_id": t["group_id"]} if "group_id" in t else {}),
             "seq": idx,
             "opened_at": t["opened_at"],
             "closed_at": t["closed_at"],
@@ -5489,6 +5485,31 @@ def _build_result_v2_trades(
             "pnl": canonical_decimal_str(t["pnl"]),
         })
     return trades
+
+
+def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map internal tags to the unchanged result.v2 sequence, or fail closed.
+
+    Use the same stable (closed_at, opened_at) second-resolution ordering as
+    _build_result_v2_trades. Never append metadata to signed trade evidence.
+    """
+    rows = []
+    if stats_trades is not None:
+        for _, trade in stats_trades.iterrows():
+            entry_time, exit_time = trade.get("EntryTime"), trade.get("ExitTime")
+            if not hasattr(entry_time, "value") or not hasattr(exit_time, "value"):
+                continue
+            rows.append((int(exit_time.value // 10**9), int(entry_time.value // 10**9), trade.get("Tag")))
+    rows.sort(key=lambda row: (row[0], row[1]))
+    if len(rows) != len(trades_v2):
+        raise ValueError("turtle group mapping does not cover result.v2 trades")
+    groups: dict[str, list[int]] = {}
+    for seq, ((closed_at, opened_at, tag), trade) in enumerate(zip(rows, trades_v2), start=1):
+        if (trade["seq"] != seq or trade["closed_at"] != closed_at or trade["opened_at"] != opened_at
+                or not isinstance(tag, str) or not tag):
+            raise ValueError("turtle group mapping has missing tag or inconsistent trade sequence")
+        groups.setdefault(tag, []).append(seq)
+    return [{"group_id": group_id, "trade_seqs": seqs} for group_id, seqs in groups.items()]
 
 
 def _result_v2_bar_closes(df: pd.DataFrame, timeframe: str) -> list[tuple[int, int, Decimal]]:
@@ -6815,11 +6836,13 @@ async def run_backtest(
         from strategy_risk_overlay import risk_assumptions
 
         turtle_assumptions = {}
+        turtle_raw_report = {}
         if tool_spec.get("runner") == TURTLE_RUNNER:
             turtle_assumptions = {
                 "unit_risk_pct_definition": _TURTLE_RISK_DESCRIPTION,
                 "units_skipped": stats["_strategy"].units_skipped,
             }
+            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"])}
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
@@ -6875,6 +6898,7 @@ async def run_backtest(
                 ),
             },
             "raw_report": {
+                **turtle_raw_report,
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,

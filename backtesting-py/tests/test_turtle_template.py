@@ -22,6 +22,7 @@ CONTRACT = {
     'add_step_atr': (0.5, 0.1, 2), 'max_units': (4, 1, 4),
     'stop_atr_multiplier': (2, 0.5, 5),
 }
+TRADE_KEYS = {'seq','opened_at','closed_at','side','qty','entry_price','exit_price','fee','slippage','pnl'}
 INT_KEYS = {'entry_period', 'exit_period', 'atr_period', 'max_units'}
 
 
@@ -117,7 +118,10 @@ def test_golden_engine_times_prices_quantities_and_group_ids():
     assert stats['_strategy'].units_skipped == 1
     assert not stats['_strategy'].position
     result = provider._build_result_v2_trades(actual, Decimal('.1'), Decimal(0), Decimal(0))
-    assert [t['group_id'] for t in result] == [t['group_id'] for t in fx['expected']['trades']]
+    assert all(set(t)==TRADE_KEYS for t in result)
+    assert provider._build_turtle_groups(actual, result)==[
+        dict(group_id='turtle-1',trade_seqs=[1,2,3,4]),
+        dict(group_id='turtle-2',trade_seqs=[5]), dict(group_id='turtle-3',trade_seqs=[6])]
     assert [t['qty'] for t in result] == [provider.canonical_decimal_str(Decimal(t['size'])/10) for t in fx['expected']['trades']]
 
 
@@ -231,8 +235,14 @@ def test_registered_route_exclusivity_tags_and_assumptions(monkeypatch, tmp_path
     assert captured[0]['exclusive_orders'] is (tool!=TOOL)
     assert captured[0]['cash'] > 100000
     assert result['trades']
+    assert all(set(t)==TRADE_KEYS for t in result['trades'])
     if tool==TOOL:
-        assert all('group_id' in t for t in result['trades'])
+        groups=result['raw_report']['turtle_groups']
+        seqs=[seq for group in groups for seq in group['trade_seqs']]
+        assert sorted(seqs)==[t['seq'] for t in result['trades']]
+        assert len(seqs)==len(set(seqs))
+        assert all(set(group)=={'group_id','trade_seqs'} for group in groups)
+        group_by_seq={seq:group['group_id'] for group in groups for seq in group['trade_seqs']}
         assert result['assumptions']['unit_risk_pct_definition']==provider._TURTLE_RISK_DESCRIPTION
         scaled_fx=fixture()
         scaled_fx['cash']=captured[0]['cash']
@@ -241,7 +251,7 @@ def test_registered_route_exclusivity_tags_and_assumptions(monkeypatch, tmp_path
         scale=Decimal(100000)/Decimal(str(captured[0]['cash']))
         assert len(result['trades'])==len(expected['trades'])
         for actual, trade in zip(result['trades'],expected['trades']):
-            assert actual['group_id']==trade['group_id']
+            assert group_by_seq[actual['seq']]==trade['group_id']
             assert actual['qty']==provider.canonical_decimal_str(Decimal(trade['size'])*scale)
             for side in ('entry','exit'):
                 assert Decimal(actual[side+'_price'])==Decimal(str(trade[side+'_price']))
@@ -250,6 +260,7 @@ def test_registered_route_exclusivity_tags_and_assumptions(monkeypatch, tmp_path
     else:
         assert all('group_id' not in t for t in result['trades'])
         assert 'units_skipped' not in result['assumptions']
+        assert 'turtle_groups' not in result['raw_report']
 
 
 def boundary_fixture(close=101):
@@ -322,3 +333,28 @@ def test_unavailable_layers_are_rejected_before_fetch(monkeypatch,key):
     monkeypatch.setattr(provider, '_fetch_ohlcv', lambda *a: pytest.fail('fetch must not be called'))
     result=TestClient(provider.app).post('/cutie/backtest',json=request({key:1})).json()
     assert result['error_type']=='INVALID_PARAMS'
+
+
+@pytest.mark.parametrize('bad', ['tag', 'seq', 'coverage', 'time'])
+def test_turtle_groups_fail_closed_on_inconsistent_evidence(bad):
+    stats=run(fixture())['_trades']
+    result=provider._build_result_v2_trades(stats,Decimal(1),Decimal(0),Decimal(0))
+    if bad=='tag':
+        stats.loc[stats.index[0],'Tag']=None
+    elif bad=='seq':
+        result[0]['seq']=2
+    elif bad=='coverage':
+        result.pop()
+    else:
+        result[0]['opened_at']+=1
+    with pytest.raises(ValueError,match='turtle group mapping'):
+        provider._build_turtle_groups(stats,result)
+
+
+def test_turtle_groups_empty_evidence_and_stable_order():
+    assert provider._build_turtle_groups(None,[])==[]
+    stats=run(fixture())['_trades'].iloc[::-1]
+    result=provider._build_result_v2_trades(stats,Decimal(1),Decimal(0),Decimal(0))
+    assert provider._build_turtle_groups(stats,result)==[
+        dict(group_id='turtle-1',trade_seqs=[1,2,3,4]),
+        dict(group_id='turtle-2',trade_seqs=[5]),dict(group_id='turtle-3',trade_seqs=[6])]
