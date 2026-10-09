@@ -120,3 +120,32 @@ def test_sized_template_entry_order_records_its_signal_bar(module_name, monkeypa
     for order, bar, tag in placed:
         assert tag is not None and tag.signal_bar == bar
         assert getattr(order, '_sizing_signal_bar', None) == bar
+
+
+# 3. The filter decorator's direction default must match the template's own direction default,
+# otherwise an enabled filter silently masks with the opposite side.
+FILTER_ON = dict(filter_layer_enabled=True, filter_ema_enabled=True)
+
+
+def test_filter_default_direction_matches_template_direction():
+    filtered = {key.rsplit('.', 1)[1]: spec for key, spec in p.TOOL_SPECS.items()
+                if getattr(spec.get('build'), '_supports_entry_filters', False)}
+    assert len(filtered) > 20
+    schema_checked, built_checked, mismatches = [], [], []
+    for name, spec in sorted(filtered.items()):
+        decorated = spec['build']._filter_default_direction
+        field = spec['param_schema_properties'].get('direction')
+        if field is not None and field.get('default') == 'both':
+            continue  # filters already reject both
+        # Schema-declared default where there is one; otherwise the template's fixed side.
+        expected = field['default'] if field is not None else ('short' if name in SHORT else 'long')
+        (schema_checked if field is not None else built_checked).append(name)
+        if name in SHORT and expected != 'short':
+            mismatches.append((name, 'short template', expected))
+        strategy = spec['build'](dict(FILTER_ON, **EXTRA.get(name, {})))['strategy']
+        if (decorated, strategy._filter_direction) != (expected, expected):
+            mismatches.append((name, expected, decorated, strategy._filter_direction))
+    assert mismatches == []
+    # The five short templates declare direction=short in their schema, so they land in the schema branch.
+    assert SHORT <= set(schema_checked)
+    assert len(schema_checked) + len(built_checked) > 20 and built_checked
