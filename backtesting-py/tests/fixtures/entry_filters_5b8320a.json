@@ -612,6 +612,42 @@
       "warmup_bars": 60,
       "assumptions": "2a8fd878baff3cb7cf26aacf52fdf8566bcea77ba2ab878ac9618f1f3a618b15",
       "raw_report": "1a7f22e3ef9ed138bc30f760d2ce322d7bba8ed6cde3dffc01109d2faf03e352"
+    },
+    "chan_3buy/0": {
+      "min_bars": 3,
+      "engine_trades": "f09b951ee4909dfc9752545e599ce461b5ef4a1f6769374477a5253a87ba0b49",
+      "engine_equity": "d6528232a39b9899f919a9b64f404a4f867c55f1947b48f3fcee0ee1dd7efa70",
+      "result_v2": "55ddbd8ca45d8efb080e11f8c48cff141cee7d7495d7d35c730e00028327364b",
+      "warmup_bars": 0,
+      "assumptions": "9bcffbdebd1911a4afbaa54ab2045d350412f2b9d4cf731166b52fdeaca6b186",
+      "raw_report": "9d81ffbdc0120c4a0439a9147f0caa52d80dee0126b6b6dee0f2ab6ff43e40cb"
+    },
+    "chan_3buy/1": {
+      "min_bars": 3,
+      "engine_trades": "127a7164ad9449642b382ca3147b901ce2ef8e2f631225d0732fbf995ece31c4",
+      "engine_equity": "14796b0e689309228ab579d1bb0571c6584996431edfa56f3e9c82b3f8334420",
+      "result_v2": "1a5df3bd9cbb52da9d7c5a3949ea0aaef8ce199f9a3ea8c9e275d1072b45ad6e",
+      "warmup_bars": 60,
+      "assumptions": "e70eddf55db20e0841c20890aade8dd5fc4ff7ad8d289fbc930d7fe13fb0c8e2",
+      "raw_report": "5768d1706ab39dee2d66fd71b70c49c9c6a79268d13b924bd5a9d705e2d8492b"
+    },
+    "chan_3buy@long/0": {
+      "min_bars": 3,
+      "engine_trades": "f09b951ee4909dfc9752545e599ce461b5ef4a1f6769374477a5253a87ba0b49",
+      "engine_equity": "d6528232a39b9899f919a9b64f404a4f867c55f1947b48f3fcee0ee1dd7efa70",
+      "result_v2": "55ddbd8ca45d8efb080e11f8c48cff141cee7d7495d7d35c730e00028327364b",
+      "warmup_bars": 0,
+      "assumptions": "9bcffbdebd1911a4afbaa54ab2045d350412f2b9d4cf731166b52fdeaca6b186",
+      "raw_report": "9d81ffbdc0120c4a0439a9147f0caa52d80dee0126b6b6dee0f2ab6ff43e40cb"
+    },
+    "chan_3buy@long/1": {
+      "min_bars": 3,
+      "engine_trades": "127a7164ad9449642b382ca3147b901ce2ef8e2f631225d0732fbf995ece31c4",
+      "engine_equity": "14796b0e689309228ab579d1bb0571c6584996431edfa56f3e9c82b3f8334420",
+      "result_v2": "1a5df3bd9cbb52da9d7c5a3949ea0aaef8ce199f9a3ea8c9e275d1072b45ad6e",
+      "warmup_bars": 60,
+      "assumptions": "e70eddf55db20e0841c20890aade8dd5fc4ff7ad8d289fbc930d7fe13fb0c8e2",
+      "raw_report": "5768d1706ab39dee2d66fd71b70c49c9c6a79268d13b924bd5a9d705e2d8492b"
     }
   }
 }

@@ -1,0 +1,77 @@
+{
+  "base_sha": "b42210ba1f47a2dcd98c9e2abbf9a0754088a5e5",
+  "checks": [
+    {
+      "log": "/tmp/9t6/baseline.log",
+      "exit_code": 0,
+      "sha256": "70b6a85a531a11d9608258d92bb5685504822376c8fd463ff223e0aae09c0f8b",
+      "summary": "5102 passed, 33 warnings in 114.60s (0:01:54)"
+    },
+    {
+      "log": "/tmp/9t6/baseline-all.log",
+      "exit_code": 0,
+      "sha256": "ee94e1f583702b031d48ee9d2bf56dfd91b459b16241ab2ddadd0580fd54e29c",
+      "summary": "5131 passed, 33 warnings in 88.51s (0:01:28)"
+    },
+    {
+      "log": "/tmp/9t6/capture.log",
+      "exit_code": 0,
+      "sha256": "effc7bda35ff2897f90f3c27a52ae0a664e112dc1c6ef2eae4aa3f93147cebd1",
+      "summary": null
+    },
+    {
+      "log": "/tmp/9t6/focus-dev.log",
+      "exit_code": 1,
+      "sha256": "d64364b3ccaae3671074d6d9b3574dfdbaf444c41c9a82ab60d9baaa64a84b2f",
+      "summary": "2 failed, 52 passed, 6 warnings in 1.73s"
+    },
+    {
+      "log": "/tmp/9t6/focus-dev2.log",
+      "exit_code": 0,
+      "sha256": "57e960bc5db7686cdbf764407e662a1bb321715efc39c2a0e7332cf91f0de984",
+      "summary": "56 passed, 2 warnings in 1.98s"
+    },
+    {
+      "log": "/tmp/9t6/focus.log",
+      "exit_code": 0,
+      "sha256": "638403ad3341ee69848833efd6becb7da3961da6fffbdfbd898b09a0965feaf5",
+      "summary": "1744 passed, 4 warnings in 49.01s"
+    },
+    {
+      "log": "/tmp/9t6/focus-final.log",
+      "exit_code": 0,
+      "sha256": "a5680a9d7e19fc885b01e7aa13958c3e74d854810ec6f79d7c0eb54e0451b744",
+      "summary": "67 passed, 2 warnings in 1.74s"
+    },
+    {
+      "log": "/tmp/9t6/mutation-run.log",
+      "exit_code": 0,
+      "sha256": "55f04eb7ecb5ab6ae3fbf2c5e82745357e1d4e39d936a95b94db6c364dd91d83",
+      "summary": null
+    },
+    {
+      "log": "/tmp/9t6/all.log",
+      "exit_code": 0,
+      "sha256": "1635c8999c1771cc723a5718c571a4ec469e6488167d51c88e93c7407e602876",
+      "summary": "5230 passed, 33 warnings in 87.23s (0:01:27)"
+    },
+    {
+      "log": "/tmp/9t6/validator.log",
+      "exit_code": 0,
+      "sha256": "78b56044d20256e26b1f247c1d105b686cfdce4f05b8e582c3eb29a9c7c83f56",
+      "summary": "29 passed in 1.30s"
+    },
+    {
+      "log": "/tmp/9t6/validator-smoke.log",
+      "exit_code": 0,
+      "sha256": "5321ea751158fec3e21fbf4bc5c6ff2cd9a00ddb924aec72822501f11fc22a6e",
+      "summary": null
+    }
+  ],
+  "final_total": 5230,
+  "baseline_total": 5131,
+  "independent_added": 67,
+  "registry_added": 32,
+  "restored_source_sha256": "481f8e717f8772fd25b84651bbe214e2974b6cff4527850eef7800565590c0c3",
+  "implementation_sha": "d896ee7f6d643420d4caf073b1f53929b7a09787"
+}

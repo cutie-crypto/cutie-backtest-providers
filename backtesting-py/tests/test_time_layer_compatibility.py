@@ -36,6 +36,7 @@ BASELINE['single'].update(PATTERN3_BASELINE['single'])
 DIVERGENCE_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t4_divergence_off.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(DIVERGENCE_BASELINE['single'])
 BASELINE['single'].update(DIVERGENCE_BASELINE['single'])
+BASELINE['single'].update(json.loads((Path(__file__).parent / 'fixtures/9t6_chan_off.json').read_text())['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -128,6 +129,12 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
             data.iloc[27, 1] = 150
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
+    if name == 'chan_3buy':
+        from test_9t6_chan_3buy import frame as chan_frame
+        data = chan_frame()
+        data.index = pd.date_range('2026-01-01 18:00', periods=len(data), freq='h')
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
     ctx = TimeContext.build(cls._time_config, '1h', data.index)
     cls._time_context = ctx

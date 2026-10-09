@@ -274,6 +274,9 @@ def test_each_registered_template_uses_filter_gate(name, risk_enabled, monkeypat
         # These templates own a frozen L2 stop and actual-fill 2R target.
         values.pop('stop_loss_pct')
         values.pop('take_profit_pct')
+    if name == 'chan_3buy':
+        values.pop('stop_loss_pct')
+        values.pop('take_profit_pct')
     cls = p.TOOL_SPECS['local.backtesting_py.'+name]['build'](values)['strategy']
     calls = []
     original = p._FilterLayerMixin._filter_allow_entry
