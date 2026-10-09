@@ -3491,6 +3491,8 @@ FILTER_LAYER_UNWIRED_TOOLS = (
     "local.backtesting_py.inside_bar_breakout",
     "local.backtesting_py.double_bottom",
     "local.backtesting_py.inverse_head_shoulders",
+    "local.backtesting_py.macd_bearish_divergence",
+    "local.backtesting_py.rsi_bearish_divergence",
 )
 _TURTLE_RISK_DESCRIPTION = (
     "单单位到初始止损的风险占权益比；经典海龟是 1%÷N（2N 止损下每单位 2%），本参数填 2 即经典口径"
@@ -5597,6 +5599,67 @@ _DIVERGENCE_EXIT_KEYS = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplie
     'take_profit_r', 'trailing_stop_pct', 'breakeven_stop', 'take_profit_levels')
 
 
+def _build_bearish_divergence(params, *, kind, initial_capital):
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS['local.backtesting_py.' + kind + '_bearish_divergence']['param_schema_properties']
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f'INVALID_PARAMS:{error}')
+    if params.get('direction', 'short') != 'short':
+        raise ValueError('INVALID_PARAMS:bearish divergence supports short only')
+    for key in _DIVERGENCE_EXIT_KEYS:
+        if (key in params if key in ('stop_loss_pct', 'take_profit_pct') else params.get(key)):
+            raise ValueError('INVALID_PARAMS:divergence frozen exits conflict with risk exit overrides')
+    for key, spec in properties.items():
+        if key in params and spec.get('type') == 'integer' and type(params[key]) is not int:
+            raise ValueError(f'INVALID_PARAMS:{key} must be a strict integer')
+    lo, hi = params.get('min_gap_bars', 5), params.get('max_gap_bars', 60)
+    if lo > hi:
+        raise ValueError('INVALID_PARAMS:min_gap_bars must not exceed max_gap_bars')
+    config = dict(n=params.get('swing_n', 5), min_gap=lo, max_gap=hi)
+    if kind == 'macd':
+        fast, slow, signal = params.get('fast', 12), params.get('slow', 26), params.get('signal', 9)
+        if fast >= slow:
+            raise ValueError('INVALID_PARAMS:fast must be less than slow')
+        config.update(fast=fast, slow=slow, signal=signal, compare=params.get('compare', 'dif'),
+                      indicator_bars=slow*3+signal+1)
+    else:
+        period = params.get('rsi_period', 14)
+        first, exit_below = params.get('rsi_first_above', 65), params.get('rsi_exit_below', 30)
+        if first <= exit_below:
+            raise ValueError('INVALID_PARAMS:rsi_first_above must exceed rsi_exit_below')
+        config.update(rsi_period=period, first_above=first, exit_below=exit_below,
+                      indicator_bars=period*3+1)
+    from strategy_divergence import make_divergence_strategy
+    cls = make_divergence_strategy(_FixedRiskMixin, kind=kind, config=config, risk=risk,
+                                  initial_capital=initial_capital, rsi_series=_rsi_series, direction="short")
+    return dict(strategy=cls, executed_name=kind.upper()+' Bearish Divergence',
+        min_bars=config['indicator_bars']+2*config['n']+lo,
+        warmup_bars=config['indicator_bars']+2*config['n']+hi,
+        divergence_assumptions=dict(divergence_execution={
+            'direction': 'short_only', 'swing_confirmation': 'left_and_right_swing_n_closed_bars_strict_extrema',
+            'indicator_sample': 'swing_high_bar', 'indicator_history': 'first_high_must_have_full_indicator_warmup',
+            'pair': 'adjacent_confirmed_highs_inclusive_gap', 'signal': 'bar_close',
+            'macd_confirmation_cross': 'confirmation_close_is_eligible',
+            'fill': 'next_bar_open_market', 'stop': 'h2_high_times_1.001',
+            'target': 'actual_entry_price_minus_2_times_stop_minus_entry_frozen_at_fill',
+            'same_bar_priority': 'stop_before_time_expiry_before_take_profit_before_signal',
+            'gap': 'entry_open_at_or_above_frozen_stop_is_skipped',
+            'consumption': 'one_signal_opportunity_per_pair_even_if_entry_blocked',
+            'histogram': '2_times_dif_minus_dea', 'final_bar': 'engine_finalize_trades_settlement',
+            'leverage': 'shared_isolated_liquidation_precedes_exits_unless_closer_intrabar_stop'}))
+
+
+@_with_time_config
+def _build_macd_bearish_divergence(params, *, initial_capital=10000.0):
+    return _build_bearish_divergence(params, kind='macd', initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_rsi_bearish_divergence(params, *, initial_capital=10000.0):
+    return _build_bearish_divergence(params, kind='rsi', initial_capital=initial_capital)
+
+
 def _build_divergence(params, *, kind, initial_capital):
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS['local.backtesting_py.' + kind + '_bullish_divergence']['param_schema_properties']
@@ -6031,6 +6094,41 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "trend_filter": {"type": "boolean", "default": False},
             "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    'local.backtesting_py.macd_bearish_divergence': {
+        'name': 'Local Backtesting.py MACD Bearish Divergence',
+        'description': 'Futures short-only adjacent confirmed swing highs: higher price and lower MACD at the high bar. '
+                       'Next-open entry, frozen H2 stop plus 0.1 percent and actual-fill 2R target.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_macd_bearish_divergence,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'short', 'enum': ['short']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'min_gap_bars': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 5000},
+            'max_gap_bars': {'type': 'integer', 'default': 60, 'minimum': 1, 'maximum': 5000},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'fast': {'type': 'integer', 'default': 12, 'minimum': 2, 'maximum': 100},
+            'slow': {'type': 'integer', 'default': 26, 'minimum': 3, 'maximum': 300},
+            'signal': {'type': 'integer', 'default': 9, 'minimum': 1, 'maximum': 100},
+            'compare': {'type': 'string', 'default': 'dif', 'enum': ['dif', 'hist']},
+        },
+    },
+    'local.backtesting_py.rsi_bearish_divergence': {
+        'name': 'Local Backtesting.py RSI Bearish Divergence',
+        'description': 'Futures short-only adjacent confirmed swing highs: higher price and lower RSI at the high bar. '
+                       'Next-open entry, frozen H2 stop plus 0.1 percent and actual-fill 2R target.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_rsi_bearish_divergence,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'short', 'enum': ['short']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'min_gap_bars': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 5000},
+            'max_gap_bars': {'type': 'integer', 'default': 60, 'minimum': 1, 'maximum': 5000},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'rsi_period': {'type': 'integer', 'default': 14, 'minimum': 2, 'maximum': 300},
+            'rsi_first_above': {'type': 'number', 'default': 65, 'minimum': 0, 'maximum': 100},
+            'rsi_exit_below': {'type': 'number', 'default': 30, 'minimum': 0, 'maximum': 100},
         },
     },
     'local.backtesting_py.macd_bullish_divergence': {
@@ -6745,6 +6843,7 @@ POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for nam
     "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi vwap_reversion "
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
     "double_bottom inverse_head_shoulders macd_bullish_divergence rsi_bullish_divergence chan_3buy "
+    "macd_bearish_divergence rsi_bearish_divergence "
     "fibonacci_retracement us_open_momentum cme_weekend_gap").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
@@ -8429,6 +8528,8 @@ async def run_backtest(
         if rejection:
             return _validation_failure("INVALID_PARAMS", rejection)
 
+    if effective_tool_id in ("local.backtesting_py.macd_bearish_divergence", "local.backtesting_py.rsi_bearish_divergence") and market != "futures":
+        return _validation_failure("INVALID_PARAMS", "bearish divergence requires futures market")
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
     if (effective_tool_id == "local.backtesting_py.turtle"
