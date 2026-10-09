@@ -4754,6 +4754,139 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+# These templates own their frozen exits. Disabled overlay defaults remain valid.
+_PATTERN_EXIT_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier",
+                      "risk_atr_period", "take_profit_r", "trailing_stop_pct", "breakeven_stop",
+                      *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
+
+
+_CANDLE_TOOL_NAMES = {"engulfing": "bullish_engulfing", "pin_bar": "hammer_pin_bar",
+                      "star": "morning_star", "soldiers": "three_white_soldiers",
+                      "doji": "bullish_doji_reversal", "inside_bar": "inside_bar_breakout"}
+
+
+def _build_long_candle_pattern(params, *, kind, initial_capital):
+    tool_id = "local.backtesting_py." + _CANDLE_TOOL_NAMES[kind]
+    error = _validate_params_against_schema(params, TOOL_SPECS[tool_id]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    if params.get("direction", "long") != "long":
+        raise ValueError("INVALID_PARAMS:candle pattern templates support long only")
+    if any(key in params if key in ("stop_loss_pct", "take_profit_pct") else params.get(key, 0)
+           for key in _PATTERN_EXIT_KEYS):
+        raise ValueError("INVALID_PARAMS:pattern exits and risk-layer stop/take-profit parameters are mutually exclusive")
+    risk = _parse_fixed_risk_params(params)
+    position_filter = params.get("position_filter", True) if kind != "inside_bar" else False
+    reward_r = params.get("reward_r", 2)
+    min_bars = 21 if position_filter else 2
+    if kind == "star":
+        min_bars = 23
+    elif kind == "soldiers":
+        min_bars = 23 if position_filter else 4
+    elif kind == "doji":
+        min_bars = 22
+    elif kind == "inside_bar":
+        min_bars = 21 if params.get("trend_filter", False) else 3
+    breakout_window = params.get("breakout_window", 3)
+    if type(breakout_window) is not int:
+        raise ValueError("INVALID_PARAMS:breakout_window must be an integer")
+    from strategy_pattern_template import make_pattern_strategy
+    strategy = make_pattern_strategy(_FixedRiskMixin, kind=kind, position_filter=position_filter,
+                                     reward_r=reward_r, risk=risk, initial_capital=initial_capital,
+                                     breakout_window=breakout_window, trend_filter=params.get("trend_filter", False),
+                                     rsi_series=_rsi_series)
+    return {"strategy": strategy, "min_bars": min_bars,
+            "executed_name": f"{_CANDLE_TOOL_NAMES[kind].replace('_', ' ').title()} ({reward_r}R)",
+            "pattern_assumptions": {"pattern_execution":
+                "Pattern confirmed at close; market entry and triggered stop/target exits fill at the next bar open. "
+                "Stop/target prices are not guaranteed fills; an entry open at or below the frozen stop is skipped."
+                + ({"doji": " Only the immediately following close above the doji high confirms; the stop uses the doji low.",
+                    "inside_bar": f" A close above the mother high within {breakout_window} bars after the inside bar confirms; otherwise the setup expires. Latest setup replaces prior; stop uses mother low.",
+                    "star": " Stop uses the second candle low; middle body is at most 30% of first body.",
+                    "soldiers": " Stop uses the first soldier low."}.get(kind, ""))}}
+
+
+@_with_time_config
+def _build_bullish_engulfing(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_long_candle_pattern(params, kind="engulfing", initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_hammer_pin_bar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_long_candle_pattern(params, kind="pin_bar", initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_morning_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_long_candle_pattern(params, kind="star", initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_three_white_soldiers(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_long_candle_pattern(params, kind="soldiers", initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_bullish_doji_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_long_candle_pattern(params, kind="doji", initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_inside_bar_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_long_candle_pattern(params, kind="inside_bar", initial_capital=initial_capital)
+
+
+def _build_bottom_pattern(params, *, kind, initial_capital):
+    spec = TOOL_SPECS['local.backtesting_py.' + kind]
+    error = _validate_params_against_schema(params, spec['param_schema_properties'])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    if params.get('direction', 'long') != 'long':
+        raise ValueError('INVALID_PARAMS:bottom pattern templates support long only')
+    if any(key in params if key in ('stop_loss_pct', 'take_profit_pct') else params.get(key, 0)
+           for key in _PATTERN_EXIT_KEYS):
+        raise ValueError('INVALID_PARAMS:pattern exits and risk-layer stop/take-profit parameters are mutually exclusive')
+    n = params.get('swing_n', 5)
+    if type(n) is not int:
+        raise ValueError('INVALID_PARAMS:swing_n must be an integer')
+    config = dict(n=n)
+    if kind == 'double_bottom':
+        lo, hi = params.get('min_gap_bars', 10), params.get('max_gap_bars', 60)
+        if type(lo) is not int or type(hi) is not int or lo > hi:
+            raise ValueError('INVALID_PARAMS:gap bounds must be ordered integers')
+        config.update(min_gap=lo, max_gap=hi, tolerance=params.get('bottom_tolerance_pct', 1)/100,
+                      rebound=params.get('min_rebound_pct', 3)/100)
+        min_bars = 2*n + max(n+1, lo) + 1
+    else:
+        config.update(head_depth=params.get('head_depth_pct', 2)/100,
+                      shoulder_tolerance=params.get('shoulder_tolerance_pct', 3)/100)
+        min_bars = 4*n + 3
+    risk = _parse_fixed_risk_params(params)
+    from strategy_bottom_patterns import make_bottom_strategy
+    cls = make_bottom_strategy(_FixedRiskMixin, kind=kind, risk=risk,
+                               initial_capital=initial_capital, config=config)
+    return dict(strategy=cls, min_bars=min_bars, executed_name=kind.replace('_', ' ').title(),
+        pattern_assumptions=dict(pattern_execution=
+            'Only adjacent lows confirmed by swing_n closed bars on each side are used; '
+            'a breakout may occur at the confirmation close. Strict close above High-based neckline; '
+            'market entry and triggered stop/target exits fill at the next bar open. '
+            'Stop and measured-move target are frozen at breakout; prices are not guaranteed fills. '
+            'Entry open at or below frozen stop is skipped. New confirmed low or close below stop invalidates setup. '
+            'Stop precedes holding expiry, which precedes target. Equal peak High chooses earliest bar. '
+            'Head-and-shoulders target uses neckline at breakout plus neckline at head minus head low; '
+            'nonpositive measured move or neckline at/below stop invalidates setup.'))
+
+
+@_with_time_config
+def _build_double_bottom(params, *, initial_capital=10000.0):
+    return _build_bottom_pattern(params, kind='double_bottom', initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_inverse_head_shoulders(params, *, initial_capital=10000.0):
+    return _build_bottom_pattern(params, kind='inverse_head_shoulders', initial_capital=initial_capital)
+
+
 @_with_time_config
 @_with_filter_config
 def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
@@ -5475,6 +5608,106 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "red_bars": {"type": "integer", "default": 4, "minimum": 3, "maximum": 8},
             "rsi_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
             "oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    'local.backtesting_py.double_bottom': {
+        'name': 'Local Backtesting.py Double Bottom',
+        'description': 'Long-only confirmed adjacent swing lows, High-based neckline breakout and frozen measured-move exits; next-open fills. Risk stop/target keys are incompatible.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_double_bottom,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'min_gap_bars': {'type': 'integer', 'default': 10, 'minimum': 2, 'maximum': 2000},
+            'max_gap_bars': {'type': 'integer', 'default': 60, 'minimum': 2, 'maximum': 2000},
+            'bottom_tolerance_pct': {'type': 'number', 'default': 1, 'minimum': 0, 'maximum': 20},
+            'min_rebound_pct': {'type': 'number', 'default': 3, 'minimum': 0.1, 'maximum': 100},
+        },
+    },
+    'local.backtesting_py.inverse_head_shoulders': {
+        'name': 'Local Backtesting.py Inverse Head Shoulders',
+        'description': 'Long-only confirmed adjacent swing lows, High-based neckline breakout and frozen measured-move exits; next-open fills. Risk stop/target keys are incompatible.',
+        'strategy_family': 'mean_reversion', 'is_default': False,
+        'build': _build_inverse_head_shoulders,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'swing_n': {'type': 'integer', 'default': 5, 'minimum': 1, 'maximum': 500},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+            'head_depth_pct': {'type': 'number', 'default': 2, 'minimum': 0.1, 'maximum': 50},
+            'shoulder_tolerance_pct': {'type': 'number', 'default': 3, 'minimum': 0, 'maximum': 20},
+        },
+    },
+    "local.backtesting_py.bullish_engulfing": {
+        "name": "Local Backtesting.py Bullish Engulfing",
+        "description": "Long-only bullish engulfing with optional prior-20 low/Bollinger position filter; frozen pattern low minus 0.1% stop and configurable R target. Risk stop/target keys are incompatible.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_bullish_engulfing,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.hammer_pin_bar": {
+        "name": "Local Backtesting.py Hammer Pin Bar",
+        "description": "Long-only hammer with optional prior-20 new-low/EMA20/60 position filter; frozen lower-shadow tip minus 0.1% stop and configurable R target. Risk stop/target keys are incompatible.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_hammer_pin_bar,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.morning_star": {
+        "name": "Local Backtesting.py Morning Star",
+        "description": "Long-only three-bar morning star; middle body <= 30% of first body; stop below second low by 0.1%, next-open entry and configurable R target.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_morning_star,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.three_white_soldiers": {
+        "name": "Local Backtesting.py Three White Soldiers",
+        "description": "Long-only three white soldiers; optional preceding-20-bar decline filter; stop below first low by 0.1%, next-open entry and configurable R target.",
+        "strategy_family": "trend_following", "is_default": False,
+        "build": _build_three_white_soldiers,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bullish_doji_reversal": {
+        "name": "Local Backtesting.py Bullish Doji Reversal",
+        "description": "Long-only doji reversal; optional RSI(14)<30 at doji close; only the next close above doji high confirms. Stop below doji low by 0.1%, next-open entry and configurable R target.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_bullish_doji_reversal,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.inside_bar_breakout": {
+        "name": "Local Backtesting.py Inside Bar Breakout",
+        "description": "Long-only strict inside bar; next N closes above mother high confirm, expiry after N bars, latest setup replaces prior. Optional close>EMA20 trend filter; stop below mother low by 0.1%, configurable R target.",
+        "strategy_family": "breakout", "is_default": False,
+        "build": _build_inside_bar_breakout,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "breakout_window": {"type": "integer", "default": 3, "minimum": 1, "maximum": 20},
+            "trend_filter": {"type": "boolean", "default": False},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -8165,6 +8398,7 @@ async def run_backtest(
                 **turtle_assumptions,
                 **(range_assumptions(range_config) if range_config is not None else {}),
                 **(calendar_assumptions(calendar_config) if calendar_config is not None else {}),
+                **built.get("pattern_assumptions", {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 **({"vwap_reversion": {
@@ -8240,6 +8474,10 @@ async def run_backtest(
                 **({"calendar_events": stats["_strategy"].calendar_events} if calendar_config is not None else {}),
                 **({"range_breakout_days": list(stats["_strategy"].daily_ranges.values())} if range_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
+                **({"bottom_pattern": stats["_strategy"].bottom_pattern_report}
+                   if hasattr(stats["_strategy"], "bottom_pattern_report") else {}),
+                **({"candle_pattern": stats["_strategy"].pattern_report}
+                   if hasattr(stats["_strategy"], "pattern_report") else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 **({"red_streak_rsi": {"skipped_entries": stats["_strategy"]._f6_skips}}
                    if effective_tool_id == "local.backtesting_py.red_streak_rsi" else {}),

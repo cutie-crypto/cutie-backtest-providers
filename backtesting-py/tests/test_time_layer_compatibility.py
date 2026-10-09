@@ -27,6 +27,12 @@ BASELINE['single'] = {**BASELINE['single'], **ADDED_BASELINE['single']}
 F5_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_f5_b42210b.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(F5_BASELINE['single'])
 BASELINE['single'].update(F5_BASELINE['single'])
+PATTERN_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t1_candle_off.json').read_text())
+BASELINE['single'].update(PATTERN_BASELINE['single'])
+PATTERN2_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t2_candle_off.json').read_text())
+BASELINE['single'].update(PATTERN2_BASELINE['single'])
+PATTERN3_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t3_bottom_off.json').read_text())
+BASELINE['single'].update(PATTERN3_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -80,7 +86,17 @@ def test_schema_only_runtime_single_position_templates():
 @pytest.mark.parametrize('name', MIXINS)
 @pytest.mark.parametrize('risk_enabled', [False, True])
 def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled):
-    data = pd.concat([compat.frame()] * 6, ignore_index=True)
+    if name in PATTERN3_BASELINE['single']:
+        from test_9t3_patterns import compatibility_frame
+        data = compatibility_frame(name)
+    elif name in PATTERN2_BASELINE['single']:
+        from test_9t2_patterns import compatibility_frame
+        data = compatibility_frame(name)
+    elif name in PATTERN_BASELINE['single']:
+        from test_9t1_engulf_pin import compatibility_frame
+        data = compatibility_frame(name)
+    else:
+        data = pd.concat([compat.frame()] * 6, ignore_index=True)
     data.index = pd.date_range('2026-01-01', periods=len(data), freq='h')
     params = {**compat.PARAMS.get(name, {}), 'stop_loss_pct': 3, 'take_profit_pct': 5,
               'risk_layer_enabled': risk_enabled, 'time_layer_enabled': True,
@@ -91,6 +107,9 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         params.pop('take_profit_pct')
     if name in F2_CASES:
         params.update(time_entry_at='07:00', time_max_holding_minutes=240, calendar_stop_enabled=False)
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
+    if name in PATTERN_BASELINE['single'] or name in PATTERN2_BASELINE['single'] or name in PATTERN3_BASELINE['single']:
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
     if name == 'ichimoku_cloud_breakout':

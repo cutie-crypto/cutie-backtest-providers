@@ -81,6 +81,68 @@ Disabled filters preserve existing result bytes, and a non-default
 Short/both directions, ledger templates and `signal_execution` remain unsupported
 with filters. See the [parameter and verification evidence](backtesting-py/tests/entry_filters_7p2_evidence.md).
 
+### Additional long-only patterns (9-T2)
+
+Four registered ids share the existing candle engine and next-open market fills:
+
+| Tool id (`local.backtesting_py.` prefix) | Confirmation | Frozen stop |
+|---|---|---|
+| `morning_star` | Large bearish first body; second body <= 30% of first and closes below first close; bullish third closes above first midpoint | Second candle low × 0.999 |
+| `three_white_soldiers` | Three rising bullish closes, every open in the preceding body (including first soldier), each upper wick <= 30% of its body | First soldier low × 0.999 |
+| `bullish_doji_reversal` | Body <= 10% of span; span >= prior-20 mean span × 0.8; immediately next close strictly above doji high | Doji low × 0.999 |
+| `inside_bar_breakout` | Strict inside bar, then a close strictly above mother high in the next N bars | Mother low × 0.999 |
+
+All four accept `direction=long` only, `reward_r=2` (0.1–20), `exchange`
+and the existing sizing/time keys. Short/both fail before fetching in both spot
+and futures. `position_filter=true` is available for soldiers (first soldier open
+below the close 20 bars earlier) and doji (RSI14 < 30 at the doji close); it can be
+disabled. Morning star has no additional position filter in the source requirement.
+Its middle body has no extra prior-average small-body restriction.
+
+Inside bar accepts strict integer `breakout_window=3` (1–20) and
+`trend_filter=false`; enabling it requires breakout close > EMA20 (adjust=False,
+20 closes required). A new inside bar replaces an unbroken setup. A breakout
+consumes its setup even when the trend/session filter blocks the entry; expiry
+never produces a delayed order. Warmup and main bars share causal confirmation
+facts. Main minimum bars: star 23, soldiers 23 (4 with filter off), doji 22,
+inside 3 (21 with trend filter on).
+
+Stops, actual-entry R targets, gap skips, exit priority and mutually exclusive
+external stop/target keys follow the candle engine below. New report information
+stays in `raw_report.candle_pattern`; result.v2 keys remain unchanged. These are
+provider tools; service registration and deployment are separate work.
+
+### Long-only candle patterns
+
+`local.backtesting_py.bullish_engulfing` and `local.backtesting_py.hammer_pin_bar`
+confirm at the last pattern close and enter at the next open. Position filtering
+is on by default: engulfing requires its two-bar low within 0.5% of the preceding
+20-bar low or a touch of Bollinger(20, 2) lower; hammer requires a new low against
+the preceding 20 bars or a touch of EMA20/60. Touch means the indicator lies in
+the confirmation bar's Low–High range. Indicators include only the current and
+previous closes; an EMA needs its full period of history. Filtered requests need
+21 main bars; disabling the filter reduces that to 2.
+
+| Parameter | Default | Accepted values |
+|---|---|---|
+| `direction` | `long` | `long` only; `short`/`both` rejected before fetching |
+| `position_filter` | `true` | Boolean |
+| `reward_r` | `2` | Number, 0.1–20 |
+| `exchange` | `okx` | Existing exchange selection (environment may override the default) |
+
+The stop is frozen at the pattern low times 0.999 (the hammer's lower-shadow tip).
+The target is the actual engine entry plus `reward_r` times entry-to-stop distance.
+An entry open at or below its frozen stop is canceled before a position exists;
+`raw_report.candle_pattern` contains the skip reason, prices, bar indexes and count.
+Stop and target use bar Low/High triggers, followed by next-open market exits;
+they do not guarantee a fill at the trigger price, as disclosed in `assumptions`.
+Stop wins over holding expiry, which wins over target on the same bar.
+
+Existing sizing, leverage=1 and time gates apply. Fixed `stop_loss_pct` or
+`take_profit_pct` keys, and active ATR/R/trailing/breakeven/multi-target exit keys,
+are incompatible with these template-owned exits. Disabled risk/time defaults
+remain valid. All new reporting stays outside the frozen result.v2 key sets.
+
 ### StrategySpec v2 artifact execution
 
 The backtesting.py service also advertises
