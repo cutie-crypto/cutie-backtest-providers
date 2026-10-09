@@ -226,6 +226,23 @@ def test_unwired_list_names_registered_tools_without_filter_keys():
         assert not set(SINGLE_NAMES) & {tool_id.removeprefix('local.backtesting_py.')}
 
 
+FROZEN_UNWIRED_WAVE_B = frozenset('local.backtesting_py.' + n for n in (
+    'opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi bullish_engulfing '
+    'hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout '
+    'double_bottom inverse_head_shoulders').split())
+
+
+def test_filter_unwired_list_only_shrinks_and_expires():
+    """The unwired list may only shrink. A tool that gains filter keys or @_with_filter_config
+    must leave it. At 7-P3 close-out replace the first assertion with
+    `assert not p.FILTER_LAYER_UNWIRED_TOOLS`."""
+    assert set(p.FILTER_LAYER_UNWIRED_TOOLS) <= FROZEN_UNWIRED_WAVE_B
+    for tool_id in p.FILTER_LAYER_UNWIRED_TOOLS:
+        spec = p.TOOL_SPECS[tool_id]
+        assert not [k for k in spec['param_schema_properties'] if k.startswith('filter_')], tool_id
+        assert not getattr(spec['build'], '_supports_entry_filters', False), tool_id
+
+
 def test_runtime_schema_and_baseline_cover_every_single_direction():
     actual = {key.removeprefix('local.backtesting_py.') for key, tool in p.TOOL_SPECS.items()
               if 'filter_layer_enabled' in tool['param_schema_properties']}

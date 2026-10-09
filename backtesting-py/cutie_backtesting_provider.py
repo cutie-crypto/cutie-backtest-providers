@@ -3461,6 +3461,7 @@ def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 
 TURTLE_RUNNER = "turtle_group"
 # 不接单仓入场过滤层的新模板（INTEG-B2 裁定）：入场处没有 _filter_allow_entry()，F1/F2 也无过滤预热。
 # 接入属于新能力，另开「7-P3 新模板接过滤层」批；在此之前 schema 不得出现 filter_* 键。
+# 7-P3 接入前临时排除；7-P3 合入时本名单必须清空（到期用例 test_filter_unwired_list_only_shrinks_and_expires）。
 FILTER_LAYER_UNWIRED_TOOLS = (
     "local.backtesting_py.opening_range_breakout",
     "local.backtesting_py.asia_range_breakout",
