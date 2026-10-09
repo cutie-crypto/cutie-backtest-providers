@@ -2480,6 +2480,11 @@ class _FixedRiskMixin:
             self._risk_state = None
             self._risk_entry_atr = None
             self._risk_exit_reason = None
+            if self._risk.get("trailing_stop_pct") or self._risk.get("breakeven_stop"):
+                # Timestamp.value is nanoseconds; kernel bars have inclusive ends.
+                self._risk_bar_times = [int(pd.Timestamp(t).value) for t in self.data.index]
+                self._risk_period_ns = getattr(self, "_risk_timeframe_ns", None) or (
+                    self._risk_bar_times[1] - self._risk_bar_times[0])
             if self._risk.get("atr_stop_multiplier"):
                 from strategy_risk_overlay import risk_atr_series
 
@@ -2501,21 +2506,42 @@ class _FixedRiskMixin:
         self._risk_entry_atr = self._risk_atr[count - 1]
 
     def _risk_layer_check_exit(self) -> bool:
-        from strategy_risk_overlay import initial_risk_state, decide_exit
+        from strategy_risk_overlay import initial_risk_state, decide_exit, advance_risk_state, level_exit
 
         trade = self.trades[-1]
+        # Parent orders remain pending until the broker confirms the next-open fill.
+        if any(order.parent_trade is trade for order in self.orders):
+            return True
         if self._risk_trade is not trade:
             self._risk_trade = trade
             self._risk_state = initial_risk_state(
                 risk=self._risk, entry_price=trade.entry_price,
                 direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
+                entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
             )
-        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1])
-        if reason is None:
-            return False
-        self._risk_exit_reason = reason
-        self.position.close()
-        return True
+        bar = len(self.data) - 1
+        holding = self._risk.get("max_holding_bars", 0)
+        due = bool(holding and bar - trade.entry_bar + 1 >= holding)
+        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=due)
+        if reason is not None:
+            self._risk_exit_reason = reason
+            self.position.close()
+            return True
+        self._risk_state, units = level_exit(
+            self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], remaining_units=abs(trade.size))
+        if self._risk_state.stop_state is not None:
+            open_at = self._risk_bar_times[bar]
+            next_open = (self._risk_bar_times[bar + 1] if bar + 1 < len(self._risk_bar_times)
+                         else open_at + self._risk_period_ns)
+            self._risk_state = advance_risk_state(
+                self._risk_state, self._risk, open_at=open_at, close_at=next_open - 1,
+                high=self.data.High[-1], low=self.data.Low[-1], close=self.data.Close[-1])
+        if units:
+            self._risk_exit_reason = "take_profit_levels"
+            # Precompute integer units to bypass Trade.close's minimum-one/round semantics.
+            trade.close(portion=units / abs(trade.size))
+            return True
+        return False
 
     def _risk_entry_size(self) -> Optional[float]:
         """None 表示未配置固定仓位——调用方必须不传 size=，直接吃库内 __FULL_EQUITY
@@ -6352,6 +6378,7 @@ async def run_backtest(
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
     risk = strategy_class._risk
+    strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
     warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df)
     indicator_warmup_bars = len(warmup_df)
