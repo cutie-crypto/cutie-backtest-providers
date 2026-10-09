@@ -135,3 +135,17 @@ def test_leverage_one_off_state_bytes():
     import json
     for key in ('assumptions', 'raw_report'):
         assert json.dumps(before[key], sort_keys=True) == json.dumps(after[key], sort_keys=True)
+
+
+def test_user_stop_closer_than_liquidation_wins_with_wide_window():
+    data = frame()
+    data.loc['2026-03-09 13:30':'2026-03-09 13:45', 'Low'] = 80
+    data.loc['2026-03-09 14:00', ['Open','High','Low','Close']] = [100,101,90,100]
+    built = p.TOOL_SPECS['local.backtesting_py.'+NAME]['build'](
+        {'leverage': 10, 'stop_loss_pct': 2, 'risk_layer_enabled': True, 'position_size_pct': 20})
+    stats = Backtest(data, built['strategy'], cash=10000, margin=.1,
+        exclusive_orders=True, finalize_trades=True).run()
+    assert len(stats['_trades']) == 1
+    assert stats['_strategy']._risk_exit_reason == 'stop_loss'
+    assert not stats['_strategy']._isolated_liquidations
+    assert stats['_trades'].iloc[0].ExitTime == pd.Timestamp('2026-03-09 14:15')

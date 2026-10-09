@@ -61,6 +61,20 @@ def build_us_open(p, params, initial_capital):
                 process()
             self._broker._process_orders = guarded_fill
 
+        def _risk_isolated_exit(self, stop=None):
+            # Both the mandatory window stop and an optional user stop can beat
+            # liquidation. The first fill bar has no cached user risk state yet.
+            from strategy_risk_overlay import initial_risk_state
+            trade = self.trades[-1]
+            state = self._risk_state if self._risk_trade is trade else initial_risk_state(
+                risk=self._risk, entry_price=trade.entry_price,
+                direction='long' if trade.is_long else 'short', atr_value=self._risk_entry_atr,
+                entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size))
+            user_stop = state.stop_state.effective_stop if state.stop_state is not None else state.initial_stop
+            stops = [value for value in (stop, user_stop, Decimal(str(self._window_stop))) if value is not None]
+            closest = max(stops) if trade.is_long else min(stops)
+            return super()._risk_isolated_exit(closest)
+
         def _holding_expiry(self):
             user = super()._holding_expiry()
             t = self.trades[-1]
