@@ -37,6 +37,9 @@ from strategy_time_layer import (
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
 from strategy_entry_filters import FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, entry_mask
+from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
+                                      parse_position_sizing, PositionSizingMixin)
+
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from strategy_execution import (
@@ -2524,6 +2527,7 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
         if notional <= 0:
             raise ValueError("INVALID_PARAMS:position_size_notional must be > 0")
         out["position_size_notional"] = notional
+    out.update(parse_position_sizing(params))
     return out
 
 
@@ -2626,7 +2630,7 @@ class _FilterLayerMixin:
         return bool(self._filter_mask[index])
 
 
-class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
+class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
     """单仓模板共用覆盖层；1 倍且 risk_layer_enabled=false 完整保留旧层。
 
     3a 显式开启时用 High/Low 判触发，仍提交下一根开盘市价平仓。
@@ -2668,7 +2672,7 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
-        if self._risk.get("leverage", 1) > 1:
+        if self._risk.get("leverage", 1) > 1 or self._risk.get("position_sizing_enabled"):
             self._isolated_liquidations = []
             self._isolated_liquidation_units = {}
             self._isolated_blocked_bar = -1
@@ -2698,11 +2702,17 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
                     arrays.append(np.concatenate([prefix, np.asarray(getattr(self.data, column))]))
                 self._risk_atr = risk_atr_series(*arrays, self._risk["risk_atr_period"])
 
+        if self._risk.get("position_sizing_enabled"):
+            self._sizing_install()
+
     def _risk_prepare_entry(self) -> None:
         if not self._risk.get("atr_stop_multiplier"):
             return
         count = self._warmup_bars + len(self.data)
         if count < self._risk["risk_atr_period"]:
+            if self._risk.get("position_size_risk_pct") is not None:
+                self._risk_entry_atr = None
+                return  # The fill hook records invalid_initial_stop without sending an order.
             raise ValueError("INVALID_PARAMS:ATR entry history is shorter than risk_atr_period")
         # Only the signal close is available when the market entry is queued.
         self._risk_entry_atr = self._risk_atr[count - 1]
@@ -2747,7 +2757,7 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
 
         def process_before_insolvency():
             process_orders()
-            if broker.equity > 0 or not self.trades:
+            if self._risk.get("leverage", 1) == 1 or broker.equity > 0 or not self.trades:
                 return
             # Broker.next checks account insolvency BEFORE Strategy.next. A low
             # close can consume unallocated cash although this isolated trade
@@ -2808,7 +2818,8 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
             return True
         if self._risk_trade is not trade:
             self._risk_trade = trade
-            self._risk_state = initial_risk_state(
+            self._risk_state = self._sizing_states.get(trade) if self._risk.get("position_sizing_enabled") else None
+            self._risk_state = self._risk_state or initial_risk_state(
                 risk=self._risk, entry_price=trade.entry_price,
                 direction="long" if trade.is_long else "short", atr_value=self._risk_entry_atr,
                 entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
@@ -2856,6 +2867,8 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
         哨兵值（该哨兵是 float 子类，真实值≈0.9999999999999998，不是字面 0.9999；
         显式传 0.9999 会让仓位比原逻辑略小，破坏"未配置时逐字节不变"的回归底线）。
         """
+        if self._risk.get("position_sizing_enabled"):
+            return 1  # Placeholder absolute unit; replaced only at the next-open hook.
         size_pct = self._risk.get("position_size_pct")
         if size_pct is not None:
             return size_pct
@@ -2877,7 +2890,9 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
-        self.buy() if size is None else self.buy(size=size)
+        order = self.buy() if size is None else self.buy(size=size)
+        if self._risk.get("position_sizing_enabled"):
+            order._sizing_signal_bar = len(self.data) - 1
 
     def _risk_sell(self) -> None:
         if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
@@ -2886,7 +2901,9 @@ class _FixedRiskMixin(_TimeLayerMixin, _FilterLayerMixin):
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
-        self.sell() if size is None else self.sell(size=size)
+        order = self.sell() if size is None else self.sell(size=size)
+        if self._risk.get("position_sizing_enabled"):
+            order._sizing_signal_bar = len(self.data) - 1
 
     def _risk_check_exit(self) -> bool:
         if not self.position or not self.trades:
@@ -5642,6 +5659,7 @@ for _tool_spec in TOOL_SPECS.values():
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
         **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
+        **POSITION_SIZE_SCHEMA,
         **_TIME_PARAM_SCHEMA_PROPERTIES,
         **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     }
@@ -5652,6 +5670,25 @@ for _filter_tool_spec in TOOL_SPECS.values():
     if getattr(_filter_tool_spec.get("build"), "_supports_entry_filters", False):
         _filter_tool_spec["param_schema_properties"].update(FILTER_PARAM_SCHEMA_PROPERTIES)
 del _filter_tool_spec
+
+POSITION_SIZING_UNWIRED_TOOLS = frozenset({
+    "local.backtesting_py.rsi_scale_in_out", "local.backtesting_py.grid",
+    "local.backtesting_py.dca", "local.backtesting_py.turtle",
+    "local.backtesting_py.basket_ratio_sma_cross", "local.backtesting_py.basket_ratio_roc",
+    "local.backtesting_py.basket_ratio_zscore",
+})
+assert POSITION_SIZING_UNWIRED_TOOLS == {
+    tool for tool, spec in TOOL_SPECS.items()
+    if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3")
+}, "Every unwired runner must be explicitly listed"
+
+
+def _position_sizing_failure(message):
+    response = _validation_failure("INVALID_PARAMS", message)
+    content = json.loads(response.body)
+    content["raw_report"]["position_sizing"] = {"rejections": [{"reason": message}]}
+    return JSONResponse(content=content)
+
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
 
@@ -7271,6 +7308,13 @@ async def run_backtest(
     if not isinstance(params, dict):  # F5: non-dict -> INVALID_PARAMS, not a 500
         return _validation_failure("INVALID_PARAMS", "provider_params must be an object")
     tool_spec = TOOL_SPECS[effective_tool_id]
+    if set(params) & POSITION_SIZE_KEYS:
+        if effective_tool_id in POSITION_SIZING_UNWIRED_TOOLS:
+            return _position_sizing_failure("position sizing is not wired to this runner")
+        try:
+            _parse_fixed_risk_params(params)
+        except ValueError as exc:
+            return _position_sizing_failure(str(exc).removeprefix("INVALID_PARAMS:"))
     if tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
         rejection = _scale_in_out_rejection(params, bt_req, market)
         if rejection:
@@ -7461,7 +7505,13 @@ async def run_backtest(
         # float，不受此契约约束），两条路径分道扬镳，互不干扰。
         internal_cash_dec = _internal_cash_dec(initial_capital, float(df["Close"].max()))
         equity_scale_dec = initial_capital / internal_cash_dec
-        if leverage > 1 and market == "futures":
+        sizing_enabled = getattr(StrategyClass, "_risk", {}).get("position_sizing_enabled", False)
+        if sizing_enabled:
+            # One engine unit is exactly one requested qty_step in user units.
+            equity_scale_dec = Decimal(str(StrategyClass._risk["position_size_qty_step"]))
+            internal_cash = float(initial_capital / equity_scale_dec)
+        if sizing_enabled or (leverage > 1 and market == "futures"):
+            StrategyClass._sizing_scale = equity_scale_dec
             StrategyClass._isolated_equity_scale = equity_scale_dec
             StrategyClass._isolated_initial_capital = initial_capital
             StrategyClass._isolated_fee_bps = fee_bps
@@ -7635,6 +7685,11 @@ async def run_backtest(
                 "exchange": exchange_id,
                 "market": market,
                 **strategy_assumptions,
+                **({"position_sizing": {"fill": "next_bar_open_market",
+                     "capital_base": "pre_fill_net_equity" if risk["compound"] else "initial_capital",
+                     "risk_quantity_leverage_multiplier": False,
+                     "initial_stop": "shared_frozen_actual_fill_risk_state",
+                     "qty_step_source": "provider_parameter_not_exchange_verified"}} if sizing_enabled else {}),
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
                 **(_build_isolated_margin_assumptions(
@@ -7675,6 +7730,8 @@ async def run_backtest(
                     liquidation_units=stats["_strategy"]._isolated_liquidation_units,
                     equity_scale_dec=equity_scale_dec)
                    if isolated else {}),
+                **({"position_sizing": stats["_strategy"]._sizing_report}
+                   if sizing_enabled else {}),
                 **turtle_raw_report,
                 **({"entry_filters": filter_config.report()} if filter_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
