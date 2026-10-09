@@ -3459,6 +3459,22 @@ def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 
 
 
 TURTLE_RUNNER = "turtle_group"
+# 不接单仓入场过滤层的新模板（INTEG-B2 裁定）：入场处没有 _filter_allow_entry()，F1/F2 也无过滤预热。
+# 接入属于新能力，另开「7-P3 新模板接过滤层」批；在此之前 schema 不得出现 filter_* 键。
+FILTER_LAYER_UNWIRED_TOOLS = (
+    "local.backtesting_py.opening_range_breakout",
+    "local.backtesting_py.asia_range_breakout",
+    "local.backtesting_py.calendar_schedule",
+    "local.backtesting_py.red_streak_rsi",
+    "local.backtesting_py.bullish_engulfing",
+    "local.backtesting_py.hammer_pin_bar",
+    "local.backtesting_py.morning_star",
+    "local.backtesting_py.three_white_soldiers",
+    "local.backtesting_py.bullish_doji_reversal",
+    "local.backtesting_py.inside_bar_breakout",
+    "local.backtesting_py.double_bottom",
+    "local.backtesting_py.inverse_head_shoulders",
+)
 _TURTLE_RISK_DESCRIPTION = (
     "单单位到初始止损的风险占权益比；经典海龟是 1%÷N（2N 止损下每单位 2%），本参数填 2 即经典口径"
 )
