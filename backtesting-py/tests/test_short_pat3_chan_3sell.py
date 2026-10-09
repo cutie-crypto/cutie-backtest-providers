@@ -423,4 +423,16 @@ def test_chan_3buy_builder_and_catalog_source_bytes_unchanged():
                         result[key.value] = ast.get_source_segment(source,value)
         return result
     assert len(sections(current)) == 2
-    assert sections(current) == sections(original)
+    # 10-B2b: the only sanctioned chan_3buy delta wires risk sizing to the frozen pullback stop.
+    expected = sections(original)
+    for old,new in (
+        ("    risk = _parse_fixed_risk_params(params)\n",
+         "    # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).\n"
+         "    risk = _parse_fixed_risk_params(params, template_initial_stop=True)\n"),
+        ("    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)\n",
+         "    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)\n"
+         "    # 10-B2b: risk distance = |actual fill - pullback Low * 0.999| frozen in the order tag.\n"
+         "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n")):
+        assert expected['_build_chan_3buy'].count(old) == 1
+        expected['_build_chan_3buy'] = expected['_build_chan_3buy'].replace(old,new)
+    assert sections(current) == expected
