@@ -2332,6 +2332,29 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+_TURTLE_RISK_KEYS = ("risk_layer_enabled", "max_holding_bars", "take_profit_pct")
+
+
+def _parse_turtle_risk_params(params: dict[str, Any]) -> dict[str, Any]:
+    conflicts = sorted(set(params) & (set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) - set(_TURTLE_RISK_KEYS)))
+    if conflicts:
+        raise ValueError("INVALID_PARAMS:Turtle does not support risk parameters: " + ", ".join(conflicts))
+    selected = {key: params[key] for key in _TURTLE_RISK_KEYS if key in params}
+    error = _validate_params_against_schema(selected, _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    holding = selected.get("max_holding_bars", 0)
+    if type(holding) is not int:
+        raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+    take = selected.get("take_profit_pct")
+    if take is not None and not 0 < take < 100:
+        raise ValueError("INVALID_PARAMS:take_profit_pct must be > 0 and < 100")
+    enabled = selected.get("risk_layer_enabled", False)
+    if not enabled and (holding or take is not None):
+        raise ValueError("INVALID_PARAMS:Turtle risk parameters require risk_layer_enabled=true")
+    return selected if enabled else {}
+
+
 def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
     """Either explicit layer consumes the shared 3b holding-bar limit."""
     return params.get("risk_layer_enabled") is True or params.get("time_layer_enabled") is True
@@ -3275,6 +3298,7 @@ class _TurtleGroupMixin:
 
 
 def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_turtle_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.turtle"]["param_schema_properties"]
     error = _validate_params_against_schema(params, properties)
     if error:
@@ -3290,6 +3314,7 @@ def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -
     from backtesting import Strategy
 
     class TurtleStrategy(_TurtleGroupMixin, Strategy):
+        _turtle_risk = risk
         _direction = values["direction"]
         _stop_multiple = values["stop_atr_multiplier"]
         _unit_risk = values["unit_risk_pct"]
@@ -4989,6 +5014,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "exclusive_orders": False,
         "build": _build_turtle,
         "param_schema_properties": {
+            **{key: dict(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]) for key in _TURTLE_RISK_KEYS},
             "entry_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
             "exit_period": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200},
             "atr_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 100},
