@@ -218,7 +218,8 @@ def test_runtime_disabled_fingerprints(case, warm, explicit, monkeypatch):
 
 def test_unwired_list_names_registered_tools_without_filter_keys():
     unwired = p.FILTER_LAYER_UNWIRED_TOOLS
-    assert len(unwired) == 16 and len(set(unwired)) == 16  # 集成 D：12 + 做空一 2 + 做空二 2
+    # 集成 D：12 + 做空一 2 + 做空二 2 = 16；7-P3b 接入 red_streak_rsi 后 16 - 1 = 15。
+    assert len(unwired) == 15 and len(set(unwired)) == 15
     for tool_id in unwired:
         assert tool_id in p.TOOL_SPECS, tool_id
         assert tool_id.removeprefix('local.backtesting_py.') in EXCLUDED
@@ -255,7 +256,7 @@ FROZEN_UNWIRED_SHORT_PAT12 = frozenset({
 
 def test_filter_unwired_list_only_shrinks_and_expires():
     """The unwired list may only shrink. A tool that gains filter keys or @_with_filter_config
-    must leave it. At 7-P3 close-out FILTER_LAYER_UNWIRED_TOOLS must be empty;
+    must leave it. At 7-P4 (short-side filter layer) close-out FILTER_LAYER_UNWIRED_TOOLS must be empty;
     both frozen sets expire together. Replace the membership assertion with
     `assert not p.FILTER_LAYER_UNWIRED_TOOLS`."""
     assert len(FROZEN_UNWIRED_SHORT_PAT12) == 16
