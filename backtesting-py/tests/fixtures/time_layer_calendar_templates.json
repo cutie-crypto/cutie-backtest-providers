@@ -1,0 +1,17 @@
+{
+  "single": {
+    "us_open_momentum": {
+      "min_bars": 2,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "209da140518a962a4fc2a8fbf239efdf14531b13c5bdd7833af99c75c66dfa19",
+        "raw_report_sha256": "278ccc6c1aed51d95cb1a4d1ad5031521fbafdc1a4448d93006f27fe384771d7"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "2ca9a9b5430e062759405dba1fd5b60213284e3245b35672de4cb5158b429803",
+        "raw_report_sha256": "278ccc6c1aed51d95cb1a4d1ad5031521fbafdc1a4448d93006f27fe384771d7"
+      }
+    }
+  }
+}

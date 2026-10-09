@@ -24,6 +24,9 @@ BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_ledger_11e8c
 ADDED_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_da027cd.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(ADDED_BASELINE['single'])
 BASELINE['single'] = {**BASELINE['single'], **ADDED_BASELINE['single']}
+NEW_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_calendar_templates.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(NEW_BASELINE['single'])
+BASELINE['single'].update(NEW_BASELINE['single'])
 MIXINS = compat.enumerate_mixin_cases()
 
 
@@ -80,8 +83,13 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
               'time_session_start': '06:00', 'time_session_end': '10:00'}
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
+    tf = '1h'
+    if name == 'us_open_momentum':
+        data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
+        params.update(direction='long', time_timezone='America/New_York', time_session_start='09:30', time_session_end='10:30')
+        tf = '15m'
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
-    ctx = TimeContext.build(cls._time_config, '1h', data.index)
+    ctx = TimeContext.build(cls._time_config, tf, data.index)
     cls._time_context = ctx
     trades = Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades']
     assert len(trades) > 0, name

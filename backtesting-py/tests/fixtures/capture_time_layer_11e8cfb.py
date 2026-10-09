@@ -24,16 +24,24 @@ LEDGER_PARAMS = {
 V2_KEYS = ('schema_version', 'trades', 'equity_curve', 'metrics', 'data_manifest')
 
 
+def template_frame(name):
+    data = compat.frame()
+    if name == 'us_open_momentum':
+        import pandas as pd
+        data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
+    return data
+
+
 def request_body(name, params):
-    data = compat.frame().iloc[60:]
+    data = template_frame(name).iloc[60:]
     return {'backtest': dict(run_id='time_compat', provider_tool_id='local.backtesting_py.' + name,
-        provider_params=params, symbol='BTCUSDT', market=('spot' if name in LEDGER_PARAMS else 'futures'), timeframe='1h',
+        provider_params=params, symbol='BTCUSDT', market=('spot' if name in LEDGER_PARAMS else 'futures'), timeframe=('15m' if name == 'us_open_momentum' else '1h'),
         start_at=int(data.index[0].timestamp()), end_at=int(data.index[-1].timestamp()) + 3600,
         initial_capital='10000', fee_bps='10', slippage_bps='5')}
 
 
 def response(name, params, warm=True):
-    full = compat.frame()
+    full = template_frame(name)
     def fetch(*args):
         return full.iloc[60:].copy()
     def warmup(*args):
