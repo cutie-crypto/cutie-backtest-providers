@@ -2509,6 +2509,23 @@ def _with_time_config(build):
     return configured
 
 
+def _isolated_liquidation_price(entry: Decimal, leverage: int, is_long: bool) -> Decimal:
+    # One division avoids rounding 1/L before multiplying by E.
+    return entry * Decimal(leverage - 1 if is_long else leverage + 1) / Decimal(leverage)
+
+
+def _isolated_liquidation_candidate(*, entry_price, leverage: int, is_long: bool,
+                                    open_price, high, low) -> Optional[dict[str, Any]]:
+    """MMR=0; fees excluded. Shared by both exit arbitration paths."""
+    price = _isolated_liquidation_price(Decimal(str(entry_price)), leverage, is_long)
+    opening, high, low = (Decimal(str(value)) for value in (open_price, high, low))
+    if not (low <= price if is_long else high >= price):
+        return None
+    gap = opening <= price if is_long else opening >= price
+    return {"liquidation_price": price, "liquidation_gap": gap,
+            "fill_price": opening if gap else price}
+
+
 class _FixedRiskMixin(_TimeLayerMixin):
     """13 模板共用覆盖层；risk_layer_enabled=false 完整保留旧层。
 
@@ -5461,9 +5478,7 @@ def _isolated_liquidation_fills(
         if (not all(value.is_finite() and value > 0 for value in (entry, qty, open_price, low, high))
                 or not low <= open_price <= high or trade["side"] not in {"long", "short"}):
             raise ValueError("invalid isolated liquidation prices, qty or side")
-        inverse_leverage = Decimal(1) / Decimal(leverage)
-        liquidation_price = entry * (Decimal(1) - inverse_leverage if trade["side"] == "long"
-                                     else Decimal(1) + inverse_leverage)
+        liquidation_price = _isolated_liquidation_price(entry, leverage, trade["side"] == "long")
         gap = (open_price <= liquidation_price if trade["side"] == "long"
                else open_price >= liquidation_price)
         fill_price = open_price if gap else liquidation_price
