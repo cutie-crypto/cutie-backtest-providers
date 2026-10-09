@@ -5563,7 +5563,9 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                             self._isolated_stop_beyond_trades += 1
             if self._risk.get("risk_layer_enabled"):
                 return self._risk_layer_check_exit()
-            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
+            # Off the risk layer the stop below is close-only, so any intrabar liquidation precedes
+            # it (same rule as the mixin's legacy path): arbitrate without the stop.
+            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit():
                 return True
             if any(order.parent_trade is trade for order in self.orders):
                 return True
@@ -5699,7 +5701,9 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                                            stop_state=managed, original_units=abs(trade.size))
             if self._risk.get("risk_layer_enabled"):
                 return self._risk_layer_check_exit()
-            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
+            # Off the risk layer the stop below is close-only, so any intrabar liquidation precedes
+            # it (same rule as the mixin's legacy path): arbitrate without the stop.
+            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit():
                 return True
             if any(order.parent_trade is trade for order in self.orders):
                 return True
