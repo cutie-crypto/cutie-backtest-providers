@@ -220,16 +220,23 @@ WIRED_10B2A = frozenset("local.backtesting_py." + n for n in (
     "macd_bullish_divergence", "rsi_bullish_divergence", "fibonacci_retracement", "vwap_reversion"))
 # 10-B2b 之后的唯一上界；SHORT_PAT12 / PAT3 只保留作历史推导，不再作上界。
 FROZEN_PENDING_AFTER_10B2B = FROZEN_PENDING_SHORT_PAT3 - WIRED_10B2A - WIRED_10B2B
+# 10-B2c：K 线形态六个与双底、头肩底按信号根冻结的形态止损定仓（14 - 8 = 6）。
+WIRED_10B2C = frozenset("local.backtesting_py." + n for n in (
+    "bullish_engulfing", "hammer_pin_bar", "morning_star", "three_white_soldiers", "bullish_doji_reversal",
+    "inside_bar_breakout", "double_bottom", "inverse_head_shoulders"))
+# 10-B2c 之后的唯一上界；FROZEN_PENDING_AFTER_10B2B 只保留作历史推导。
+FROZEN_PENDING_AFTER_10B2C = FROZEN_PENDING_AFTER_10B2B - WIRED_10B2C
 
 
 def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
     """Pending tools may only shrink; tools with sizing keys must leave this list.
 
     10-B2b expired the short part: the five short ids must be absent and wired to
-    their own frozen stop; the remaining 14 may only shrink below
-    FROZEN_PENDING_AFTER_10B2B. At 10-B2d (the last close-out batch; 10-B2c takes 8 of the 14) the whole
-    list must be empty: replace the subset assertion with
-    `assert not p.POSITION_SIZING_PENDING_TOOLS` and retire every frozen set here.
+    their own frozen stop. 10-B2c wired the six candle patterns, double bottom and inverse
+    head-and-shoulders the same way; the remaining 6 may only shrink below
+    FROZEN_PENDING_AFTER_10B2C. At 10-B2d (the last close-out batch) the whole list must be
+    empty: replace the subset assertion with `assert not p.POSITION_SIZING_PENDING_TOOLS`
+    and retire every frozen set here.
     """
     assert len(FROZEN_PENDING_SHORT_PAT12) == 23
     assert FROZEN_PENDING_SHORT_PAT12 - FROZEN_PENDING_INTEG_C == {
@@ -245,7 +252,11 @@ def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
     # 做空部分到期：交集为空，且本批 6 个都按模板冻结止损定仓。
     assert not (SHORT_PENDING_EXPIRED_10B2B & p.POSITION_SIZING_PENDING_TOOLS)
     assert WIRED_10B2B <= p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
-    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_AFTER_10B2B
+    assert len(WIRED_10B2C) == 8 and WIRED_10B2C <= FROZEN_PENDING_AFTER_10B2B
+    assert len(FROZEN_PENDING_AFTER_10B2C) == 6
+    assert not (WIRED_10B2C & p.POSITION_SIZING_PENDING_TOOLS)
+    assert WIRED_10B2C <= p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
+    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_AFTER_10B2C
     assert p.POSITION_SIZING_PENDING_TOOLS.isdisjoint(p.POSITION_SIZING_UNWIRED_TOOLS)
     for tool in p.POSITION_SIZING_PENDING_TOOLS:
         assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool

@@ -4819,7 +4819,8 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
     if any(key in params if key in ("stop_loss_pct", "take_profit_pct") else params.get(key, 0)
            for key in _PATTERN_EXIT_KEYS):
         raise ValueError("INVALID_PARAMS:pattern exits and risk-layer stop/take-profit parameters are mutually exclusive")
-    risk = _parse_fixed_risk_params(params)
+    # Candle patterns reject user stops; the pattern stop is frozen at the signal (10-B2c).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     position_filter = params.get("position_filter", True) if kind != "inside_bar" else False
     reward_r = params.get("reward_r", 2)
     min_bars = 21 if position_filter else 2
@@ -4839,6 +4840,8 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
                                      reward_r=reward_r, risk=risk, initial_capital=initial_capital,
                                      breakout_window=breakout_window, trend_filter=params.get("trend_filter", False),
                                      rsi_series=_rsi_series)
+    # 10-B2c: risk distance = |actual fill - anchor Low * 0.999| frozen in PatternEntry.stop.
+    strategy._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return {"strategy": strategy, "min_bars": min_bars,
             "executed_name": f"{_CANDLE_TOOL_NAMES[kind].replace('_', ' ').title()} ({reward_r}R)",
             "pattern_assumptions": {"pattern_execution":
@@ -4911,10 +4914,13 @@ def _build_bottom_pattern(params, *, kind, initial_capital):
         config.update(head_depth=params.get('head_depth_pct', 2)/100,
                       shoulder_tolerance=params.get('shoulder_tolerance_pct', 3)/100)
         min_bars = 4*n + 3
-    risk = _parse_fixed_risk_params(params)
+    # Bottom patterns reject user stops; the pattern stop is frozen at the breakout (10-B2c).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     from strategy_bottom_patterns import make_bottom_strategy
     cls = make_bottom_strategy(_FixedRiskMixin, kind=kind, risk=risk,
                                initial_capital=initial_capital, config=config)
+    # 10-B2c: risk distance = |actual fill - last bottom Low * 0.999| frozen in BottomEntry.stop.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, min_bars=min_bars, executed_name=kind.replace('_', ' ').title(),
         pattern_assumptions=dict(pattern_execution=
             'Only adjacent lows confirmed by swing_n closed bars on each side are used; '
@@ -5380,10 +5386,13 @@ _TEMPLATE_PRICING_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multipli
                           *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
 # 10-B2a: sizing distance = |actual fill - the template's own initial stop frozen at the signal|.
 # 10-B2b: short templates are sized the same way; direction only signs the order quantity.
+# 10-B2c: the six long candle patterns and the two bottom patterns (they reject every pattern-exit key).
 # Templates whose own frozen stop is always used (they reject user stop/take-profit keys).
 _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
     "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
-    "double_top", "head_shoulders", "chan_3sell", "chan_3buy"))
+    "double_top", "head_shoulders", "chan_3sell", "chan_3buy",
+    "bullish_engulfing", "hammer_pin_bar", "morning_star", "three_white_soldiers", "bullish_doji_reversal",
+    "inside_bar_breakout", "double_bottom", "inverse_head_shoulders"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
     "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
 
@@ -7032,11 +7041,10 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
-# 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空；余下 14 个：10-B2c 接 K 线六 + 双底 + 头肩底，10-B2d 接其余 6 个并清空名单。
+# 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空。
+# 10-B2c 移出 K 线六个与双底、头肩底（按信号根冻结的形态止损定仓）；余下 6 个由 10-B2d 接上并清空名单。
 POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
     "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
-    "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
-    "double_bottom inverse_head_shoulders "
     "us_open_momentum cme_weekend_gap").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
