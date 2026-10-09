@@ -3281,6 +3281,66 @@ def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     }
 
 
+def _stoch_arrays(high: Any, low: Any, close: Any, period: int, smooth: int, d_period: int) -> dict[str, Any]:
+    highest = pd.Series(high, dtype="float64").rolling(period).max()
+    lowest = pd.Series(low, dtype="float64").rolling(period).min()
+    width = highest - lowest
+    raw = ((pd.Series(close, dtype="float64") - lowest) / width.replace(0, np.nan) * 100).mask(width == 0, 50)
+    k = raw.rolling(smooth).mean()
+    d = k.rolling(d_period).mean()
+    return {"raw": raw.to_numpy(), "k": k.to_numpy(), "d": d.to_numpy()}
+
+
+def _build_stoch_oversold_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.stoch_oversold_cross"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("stoch_period", 14))
+    smooth = int(params.get("stoch_smooth", 3))
+    d_period = int(params.get("stoch_d", 3))
+    oversold = float(params.get("oversold", 20))
+    overbought = float(params.get("overbought", 80))
+    if not all(math.isfinite(v) for v in (oversold, overbought)):
+        raise ValueError("INVALID_PARAMS:Stochastic levels must be finite")
+
+    from backtesting import Strategy
+
+    # One complete D value plus its predecessor for the crossover comparison.
+    min_bars = period + smooth + d_period - 1
+
+    class StochOversoldCrossStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("k", "d"):
+                func = lambda h, l, c, key=key: _stoch_arrays(h, l, c, period, smooth, d_period)[key]
+                setattr(self, key, self.I(self._warm(func, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            if not all(math.isfinite(v) for v in (self.k[-1], self.k[-2], self.d[-1], self.d[-2])):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if self.k[-2] <= self.d[-2] and self.k[-1] > self.d[-1] and self.k[-1] < oversold:
+                    self._risk_buy()
+            elif self.k[-2] >= self.d[-2] and self.k[-1] < self.d[-1] and self.k[-1] > overbought:
+                self.position.close()
+
+    return {"strategy": StochOversoldCrossStrategy,
+            "executed_name": f"Stochastic Oversold Cross ({period}/{smooth}/{d_period}, {oversold:g}/{overbought:g})",
+            "min_bars": min_bars}
+
+
 def _bollinger_squeeze_arrays(close: Any, period: int, std_mult: float, lookback: int) -> dict[str, Any]:
     s = pd.Series(close, dtype="float64")
     middle = s.rolling(period).mean()
@@ -3858,6 +3918,24 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.stoch_oversold_cross": {
+        "name": "Local Backtesting.py Stochastic Oversold Cross",
+        "description": (
+            "Long on an SMA-smoothed stochastic K cross above D below oversold; "
+            "exit on a cross below D above overbought. Maps to KOL 'KDJ超卖金叉'."
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_stoch_oversold_cross,
+        "param_schema_properties": {
+            "stoch_period": {"type": "integer", "default": 14, "minimum": 5, "maximum": 30},
+            "stoch_smooth": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5},
+            "stoch_d": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5},
+            "oversold": {"type": "number", "default": 20, "minimum": 10, "maximum": 30},
+            "overbought": {"type": "number", "default": 80, "minimum": 70, "maximum": 90},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.bollinger_squeeze_breakout": {
         "name": "Local Backtesting.py Bollinger Squeeze Breakout",
         "description": (
