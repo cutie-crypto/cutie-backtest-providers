@@ -241,6 +241,14 @@ def test_fixed_risk_keys_are_merged_into_every_tool_schema():
                 else:
                     assert key not in props, f"{tool_id} must not declare legacy risk key {key}"
             continue
+        if tool_id in ("local.backtesting_py.opening_range_breakout", "local.backtesting_py.asia_range_breakout"):
+            supported = {"position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
+            assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
+            continue
+        if tool_id == "local.backtesting_py.calendar_schedule":
+            supported = {"stop_loss_pct", "take_profit_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
+            assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
+            continue
         for key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
             assert key in props, f"{tool_id} missing {key} in param_schema_properties"
 
