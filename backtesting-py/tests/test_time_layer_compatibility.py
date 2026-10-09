@@ -196,3 +196,21 @@ def test_http_unsupported_timeframe_before_fetch(client):
     body['backtest']['timeframe'] = '1M'
     response = client.post('/cutie/backtest', json=body)
     assert response.json()['error_type'] == 'INVALID_PARAMS'
+
+
+@pytest.mark.parametrize('name', compat.enumerate_turtle_cases())
+@pytest.mark.parametrize('direction', ['long', 'short', 'both'])
+def test_turtle_group_time_exemption_preserves_disabled_golden(name, direction):
+    from test_turtle_risk_3b import assert_disabled_golden
+    assert_disabled_golden(name, direction)
+    props = provider.TOOL_SPECS['local.backtesting_py.' + name]['param_schema_properties']
+    assert not any(key.startswith('time_') for key in props)
+
+
+@pytest.mark.parametrize('name', compat.enumerate_turtle_cases())
+@pytest.mark.parametrize('key,value', list(DEFAULTS.items()) + [
+    ('time_max_holding_minutes', 1), ('time_flatten_at', '12:00'), ('time_flatten_weekdays', 1)])
+def test_turtle_time_keys_rejected_even_with_group_risk(client, name, key, value):
+    body = capture.request_body(name, {'risk_layer_enabled': True, key: value})
+    body['backtest']['market'] = 'futures'
+    assert client.post('/cutie/backtest', json=body).json()['error_type'] == 'INVALID_PARAMS'

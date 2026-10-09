@@ -180,3 +180,26 @@ def test_ema_pullback_golden_with_explicit_leverage_one(side):
         for (_, trade), expected in zip(explicit['_trades'].iterrows(), f['expected_trades']):
             assert [trade.EntryBar, trade.ExitBar, trade.EntryPrice, trade.ExitPrice,
                     trade.Size, trade.PnL] == pytest.approx(list(expected.values()), rel=0, abs=1e-10)
+
+
+def enumerate_turtle_cases():
+    return {tool.removeprefix('local.backtesting_py.'): spec
+            for tool, spec in provider.TOOL_SPECS.items()
+            if spec.get('runner') == provider.TURTLE_RUNNER}
+
+
+@pytest.mark.parametrize('name', enumerate_turtle_cases())
+@pytest.mark.parametrize('direction', ['long', 'short', 'both'])
+def test_turtle_disabled_group_risk_exemption_preserves_golden(name, direction):
+    from test_turtle_risk_3b import assert_disabled_golden
+    assert_disabled_golden(name, direction)
+
+
+@pytest.mark.parametrize('name', enumerate_turtle_cases())
+def test_turtle_accepts_only_group_risk_subset(name):
+    spec = enumerate_turtle_cases()[name]
+    assert set(spec['param_schema_properties']) & set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == {
+        'risk_layer_enabled', 'max_holding_bars', 'take_profit_pct'}
+    for key in set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) - set(provider._TURTLE_RISK_KEYS):
+        with pytest.raises(ValueError, match='INVALID_PARAMS:'):
+            spec['build']({key: provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key].get('default', 0)})
