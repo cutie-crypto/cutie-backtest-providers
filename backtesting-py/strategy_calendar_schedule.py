@@ -120,6 +120,16 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
                 original()
             self._broker._process_orders = guarded_orders
 
+        def _sizing_template_stop(self, order):
+            # 10-B2d: only consulted by position_size_risk_pct, after the gap guard above. The stop is
+            # frozen at the signal close (the same value _risk_check_exit installs after the fill).
+            # calendar_stop_enabled=false freezes no stop: None makes the fill hook reject the entry
+            # with missing_initial_stop (fail-closed), never a zero or default distance.
+            pending = self._pending_entry
+            if not pending or pending[0] is not order or pending[2] is None:
+                return None
+            return Decimal(str(pending[2]))
+
         def _holding_expiry(self):
             trade = self.trades[-1]
             intrinsic = expiry_due(holding_bars=self._risk.get('max_holding_bars', 0),
