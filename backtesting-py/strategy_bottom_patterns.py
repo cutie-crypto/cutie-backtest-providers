@@ -134,5 +134,7 @@ def make_bottom_strategy(mixin, *, kind, risk, initial_capital, config):
                 return
             tag = BottomEntry(len(self.data)-1, signal.stop, signal.target)
             size = self._risk_entry_size()
-            self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
+            order = self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
+            if self._risk.get("position_sizing_enabled"):
+                order._sizing_signal_bar = len(self.data) - 1
     return BottomStrategy
