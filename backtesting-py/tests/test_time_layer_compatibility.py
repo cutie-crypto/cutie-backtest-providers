@@ -36,6 +36,9 @@ BASELINE['single'].update(PATTERN2_BASELINE['single'])
 PATTERN3_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t3_bottom_off.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(PATTERN3_BASELINE['single'])
 BASELINE['single'].update(PATTERN3_BASELINE['single'])
+SHORT_PAT1_BASELINE = json.loads((Path(__file__).parent / 'fixtures/short_pat1_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(SHORT_PAT1_BASELINE['single'])
+BASELINE['single'].update(SHORT_PAT1_BASELINE['single'])
 DIVERGENCE_BASELINE = json.loads((Path(__file__).parent / 'fixtures/9t4_divergence_off.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(DIVERGENCE_BASELINE['single'])
 BASELINE['single'].update(DIVERGENCE_BASELINE['single'])
@@ -104,7 +107,10 @@ def test_schema_only_runtime_single_position_templates():
 @pytest.mark.parametrize('name', MIXINS)
 @pytest.mark.parametrize('risk_enabled', [False, True])
 def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled):
-    if name in PATTERN3_BASELINE['single']:
+    if name in SHORT_PAT1_BASELINE['single']:
+        from test_short_pat1 import compatibility_frame
+        data = compatibility_frame(name)
+    elif name in PATTERN3_BASELINE['single']:
         from test_9t3_patterns import compatibility_frame
         data = compatibility_frame(name)
     elif name in PATTERN2_BASELINE['single']:
@@ -127,7 +133,7 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         params.update(time_entry_at='07:00', time_max_holding_minutes=240, calendar_stop_enabled=False)
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
-    if name in PATTERN_BASELINE['single'] or name in PATTERN2_BASELINE['single'] or name in PATTERN3_BASELINE['single']:
+    if name in PATTERN_BASELINE['single'] or name in PATTERN2_BASELINE['single'] or name in PATTERN3_BASELINE['single'] or name in SHORT_PAT1_BASELINE['single']:
         params.pop('stop_loss_pct')
         params.pop('take_profit_pct')
     if name in DIVERGENCE_BASELINE['single']:

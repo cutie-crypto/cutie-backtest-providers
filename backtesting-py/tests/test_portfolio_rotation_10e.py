@@ -292,10 +292,11 @@ def test_catalog_existing_entries_byte_identical():
         old = json.dumps(baseline._catalog_tool(tool_id, spec, symbols), ensure_ascii=False, separators=(',', ':')).encode()
         new = json.dumps(api._catalog_tool(tool_id, api.TOOL_SPECS[tool_id], symbols), ensure_ascii=False, separators=(',', ':')).encode()
         assert old == new, tool_id
-    # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态二 2 个工具，改为逐 id 比对。
+    # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。
     assert set(api.TOOL_SPECS) - set(baseline.TOOL_SPECS) == {
         TOOL_ID,
         'local.backtesting_py.macd_bearish_divergence', 'local.backtesting_py.rsi_bearish_divergence',
+        'local.backtesting_py.double_top', 'local.backtesting_py.head_shoulders',
     }
     entry = api._catalog_tool(TOOL_ID, api.TOOL_SPECS[TOOL_ID], symbols)
     assert entry['markets'] == ['spot']
