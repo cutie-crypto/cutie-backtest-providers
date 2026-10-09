@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Exercise this checkout's schema contract, not a stale site-packages validator.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'validator'))
 import cutie_backtesting_provider as p
 
 NEW = dict(risk_layer_enabled=True, atr_stop_multiplier=2, risk_atr_period=14, take_profit_r=2)
@@ -40,14 +42,14 @@ def test_risk_types_and_nonfinite_rejected_by_schema_and_builder(key, bad):
         p._parse_fixed_risk_params(params)
 
 
-def test_new_keys_merged_into_all_13_templates_and_excluded_from_other_runners():
-    count = 0
+def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
+    actual = set(enumerate_mixin_cases())
+    assert fixture_names() <= actual
+    assert len(actual) >= 19
     for spec in p.TOOL_SPECS.values():
         included = spec.get('runner') not in ('kernel_v3', 'scale_in_out_ledger')
         for key in NEW:
             assert (key in spec['param_schema_properties']) == included
-        count += included
-    assert count == 13
 
 
 @pytest.mark.parametrize('key', NEW)
@@ -179,15 +181,15 @@ def test_assumptions_only_added_for_opt_in():
     assert assumptions['atr_seed'] == 'first_true_range'
 
 from fastapi.testclient import TestClient
-from test_risk_overlay_compatibility import PARAMS, frame
+from test_risk_overlay_compatibility import PARAMS, frame, enumerate_mixin_cases, fixture_names, tool_name
 
 
 @pytest.mark.parametrize('name', PARAMS)
 @pytest.mark.parametrize('exits', [dict(stop_loss_pct=.1, take_profit_r=2),
                                    dict(atr_stop_multiplier=.1, risk_atr_period=5, take_profit_r=2)])
-def test_all_13_templates_reach_enabled_risk_execution(name, exits):
+def test_baseline_templates_reach_enabled_risk_execution(name, exits):
     params = dict(PARAMS[name], risk_layer_enabled=True, **exits)
-    cls = p.TOOL_SPECS['local.backtesting_py.' + name]['build'](params)['strategy']
+    cls = p.TOOL_SPECS['local.backtesting_py.' + tool_name(name)]['build'](params)['strategy']
     result = Backtest(frame(), cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()
     assert not result['_trades'].empty
     assert result['_strategy']._risk_state is not None
