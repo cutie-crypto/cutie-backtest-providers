@@ -209,7 +209,11 @@ def test_time_only_retains_close_price_stop_semantics():
 
 @pytest.mark.parametrize('name', compat.enumerate_mixin_cases())
 def test_every_registered_single_template_consumes_holding_bars(name):
-    data = pd.concat([compat.frame()]*3, ignore_index=True)
+    if name in ('bullish_engulfing', 'hammer_pin_bar'):
+        from test_9t1_engulf_pin import compatibility_frame
+        data = compatibility_frame(name)
+    else:
+        data = pd.concat([compat.frame()]*3, ignore_index=True)
     data.index = pd.date_range('2026-01-01', periods=len(data), freq='h')
     params = dict(compat.PARAMS.get(name, {}), time_layer_enabled=True, max_holding_bars=3)
     if name.endswith('_short'):

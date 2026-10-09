@@ -4252,6 +4252,46 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+# These templates own their frozen exits. Disabled overlay defaults remain valid.
+_PATTERN_EXIT_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier",
+                      "risk_atr_period", "take_profit_r", "trailing_stop_pct", "breakeven_stop",
+                      *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
+
+
+def _build_long_candle_pattern(params, *, kind, initial_capital):
+    tool_id = "local.backtesting_py." + ("bullish_engulfing" if kind == "engulfing" else "hammer_pin_bar")
+    error = _validate_params_against_schema(params, TOOL_SPECS[tool_id]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    if params.get("direction", "long") != "long":
+        raise ValueError("INVALID_PARAMS:candle pattern templates support long only")
+    if any(key in params if key in ("stop_loss_pct", "take_profit_pct") else params.get(key, 0)
+           for key in _PATTERN_EXIT_KEYS):
+        raise ValueError("INVALID_PARAMS:pattern exits and risk-layer stop/take-profit parameters are mutually exclusive")
+    risk = _parse_fixed_risk_params(params)
+    position_filter = params.get("position_filter", True)
+    reward_r = params.get("reward_r", 2)
+    min_bars = 21 if position_filter else 2
+    from strategy_pattern_template import make_pattern_strategy
+    strategy = make_pattern_strategy(_FixedRiskMixin, kind=kind, position_filter=position_filter,
+                                     reward_r=reward_r, risk=risk, initial_capital=initial_capital)
+    return {"strategy": strategy, "min_bars": min_bars,
+            "executed_name": f"{'Bullish Engulfing' if kind == 'engulfing' else 'Hammer Pin Bar'} ({reward_r}R)",
+            "pattern_assumptions": {"pattern_execution":
+                "Pattern confirmed at close; market entry and triggered stop/target exits fill at the next bar open. "
+                "Stop/target prices are not guaranteed fills; an entry open at or below the frozen stop is skipped."}}
+
+
+@_with_time_config
+def _build_bullish_engulfing(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_long_candle_pattern(params, kind="engulfing", initial_capital=initial_capital)
+
+
+@_with_time_config
+def _build_hammer_pin_bar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_long_candle_pattern(params, kind="pin_bar", initial_capital=initial_capital)
+
+
 @_with_time_config
 def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only close-confirmed BIAS reversion, filled at the next open."""
@@ -4589,6 +4629,30 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.bullish_engulfing": {
+        "name": "Local Backtesting.py Bullish Engulfing",
+        "description": "Long-only bullish engulfing with optional prior-20 low/Bollinger position filter; frozen pattern low minus 0.1% stop and configurable R target. Risk stop/target keys are incompatible.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_bullish_engulfing,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.hammer_pin_bar": {
+        "name": "Local Backtesting.py Hammer Pin Bar",
+        "description": "Long-only hammer with optional prior-20 new-low/EMA20/60 position filter; frozen lower-shadow tip minus 0.1% stop and configurable R target. Risk stop/target keys are incompatible.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_hammer_pin_bar,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.stoch_oversold_cross": {
         "name": "Local Backtesting.py Stochastic Oversold Cross",
         "description": (
@@ -6965,6 +7029,7 @@ async def run_backtest(
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
+                **built.get("pattern_assumptions", {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -6993,6 +7058,8 @@ async def run_backtest(
             },
             "raw_report": {
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
+                **({"candle_pattern": stats["_strategy"].pattern_report}
+                   if hasattr(stats["_strategy"], "pattern_report") else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
                 "strategy_semantics": strategy_raw_report,

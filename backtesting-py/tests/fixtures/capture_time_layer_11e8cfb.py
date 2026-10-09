@@ -33,7 +33,12 @@ def request_body(name, params):
 
 
 def response(name, params, warm=True):
-    full = compat.frame()
+    if name in ('bullish_engulfing', 'hammer_pin_bar'):
+        import pandas as pd
+        frozen = json.loads(Path(__file__).with_name('9t1_candle_off.json').read_text())['inputs'][name]
+        full = pd.DataFrame(frozen['columns'], index=pd.to_datetime(frozen['index']))
+    else:
+        full = compat.frame()
     def fetch(*args):
         return full.iloc[60:].copy()
     def warmup(*args):
