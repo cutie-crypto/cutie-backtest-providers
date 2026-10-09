@@ -47,13 +47,13 @@ def market_for(params):
     return 'futures' if (params or {}).get('leverage', 1) > 1 else 'spot'
 
 
-def post(monkeypatch, tmp_path, name, params=None, data=None, capital='10000'):
+def post(monkeypatch, tmp_path, name, params=None, data=None, capital='10000', fetch=None):
     factory, base, timeframe = CASES[name]
     data = factory() if data is None else data
     step = int((data.index[1] - data.index[0]).total_seconds())
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
-    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a: data.copy())
+    monkeypatch.setattr(p, '_fetch_ohlcv', fetch or (lambda *a: data.copy()))
     monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a: data.iloc[:0].copy())
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     request = dict(run_id='10b2a', provider_tool_id='local.backtesting_py.' + name,
