@@ -1,0 +1,25 @@
+{
+  "source_sha": "ad9899121dc8bc4bd4e67e5cf60558fa30c98414",
+  "cases": {
+    "macd_bearish_divergence/0": {
+      "v2": "6a6a29c2fd269fe2830677e0d7e6c97e363afef02691c83a3e77ace3897d7899",
+      "assumptions": "4ccce5ac04cb5ce91307a7b9fc7e6ed9482e7cc790e49cd1ec8843a321b657ee",
+      "raw_report": "1a57ab58ce2d50bcbed2161707337710fb793ddad67d0b585269db0ce28bd3d3"
+    },
+    "macd_bearish_divergence/10": {
+      "v2": "4e9e924f65b0abc106d4d0f5c7f6755e1c70cfa8aeb9bf8428b512a78d5d84ce",
+      "assumptions": "aa07ae759c3be92e1725e73f4cd013e4ca70e7dd3f67c17f838074a273843639",
+      "raw_report": "84f295dabf05db15155a643669a6e7d36f4b3bbf2bbe874e9b0141c8372a7bfc"
+    },
+    "rsi_bearish_divergence/0": {
+      "v2": "6bef9995a53098a5f5e9ccce1df8b29f12b997dd6f1a7409d38e506fbf0b5918",
+      "assumptions": "cfc798aa78e5e4edac901013beaf7ae505777ba2dbff4e0bee9209f8fe382bd6",
+      "raw_report": "b21d0dadb64489cc335eeacf90e9c5db7f7ac926f3c8bca7f234376b678c5924"
+    },
+    "rsi_bearish_divergence/10": {
+      "v2": "2dd27ba5eeb60f37a7f498e1a0b4597ec1a47ef705b2dd3f24b96da96cb4280f",
+      "assumptions": "478b86f17c95e5651f879cd276a75e4d146e748b5379751f96c365f9d0808d2e",
+      "raw_report": "1c97f004d72278d15bba1a828c57d1c375925ccd12695e6c245cfb871717a891"
+    }
+  }
+}

@@ -234,6 +234,12 @@ def test_every_registered_single_template_consumes_holding_bars(name):
         params.update(hand_params(name))
         if name.startswith('rsi'):
             params['rsi_exit_above'] = 100
+    if name.endswith('_bearish_divergence'):
+        from test_short_pat2 import hand_frame, hand_params
+        data = hand_frame()
+        params.update(hand_params(name))
+        if name.startswith('rsi'):
+            params['rsi_exit_below'] = 0
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 85
     if name == 'ichimoku_cloud_breakout':
