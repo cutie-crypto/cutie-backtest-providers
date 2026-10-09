@@ -111,3 +111,127 @@ def validate_time_history(opens: Sequence[datetime], required_start: datetime,
         expected += context.period
     if expected != end:
         raise TimeHistoryError(f'history ends at {expected.isoformat()}, requires {end.isoformat()}')
+
+
+@dataclass(frozen=True)
+class SeriesBar:
+    open_utc: datetime
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+def _check_bar(bar: SeriesBar) -> None:
+    if not all(math.isfinite(v) for v in (bar.high, bar.low, bar.close, bar.volume)) or bar.volume < 0:
+        raise TimeHistoryError('nonfinite price/volume or negative volume')
+
+
+def range_window(cycle: PeriodBounds, definition: PeriodDefinition,
+                 range_start: str, range_end: str) -> PeriodBounds:
+    """One observation window per cycle, starting on/after its local reset.
+
+    Equal clocks mean a positive 24 wall-hour window. Cross-midnight windows
+    retain the START day's cycle, even when their end crosses the next reset.
+    Nonexistent window endpoints are rejected; repeated endpoints use fold=0.
+    """
+    start_clock, end_clock = _clock(range_start), _clock(range_end)
+    zone = ZoneInfo(definition.timezone_name)
+    day = cycle.start_utc.astimezone(zone).date()
+    start = _local_boundary(day, range_start, zone)
+    if start is not None and start < cycle.start_utc:
+        day += timedelta(days=1)
+        start = _local_boundary(day, range_start, zone)
+    end_day = day + timedelta(days=int(end_clock <= start_clock))
+    end = _local_boundary(end_day, range_end, zone)
+    if start is None or end is None or end <= start:
+        raise ValueError('INVALID_PARAMS:observation window has nonexistent or nonpositive endpoints')
+    return PeriodBounds(start, end)
+
+
+@dataclass(frozen=True)
+class FrozenRange:
+    cycle: PeriodBounds
+    freeze_utc: datetime
+    high: float | None
+    low: float | None
+    available: bool
+    warmup_only: bool
+
+
+def freeze_range(bars: Sequence[SeriesBar], context: TimeContext, cycle: PeriodBounds,
+                 definition: PeriodDefinition, range_start: str, range_end: str,
+                 *, as_of: datetime, backtest_start: datetime) -> FrozenRange:
+    """Snapshot for ONE cycle at a decision instant, with no future price reads.
+
+    Before window end, both prices are absent. At/after end a complete history
+    is mandatory; missing candles fail instead of freezing a partial range.
+    Caller can request each cycle independently, including overnight windows.
+    """
+    window = range_window(cycle, definition, range_start, range_end)
+    decision = utc_datetime(as_of)
+    if not bars:
+        raise TimeHistoryError('range requires candle grid')
+    grid = utc_datetime(bars[0].open_utc)
+    if (window.start_utc - grid) % context.period or (window.end_utc - grid) % context.period:
+        raise ValueError('INVALID_PARAMS:observation endpoint cuts through a candle')
+    warmup = window.end_utc <= utc_datetime(backtest_start)
+    if decision < window.end_utc:
+        return FrozenRange(cycle, window.end_utc, None, None, False, warmup)
+    selected = [bar for bar in bars if window.start_utc <= utc_datetime(bar.open_utc)
+                and context.decision_utc(bar.open_utc) <= window.end_utc
+                and context.decision_utc(bar.open_utc) <= decision]
+    validate_time_history([bar.open_utc for bar in selected], window.start_utc, window.end_utc, context)
+    for bar in selected:
+        _check_bar(bar)
+    return FrozenRange(cycle, window.end_utc, max(bar.high for bar in selected),
+                       min(bar.low for bar in selected), True, warmup)
+
+
+@dataclass(frozen=True)
+class VwapPoint:
+    open_utc: datetime
+    decision_utc: datetime
+    cycle: PeriodBounds
+    value: float | None
+    warmup_only: bool
+
+
+def prefix_vwap(bars: Sequence[SeriesBar], context: TimeContext, definition: PeriodDefinition,
+                *, backtest_start: datetime, price_source: str = 'hlc3',
+                as_of: datetime | None = None) -> list[VwapPoint]:
+    """IEEE-754 float64-style scalar sums, no rounding, zero volume => None.
+
+    Each output is computed before advancing to the next bar. Only candles
+    closed at as_of are consumed; earlier outputs cannot depend on later prices.
+    Prefixes must start at a cycle boundary and contain no missing candles.
+    """
+    if price_source not in ('hlc3', 'close'):
+        raise ValueError('INVALID_PARAMS:vwap price_source must be hlc3 or close')
+    result = []
+    active = None
+    numerator = denominator = 0.0
+    expected = None
+    for bar in bars:
+        opened = utc_datetime(bar.open_utc)
+        decision = context.decision_utc(opened)
+        if as_of is not None and decision > utc_datetime(as_of):
+            break
+        cycle = period_bounds(opened, definition)
+        if expected is None:
+            expected = cycle.start_utc
+        if opened != expected:
+            raise TimeHistoryError(f'VWAP expected {expected.isoformat()}, got {opened.isoformat()}')
+        expected = decision
+        _check_bar(bar)
+        if cycle != active:
+            active = cycle
+            numerator = denominator = 0.0
+        price = float(bar.close) if price_source == 'close' else (float(bar.high) / 3 + float(bar.low) / 3 + float(bar.close) / 3)
+        numerator += price * float(bar.volume)
+        denominator += float(bar.volume)
+        if not math.isfinite(numerator) or not math.isfinite(denominator):
+            raise TimeHistoryError('VWAP accumulation overflow')
+        value = numerator / denominator if denominator else None
+        result.append(VwapPoint(opened, decision, cycle, value, opened < utc_datetime(backtest_start)))
+    return result
