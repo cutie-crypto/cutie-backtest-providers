@@ -20,7 +20,10 @@ spec = importlib.util.spec_from_file_location('filter_capture', Path(__file__).p
 capture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capture)
 DEFAULTS = {key: value['default'] for key, value in FILTER_PARAM_SCHEMA_PROPERTIES.items()}
-CASES = capture.cases()
+# 7-P3b2：F1/F2（ORB、亚洲区间、日历）要按真实时钟网格跑，通用 template_frame 直跑不适用；
+# 其关态由 test_7p3b_pattern_range_filter.py 的 c72c4a1 HTTP 全响应金样钉住，开态由同文件手算用例覆盖。
+F1F2_FILTER_NAMES = {'opening_range_breakout', 'asia_range_breakout', 'calendar_schedule'}
+CASES = {key: case for key, case in capture.cases().items() if case[0] not in F1F2_FILTER_NAMES}
 BASELINE = json.loads((Path(__file__).parent / 'fixtures/entry_filters_5b8320a.json').read_text())
 # S4b changes only EMA warmup disclosure, not disabled-filter result.v2 bytes.
 EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
@@ -222,8 +225,9 @@ def test_runtime_disabled_fingerprints(case, warm, explicit, monkeypatch):
 
 def test_unwired_list_names_registered_tools_without_filter_keys():
     unwired = p.FILTER_LAYER_UNWIRED_TOOLS
-    # 集成 D：12 + 做空一 2 + 做空二 2 = 16；SHORT-PAT-3 +1 = 17；7-P3a 接入 6 个 K 线形态后剩 11。
-    assert len(unwired) == 11 and len(set(unwired)) == 11
+    # 集成 D：12 + 做空一 2 + 做空二 2 = 16；SHORT-PAT-3 +1 = 17；7-P3a 接入 6 个 K 线形态后剩 11；7-P3b 接入 red_streak_rsi 后 11 - 1 = 10；
+    # 7-P3b2 接入双底、头肩底、ORB、亚洲区间、日历后 10 - 5 = 5（只剩做空，留给 7-P4）。
+    assert len(unwired) == 5 and len(set(unwired)) == 5
     for tool_id in unwired:
         assert tool_id in p.TOOL_SPECS, tool_id
         assert tool_id.removeprefix('local.backtesting_py.') in EXCLUDED
@@ -282,7 +286,7 @@ FROZEN_UNWIRED_SHORT_PAT3 = frozenset({
 
 def test_filter_unwired_list_only_shrinks_and_expires():
     """The unwired list may only shrink. A tool that gains filter keys or @_with_filter_config
-    must leave it. At 7-P3 close-out FILTER_LAYER_UNWIRED_TOOLS must be empty;
+    must leave it. At 7-P4 (short-side filter layer) close-out FILTER_LAYER_UNWIRED_TOOLS must be empty;
     both frozen sets expire together. Replace the membership assertion with
     `assert not p.FILTER_LAYER_UNWIRED_TOOLS`."""
     assert len(FROZEN_UNWIRED_SHORT_PAT12) == 16
@@ -305,7 +309,7 @@ def test_filter_unwired_list_only_shrinks_and_expires():
 def test_runtime_schema_and_baseline_cover_every_single_direction():
     actual = {key.removeprefix('local.backtesting_py.') for key, tool in p.TOOL_SPECS.items()
               if 'filter_layer_enabled' in tool['param_schema_properties']}
-    assert actual == set(SINGLE_NAMES)
+    assert actual == set(SINGLE_NAMES) | F1F2_FILTER_NAMES
     assert set(BASELINE['cases']) == {case+'/'+str(int(warm)) for case in CASES for warm in (False, True)}
     for name in SINGLE_NAMES:
         assert issubclass(p.TOOL_SPECS['local.backtesting_py.'+name]['build']({})['strategy'], p._FilterLayerMixin)
@@ -328,7 +332,7 @@ CANDLE_FILTER_NAMES = {'bullish_engulfing', 'hammer_pin_bar', 'morning_star', 't
                        'bullish_doji_reversal', 'inside_bar_breakout'}
 
 
-@pytest.mark.parametrize('name', [n for n in SINGLE_NAMES if n not in CANDLE_FILTER_NAMES])
+@pytest.mark.parametrize('name', [n for n in SINGLE_NAMES if n not in CANDLE_FILTER_NAMES])  # F1/F2 已不在 SINGLE_NAMES
 @pytest.mark.parametrize('risk_enabled', [False, True])
 def test_each_registered_template_uses_filter_gate(name, risk_enabled, monkeypatch):
     values = {**compat.PARAMS.get(name, {}), **params('ema'),
@@ -339,7 +343,8 @@ def test_each_registered_template_uses_filter_gate(name, risk_enabled, monkeypat
         # These templates own a frozen L2 stop and actual-fill 2R target.
         values.pop('stop_loss_pct')
         values.pop('take_profit_pct')
-    if name == 'chan_3buy':
+    if name in ('chan_3buy', 'double_bottom', 'inverse_head_shoulders'):
+        # 7-P3b2：底部形态自带冻结止损 / 量度目标，拒绝 stop_loss_pct / take_profit_pct。
         values.pop('stop_loss_pct')
         values.pop('take_profit_pct')
     cls = p.TOOL_SPECS['local.backtesting_py.'+name]['build'](values)['strategy']

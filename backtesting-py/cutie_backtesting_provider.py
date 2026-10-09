@@ -2642,11 +2642,14 @@ class _FilterLayerMixin:
             columns[name] = np.concatenate([prefix, np.asarray(getattr(self.data, name))])
         self._filter_mask = entry_mask(self._filter_config, columns, _supertrend_arrays)
 
-    def _filter_allow_entry(self) -> bool:
+    def _filter_allow_entry(self, bar: Optional[int] = None) -> bool:
         if self._filter_config is None:
             return True
         # No next open exists at the tail; do not let finalize_trades back-fill.
-        index = (0 if self._filter_context is not None else self._warmup_bars) + len(self.data) - 1
+        # bar: explicit main-range judgment bar when the decision is submitted later
+        # (calendar's bar-0 event is placed at broker step 1); default = current bar.
+        index = (0 if self._filter_context is not None else self._warmup_bars) + (
+            len(self.data) - 1 if bar is None else bar)
         if index >= len(self._filter_mask) - 1:
             return False
         return bool(self._filter_mask[index])
@@ -3487,16 +3490,11 @@ def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 
 
 
 TURTLE_RUNNER = "turtle_group"
-# 不接单仓入场过滤层的新模板（INTEG-B2 裁定）：入场处没有 _filter_allow_entry()，F1/F2 也无过滤预热。
-# 接入属于新能力，另开「7-P3 新模板接过滤层」批；在此之前 schema 不得出现 filter_* 键。
-# 7-P3 接入前临时排除；7-P3 合入时本名单必须清空（到期用例 test_filter_unwired_list_only_shrinks_and_expires）。
+# 不接单仓入场过滤层的模板：入场处没有 _filter_allow_entry()，schema 不得出现 filter_* 键。
+# 做空模板：过滤层只支持做多（_with_filter_config 拒非 long），做空过滤口径待新单 7-P4 做空过滤层裁定后接入；
+# 7-P4 合入时本名单必须清空（到期用例 test_filter_unwired_list_only_shrinks_and_expires）。
+# 7-P3a/7-P3b/7-P3b2 已把全部做多单仓模板接入，名单只剩 5 个做空模板。
 FILTER_LAYER_UNWIRED_TOOLS = (
-    "local.backtesting_py.opening_range_breakout",
-    "local.backtesting_py.asia_range_breakout",
-    "local.backtesting_py.calendar_schedule",
-    "local.backtesting_py.red_streak_rsi",
-    "local.backtesting_py.double_bottom",
-    "local.backtesting_py.inverse_head_shoulders",
     "local.backtesting_py.macd_bearish_divergence",
     "local.backtesting_py.rsi_bearish_divergence",
     "local.backtesting_py.double_top",
@@ -4819,7 +4817,8 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
     if any(key in params if key in ("stop_loss_pct", "take_profit_pct") else params.get(key, 0)
            for key in _PATTERN_EXIT_KEYS):
         raise ValueError("INVALID_PARAMS:pattern exits and risk-layer stop/take-profit parameters are mutually exclusive")
-    risk = _parse_fixed_risk_params(params)
+    # Candle patterns reject user stops; the pattern stop is frozen at the signal (10-B2c).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     position_filter = params.get("position_filter", True) if kind != "inside_bar" else False
     reward_r = params.get("reward_r", 2)
     min_bars = 21 if position_filter else 2
@@ -4839,6 +4838,8 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
                                      reward_r=reward_r, risk=risk, initial_capital=initial_capital,
                                      breakout_window=breakout_window, trend_filter=params.get("trend_filter", False),
                                      rsi_series=_rsi_series)
+    # 10-B2c: risk distance = |actual fill - anchor Low * 0.999| frozen in PatternEntry.stop.
+    strategy._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return {"strategy": strategy, "min_bars": min_bars,
             "executed_name": f"{_CANDLE_TOOL_NAMES[kind].replace('_', ' ').title()} ({reward_r}R)",
             "pattern_assumptions": {"pattern_execution":
@@ -4911,10 +4912,13 @@ def _build_bottom_pattern(params, *, kind, initial_capital):
         config.update(head_depth=params.get('head_depth_pct', 2)/100,
                       shoulder_tolerance=params.get('shoulder_tolerance_pct', 3)/100)
         min_bars = 4*n + 3
-    risk = _parse_fixed_risk_params(params)
+    # Bottom patterns reject user stops; the pattern stop is frozen at the breakout (10-B2c).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     from strategy_bottom_patterns import make_bottom_strategy
     cls = make_bottom_strategy(_FixedRiskMixin, kind=kind, risk=risk,
                                initial_capital=initial_capital, config=config)
+    # 10-B2c: risk distance = |actual fill - last bottom Low * 0.999| frozen in BottomEntry.stop.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, min_bars=min_bars, executed_name=kind.replace('_', ' ').title(),
         pattern_assumptions=dict(pattern_execution=
             'Only adjacent lows confirmed by swing_n closed bars on each side are used; '
@@ -4928,11 +4932,13 @@ def _build_bottom_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
+@_with_filter_config
 def _build_double_bottom(params, *, initial_capital=10000.0):
     return _build_bottom_pattern(params, kind='double_bottom', initial_capital=initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_inverse_head_shoulders(params, *, initial_capital=10000.0):
     return _build_bottom_pattern(params, kind='inverse_head_shoulders', initial_capital=initial_capital)
 
@@ -5340,16 +5346,19 @@ def _build_range_breakout(params, profile, initial_capital):
 
 
 @_with_time_config
+@_with_filter_config
 def _build_opening_range_breakout(params, *, initial_capital=10000.0):
     return _build_range_breakout(params, "orb", initial_capital)
 
 
 @_with_time_config
+@_with_filter_config
 def _build_asia_range_breakout(params, *, initial_capital=10000.0):
     return _build_range_breakout(params, "asia", initial_capital)
 
 
 @_with_time_config(intrinsic_keys=INTRINSIC_KEYS)
+@_with_filter_config
 def _build_calendar_schedule(params, *, initial_capital=10000.0):
     error = _validate_params_against_schema(params, TOOL_SPECS["local.backtesting_py.calendar_schedule"]["param_schema_properties"])
     if error:
@@ -5380,10 +5389,13 @@ _TEMPLATE_PRICING_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multipli
                           *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
 # 10-B2a: sizing distance = |actual fill - the template's own initial stop frozen at the signal|.
 # 10-B2b: short templates are sized the same way; direction only signs the order quantity.
+# 10-B2c: the six long candle patterns and the two bottom patterns (they reject every pattern-exit key).
 # Templates whose own frozen stop is always used (they reject user stop/take-profit keys).
 _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
     "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
-    "double_top", "head_shoulders", "chan_3sell", "chan_3buy"))
+    "double_top", "head_shoulders", "chan_3sell", "chan_3buy",
+    "bullish_engulfing", "hammer_pin_bar", "morning_star", "three_white_soldiers", "bullish_doji_reversal",
+    "inside_bar_breakout", "double_bottom", "inverse_head_shoulders"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
     "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
 
@@ -5574,6 +5586,7 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
 
 
 @_with_time_config
+@_with_filter_config
 def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Jessie #18: exact Nth red close + RSI, frozen levels and shared 3b expiry."""
     properties = TOOL_SPECS["local.backtesting_py.red_streak_rsi"]["param_schema_properties"]
@@ -5682,7 +5695,8 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                 return
             if self.red_count[-1] != red_bars or not math.isfinite(self.rsi[-1]) or not self.rsi[-1] < oversold:
                 return
-            if not self._time_allow_entry():
+            # Judgment bar = the exact Nth red close; a blocked signal is discarded, not delayed.
+            if not self._time_allow_entry() or not self._filter_allow_entry():
                 return
             self._risk_prepare_entry()
             self._f6_frozen = initial_risk_state(risk=risk, entry_price=self.data.Close[-1], direction="long",
@@ -7032,11 +7046,10 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
-# 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空；余下 14 个：10-B2c 接 K 线六 + 双底 + 头肩底，10-B2d 接其余 6 个并清空名单。
+# 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空。
+# 10-B2c 移出 K 线六个与双底、头肩底（按信号根冻结的形态止损定仓）；余下 6 个由 10-B2d 接上并清空名单。
 POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
     "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
-    "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
-    "double_bottom inverse_head_shoulders "
     "us_open_momentum cme_weekend_gap").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
@@ -8936,7 +8949,11 @@ async def run_backtest(
     filter_warmup = filter_config.required_bars if filter_config is not None and not filter_config.timeframe else 0
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
-    warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
+    # F1/F2 have no indicators of their own: only an enabled same-timeframe filter fetches
+    # its required_bars prefix; off-state (and filter_timeframe) stays empty.
+    warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
+                  if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
+                 if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
