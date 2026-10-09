@@ -150,11 +150,13 @@ def test_four_templates_left_pending_list_and_others_still_reject(monkeypatch):
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a: pytest.fail('pending tool fetched data'))
     wired = {'local.backtesting_py.' + n for n in TOOLS}
     assert wired.isdisjoint(p.POSITION_SIZING_PENDING_TOOLS)
-    assert wired == p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
+    # 10-B2b 又接入 6 个（做空 5 个 + chan_3buy），模板止损名单只比本批多这 6 个。
+    assert p.POSITION_SIZING_TEMPLATE_STOP_TOOLS - wired == {'local.backtesting_py.' + n for n in (
+        'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell', 'chan_3buy')}
     for tool in wired:
         assert POSITION_SIZE_KEYS <= set(p.TOOL_SPECS[tool]['param_schema_properties']), tool
-    # 集成 E：10-B2a 移出 4 个后 19，SHORT-PAT-3 新增 chan_3sell 进待接名单，合并后 20
-    assert len(p.POSITION_SIZING_PENDING_TOOLS) == 20
+    # 集成 E：10-B2a 移出 4 个后 19，SHORT-PAT-3 新增 chan_3sell 进待接名单，合并后 20；10-B2b 移出 6 个后 14
+    assert len(p.POSITION_SIZING_PENDING_TOOLS) == 14
     client = TestClient(p.app)
     for tool in sorted(p.POSITION_SIZING_PENDING_TOOLS):
         assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
