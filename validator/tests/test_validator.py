@@ -222,10 +222,10 @@ def test_conforming_provider_passes_all_checks():
         assert c.passed, (c.check_id, c.errors)
 
 
-def test_tool_count_limit_is_20():
-    ok = run_validator(make_provider(tool_count=13))
+def test_tool_count_limit_is_40():
+    ok = run_validator(make_provider(tool_count=40))
     assert check_by_id(ok, 3).passed, check_by_id(ok, 3).errors
-    bad = run_validator(make_provider(tool_count=21))
+    bad = run_validator(make_provider(tool_count=41))
     assert not check_by_id(bad, 3).passed
 
 
