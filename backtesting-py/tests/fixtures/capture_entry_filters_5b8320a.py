@@ -18,7 +18,7 @@ from canonical_json import canonical_json
 def cases():
     result = {}
     for tool_id, spec in provider.TOOL_SPECS.items():
-        if spec.get('runner') in ('kernel_v3', provider.SCALE_IN_OUT_RUNNER, provider.TURTLE_RUNNER):
+        if spec.get('runner') in ('kernel_v3', provider.SCALE_IN_OUT_RUNNER, provider.TURTLE_RUNNER, provider.ROTATION_RUNNER):
             continue
         if tool_id in getattr(provider, 'FILTER_LAYER_UNWIRED_TOOLS', ()):
             continue
