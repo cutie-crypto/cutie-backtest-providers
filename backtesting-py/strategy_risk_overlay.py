@@ -33,11 +33,9 @@ def risk_atr_series(highs, lows, closes, period: int) -> list[float | None]:
     return atr_series(bars, period)
 
 
-def initial_risk_state(*, risk: dict, entry_price: float, direction: str,
-                       atr_value: float | None = None, entry_at: int = 0, original_units: int = 0) -> RiskState:
-    entry = Decimal(str(entry_price))
-    if not entry.is_finite() or entry <= 0 or direction not in {'long', 'short'}:
-        raise ValueError('INVALID_PARAMS:invalid risk entry price or direction')
+def initial_stop_price(*, risk: dict, entry: Decimal, direction: str,
+                       atr_value: float | None = None) -> Decimal | None:
+    """Shared frozen stop calculation for fill-time sizing and initial R."""
     stop = None
     if risk.get('atr_stop_multiplier'):
         if atr_value is None:
@@ -58,6 +56,15 @@ def initial_risk_state(*, risk: dict, entry_price: float, direction: str,
         or not (stop < entry if direction == 'long' else stop > entry)
     ):
         raise ValueError('INVALID_PARAMS:initial stop unavailable or non-positive')
+    return stop
+
+
+def initial_risk_state(*, risk: dict, entry_price: float, direction: str,
+                       atr_value: float | None = None, entry_at: int = 0, original_units: int = 0) -> RiskState:
+    entry = Decimal(str(entry_price))
+    if not entry.is_finite() or entry <= 0 or direction not in {'long', 'short'}:
+        raise ValueError('INVALID_PARAMS:invalid risk entry price or direction')
+    stop = initial_stop_price(risk=risk, entry=entry, direction=direction, atr_value=atr_value)
     distance = None if stop is None else abs(entry - stop)
     take = None
     if risk.get('take_profit_r'):
