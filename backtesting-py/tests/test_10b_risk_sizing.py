@@ -179,7 +179,8 @@ FROZEN_PENDING_INTEG_C = frozenset('local.backtesting_py.' + n for n in (
     'fibonacci_retracement us_open_momentum cme_weekend_gap').split())
 
 
-FROZEN_PENDING_SHORT_PAT2 = frozenset({
+# 集成 D：做空形态一 FROZEN_PENDING_SHORT_PAT1、做空形态二 FROZEN_PENDING_SHORT_PAT2 合并为一份；只比 INTEG-C 多 4 个做空 id。
+FROZEN_PENDING_SHORT_PAT12 = frozenset({
     "local.backtesting_py.opening_range_breakout",
     "local.backtesting_py.asia_range_breakout",
     "local.backtesting_py.calendar_schedule",
@@ -201,21 +202,29 @@ FROZEN_PENDING_SHORT_PAT2 = frozenset({
     "local.backtesting_py.cme_weekend_gap",
     "local.backtesting_py.macd_bearish_divergence",
     "local.backtesting_py.rsi_bearish_divergence",
+    "local.backtesting_py.double_top",
+    "local.backtesting_py.head_shoulders",
 })
 
 
 def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
-    """Only shrink this frozen list. At 10-B2 close-out POSITION_SIZING_PENDING_TOOLS
-    must be empty; both frozen sets expire together and membership becomes
-    `assert not p.POSITION_SIZING_PENDING_TOOLS`."""
-    assert len(FROZEN_PENDING_SHORT_PAT2) == 21
-    assert FROZEN_PENDING_SHORT_PAT2 - FROZEN_PENDING_INTEG_C == {
+    """Pending tools may only shrink; tools with sizing keys must leave this list.
+
+    At 10-B2 close-out POSITION_SIZING_PENDING_TOOLS must be empty; both frozen
+    sets expire together. Replace the subset assertion with
+    `assert not p.POSITION_SIZING_PENDING_TOOLS`.
+    """
+    assert len(FROZEN_PENDING_SHORT_PAT12) == 23
+    assert FROZEN_PENDING_SHORT_PAT12 - FROZEN_PENDING_INTEG_C == {
         "local.backtesting_py.macd_bearish_divergence",
         "local.backtesting_py.rsi_bearish_divergence",
+        "local.backtesting_py.double_top",
+        "local.backtesting_py.head_shoulders",
     }
-    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_SHORT_PAT2
+    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_SHORT_PAT12
     assert p.POSITION_SIZING_PENDING_TOOLS.isdisjoint(p.POSITION_SIZING_UNWIRED_TOOLS)
     for tool in p.POSITION_SIZING_PENDING_TOOLS:
+        assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
         assert issubclass(p.TOOL_SPECS[tool]['build']({})['strategy'], p._FixedRiskMixin), tool
 
 

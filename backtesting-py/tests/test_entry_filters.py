@@ -218,7 +218,7 @@ def test_runtime_disabled_fingerprints(case, warm, explicit, monkeypatch):
 
 def test_unwired_list_names_registered_tools_without_filter_keys():
     unwired = p.FILTER_LAYER_UNWIRED_TOOLS
-    assert len(unwired) == 14 and len(set(unwired)) == 14
+    assert len(unwired) == 16 and len(set(unwired)) == 16  # 集成 D：12 + 做空一 2 + 做空二 2
     for tool_id in unwired:
         assert tool_id in p.TOOL_SPECS, tool_id
         assert tool_id.removeprefix('local.backtesting_py.') in EXCLUDED
@@ -232,7 +232,8 @@ FROZEN_UNWIRED_WAVE_B = frozenset('local.backtesting_py.' + n for n in (
     'double_bottom inverse_head_shoulders').split())
 
 
-FROZEN_UNWIRED_SHORT_PAT2 = frozenset({
+# 集成 D：做空形态一 FROZEN_UNWIRED_SHORT_PAT1、做空形态二 FROZEN_UNWIRED_SHORT_PAT2 合并为一份；只比 Wave-B 多 4 个做空 id。
+FROZEN_UNWIRED_SHORT_PAT12 = frozenset({
     "local.backtesting_py.opening_range_breakout",
     "local.backtesting_py.asia_range_breakout",
     "local.backtesting_py.calendar_schedule",
@@ -247,18 +248,24 @@ FROZEN_UNWIRED_SHORT_PAT2 = frozenset({
     "local.backtesting_py.inverse_head_shoulders",
     "local.backtesting_py.macd_bearish_divergence",
     "local.backtesting_py.rsi_bearish_divergence",
+    "local.backtesting_py.double_top",
+    "local.backtesting_py.head_shoulders",
 })
+
 
 def test_filter_unwired_list_only_shrinks_and_expires():
     """The unwired list may only shrink. A tool that gains filter keys or @_with_filter_config
     must leave it. At 7-P3 close-out FILTER_LAYER_UNWIRED_TOOLS must be empty;
     both frozen sets expire together. Replace the membership assertion with
     `assert not p.FILTER_LAYER_UNWIRED_TOOLS`."""
-    assert FROZEN_UNWIRED_SHORT_PAT2 - FROZEN_UNWIRED_WAVE_B == {
+    assert len(FROZEN_UNWIRED_SHORT_PAT12) == 16
+    assert FROZEN_UNWIRED_SHORT_PAT12 - FROZEN_UNWIRED_WAVE_B == {
         "local.backtesting_py.macd_bearish_divergence",
         "local.backtesting_py.rsi_bearish_divergence",
+        "local.backtesting_py.double_top",
+        "local.backtesting_py.head_shoulders",
     }
-    assert set(p.FILTER_LAYER_UNWIRED_TOOLS) <= FROZEN_UNWIRED_SHORT_PAT2
+    assert set(p.FILTER_LAYER_UNWIRED_TOOLS) <= FROZEN_UNWIRED_SHORT_PAT12
     for tool_id in p.FILTER_LAYER_UNWIRED_TOOLS:
         spec = p.TOOL_SPECS[tool_id]
         assert not [k for k in spec['param_schema_properties'] if k.startswith('filter_')], tool_id
