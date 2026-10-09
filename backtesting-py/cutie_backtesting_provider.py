@@ -3168,6 +3168,7 @@ class _TurtleGroupMixin:
         self.units_skipped = 0
         self._group_sequence = 0
         self._group_id = None
+        self._group_side = 0
         self._group_n = 0.0
         self._group_q = 0
         self._last_fill = None
@@ -3183,14 +3184,16 @@ class _TurtleGroupMixin:
             if filled:
                 self._group_units = len(self.trades)
                 self._last_fill = self.trades[-1].entry_price
-                self._group_stop = self._last_fill - self._stop_multiple * self._group_n
+                self._group_stop = self._last_fill - self._group_side * self._stop_multiple * self._group_n
             elif self._group_units:
                 self.units_skipped += 1
             else:
                 self._group_id = None
+                self._group_side = 0
             self._pending_unit = None
         if self._closing_group and not self.trades:
             self._group_id = None
+            self._group_side = 0
             self._group_units = 0
             self._last_fill = None
             self._closing_group = False
@@ -3206,21 +3209,26 @@ class _TurtleGroupMixin:
             return
         price = self.data.Close[-1]
         if self.position:
-            if self.data.Low[-1] <= self._group_stop:
+            if (self.data.Low[-1] <= self._group_stop if self._group_side == 1
+                    else self.data.High[-1] >= self._group_stop):
                 self._turtle_close()
                 return
-            if price < self.exit_low[-1]:
+            if (price < self.exit_low[-1] if self._group_side == 1
+                    else price > self.exit_high[-1]):
                 self._turtle_close()
                 return
             if (self._group_units < self._max_units
-                    and price >= self._last_fill + self._add_step * self._group_n):
+                    and self._group_side * (price - self._last_fill) >= self._add_step * self._group_n):
                 # An absolute integer order is all-or-nothing in backtesting.py.
                 # Let the next-open broker check cash including commission/gaps.
-                self._pending_unit = self.buy(size=self._group_q, tag=self._group_id)
+                order = self.buy if self._group_side == 1 else self.sell
+                self._pending_unit = order(size=self._group_q, tag=self._group_id)
             return
         if self._warmup_bars + len(self.data) < self._min_bars:
             return
-        if price > self.entry_high[-1]:
+        long_signal = self._direction in ("long", "both") and price > self.entry_high[-1]
+        short_signal = self._direction in ("short", "both") and price < self.entry_low[-1]
+        if long_signal or short_signal:
             n = float(self.atr[-1])
             if not math.isfinite(n) or n <= 0:
                 return
@@ -3229,9 +3237,11 @@ class _TurtleGroupMixin:
                 return
             self._group_sequence += 1
             self._group_id = f"turtle-{self._group_sequence}"
+            self._group_side = 1 if long_signal else -1
             self._group_n, self._group_q = n, q
             self._group_units = 0
-            self._pending_unit = self.buy(size=q, tag=self._group_id)
+            order = self.buy if self._group_side == 1 else self.sell
+            self._pending_unit = order(size=q, tag=self._group_id)
 
 
 def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
@@ -3245,13 +3255,12 @@ def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -
             raise ValueError(f"INVALID_PARAMS:{key} must be an integer, not a float")
     if values["unit_risk_pct"] <= 0:
         raise ValueError("INVALID_PARAMS:unit_risk_pct must be > 0")
-    if values["direction"] != "long":
-        raise ValueError("INVALID_PARAMS:turtle short/both is not available yet")
     entry, exit_, atr_period = (values[k] for k in ("entry_period", "exit_period", "atr_period"))
     min_bars = max(entry, exit_, atr_period) + 1
     from backtesting import Strategy
 
     class TurtleStrategy(_TurtleGroupMixin, Strategy):
+        _direction = values["direction"]
         _stop_multiple = values["stop_atr_multiplier"]
         _unit_risk = values["unit_risk_pct"]
         _add_step = values["add_step_atr"]
@@ -3267,6 +3276,13 @@ def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -
             self.exit_low = self.I(self._warm(
                 lambda l: pd.Series(l).rolling(exit_).min().shift(1).fillna(-np.inf).to_numpy(),
                 "Low"), self.data.Low, name="Turtle exit")
+            if self._direction in ("short", "both"):
+                self.entry_low = self.I(self._warm(
+                    lambda l: pd.Series(l).rolling(entry).min().shift(1).fillna(-np.inf).to_numpy(),
+                    "Low"), self.data.Low, name="Turtle short entry")
+                self.exit_high = self.I(self._warm(
+                    lambda h: pd.Series(h).rolling(exit_).max().shift(1).fillna(np.inf).to_numpy(),
+                    "High"), self.data.High, name="Turtle short exit")
             self.atr = self.I(self._warm(
                 lambda h, l, c: _supertrend_arrays(h, l, c, atr_period, 1)["atr"],
                 "High", "Low", "Close"), self.data.High, self.data.Low, self.data.Close,
@@ -3276,7 +3292,8 @@ def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -
         def next(self):
             self._turtle_next()
 
-    return {"strategy": TurtleStrategy, "executed_name": f"Turtle ({entry}/{exit_}/{atr_period})",
+    suffix = {"long": "", "short": " Short", "both": " Both"}[values["direction"]]
+    return {"strategy": TurtleStrategy, "executed_name": f"Turtle{suffix} ({entry}/{exit_}/{atr_period})",
             "min_bars": min_bars}
 
 
@@ -6668,6 +6685,9 @@ async def run_backtest(
 
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
+    if (effective_tool_id == "local.backtesting_py.turtle"
+            and params.get("direction") in ("short", "both") and market != "futures"):
+        return _validation_failure("INVALID_PARAMS", "Turtle short/both direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
