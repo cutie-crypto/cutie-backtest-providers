@@ -179,11 +179,52 @@ FROZEN_PENDING_INTEG_C = frozenset('local.backtesting_py.' + n for n in (
     'fibonacci_retracement us_open_momentum cme_weekend_gap').split())
 
 
+# 集成 D：做空形态一 FROZEN_PENDING_SHORT_PAT1、做空形态二 FROZEN_PENDING_SHORT_PAT2 合并为一份；只比 INTEG-C 多 4 个做空 id。
+FROZEN_PENDING_SHORT_PAT12 = frozenset({
+    "local.backtesting_py.opening_range_breakout",
+    "local.backtesting_py.asia_range_breakout",
+    "local.backtesting_py.calendar_schedule",
+    "local.backtesting_py.red_streak_rsi",
+    "local.backtesting_py.vwap_reversion",
+    "local.backtesting_py.bullish_engulfing",
+    "local.backtesting_py.hammer_pin_bar",
+    "local.backtesting_py.morning_star",
+    "local.backtesting_py.three_white_soldiers",
+    "local.backtesting_py.bullish_doji_reversal",
+    "local.backtesting_py.inside_bar_breakout",
+    "local.backtesting_py.double_bottom",
+    "local.backtesting_py.inverse_head_shoulders",
+    "local.backtesting_py.macd_bullish_divergence",
+    "local.backtesting_py.rsi_bullish_divergence",
+    "local.backtesting_py.chan_3buy",
+    "local.backtesting_py.fibonacci_retracement",
+    "local.backtesting_py.us_open_momentum",
+    "local.backtesting_py.cme_weekend_gap",
+    "local.backtesting_py.macd_bearish_divergence",
+    "local.backtesting_py.rsi_bearish_divergence",
+    "local.backtesting_py.double_top",
+    "local.backtesting_py.head_shoulders",
+})
+
+
 def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
-    assert len(FROZEN_PENDING_INTEG_C) == 19
-    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_INTEG_C
+    """Pending tools may only shrink; tools with sizing keys must leave this list.
+
+    At 10-B2 close-out POSITION_SIZING_PENDING_TOOLS must be empty; both frozen
+    sets expire together. Replace the subset assertion with
+    `assert not p.POSITION_SIZING_PENDING_TOOLS`.
+    """
+    assert len(FROZEN_PENDING_SHORT_PAT12) == 23
+    assert FROZEN_PENDING_SHORT_PAT12 - FROZEN_PENDING_INTEG_C == {
+        "local.backtesting_py.macd_bearish_divergence",
+        "local.backtesting_py.rsi_bearish_divergence",
+        "local.backtesting_py.double_top",
+        "local.backtesting_py.head_shoulders",
+    }
+    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_SHORT_PAT12
     assert p.POSITION_SIZING_PENDING_TOOLS.isdisjoint(p.POSITION_SIZING_UNWIRED_TOOLS)
     for tool in p.POSITION_SIZING_PENDING_TOOLS:
+        assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool
         assert issubclass(p.TOOL_SPECS[tool]['build']({})['strategy'], p._FixedRiskMixin), tool
 
 
@@ -196,7 +237,7 @@ def test_catalog_and_builders_cover_actual_mixins():
             assert issubclass(cls, p._FixedRiskMixin)
             assert cls._risk['compound'] is False
     assert p.POSITION_SIZING_UNWIRED_TOOLS == {tool for tool,spec in p.TOOL_SPECS.items()
-        if spec.get('runner') in (p.TURTLE_RUNNER,p.SCALE_IN_OUT_RUNNER,'kernel_v3')}
+        if spec.get('runner') in (p.TURTLE_RUNNER,p.SCALE_IN_OUT_RUNNER,'kernel_v3',p.ROTATION_RUNNER)}
 
 
 @pytest.mark.parametrize('risk_case', ['pct','notional'])

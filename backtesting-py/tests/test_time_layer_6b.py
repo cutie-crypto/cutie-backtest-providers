@@ -212,6 +212,9 @@ def test_every_registered_single_template_consumes_holding_bars(name):
     if name in ('bullish_engulfing', 'hammer_pin_bar'):
         from test_9t1_engulf_pin import compatibility_frame
         data = compatibility_frame(name)
+    elif name in ('double_top', 'head_shoulders'):
+        from test_short_pat1 import compatibility_frame
+        data = compatibility_frame(name)
     elif name in ('double_bottom', 'inverse_head_shoulders'):
         from test_9t3_patterns import compatibility_frame
         data = compatibility_frame(name)
@@ -234,6 +237,12 @@ def test_every_registered_single_template_consumes_holding_bars(name):
         params.update(hand_params(name))
         if name.startswith('rsi'):
             params['rsi_exit_above'] = 100
+    if name.endswith('_bearish_divergence'):
+        from test_short_pat2 import hand_frame, hand_params
+        data = hand_frame()
+        params.update(hand_params(name))
+        if name.startswith('rsi'):
+            params['rsi_exit_below'] = 0
     if name == 'ema_rsi_pullback':
         params['rsi_exit'] = 85
     if name == 'ichimoku_cloud_breakout':

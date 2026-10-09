@@ -1,4 +1,4 @@
-"""Causal long-only divergence facts and next-open single-position execution."""
+"""Causal directional divergence facts and next-open single-position execution."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,50 +35,57 @@ def macd_values(close, fast, slow, signal):
 
 
 def divergence_signals(high, low, close, values, *, kind, n=5, min_gap=5, max_gap=60,
-                       first_below=35, dif=None, dea=None, valid_from=0):
+                       first_below=35, dif=None, dea=None, valid_from=0, direction="long", first_above=65):
     """Slots are decision closes; swing events are read only at confirmation.
 
-    MACD may cross at the L2 confirmation close. New confirmed lows replace the
+    Direction selects confirmed lows / highs and mirrors strict comparisons.
+    MACD may cross at the second swing confirmation close. New confirmed lows replace the
     pending pair before considering that close's cross. Consumption is independent
     of position, session, filter or next-open gap, so each pair has one opportunity.
     """
+    short = direction == "short"
     swings = swing_points(high, low, n=n)
     signals, setups = [None] * len(close), []
     previous, armed = None, None
     for i in range(len(close)):
-        point = swings.lows[i]
+        point = (swings.highs if short else swings.lows)[i]
         if point is not None:
             if armed is not None:
-                setups[armed.setup].update(status='invalidated_new_low', invalidated_at=i)
+                setups[armed.setup].update(status=('invalidated_new_high' if short else 'invalidated_new_low'), invalidated_at=i)
                 armed = None
             if previous is not None:
                 left = previous
                 a, b = values[left.index], values[point.index]
                 if (left.index >= valid_from and min_gap <= point.index - left.index <= max_gap
                         and math.isfinite(a) and math.isfinite(b)
-                        and point.price < left.price and b > a
-                        and (kind != 'rsi' or a < first_below)):
+                        and (point.price > left.price and b < a if short else point.price < left.price and b > a)
+                        and (kind != 'rsi' or (a > first_above if short else a < first_below))):
                     setup = dict(l1_index=left.index, l2_index=point.index,
                                  l1_price=left.price, l2_price=point.price,
                                  l1_indicator=float(a), l2_indicator=float(b),
                                  confirmed_at=i, status='waiting')
+                    if short:
+                        setup = {key.replace("l1_", "h1_").replace("l2_", "h2_"): value
+                                 for key, value in setup.items()}
                     setups.append(setup)
-                    armed = Divergence(left.index, point.index, point.price * .999, len(setups)-1)
+                    armed = Divergence(left.index, point.index, point.price * (1.001 if short else .999), len(setups)-1)
             previous = point
         if armed is None:
             continue
-        if close[i] < armed.stop:
+        if close[i] > armed.stop if short else close[i] < armed.stop:
             setups[armed.setup].update(status='invalidated_close', invalidated_at=i)
             armed = None
             continue
-        if kind == 'rsi' or (i > 0 and dif[i-1] <= dea[i-1] and dif[i] > dea[i]):
+        if kind == 'rsi' or (i > 0 and (dif[i-1] >= dea[i-1] and dif[i] < dea[i] if short
+                                      else dif[i-1] <= dea[i-1] and dif[i] > dea[i])):
             signals[i] = armed
             setups[armed.setup].update(status='signal', signal_bar=i, frozen_stop=armed.stop)
             armed = None
     return tuple(signals), setups
 
 
-def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_series):
+def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_series, direction="long"):
+    short = direction == "short"
     class DivergenceStrategy(mixin, Strategy):
         _risk = risk
         _initial_capital = initial_capital
@@ -100,6 +107,7 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
                 cross = {}
             self._signals, setups = divergence_signals(high, low, close, values, kind=kind,
                 n=config['n'], min_gap=config['min_gap'], max_gap=config['max_gap'],
+                direction=direction, first_above=config.get('first_above', 65),
                 valid_from=config['indicator_bars']-1, first_below=config.get('first_below', 35), **cross)
             self.divergence_report = dict(kind=kind, compare=config.get('compare', 'rsi'),
                 index_basis='warmup_plus_main_zero_based', setups=setups,
@@ -115,9 +123,9 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
                         # Use the broker's effective entry price (including spread)
                         # for gap protection, without peeking at future bars.
                         fill = self._broker._adjusted_price(order.size, opening)
-                        if fill <= order.tag.stop:
+                        if fill >= order.tag.stop if short else fill <= order.tag.stop:
                             self.divergence_report['skipped_entries'].append(dict(
-                                reason='entry_open_at_or_below_frozen_stop',
+                                reason=('entry_open_at_or_above_frozen_stop' if short else 'entry_open_at_or_below_frozen_stop'),
                                 signal_bar=order.tag.signal_bar, entry_bar=len(self.data)-1,
                                 entry_open=opening, frozen_stop=order.tag.stop))
                             order.cancel()
@@ -125,7 +133,8 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
                 for trade in self.trades:
                     tag = trade.tag
                     if isinstance(tag, DivergenceEntry) and tag not in self._targets:
-                        self._targets[tag] = trade.entry_price + 2 * (trade.entry_price - tag.stop)
+                        self._targets[tag] = (trade.entry_price - 2 * (tag.stop - trade.entry_price) if short
+                                              else trade.entry_price + 2 * (trade.entry_price - tag.stop))
                         self.divergence_report['entries'].append(dict(
                             setup=tag.setup, entry_bar=trade.entry_bar, entry_price=trade.entry_price,
                             frozen_stop=tag.stop, frozen_target=self._targets[tag]))
@@ -139,16 +148,17 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
             if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(tag.stop))):
                 return True
             index = self._warmup_bars + len(self.data) - 1
-            if self.data.Low[-1] <= tag.stop:
+            if self.data.High[-1] >= tag.stop if short else self.data.Low[-1] <= tag.stop:
                 reason = 'stop_loss'
             elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
                 self._record_holding_expiry(fact)
                 reason = 'time_expiry'
-            elif self.data.High[-1] >= self._targets[tag]:
+            elif self.data.Low[-1] <= self._targets[tag] if short else self.data.High[-1] >= self._targets[tag]:
                 reason = 'take_profit'
-            elif kind == 'macd' and self._dif[index-1] >= self._dea[index-1] and self._dif[index] < self._dea[index]:
-                reason = 'macd_cross_down'
-            elif kind == 'rsi' and self._rsi[index] > config['exit_above']:
+            elif kind == 'macd' and (self._dif[index-1] <= self._dea[index-1] and self._dif[index] > self._dea[index] if short
+                                    else self._dif[index-1] >= self._dea[index-1] and self._dif[index] < self._dea[index]):
+                reason = 'macd_cross_up' if short else 'macd_cross_down'
+            elif kind == 'rsi' and (self._rsi[index] < config['exit_below'] if short else self._rsi[index] > config['exit_above']):
                 reason = 'rsi_exit'
             else:
                 return False
@@ -163,13 +173,14 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
                 return
             if (self.orders or len(self.data) >= self._main_bars
                     or self._warmup_bars + len(self.data) < config['indicator_bars']
-                    or not self._time_allow_entry() or not self._filter_allow_entry()):
+                    or not self._time_allow_entry() or (not short and not self._filter_allow_entry())):
                 return
             signal = self._signals[self._warmup_bars + len(self.data) - 1]
             if signal is None:
                 return
             tag = DivergenceEntry(len(self.data)-1, signal.stop, signal.setup)
             size = self._risk_entry_size()
-            self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
+            entry = self.sell if short else self.buy
+            entry(tag=tag) if size is None else entry(size=size, tag=tag)
 
     return DivergenceStrategy
