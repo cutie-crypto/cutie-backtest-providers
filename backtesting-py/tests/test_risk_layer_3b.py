@@ -312,6 +312,27 @@ FEATURES = {
 @pytest.mark.parametrize('name', list(enumerate_mixin_cases()))
 @pytest.mark.parametrize('feature', FEATURES)
 def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
+    if name in ('bullish_engulfing', 'hammer_pin_bar'):
+        build = p.TOOL_SPECS['local.backtesting_py.'+name]['build']
+        params = dict(risk_layer_enabled=True, **FEATURES[feature])
+        if feature != 'holding':
+            # Template-owned exits deliberately reject the generic overlay modes.
+            with pytest.raises(ValueError, match='INVALID_PARAMS:.*mutually exclusive'):
+                build(params)
+            return
+        from test_9t1_engulf_pin import compatibility_frame
+        cls = build(params)['strategy']
+        reasons = []
+        original = cls._record_holding_expiry
+        def record(self, fact):
+            reasons.append('time_expiry')
+            original(self, fact)
+        cls._record_holding_expiry = record
+        trades = Backtest(compatibility_frame(name), cls, cash=100000,
+                          exclusive_orders=True, finalize_trades=True).run()['_trades']
+        assert len(trades) == 1 and reasons == ['time_expiry']
+        assert trades.iloc[0].ExitBar - trades.iloc[0].EntryBar == 1
+        return
     observations=[]
     original=p._FixedRiskMixin._risk_layer_check_exit
     def observe(self):
