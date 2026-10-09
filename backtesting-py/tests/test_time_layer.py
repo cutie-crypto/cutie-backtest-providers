@@ -45,7 +45,7 @@ BAD_PARAMS = [
       for value in ('9:30', '24:00', '12:60', ' 09:30', '09:30 ', '09:30:00', 'ab:cd', None, 930, True)],
     {'time_session_start': '09:00'}, {'time_session_end': '10:00'},
     {'time_session_start': '09:00', 'time_session_end': '09:00'},
-    {'time_calendar': 'none'},
+    {'time_calendar': 'unknown'},
     *[{'time_max_holding_minutes': value} for value in (-1, 525601, True, 1.0, '60')],
 ]
 
