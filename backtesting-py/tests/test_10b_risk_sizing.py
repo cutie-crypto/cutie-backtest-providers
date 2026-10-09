@@ -233,7 +233,10 @@ def test_catalog_and_builders_cover_actual_mixins():
         wired = tool not in p.POSITION_SIZING_UNWIRED_TOOLS | p.POSITION_SIZING_PENDING_TOOLS
         assert POSITION_SIZE_KEYS <= set(spec['param_schema_properties']) if wired else POSITION_SIZE_KEYS.isdisjoint(spec['param_schema_properties'])
         if wired:
-            cls = spec['build'](PARAMS)['strategy']
+            # 10-B2a: template-stop tools size against their own frozen stop (divergence rejects user stops).
+            params = ({k: v for k, v in PARAMS.items() if k != 'stop_loss_pct'}
+                      if tool in p.POSITION_SIZING_TEMPLATE_STOP_TOOLS else PARAMS)
+            cls = spec['build'](params)['strategy']
             assert issubclass(cls, p._FixedRiskMixin)
             assert cls._risk['compound'] is False
     assert p.POSITION_SIZING_UNWIRED_TOOLS == {tool for tool,spec in p.TOOL_SPECS.items()
