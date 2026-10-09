@@ -4176,6 +4176,74 @@ def _build_parabolic_sar(params: dict[str, Any], *, initial_capital: float = 100
             "executed_name": f"Parabolic SAR ({af_start:g}/{af_step:g}/{af_max:g})", "min_bars": min_bars}
 
 
+def _ichimoku_arrays(high: Any, low: Any, tenkan_period: int,
+                     kijun_period: int, senkou_b_period: int) -> dict[str, Any]:
+    """Visible cloud uses past spans only; positive shift is the forward plot offset."""
+    h, l = pd.Series(high, dtype="float64"), pd.Series(low, dtype="float64")
+
+    def midpoint(period):
+        return (h.rolling(period).max() + l.rolling(period).min()) / 2
+
+    tenkan, kijun = midpoint(tenkan_period), midpoint(kijun_period)
+    a = ((tenkan + kijun) / 2).shift(kijun_period)
+    b = midpoint(senkou_b_period).shift(kijun_period)
+    return {"tenkan": tenkan.to_numpy(), "kijun": kijun.to_numpy(),
+            "senkou_a": a.to_numpy(), "senkou_b": b.to_numpy(),
+            "cloud_top": np.maximum(a.to_numpy(), b.to_numpy())}
+
+
+def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    periods = {}
+    for key, default, lo, hi in (("tenkan_period", 9, 5, 20),
+                                 ("kijun_period", 26, 10, 60),
+                                 ("senkou_b_period", 52, 20, 120)):
+        value = params.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise ValueError(f"INVALID_PARAMS:{key} must be an integer within {lo}-{hi}")
+        periods[key] = value
+    tenkan, kijun, senkou_b = (periods[k] for k in ("tenkan_period", "kijun_period", "senkou_b_period"))
+    if not tenkan < kijun < senkou_b:
+        raise ValueError("INVALID_PARAMS:tenkan_period must be less than kijun_period, which must be less than senkou_b_period")
+
+    from backtesting import Strategy
+
+    min_bars = senkou_b + kijun
+
+    class IchimokuCloudBreakoutStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("tenkan", "kijun", "cloud_top"):
+                def indicator(high, low, key=key):
+                    return _ichimoku_arrays(high, low, tenkan, kijun, senkou_b)[key]
+                setattr(self, key, self.I(self._warm(indicator, "High", "Low"),
+                                         self.data.High, self.data.Low, name=f"Ichimoku {key}"))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            close, top = self.data.Close[-1], self.cloud_top[-1]
+            if not math.isfinite(top):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                previous_top = self.cloud_top[-2]
+                if (math.isfinite(previous_top) and self.data.Close[-2] <= previous_top
+                        and close > top and self.tenkan[-1] > self.kijun[-1]):
+                    self._risk_buy()
+            elif close <= top:
+                self.position.close()
+
+    return {"strategy": IchimokuCloudBreakoutStrategy,
+            "executed_name": f"Ichimoku Cloud Breakout ({tenkan}/{kijun}/{senkou_b})", "min_bars": min_bars}
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -4600,6 +4668,24 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "af_start": {"type": "number", "default": 0.02, "minimum": 0.01, "maximum": 0.1},
             "af_step": {"type": "number", "default": 0.02, "minimum": 0.01, "maximum": 0.1},
             "af_max": {"type": "number", "default": 0.2, "minimum": 0.1, "maximum": 0.5},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.ichimoku_cloud_breakout": {
+        "name": "Local Backtesting.py Ichimoku Cloud Breakout",
+        "description": (
+            "Long-only Ichimoku: enter on a close crossing above the visible cloud "
+            "with Tenkan above Kijun; exit on a close at or below the cloud top. "
+            "Cloud spans are shifted forward by Kijun periods without future data. "
+            "Maps to KOL '一目均衡表云突破'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_ichimoku_cloud_breakout,
+        "param_schema_properties": {
+            "tenkan_period": {"type": "integer", "default": 9, "minimum": 5, "maximum": 20},
+            "kijun_period": {"type": "integer", "default": 26, "minimum": 10, "maximum": 60},
+            "senkou_b_period": {"type": "integer", "default": 52, "minimum": 20, "maximum": 120},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
