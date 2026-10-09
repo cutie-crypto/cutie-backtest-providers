@@ -51,6 +51,24 @@ assumption builders describe margin and excess loss only for futures L>1.
 The public runner does not call these helpers or accept L>1 yet; arbitration and
 runner wiring remain a later batch.
 
+### Closed higher-timeframe entry filters
+
+Single-position templates support opt-in EMA, MACD zero-axis and Supertrend
+long-entry filters. Set `filter_layer_enabled=true` and select at least one
+`filter_*_enabled` predicate; enabled predicates combine with AND.
+`filter_timeframe` defaults to `""` (the primary timeframe). An explicit value
+must be a supported fixed timeframe strictly larger than the primary timeframe;
+monthly timeframes are rejected. A higher candle is visible when its close is
+at or before the primary signal candle's close. Entries still fill at the next
+primary open; exit rules are unchanged.
+
+Higher-timeframe history is fetched once for the complete run plus indicator
+warmup. Missing candles or unavailable history return `INSUFFICIENT_DATA`.
+Disabled filters preserve existing result bytes, and a non-default
+`filter_timeframe` while disabled is rejected before fetching market data.
+Short/both directions, ledger templates and `signal_execution` remain unsupported
+with filters. See the [parameter and verification evidence](backtesting-py/tests/entry_filters_7p2_evidence.md).
+
 ### StrategySpec v2 artifact execution
 
 The backtesting.py service also advertises
