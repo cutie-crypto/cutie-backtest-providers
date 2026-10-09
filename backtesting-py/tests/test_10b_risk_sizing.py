@@ -207,6 +207,10 @@ FROZEN_PENDING_SHORT_PAT12 = frozenset({
 })
 
 
+# SHORT-PAT-3：缠论三卖与 chan_3buy 同口径（冻结出场、未核定仓）进待接名单；只比 SHORT_PAT12 多本批 1 个 id。
+FROZEN_PENDING_SHORT_PAT3 = FROZEN_PENDING_SHORT_PAT12 | {"local.backtesting_py.chan_3sell"}
+
+
 def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
     """Pending tools may only shrink; tools with sizing keys must leave this list.
 
@@ -221,7 +225,9 @@ def test_pending_list_only_shrinks_and_is_disjoint_from_runner_list():
         "local.backtesting_py.double_top",
         "local.backtesting_py.head_shoulders",
     }
-    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_SHORT_PAT12
+    assert len(FROZEN_PENDING_SHORT_PAT3) == 24
+    assert FROZEN_PENDING_SHORT_PAT3 - FROZEN_PENDING_SHORT_PAT12 == {"local.backtesting_py.chan_3sell"}
+    assert p.POSITION_SIZING_PENDING_TOOLS <= FROZEN_PENDING_SHORT_PAT3
     assert p.POSITION_SIZING_PENDING_TOOLS.isdisjoint(p.POSITION_SIZING_UNWIRED_TOOLS)
     for tool in p.POSITION_SIZING_PENDING_TOOLS:
         assert POSITION_SIZE_KEYS.isdisjoint(p.TOOL_SPECS[tool]['param_schema_properties']), tool

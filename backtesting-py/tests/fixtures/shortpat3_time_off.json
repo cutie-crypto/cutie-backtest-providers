@@ -1,0 +1,19 @@
+{
+  "base_sha": "c72c4a1",
+  "note": "SHORT-PAT-3 chan_3sell time-layer off-state baseline captured on branch head (new tool)",
+  "single": {
+    "chan_3sell": {
+      "min_bars": 3,
+      "0": {
+        "warmup_bars": 0,
+        "assumptions_sha256": "9a407dea9660ca361c3f9c2088cc2680de669d18223dc00d58e99365752de862",
+        "raw_report_sha256": "131f1a8e5d4ab232b696a3aa952bea101ed4a30498757e7b3433e2a57075f67e"
+      },
+      "1": {
+        "warmup_bars": 60,
+        "assumptions_sha256": "d1e36a07bc2e6ce28184235a99138dcff02bbcc8ab80da58ad85c3978425825d",
+        "raw_report_sha256": "5a6cd97a1760d3ce8d71b922b3f460d6ab28655e4127316bde4e14be30b6f8ea"
+      }
+    }
+  }
+}
