@@ -33,6 +33,7 @@ def snapshot(name, params, warm):
     built = provider.TOOL_SPECS['local.backtesting_py.' + name]['build'](params)
     cls = built['strategy']
     if warm:
+        cls._warmup_index = prefix.index
         cls._warmup_bars = len(prefix)
         cls._warmup_cols = {c: prefix[c].to_numpy() for c in provider._WARMUP_COLUMNS}
     stats = Backtest(data, cls, cash=100000, commission=.001, exclusive_orders=True,
