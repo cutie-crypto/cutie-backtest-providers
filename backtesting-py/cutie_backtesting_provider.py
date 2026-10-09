@@ -6076,9 +6076,11 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                         self._isolated_stop_beyond_trades += 1
             if self._risk.get("risk_layer_enabled"):
                 exited = self._risk_layer_check_exit()
-            # Frozen intrinsic and user stops both participate in arbitration.
-            # With no configured user stop, initial_stop is None: liquidation only.
-            elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
+            # The frozen intrinsic stop is judged intrabar and joins T2-2b arbitration. An explicit
+            # user stop is judged on the close only (decide_exit below), so any intrabar liquidation
+            # precedes it: arbitrate without the stop (mixin legacy rule, as F5/F6; P-LIQ1 1010).
+            elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(
+                    self._risk_state.initial_stop if intrinsic else None):
                 exited = True
             elif any(order.parent_trade is trade for order in self.orders):
                 return True

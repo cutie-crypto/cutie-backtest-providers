@@ -370,7 +370,9 @@ def risk_feature_frame(feature):
 
 
 @pytest.mark.parametrize('pricing,reason,exit_price', [
-    (dict(stop_loss_pct=3), 'stop_loss', 104.76),
+    # 4dc4ee8 expected stop_loss 104.76 here: it passed the close-only user stop to arbitration, which
+    # conflicts with the mixin legacy rule (close-only stop => liquidation first). Unified by P-LIQ1 1010.
+    (dict(stop_loss_pct=3), 'liquidation', 98.1),
     (dict(stop_loss_pct=20), 'liquidation', 98.1),
     (dict(take_profit_pct=5), 'liquidation', 98.1),
 ])
@@ -389,3 +391,26 @@ def test_explicit_frozen_stop_liquidation_arbitration(monkeypatch, tmp_path, pri
     assert body['raw_report']['fibonacci_retracement']['exit_decisions'][0]['reason'] == reason
     assert float(body['trades'][0]['entry_price']) == 109
     assert float(body['trades'][0]['exit_price']) == exit_price
+
+
+@pytest.mark.parametrize('fill_bar,reason,exit_price,liquidations', [
+    # Signal close108, 5% stop102.6, fill109/L10 => liquidation98.1. Low98 crosses L intrabar while
+    # the close105 stays above the close-only user stop => liquidation at 98.1 (P-LIQ1 1010).
+    ([109, 110, 98.0, 105], 'liquidation', 98.1, 1),
+    # Low100 stays above L98.1, close101 breaks the stop => stop_loss at the next open (hand-set 102.6).
+    ([109, 110, 100, 101], 'stop_loss', 102.6, 0),
+])
+def test_explicit_close_only_stop_yields_to_intrabar_liquidation(monkeypatch, tmp_path, fill_bar, reason,
+                                                                  exit_price, liquidations):
+    data = frame()
+    data.loc[data.index[9], ['Open', 'High', 'Low', 'Close']] = fill_bar
+    data.loc[data.index[10], ['Open', 'High', 'Low', 'Close']] = [102.6, 108, 102, 107]
+    body = response(monkeypatch, tmp_path, params={
+        'stop_loss_pct': 5, 'leverage': 10, 'position_size_pct': 20,
+    }, data=data, market='futures')
+    assert body['result_status'] == 'success', body
+    assert len(body['trades']) == 1
+    assert body['raw_report']['fibonacci_retracement']['exit_decisions'][0]['reason'] == reason
+    assert float(body['trades'][0]['entry_price']) == 109
+    assert float(body['trades'][0]['exit_price']) == exit_price
+    assert body['raw_report']['isolated_risk']['liquidation_count'] == liquidations
