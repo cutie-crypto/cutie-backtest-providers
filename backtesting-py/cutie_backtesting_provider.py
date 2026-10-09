@@ -8819,6 +8819,8 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "range breakout short/both requires futures market")
     if effective_tool_id == "local.backtesting_py.calendar_schedule" and market == "spot" and params.get("direction", "long") != "long":
         return _validation_failure("INVALID_PARAMS", "calendar short requires futures market")
+    if effective_tool_id == "local.backtesting_py.ema_pullback" and market != "futures" and params.get("direction", "long") != "long":
+        return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     if tool_spec.get("long_only_spot") and market != "futures" and params.get("direction", "both") != "long":
         return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     if tool_spec.get("markets") == ["futures"] and market != "futures":

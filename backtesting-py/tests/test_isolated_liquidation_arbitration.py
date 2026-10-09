@@ -277,6 +277,13 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
     data=compat.frame().iloc[WAVEB_GOLDEN['data_offset'].get(name,60):].copy()
     params={'direction':'short'} if name.endswith('_short') else {}
     params.update(WAVEB_GOLDEN['tool_params'].get(name,{}))
+    if market == 'spot' and name == 'ema_pullback_short':
+        # P-GATE1: spot EMA pullback short is rejected before fetch, so there is no off-state run to compare.
+        monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a,**k:pytest.fail('spot ema_pullback short must not fetch'))
+        req=request(params,market=market,name=compat.tool_name(name))
+        out=TestClient(p.app).post('/cutie/backtest',json=req).json()
+        assert (out['error_type'],out['error_message'])==('INVALID_PARAMS','short/both direction requires futures market')
+        return
     def forbidden(*a,**k):
         pytest.fail('L=1 called liquidation arbitration or settlement installation')
     monkeypatch.setattr(p,'_isolated_liquidation_candidate',forbidden)
