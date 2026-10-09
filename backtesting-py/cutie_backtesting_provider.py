@@ -5850,6 +5850,22 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                 executed_name=f"Fibonacci Retracement ({level:g}, N={n}, target={target})")
 
 
+@_with_time_config
+@_with_filter_config(default_direction="both")
+def _build_us_open_momentum(params, *, initial_capital=10000.0):
+    import sys
+    import strategy_calendar_templates as templates
+    return templates.build_us_open(sys.modules[__name__], params, initial_capital)
+
+
+@_with_time_config
+@_with_filter_config(default_direction="both")
+def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
+    import sys
+    import strategy_calendar_templates as templates
+    return templates.build_cme_gap(sys.modules[__name__], params, initial_capital)
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     "local.backtesting_py.calendar_schedule": {
         "name": "Local Backtesting.py Calendar Schedule",
@@ -6061,6 +6077,29 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "fib_tolerance_pct": {"type": "number", "default": 0.3, "minimum": 0.05, "maximum": 2},
             "fib_target": {"type": "string", "default": "swing_high", "enum": ["swing_high", "1.272", "1.618"]},
             "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.cme_weekend_gap": {
+        "name": "Local Backtesting.py CME Weekend Gap",
+        "description": "BTC spot proxy for Chicago Friday 16:00 and Sunday 17:00 closing prices; fades inclusive weekend gaps with frozen Friday target, default 2 percent stop and Wednesday 00:00 UTC expiry.",
+        "strategy_family": "mean_reversion", "is_default": False,
+        "build": _build_cme_weekend_gap, "long_only_spot": True, "ohlcv_market": "spot",
+        "param_schema_properties": {
+            "gap_pct": {"type": "number", "default": 1, "minimum": 0.2, "maximum": 10},
+            "direction": {"type": "string", "default": "both", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.us_open_momentum": {
+        "name": "Local Backtesting.py US Open Momentum",
+        "description": "Regular New York weekday opening-window momentum; frozen opposite-window stop and 16:00 flatten. Regular calendar excludes holiday and half-day modeling.",
+        "strategy_family": "momentum", "is_default": False,
+        "build": _build_us_open_momentum, "long_only_spot": True,
+        "param_schema_properties": {
+            "window_minutes": {"type": "integer", "default": 30, "minimum": 15, "maximum": 60},
+            "threshold_pct": {"type": "number", "default": 0.3, "minimum": 0.05, "maximum": 5},
+            "direction": {"type": "string", "default": "both", "enum": ["long", "short", "both"]},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
@@ -8336,6 +8375,8 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "range breakout short/both requires futures market")
     if effective_tool_id == "local.backtesting_py.calendar_schedule" and market == "spot" and params.get("direction", "long") != "long":
         return _validation_failure("INVALID_PARAMS", "calendar short requires futures market")
+    if tool_spec.get("long_only_spot") and market != "futures" and params.get("direction", "both") != "long":
+        return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -8350,6 +8391,11 @@ async def run_backtest(
     except Exception as e:  # F8: don't let build bugs become bare 500s with lost context
         logger.exception("strategy build failed tool=%s", effective_tool_id)
         return _business_failure(run_id, "ENGINE_ERROR", f"Strategy build failed: {e}")
+    if "validate_timeframe" in built:
+        try:
+            built["validate_timeframe"](timeframe)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e))
     min_bars = int(built["min_bars"])
     executed_name = str(built["executed_name"])
     strategy_class = built["strategy"]
@@ -8398,6 +8444,7 @@ async def run_backtest(
         strategy_class._calendar_timeframe = timeframe
 
     # --- Fetch OHLCV ---
+    source_market = tool_spec.get("ohlcv_market", market)
     try:
         if range_config is not None:
             history = _fetch_strict_time_history(exchange_id, market, symbol, timeframe, start_at, end_at, range_config.definition)
@@ -8409,7 +8456,7 @@ async def run_backtest(
             strategy_class._range_timeframe = timeframe
             strategy_class._range_backtest_start = start
         else:
-            df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
+            df = _fetch_ohlcv(exchange_id, source_market, symbol, timeframe, start_at, end_at)
     except TimeHistoryError as exc:
         return _business_failure(run_id, exc.error_type, str(exc), reason=exc.reason)
     except MarketDataFetchError as e:
@@ -8520,7 +8567,7 @@ async def run_backtest(
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
     warmup_df = (pd.DataFrame(columns=list(_WARMUP_COLUMNS)) if range_config is not None or calendar_config is not None else
-                 _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at,
+                 _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(min_bars, risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
@@ -8766,6 +8813,7 @@ async def run_backtest(
                 **built.get("pattern_assumptions", {}),
                 **built.get("divergence_assumptions", {}),
                 **built.get("chan_assumptions", {}),
+                **built.get("template_assumptions", {}),
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 **({"vwap_reversion": {
@@ -8844,6 +8892,8 @@ async def run_backtest(
                     "skipped_entries": stats["_strategy"]._fib_skips,
                     "exit_decisions": stats["_strategy"]._fib_exits,
                 }} if effective_tool_id == "local.backtesting_py.fibonacci_retracement" else {}),
+                **({built["template_report_key"]: stats["_strategy"]._template_report}
+                   if "template_report_key" in built else {}),
                 **({"entry_filters": {**filter_config.report(),
                     **(strategy_class._filter_context.report if strategy_class._filter_context is not None else {})}}
                     if filter_config is not None else {}),
