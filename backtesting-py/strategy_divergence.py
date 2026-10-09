@@ -173,7 +173,7 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
                 return
             if (self.orders or len(self.data) >= self._main_bars
                     or self._warmup_bars + len(self.data) < config['indicator_bars']
-                    or not self._time_allow_entry() or (not short and not self._filter_allow_entry())):
+                    or not self._time_allow_entry() or not self._filter_allow_entry()):
                 return
             signal = self._signals[self._warmup_bars + len(self.data) - 1]
             if signal is None:

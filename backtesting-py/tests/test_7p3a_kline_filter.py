@@ -121,8 +121,8 @@ def test_catalog_filter_keys_only_on_wired_templates():
         elif tool_id in p.FILTER_LAYER_UNWIRED_TOOLS:
             assert not has, tool_id
     # 集成 E：7-P3a 移出 6 个后 10，SHORT-PAT-3 新增 chan_3sell 进未接名单，合并后 11；7-P3b 移出 red_streak_rsi 后 11 - 1 = 10；
-    # 7-P3b2 移出双底、头肩底、ORB、亚洲区间、日历后 10 - 5 = 5
-    assert len(p.FILTER_LAYER_UNWIRED_TOOLS) == 5
+    # 7-P3b2 移出双底、头肩底、ORB、亚洲区间、日历后 10 - 5 = 5；7-P4 移出 5 个做空模板后 5 - 5 = 0
+    assert len(p.FILTER_LAYER_UNWIRED_TOOLS) == 0
     assert not set('local.backtesting_py.' + n for n in NAMES) & set(p.FILTER_LAYER_UNWIRED_TOOLS)
 
 
