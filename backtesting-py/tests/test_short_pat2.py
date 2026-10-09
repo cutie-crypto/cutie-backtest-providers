@@ -439,7 +439,8 @@ def test_branch_head_isolated_off_golden(name,warm,explicit):
 
 
 def test_catalog_count_and_default_params():
-    assert len(p.TOOL_SPECS)==50
+    # 集成 D：做空二基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1 → 51
+    assert len(p.TOOL_SPECS)==51
     for name in NAMES:
         assert p.TOOL_SPECS['local.backtesting_py.'+name]['markets']==['futures']
         props=p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']
