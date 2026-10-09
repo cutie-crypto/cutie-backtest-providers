@@ -1119,8 +1119,9 @@ def _fetch_template_warmup(
     都退化成「拿到多少用多少 / 不预热」，绝不让本来能跑的回测因此失败；主区间的取数
     与错误处理不经过这里。只保留早于主区间第一根的行，防止取数源不按区间裁剪时把
     主区间数据当成预热。
-    例外（P-LOW1）：ORB / 亚洲区间 / 日历开同周期过滤时，调用方在 run_backtest 里要求非空预热段
-    连续且紧挨主区间，有缺口即 INSUFFICIENT_DATA；本函数本身仍不失败。
+    例外（P-LOW1 / P-LOW2a）：凡开同周期过滤的模板（过滤开启且未设 filter_timeframe），调用方在
+    run_backtest 里要求非空预热段连续且紧挨主区间，有缺口即 INSUFFICIENT_DATA；过滤关闭时不判。
+    本函数本身仍不失败。
     """
     empty = pd.DataFrame(columns=list(_WARMUP_COLUMNS), dtype="float64")
     if bars <= 0 or main_df.empty:
@@ -8985,10 +8986,13 @@ async def run_backtest(
                  if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
-    # F1/F2 filter prefix must be gap-free and end one bar before the main range: a non-empty
-    # prefix with a hole would feed EMA/MACD/Supertrend a discontinuous series. An empty prefix
-    # passes (the mask then starts on the main range only) and falls to the bar-count check below.
-    if (range_config is not None or calendar_config is not None) and filter_warmup and len(warmup_df):
+    # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1): the warmup
+    # prefix is concatenated in front of the main range for the filter mask, so a non-empty prefix
+    # must be gap-free and end one bar before the main range -- a hole would feed EMA/MACD/Supertrend
+    # a discontinuous series (silent misjudgment). Filter off / filter_timeframe: filter_warmup is 0,
+    # best-effort warmup is never judged. An empty prefix passes (the mask then starts on the main
+    # range only) and falls to the bar-count check below.
+    if filter_warmup and len(warmup_df):
         step_ns = _timeframe_milliseconds(timeframe) * 1000000
         stamps = [pd.Timestamp(t).value for t in warmup_df.index] + [pd.Timestamp(df.index[0]).value]
         if any(b - a != step_ns for a, b in zip(stamps, stamps[1:])):
