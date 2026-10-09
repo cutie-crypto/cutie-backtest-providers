@@ -4962,10 +4962,13 @@ def _build_top_pattern(params, *, kind, initial_capital):
         config.update(head_height=params.get('head_height_pct', 2)/100,
                       shoulder_tolerance=params.get('shoulder_tolerance_pct', 3)/100)
         min_bars = 4*n + 3
-    risk = _parse_fixed_risk_params(params)
+    # Top patterns reject user stops; the pattern stop is frozen at the breakout (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     from strategy_top_patterns import make_top_strategy
     cls = make_top_strategy(_FixedRiskMixin, kind=kind, risk=risk,
                             initial_capital=initial_capital, config=config)
+    # 10-B2b: risk distance = |actual fill - last top High * 1.001| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, min_bars=min_bars, executed_name=kind.replace('_', ' ').title(),
         pattern_assumptions=dict(pattern_execution=
             'Only adjacent highs confirmed by swing_n closed bars on each side are used; '
@@ -5376,8 +5379,13 @@ _TEMPLATE_PRICING_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multipli
                           "trailing_stop_pct", "breakeven_stop",
                           *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
 # 10-B2a: sizing distance = |actual fill - the template's own initial stop frozen at the signal|.
-POSITION_SIZING_TEMPLATE_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
-    "macd_bullish_divergence", "rsi_bullish_divergence", "fibonacci_retracement", "vwap_reversion"))
+# 10-B2b: short templates are sized the same way; direction only signs the order quantity.
+# Templates whose own frozen stop is always used (they reject user stop/take-profit keys).
+_SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
+    "macd_bullish_divergence", "rsi_bullish_divergence",
+    "double_top", "head_shoulders"))
+POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
+    "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
 
 
 def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -5389,7 +5397,7 @@ def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     """Whether the template supplies its own frozen stop when the user gives none."""
-    if tool_id in ("local.backtesting_py.macd_bullish_divergence", "local.backtesting_py.rsi_bullish_divergence"):
+    if tool_id in _SIZING_INTRINSIC_STOP_TOOLS:
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
         return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
@@ -7020,7 +7028,7 @@ POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for nam
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
     "double_bottom inverse_head_shoulders chan_3buy "
     "macd_bearish_divergence rsi_bearish_divergence "
-    "us_open_momentum cme_weekend_gap double_top head_shoulders chan_3sell").split())
+    "us_open_momentum cme_weekend_gap chan_3sell").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
         TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)
