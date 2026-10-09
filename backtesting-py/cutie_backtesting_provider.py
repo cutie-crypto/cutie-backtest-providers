@@ -5545,21 +5545,23 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                 offset = next((i for i, t in enumerate(main_index) if t >= midnight + timedelta(days=1)), len(main_index))
             else:
                 offset = 0
-            # P-LOW5-VWAP: masked UTC days stay NaN (no entry, no accumulation); each run of unmasked
-            # days is accumulated on its own, so VWAP restarts at 00:00 of the day after a masked day.
+            # P-LOW5-VWAP: masked UTC days stay NaN (no entry, no accumulation); each contiguous run of
+            # unmasked bars is accumulated on its own, so VWAP restarts at 00:00 of the day after a masked
+            # day -- also when the masked day has no candle at all (split on the jump, not on a masked bar).
             values = [float("nan")] * len(history_index)
-            run = []
-            for i, t in enumerate(history_index + [None]):
-                if t is not None and i >= offset and t.date() not in gap_days:
-                    run.append((i, SeriesBar(t, columns["High"][i], columns["Low"][i], columns["Close"][i],
-                                             columns["Volume"][i])))
+            runs = [[]]
+            for i, t in enumerate(history_index):
+                if i < offset or t.date() in gap_days:
                     continue
-                if run:
-                    points = prefix_vwap([bar for _, bar in run], self._f5_clock, PeriodDefinition(),
-                                         backtest_start=main_index[0], price_source=price_source)
-                    for (k, _), point in zip(run, points):
-                        values[k] = point.value if point.value is not None else float("nan")
-                    run = []
+                if runs[-1] and t != runs[-1][-1][1].open_utc + step:
+                    runs.append([])
+                runs[-1].append((i, SeriesBar(t, columns["High"][i], columns["Low"][i], columns["Close"][i],
+                                              columns["Volume"][i])))
+            for run in filter(None, runs):
+                points = prefix_vwap([bar for _, bar in run], self._f5_clock, PeriodDefinition(),
+                                     backtest_start=main_index[0], price_source=price_source)
+                for (k, _), point in zip(run, points):
+                    values[k] = point.value if point.value is not None else float("nan")
             self._f5_vwap = np.asarray(values[-len(main_index):])
             process_orders = self._broker._process_orders
             def guarded_orders():
