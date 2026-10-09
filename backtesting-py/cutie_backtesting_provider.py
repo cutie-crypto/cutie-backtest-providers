@@ -2332,6 +2332,29 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 
 
+_TURTLE_RISK_KEYS = ("risk_layer_enabled", "max_holding_bars", "take_profit_pct")
+
+
+def _parse_turtle_risk_params(params: dict[str, Any]) -> dict[str, Any]:
+    conflicts = sorted(set(params) & (set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) - set(_TURTLE_RISK_KEYS)))
+    if conflicts:
+        raise ValueError("INVALID_PARAMS:Turtle does not support risk parameters: " + ", ".join(conflicts))
+    selected = {key: params[key] for key in _TURTLE_RISK_KEYS if key in params}
+    error = _validate_params_against_schema(selected, _FIXED_RISK_PARAM_SCHEMA_PROPERTIES)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    holding = selected.get("max_holding_bars", 0)
+    if type(holding) is not int:
+        raise ValueError("INVALID_PARAMS:max_holding_bars must be an integer, not a float")
+    take = selected.get("take_profit_pct")
+    if take is not None and not 0 < take < 100:
+        raise ValueError("INVALID_PARAMS:take_profit_pct must be > 0 and < 100")
+    enabled = selected.get("risk_layer_enabled", False)
+    if not enabled and (holding or take is not None):
+        raise ValueError("INVALID_PARAMS:Turtle risk parameters require risk_layer_enabled=true")
+    return selected if enabled else {}
+
+
 def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
     """Either explicit layer consumes the shared 3b holding-bar limit."""
     return params.get("risk_layer_enabled") is True or params.get("time_layer_enabled") is True
@@ -3299,6 +3322,197 @@ def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 
         "executed_name": f"Keltner Breakout ({ema_period}/{atr_period}/{multiplier:g})",
         "min_bars": min_bars,
     }
+
+
+TURTLE_RUNNER = "turtle_group"
+_TURTLE_RISK_DESCRIPTION = (
+    "单单位到初始止损的风险占权益比；经典海龟是 1%÷N（2N 止损下每单位 2%），本参数填 2 即经典口径"
+)
+
+
+class _TurtleGroupMixin:
+    """One frozen-N, frozen-quantity group; reconcile only actual broker fills."""
+
+    _time_context = None
+    _turtle_risk: dict[str, Any] = {}
+
+    _warmup_bars: int = 0
+    _warmup_cols: dict[str, Any] = {}
+
+    def _warm(self, func: Any, *columns: str) -> Any:
+        if not self._warmup_bars:
+            return func
+        prefixes = [self._warmup_cols[column] for column in columns]
+
+        @functools.wraps(func)
+        def wrapped(*arrays: Any) -> Any:
+            full = [np.concatenate([prefix, np.asarray(array, dtype="float64")])
+                    for prefix, array in zip(prefixes, arrays)]
+            return np.asarray(func(*full), dtype="float64")[-len(arrays[0]):]
+        return wrapped
+
+    def _turtle_init(self) -> None:
+        self.units_skipped = 0
+        self._group_sequence = 0
+        self._group_id = None
+        self._group_side = 0
+        self._group_n = 0.0
+        self._group_q = 0
+        self._last_fill = None
+        self._group_units = 0
+        self._pending_unit = None
+        self._closing_group = False
+        self._group_entry_bar = None
+        self._group_take = None
+        self._group_exit_reasons = {}
+
+    def _turtle_sync(self) -> bool:
+        # Called after broker.next(): a queued market order has either filled or
+        # been canceled for insufficient margin. Never infer fills from signals.
+        if self._pending_unit is not None and self._pending_unit not in self.orders:
+            filled = len(self.trades) > self._group_units
+            if filled:
+                if self._group_units == 0:
+                    self._group_entry_bar = self.trades[0].entry_bar
+                if self._turtle_risk.get("take_profit_pct") is not None:
+                    quantity = sum(abs(trade.size) for trade in self.trades)
+                    vwap = sum(Decimal(str(trade.entry_price)) * abs(trade.size)
+                               for trade in self.trades) / quantity
+                    pct = Decimal(str(self._turtle_risk["take_profit_pct"])) / 100
+                    self._group_take = vwap * (1 + self._group_side * pct)
+                self._group_units = len(self.trades)
+                self._last_fill = self.trades[-1].entry_price
+                self._group_stop = self._last_fill - self._group_side * self._stop_multiple * self._group_n
+            elif self._group_units:
+                self.units_skipped += 1
+            else:
+                self._group_id = None
+                self._group_side = 0
+            self._pending_unit = None
+        if self._closing_group and not self.trades:
+            self._group_id = None
+            self._group_side = 0
+            self._group_units = 0
+            self._last_fill = None
+            self._closing_group = False
+            return True  # No new group on the exit-fill bar either.
+        return False
+
+    def _turtle_close(self, reason: str) -> None:
+        self.position.close()
+        self._group_exit_reasons[self._group_id] = reason
+        self._closing_group = True
+
+    def _turtle_next(self) -> None:
+        if self._turtle_sync() or self._closing_group or self._pending_unit is not None:
+            return
+        price = self.data.Close[-1]
+        if self.position:
+            if (self.data.Low[-1] <= self._group_stop if self._group_side == 1
+                    else self.data.High[-1] >= self._group_stop):
+                self._turtle_close("stop")
+                return
+            if self._turtle_risk.get("risk_layer_enabled"):
+                first = self.trades[0]
+                due = expiry_due(
+                    holding_bars=self._turtle_risk.get("max_holding_bars", 0),
+                    entry_bar=self._group_entry_bar, bar=len(self.data) - 1,
+                    entry_utc=first.entry_time, bar_open=self.data.index[-1], context=None)
+                if due.due:
+                    self._turtle_close("time_expiry")
+                    return
+                if self._group_take is not None and (
+                    Decimal(str(self.data.High[-1])) >= self._group_take if self._group_side == 1
+                    else Decimal(str(self.data.Low[-1])) <= self._group_take
+                ):
+                    self._turtle_close("take_profit")
+                    return
+            if (price < self.exit_low[-1] if self._group_side == 1
+                    else price > self.exit_high[-1]):
+                self._turtle_close("channel")
+                return
+            if (self._group_units < self._max_units
+                    and self._group_side * (price - self._last_fill) >= self._add_step * self._group_n):
+                # An absolute integer order is all-or-nothing in backtesting.py.
+                # Let the next-open broker check cash including commission/gaps.
+                order = self.buy if self._group_side == 1 else self.sell
+                self._pending_unit = order(size=self._group_q, tag=self._group_id)
+            return
+        if self._warmup_bars + len(self.data) < self._min_bars:
+            return
+        long_signal = self._direction in ("long", "both") and price > self.entry_high[-1]
+        short_signal = self._direction in ("short", "both") and price < self.entry_low[-1]
+        if long_signal or short_signal:
+            n = float(self.atr[-1])
+            if not math.isfinite(n) or n <= 0:
+                return
+            q = math.floor(self.equity * self._unit_risk / 100 / (self._stop_multiple * n))
+            if q <= 0:
+                return
+            self._group_sequence += 1
+            self._group_id = f"turtle-{self._group_sequence}"
+            self._group_side = 1 if long_signal else -1
+            self._group_n, self._group_q = n, q
+            self._group_units = 0
+            self._group_entry_bar = None
+            self._group_take = None
+            order = self.buy if self._group_side == 1 else self.sell
+            self._pending_unit = order(size=q, tag=self._group_id)
+
+
+def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_turtle_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.turtle"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    values = {key: params.get(key, spec.get("default")) for key, spec in properties.items()}
+    for key in ("entry_period", "exit_period", "atr_period", "max_units"):
+        if type(values[key]) is not int:
+            raise ValueError(f"INVALID_PARAMS:{key} must be an integer, not a float")
+    if values["unit_risk_pct"] <= 0:
+        raise ValueError("INVALID_PARAMS:unit_risk_pct must be > 0")
+    entry, exit_, atr_period = (values[k] for k in ("entry_period", "exit_period", "atr_period"))
+    min_bars = max(entry, exit_, atr_period) + 1
+    from backtesting import Strategy
+
+    class TurtleStrategy(_TurtleGroupMixin, Strategy):
+        _turtle_risk = risk
+        _direction = values["direction"]
+        _stop_multiple = values["stop_atr_multiplier"]
+        _unit_risk = values["unit_risk_pct"]
+        _add_step = values["add_step_atr"]
+        _max_units = values["max_units"]
+        _min_bars = min_bars
+
+        def init(self):
+            # Inf sentinels preserve the first eligible signal bar: the engine
+            # must not add another NaN-indicator warmup bar beyond min_bars.
+            self.entry_high = self.I(self._warm(
+                lambda h: pd.Series(h).rolling(entry).max().shift(1).fillna(np.inf).to_numpy(),
+                "High"), self.data.High, name="Turtle entry")
+            self.exit_low = self.I(self._warm(
+                lambda l: pd.Series(l).rolling(exit_).min().shift(1).fillna(-np.inf).to_numpy(),
+                "Low"), self.data.Low, name="Turtle exit")
+            if self._direction in ("short", "both"):
+                self.entry_low = self.I(self._warm(
+                    lambda l: pd.Series(l).rolling(entry).min().shift(1).fillna(-np.inf).to_numpy(),
+                    "Low"), self.data.Low, name="Turtle short entry")
+                self.exit_high = self.I(self._warm(
+                    lambda h: pd.Series(h).rolling(exit_).max().shift(1).fillna(np.inf).to_numpy(),
+                    "High"), self.data.High, name="Turtle short exit")
+            self.atr = self.I(self._warm(
+                lambda h, l, c: _supertrend_arrays(h, l, c, atr_period, 1)["atr"],
+                "High", "Low", "Close"), self.data.High, self.data.Low, self.data.Close,
+                name="Turtle N")
+            self._turtle_init()
+
+        def next(self):
+            self._turtle_next()
+
+    suffix = {"long": "", "short": " Short", "both": " Both"}[values["direction"]]
+    return {"strategy": TurtleStrategy, "executed_name": f"Turtle{suffix} ({entry}/{exit_}/{atr_period})",
+            "min_bars": min_bars}
 
 
 @_with_time_config
@@ -4954,6 +5168,31 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    "local.backtesting_py.turtle": {
+        "name": "Local Backtesting.py Turtle",
+        "description": (
+            "Turtle groups: spot supports long only; futures supports long, short, or both directions. "
+            "Prior-bar Donchian channels, frozen Wilder N and unit size; next-open fills."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "runner": TURTLE_RUNNER,
+        "exclusive_orders": False,
+        "build": _build_turtle,
+        "param_schema_properties": {
+            **{key: dict(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]) for key in _TURTLE_RISK_KEYS},
+            "entry_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
+            "exit_period": {"type": "integer", "default": 10, "minimum": 1, "maximum": 200},
+            "atr_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 100},
+            "unit_risk_pct": {"type": "number", "default": 1, "exclusiveMinimum": 0, "maximum": 2,
+                              "description": _TURTLE_RISK_DESCRIPTION},
+            "add_step_atr": {"type": "number", "default": 0.5, "minimum": 0.1, "maximum": 2},
+            "max_units": {"type": "integer", "default": 4, "minimum": 1, "maximum": 4},
+            "stop_atr_multiplier": {"type": "number", "default": 2, "minimum": 0.5, "maximum": 5},
+            "direction": {"type": "string", "default": "long", "enum": ["long", "short", "both"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.breakout": {
         "name": "Local Backtesting.py Donchian Breakout",
         "description": (
@@ -5247,8 +5486,9 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 # 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
 # 132：定额分批（runner=scale_in_out_ledger）同样不合并——账本不消费固定止损止盈/仓位，
 # 带这些参数的请求直接 INVALID_PARAMS（IMPL §3.1）。
+# 海龟单独声明组级风控三键，自管定量与退出；不声明杠杆及 time_* 键。
 for _tool_spec in TOOL_SPECS.values():
-    if _tool_spec.get("runner") in ("kernel_v3", SCALE_IN_OUT_RUNNER):
+    if _tool_spec.get("runner") in ("kernel_v3", SCALE_IN_OUT_RUNNER, TURTLE_RUNNER):
         continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
@@ -5544,6 +5784,34 @@ def _build_result_v2_trades(
             "pnl": canonical_decimal_str(t["pnl"]),
         })
     return trades
+
+
+def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]],
+                         exit_reasons: Optional[dict[str, str]] = None) -> list[dict[str, Any]]:
+    """Map internal tags to the unchanged result.v2 sequence, or fail closed.
+
+    Use the same stable (closed_at, opened_at) second-resolution ordering as
+    _build_result_v2_trades. Never append metadata to signed trade evidence.
+    """
+    rows = []
+    if stats_trades is not None:
+        for _, trade in stats_trades.iterrows():
+            entry_time, exit_time = trade.get("EntryTime"), trade.get("ExitTime")
+            if not hasattr(entry_time, "value") or not hasattr(exit_time, "value"):
+                continue
+            rows.append((int(exit_time.value // 10**9), int(entry_time.value // 10**9), trade.get("Tag")))
+    rows.sort(key=lambda row: (row[0], row[1]))
+    if len(rows) != len(trades_v2):
+        raise ValueError("turtle group mapping does not cover result.v2 trades")
+    groups: dict[str, list[int]] = {}
+    for seq, ((closed_at, opened_at, tag), trade) in enumerate(zip(rows, trades_v2), start=1):
+        if (trade["seq"] != seq or trade["closed_at"] != closed_at or trade["opened_at"] != opened_at
+                or not isinstance(tag, str) or not tag):
+            raise ValueError("turtle group mapping has missing tag or inconsistent trade sequence")
+        groups.setdefault(tag, []).append(seq)
+    return [{"group_id": group_id, "trade_seqs": seqs, "units": len(seqs),
+             **({"exit_reason": exit_reasons.get(group_id, "end_of_data")} if exit_reasons is not None else {})}
+            for group_id, seqs in groups.items()]
 
 
 def _isolated_liquidation_fills(
@@ -6871,6 +7139,9 @@ async def run_backtest(
 
     if effective_tool_id == "local.backtesting_py.breakout" and params.get("direction") == "short" and market != "futures":
         return _validation_failure("INVALID_PARAMS", "Donchian short direction requires futures market")
+    if (effective_tool_id == "local.backtesting_py.turtle"
+            and params.get("direction") in ("short", "both") and market != "futures"):
+        return _validation_failure("INVALID_PARAMS", "Turtle short/both direction requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     try:
@@ -6969,7 +7240,7 @@ async def run_backtest(
 
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
-    risk = strategy_class._risk
+    risk = getattr(strategy_class, "_risk", {})
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
     warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup), df)
@@ -7010,7 +7281,7 @@ async def run_backtest(
             StrategyClass,
             cash=internal_cash,
             commission=commission,
-            exclusive_orders=True,
+            exclusive_orders=tool_spec.get("exclusive_orders", True),
             # Settle trades still open at the end (close at last bar) so metrics /
             # trade_count reflect them instead of silently dropping unrealized PnL.
             finalize_trades=True,
@@ -7121,6 +7392,31 @@ async def run_backtest(
 
         from strategy_risk_overlay import risk_assumptions
 
+        turtle_assumptions = {}
+        turtle_raw_report = {}
+        if tool_spec.get("runner") == TURTLE_RUNNER:
+            turtle_assumptions = {
+                "unit_risk_pct_definition": _TURTLE_RISK_DESCRIPTION,
+                "units_skipped": stats["_strategy"].units_skipped,
+            }
+            turtle_risk = strategy_class._turtle_risk
+            reasons = None
+            if turtle_risk.get("risk_layer_enabled"):
+                instance = stats["_strategy"]
+                reasons = dict(instance._group_exit_reasons)
+                if instance._group_id is not None:
+                    reasons[instance._group_id] = "end_of_data"
+                turtle_assumptions["turtle_risk"] = {
+                    "holding_bars_count_from": "group_first_fill_bar_is_1",
+                    "max_holding_bars": turtle_risk.get("max_holding_bars", 0),
+                    "take_profit_basis": "group_vwap_entry",
+                    "take_profit_pct": turtle_risk.get("take_profit_pct"),
+                    "trigger": "current_bar_high_low",
+                    "fill": "next_bar_open_market",
+                    "same_bar_priority": "stop_before_time_expiry_before_take_profit_before_channel_before_add_before_entry",
+                    "final_bar": "engine_finalize_trades_settlement",
+                }
+            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"], reasons)}
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
@@ -7154,6 +7450,7 @@ async def run_backtest(
                     leverage=leverage, market=market, stop_loss_pct=params.get("stop_loss_pct"),
                     stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
                    if isolated else {}),
+                **turtle_assumptions,
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
@@ -7187,6 +7484,7 @@ async def run_backtest(
                     liquidation_units=stats["_strategy"]._isolated_liquidation_units,
                     equity_scale_dec=equity_scale_dec)
                    if isolated else {}),
+                **turtle_raw_report,
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"strategy_risk_result": risk_result} if risk_result is not None else {}),
                 "provider_summary": provider_summary,
