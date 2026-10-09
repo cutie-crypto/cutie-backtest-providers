@@ -43,6 +43,14 @@ are currently tested only through direct engine construction, not public runs.
 The `rsi_scale_in_out`, `grid`, and `dca` ledger templates do not advertise or
 accept `leverage`, even 1. Basket `kernel_v3` leverage remains in [1, 3].
 
+The dormant isolated-settlement helpers can rewrite already identified liquidation
+trades before result.v2 equity/metrics construction. They preserve the frozen
+trade keys and use MMR=0, fee-exclusive liquidation prices, and bar-open gap fills;
+gap PnL follows the frozen formula and can exceed margin. Separate report and
+assumption builders describe margin and excess loss only for futures L>1.
+The public runner does not call these helpers or accept L>1 yet; arbitration and
+runner wiring remain a later batch.
+
 ### StrategySpec v2 artifact execution
 
 The backtesting.py service also advertises
