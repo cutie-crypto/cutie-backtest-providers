@@ -308,3 +308,11 @@ def test_plain_engine_exception_remains_engine_error(monkeypatch):
     assert body['result_status'] == 'failed'
     assert body['error_type'] == 'ENGINE_ERROR'
     assert body['error_message'] == 'Backtest execution failed: plain engine failure'
+
+# Preserve the original 3a type matrix when the shared schema grows. The 3b
+# matrix owns new boolean/integer contracts; existing 3a assertions stay intact.
+for _mark_index, _mark in enumerate(test_risk_types_and_nonfinite_rejected_by_schema_and_builder.pytestmark):
+    if _mark.name == 'parametrize' and _mark.args[0] == 'key':
+        test_risk_types_and_nonfinite_rejected_by_schema_and_builder.pytestmark[_mark_index] = pytest.mark.parametrize(
+            'key', ['stop_loss_pct', 'take_profit_pct', 'position_size_pct', 'position_size_notional',
+                    'risk_layer_enabled', 'atr_stop_multiplier', 'risk_atr_period', 'take_profit_r']).mark
