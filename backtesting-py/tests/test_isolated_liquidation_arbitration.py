@@ -275,6 +275,12 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         assert out['result_status']=='success',out
         return out
     result=invoke(p)
+    if name == 'ema_cross':
+        # Validate the added S4b disclosure separately, then keep the exact
+        # historical comparator for every pre-existing field and result.v2.
+        assert result['assumptions'].pop('ema_warmup') == 'EMA 预热取 10×最长周期（目标 600 根，实得 0 根）'
+        assert result['raw_report'].pop('ema_warmup') == dict(requested_bars=600,
+            target_bars=600, actual_bars=0, truncated=False, tenfold_reached=False)
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')
     if name in ('vwap_reversion', 'fibonacci_retracement') or golden:
         # F5, 9T5 and the Wave-B tools did not exist at e25886e: compare their independent immutable goldens

@@ -238,7 +238,10 @@ def test_http_assumptions_and_atr_warmup_window(monkeypatch, tmp_path, enabled):
     body = response.json()
     assert body['result_status'] == 'success', body
     assert ('risk_layer' in body['assumptions']) == enabled
-    expected_warmup = 50 if enabled else 21
+    # EMA target is 200 in both cases; this input has only 60 historical bars.
+    # ATR's 50 bars cannot reduce the template's longer convergence target.
+    expected_warmup = 60
+    assert calls[1] == (int(data.index[60].timestamp()) - 202*3600, int(data.index[60].timestamp()))
     assert body['assumptions']['indicator_warmup_bars'] == expected_warmup
     if enabled:
         assert body['assumptions']['risk_layer']['fill_price_is_stop_price'] is False
