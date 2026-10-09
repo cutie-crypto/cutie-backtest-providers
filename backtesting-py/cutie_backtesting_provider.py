@@ -8983,6 +8983,15 @@ async def run_backtest(
                  if range_config is not None or calendar_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
+    # F1/F2 filter prefix must be gap-free and end one bar before the main range: a non-empty
+    # prefix with a hole would feed EMA/MACD/Supertrend a discontinuous series. An empty prefix
+    # passes (the mask then starts on the main range only) and falls to the bar-count check below.
+    if (range_config is not None or calendar_config is not None) and filter_warmup and len(warmup_df):
+        step_ns = _timeframe_milliseconds(timeframe) * 1000000
+        stamps = [pd.Timestamp(t).value for t in warmup_df.index] + [pd.Timestamp(df.index[0]).value]
+        if any(b - a != step_ns for a, b in zip(stamps, stamps[1:])):
+            return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history has gaps",
+                                     reason="filter_history_insufficient")
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
