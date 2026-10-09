@@ -5383,7 +5383,7 @@ _TEMPLATE_PRICING_KEYS = ("stop_loss_pct", "take_profit_pct", "atr_stop_multipli
 # Templates whose own frozen stop is always used (they reject user stop/take-profit keys).
 _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name in (
     "macd_bullish_divergence", "rsi_bullish_divergence", "macd_bearish_divergence", "rsi_bearish_divergence",
-    "double_top", "head_shoulders", "chan_3sell"))
+    "double_top", "head_shoulders", "chan_3sell", "chan_3buy"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
     "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion"))
 
@@ -5832,7 +5832,8 @@ def _build_rsi_bullish_divergence(params, *, initial_capital=10000.0):
 @_with_time_config
 @_with_filter_config
 def _build_chan_3buy(params, *, initial_capital=10000.0):
-    risk = _parse_fixed_risk_params(params)
+    # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
+    risk = _parse_fixed_risk_params(params, template_initial_stop=True)
     if params.get('direction', 'long') != 'long':
         raise ValueError('INVALID_PARAMS:Chan third buy supports long only')
     bi_mode = params.get('bi_mode', 'new')
@@ -5846,6 +5847,8 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
         raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
     from strategy_chan import make_chan_strategy
     cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)
+    # 10-B2b: risk distance = |actual fill - pullback Low * 0.999| frozen in the order tag.
+    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name='Chan Third Buy ('+bi_mode+')', min_bars=3,
         chan_assumptions=dict(chan_execution={
             'direction': 'long_only', 'bi_mode': bi_mode,
@@ -7029,10 +7032,11 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
+# 10-B2b 移出做空 5 个（MACD/RSI 顶背离、双顶、头肩顶、缠论三卖）与缠论三买，做空部分已清空；余下 14 个留给 10-B2c。
 POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for name in (
     "opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi "
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
-    "double_bottom inverse_head_shoulders chan_3buy "
+    "double_bottom inverse_head_shoulders "
     "us_open_momentum cme_weekend_gap").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
