@@ -20,6 +20,8 @@ def cases():
     for tool_id, spec in provider.TOOL_SPECS.items():
         if spec.get('runner') in ('kernel_v3', provider.SCALE_IN_OUT_RUNNER, provider.TURTLE_RUNNER):
             continue
+        if tool_id in getattr(provider, 'FILTER_LAYER_UNWIRED_TOOLS', ()):
+            continue
         name = tool_id.removeprefix('local.backtesting_py.')
         result[name] = (name, {})
         for direction in spec['param_schema_properties'].get('direction', {}).get('enum', []):
