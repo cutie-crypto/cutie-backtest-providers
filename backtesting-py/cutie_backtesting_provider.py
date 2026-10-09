@@ -3281,6 +3281,80 @@ def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     }
 
 
+def _adx_di_arrays(high: Any, low: Any, close: Any, period: int) -> dict[str, Any]:
+    """Wilder RMA seeded at the first value, matching Supertrend's ewm."""
+    h, l, c = (np.asarray(x, dtype="float64") for x in (high, low, close))
+    tr = np.zeros(len(c), dtype="float64")
+    plus_dm, minus_dm = np.zeros_like(tr), np.zeros_like(tr)
+    if len(c):
+        tr[0] = h[0] - l[0]
+        tr[1:] = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+        up, down = h[1:] - h[:-1], l[:-1] - l[1:]
+        plus_dm[1:] = np.where((up > down) & (up > 0), up, 0)
+        minus_dm[1:] = np.where((down > up) & (down > 0), down, 0)
+
+    def rma(values: Any) -> Any:
+        return pd.Series(values).ewm(alpha=1 / period, adjust=False).mean().to_numpy()
+
+    atr = rma(tr)
+    plus = np.divide(100 * rma(plus_dm), atr, out=np.zeros_like(tr), where=atr != 0)
+    minus = np.divide(100 * rma(minus_dm), atr, out=np.zeros_like(tr), where=atr != 0)
+    total = plus + minus
+    dx = np.divide(100 * np.abs(plus - minus), total, out=np.zeros_like(tr), where=total != 0)
+    return {"adx": rma(dx), "plus_di": plus, "minus_di": minus}
+
+
+def _build_adx_di_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    properties = TOOL_SPECS["local.backtesting_py.adx_di_cross"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    period = int(params.get("adx_period", 14))
+    threshold = float(params.get("adx_threshold", 25))
+    exit_level = float(params.get("adx_exit", 20))
+    if not all(math.isfinite(v) for v in (threshold, exit_level)):
+        raise ValueError("INVALID_PARAMS:ADX levels must be finite")
+    if exit_level >= threshold:
+        raise ValueError("INVALID_PARAMS:adx_exit must be < adx_threshold")
+
+    from backtesting import Strategy
+
+    min_bars = 2 * period
+
+    class AdxDiCrossStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("adx", "plus_di", "minus_di"):
+                func = lambda h, l, c, key=key: _adx_di_arrays(h, l, c, period)[key]
+                setattr(self, key, self.I(self._warm(func, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close, name=key))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if len(self.data) < 2:
+                return
+            if not all(math.isfinite(v) for v in (self.adx[-1], self.plus_di[-1], self.plus_di[-2],
+                                                   self.minus_di[-1], self.minus_di[-2])):
+                return
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if (self.adx[-1] > threshold and self.plus_di[-2] <= self.minus_di[-2]
+                        and self.plus_di[-1] > self.minus_di[-1]):
+                    self._risk_buy()
+            elif ((self.minus_di[-2] <= self.plus_di[-2] and self.minus_di[-1] > self.plus_di[-1])
+                  or self.adx[-1] < exit_level):
+                self.position.close()
+
+    return {"strategy": AdxDiCrossStrategy,
+            "executed_name": f"ADX DI Cross ({period}, {threshold:g}/{exit_level:g})", "min_bars": min_bars}
+
+
 def _supertrend_arrays(high: Any, low: Any, close: Any, atr_period: int, multiplier: float) -> dict[str, Any]:
     """Supertrend：Wilder ATR(RMA, ewm alpha=1/n adjust=False) + 带沿用/重置的 final 上下轨 + trend(+1 up/-1 down)。
 
@@ -3724,6 +3798,22 @@ _BASKET_COMMON_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "local.backtesting_py.adx_di_cross": {
+        "name": "Local Backtesting.py ADX DI Cross",
+        "description": (
+            "Long on a positive DI cross above negative DI with ADX above the strength threshold; "
+            "exit on the opposite cross or weak ADX. Maps to KOL 'ADX趋势强度 + DI交叉'."
+        ),
+        "strategy_family": "trend",
+        "is_default": False,
+        "build": _build_adx_di_cross,
+        "param_schema_properties": {
+            "adx_period": {"type": "integer", "default": 14, "minimum": 7, "maximum": 30},
+            "adx_threshold": {"type": "number", "default": 25, "minimum": 15, "maximum": 40},
+            "adx_exit": {"type": "number", "default": 20, "minimum": 10, "maximum": 30},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.ema_cross": {
         "name": "Local Backtesting.py EMA Cross",
         "description": (
