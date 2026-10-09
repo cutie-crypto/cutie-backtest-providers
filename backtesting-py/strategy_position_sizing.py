@@ -13,7 +13,9 @@ POSITION_SIZE_SCHEMA = {
 POSITION_SIZE_KEYS = frozenset(POSITION_SIZE_SCHEMA)
 
 
-def parse_position_sizing(params):
+def parse_position_sizing(params, *, template_initial_stop=False):
+    """template_initial_stop: the template freezes its own initial stop at the signal
+    (10-B2), so the user-stop requirement is checked at the fill hook instead."""
     if not POSITION_SIZE_KEYS.intersection(params):
         return {}
     sizes = [k for k in ('position_size_risk_pct', 'position_size_pct', 'position_size_notional')
@@ -32,7 +34,7 @@ def parse_position_sizing(params):
             if not valid or (key == 'position_size_risk_pct' and value > 100) or (
                 key == 'position_size_qty_step' and value < 0.00000001):
                 raise ValueError(f'INVALID_PARAMS:{key} must be finite and positive (risk <= 100; qty_step >= 1e-8)')
-    if 'position_size_risk_pct' in params and not any(params.get(k) for k in (
+    if 'position_size_risk_pct' in params and not template_initial_stop and not any(params.get(k) for k in (
         'stop_loss_pct', 'atr_stop_multiplier', 'trailing_stop_pct'
     )):
         raise ValueError('INVALID_PARAMS:missing_initial_stop')
@@ -96,7 +98,7 @@ class PositionSizingMixin:
             process()
             for order in entries:
                 broker.orders.append(order)
-                frozen = None
+                frozen = stop_used = None
                 try:
                     if broker._i <= getattr(order, '_sizing_signal_bar', -1):
                         raise SizingRejected('no_next_open')
@@ -107,7 +109,14 @@ class PositionSizingMixin:
                     equity = Decimal(str(broker._cash)) * scale
                     base = equity if self._risk['compound'] else initial
                     risk_pct = self._risk.get('position_size_risk_pct')
-                    if risk_pct is not None:
+                    template_stop = getattr(self, '_sizing_template_stop', None)
+                    if risk_pct is not None and template_stop is not None:
+                        # 10-B2: the template's own stop, frozen at the signal; never re-derived
+                        # from stop_loss_pct at the fill. Distance still uses the actual fill.
+                        stop_used = template_stop(order)
+                        qty = risk_quantity(capital=base, risk_pct=risk_pct, fill_price=price,
+                                            initial_stop=stop_used, qty_step=step)
+                    elif risk_pct is not None:
                         try:
                             frozen = initial_risk_state(risk=self._risk, entry_price=float(price),
                                 direction='long' if order.is_long else 'short', entry_at=int(self.data.index[-1].value),
@@ -142,7 +151,8 @@ class PositionSizingMixin:
                     broker._cash -= float(qty * price * slip / 10000 / scale)
                     self._sizing_report['fills'].append(dict(at=int(self.data.index[-1].timestamp()),
                         capital_base=str(base), fill_price=str(price), qty=str(qty), margin=str(margin),
-                        initial_stop=str(frozen.initial_stop) if frozen is not None else None))
+                        initial_stop=str(frozen.initial_stop) if frozen is not None else
+                        str(stop_used) if stop_used is not None else None))
                 except SizingRejected as exc:
                     if order in broker.orders:
                         broker.orders.remove(order)
