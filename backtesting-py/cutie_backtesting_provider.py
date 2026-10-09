@@ -2627,6 +2627,8 @@ def _with_filter_config(build=None, *, default_direction="long"):
             built["strategy"]._filter_direction = direction
         return built
     configured._supports_entry_filters = True
+    # Exposed so tests can pin it against the template's own direction default (pi LOW on 7-P4).
+    configured._filter_default_direction = default_direction
     return configured
 
 
