@@ -93,3 +93,40 @@ def test_other_sizing_labels_unchanged(name, label, monkeypatch, tmp_path):
     body = c.post(monkeypatch, tmp_path, name, RISK)
     assert body['result_status'] == 'success', body.get('error_message')
     assert body['assumptions']['position_sizing']['initial_stop'] == label
+
+
+# --- 2. calendar event rejected by sizing leaves `submitted` -----------------------------------------
+
+def two_day_calendar(second_day_price=40.):
+    import test_f2_calendar as f2
+    data = f2.frame(count=48)  # events 01-01 02:00 (signal bar 1, fill bar 2) and 01-02 02:00 (bars 25, 26)
+    data.iloc[24:] = [second_day_price, second_day_price * 1.01, second_day_price * 0.99, second_day_price, 1.]
+    return data
+
+
+def test_calendar_sizing_rejected_event_marked_skipped_then_next_fills(monkeypatch, tmp_path):
+    # notional 50, step 1: day 1 at 100 -> floor(0.5) = 0 < step (quantity_below_step);
+    # day 2 at 40 -> floor(1.25) = 1 unit fills.
+    body = c.post(monkeypatch, tmp_path, 'calendar_schedule',
+                  dict(position_size_notional=50, position_size_qty_step=1), data=two_day_calendar())
+    assert body['result_status'] == 'success', body.get('error_message')
+    first, second = body['raw_report']['calendar_events']
+    assert (first['status'], first['reason']) == ('skipped', 'sizing_rejected')
+    assert second['status'] == 'filled'
+    assert [r['reason'] for r in sizing(body)['rejections']] == ['quantity_below_step']
+    assert [t['qty'] for t in body['trades']] == ['1']
+
+
+def test_calendar_sizing_off_events_match_base_golden(monkeypatch, tmp_path):
+    import json
+    for label, (params, side) in c.GOLDEN_VARIANTS['calendar_schedule'].items():
+        golden = json.loads((c.GOLDEN_DIR / f'calendar_schedule.{label}.json').read_text())
+        body = c.post(monkeypatch, tmp_path, 'calendar_schedule', params, side=side)
+        assert c.canonical(body['raw_report']['calendar_events']) == c.canonical(
+            golden['raw_report']['calendar_events']), label
+
+
+def test_calendar_sizing_off_two_day_events_hand_expected(monkeypatch, tmp_path):
+    body = c.post(monkeypatch, tmp_path, 'calendar_schedule', {}, data=two_day_calendar())
+    assert [(e['status'], e['reason']) for e in body['raw_report']['calendar_events']] == [
+        ('filled', None), ('filled', None)]
