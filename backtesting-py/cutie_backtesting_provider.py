@@ -34,7 +34,7 @@ import pandas as pd
 from canonical_json import canonical_decimal_str, canonical_json_sha256
 from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
-    _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime,
+    _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -2333,8 +2333,8 @@ _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
 
 
 def _consumes_max_holding_bars(params: dict[str, Any]) -> bool:
-    """Shared holding-key gate; the later time layer can extend this independently."""
-    return params.get("risk_layer_enabled") is True
+    """Either explicit layer consumes the shared 3b holding-bar limit."""
+    return params.get("risk_layer_enabled") is True or params.get("time_layer_enabled") is True
 
 
 # 单仓杠杆独立于风控层与组合杠杆；T2-2 接入逐仓结算后才放行 >1。
@@ -2471,6 +2471,19 @@ class _TimeLayerMixin:
     _time_config = None
     _time_context = None
 
+    def _holding_expiry(self):
+        trade = self.trades[-1]
+        return expiry_due(
+            holding_bars=self._risk.get("max_holding_bars", 0),
+            entry_bar=trade.entry_bar, bar=len(self.data) - 1,
+            entry_utc=trade.entry_time, bar_open=self.data.index[-1],
+            context=self._time_context if self._time_config is not None else None)
+
+    def _record_holding_expiry(self, fact) -> None:
+        self._risk_exit_reason = "time_expiry"
+        if fact.flatten_delay_bars is not None:
+            self._time_context.flatten_delays.append(fact.flatten_delay_bars)
+
     def _time_allow_entry(self) -> bool:
         if self._time_config is None:
             return True
@@ -2538,6 +2551,8 @@ class _FixedRiskMixin(_TimeLayerMixin):
 
     def _risk_init(self) -> None:
         self._start_equity = self.equity
+        if self._time_config is not None:
+            self._risk_exit_reason = None
         if self._risk.get("risk_layer_enabled"):
             self._risk_trade = None
             self._risk_state = None
@@ -2583,11 +2598,12 @@ class _FixedRiskMixin(_TimeLayerMixin):
                 entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size),
             )
         bar = len(self.data) - 1
-        holding = self._risk.get("max_holding_bars", 0)
-        due = bool(holding and bar - trade.entry_bar + 1 >= holding)
-        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=due)
+        fact = self._holding_expiry()
+        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
         if reason is not None:
             self._risk_exit_reason = reason
+            if reason == "time_expiry":
+                self._record_holding_expiry(fact)
             self.position.close()
             return True
         self._risk_state, units = level_exit(
@@ -2645,7 +2661,13 @@ class _FixedRiskMixin(_TimeLayerMixin):
             return self._risk_layer_check_exit()
         sl_pct = self._risk.get("stop_loss_pct")
         tp_pct = self._risk.get("take_profit_pct")
-        if sl_pct is None and tp_pct is None:
+        time_enabled = self._time_config is not None
+        if time_enabled:
+            trade = self.trades[-1]
+            if any(order.parent_trade is trade for order in self.orders):
+                return True
+            self._risk_exit_reason = None
+        if sl_pct is None and tp_pct is None and not time_enabled:
             return False
         entry_price = self.trades[-1].entry_price
         close = self.data.Close[-1]
@@ -2653,6 +2675,14 @@ class _FixedRiskMixin(_TimeLayerMixin):
         if sl_pct is not None:
             stop_price = entry_price * (1 - sl_pct) if is_long else entry_price * (1 + sl_pct)
             if (is_long and close <= stop_price) or (not is_long and close >= stop_price):
+                if time_enabled:
+                    self._risk_exit_reason = "stop_loss"
+                self.position.close()
+                return True
+        if time_enabled:
+            fact = self._holding_expiry()
+            if fact.due:
+                self._record_holding_expiry(fact)
                 self.position.close()
                 return True
         if tp_pct is not None:
@@ -6935,7 +6965,8 @@ async def run_backtest(
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
-                **(strategy_class._time_context.assumptions() if strategy_class._time_context is not None else {}),
+                **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
+                   if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
                 "no_live_trading": True,
             },
