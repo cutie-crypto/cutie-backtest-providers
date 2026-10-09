@@ -3500,6 +3500,7 @@ FILTER_LAYER_UNWIRED_TOOLS = (
     "local.backtesting_py.rsi_bearish_divergence",
     "local.backtesting_py.double_top",
     "local.backtesting_py.head_shoulders",
+    "local.backtesting_py.chan_3sell",
 )
 _TURTLE_RISK_DESCRIPTION = (
     "单单位到初始止损的风险占权益比；经典海龟是 1%÷N（2N 止损下每单位 2%），本参数填 2 即经典口径"
@@ -5815,6 +5816,42 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
 
 
 @_with_time_config
+def _build_chan_3sell(params, *, initial_capital=10000.0):
+    """SHORT-PAT-3: strict mirror of chan_3buy, futures short only (market gate in run)."""
+    risk = _parse_fixed_risk_params(params)
+    if params.get('direction', 'short') != 'short':
+        raise ValueError('INVALID_PARAMS:Chan third sell supports short only')
+    bi_mode = params.get('bi_mode', 'new')
+    if bi_mode not in ('new', 'old'):
+        raise ValueError('INVALID_PARAMS:bi_mode must be new or old')
+    frozen_exit_keys = ('stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplier',
+        'take_profit_r', 'trailing_stop_pct', 'breakeven_stop',
+        *(f'tp{n}_{suffix}' for n in (1,2,3) for suffix in ('r','close_pct')))
+    if any((key in params if key in ('stop_loss_pct','take_profit_pct') else params.get(key))
+           for key in frozen_exit_keys):
+        raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
+    from strategy_chan import make_chan_strategy
+    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital,
+                             direction='short')
+    return dict(strategy=cls, executed_name='Chan Third Sell ('+bi_mode+')', min_bars=3,
+        chan_assumptions=dict(chan_execution={
+            'direction': 'short_only', 'market': 'futures_only', 'bi_mode': bi_mode,
+            'independent_bars_between_endpoints': 1 if bi_mode=='new' else 5,
+            'confirmation': 'right_independent_bar_close_facts_never_revised',
+            'initial_inclusion': 'defer_merge_until_direction_observable',
+            'centers': 'latest_three_completed_strokes_no_reuse_extension_or_expansion',
+            'departure': 'down_stroke_low_strictly_below_zd',
+            'pullback': 'up_stroke_high_strictly_below_zd_confirmed_by_top_fractal',
+            'fill': 'next_bar_open_market', 'stop': 'pullback_high_times_1.001',
+            'target': 'actual_fill_minus_2_times_stop_minus_fill_frozen',
+            'priority': 'stop_before_time_expiry_before_take_profit_before_close_above_zd',
+            'gap': 'entry_open_at_or_above_frozen_stop_is_skipped',
+            'consumption': 'one_opportunity_per_center_even_if_entry_blocked',
+            'final_bar': 'engine_finalize_trades_settlement',
+            'leverage': 'shared_isolated_liquidation_arbitration'}))
+
+
+@_with_time_config
 @_with_filter_config
 def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """9T5: confirmed adjacent low/high events; signal-close frozen risk prices."""
@@ -6260,6 +6297,16 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         'strategy_family': 'breakout', 'is_default': False, 'build': _build_chan_3buy,
         'param_schema_properties': {
             'direction': {'type': 'string', 'default': 'long', 'enum': ['long']},
+            'bi_mode': {'type': 'string', 'default': 'new', 'enum': ['new', 'old']},
+            'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
+        },
+    },
+    'local.backtesting_py.chan_3sell': {
+        'name': 'Local Backtesting.py Chan Third Sell',
+        'description': 'Futures short-only simplified Chan third sell, the strict mirror of chan_3buy: confirmed fractals, alternating strokes and a three-stroke center; a down stroke leaves below ZD and the up pullback high stays below ZD. Next-open entry and frozen pullback stop / actual-fill 2R target.',
+        'strategy_family': 'breakout', 'is_default': False, 'markets': ['futures'], 'build': _build_chan_3sell,
+        'param_schema_properties': {
+            'direction': {'type': 'string', 'default': 'short', 'enum': ['short']},
             'bi_mode': {'type': 'string', 'default': 'new', 'enum': ['new', 'old']},
             'exchange': {'type': 'string', 'default': DEFAULT_EXCHANGE},
         },
@@ -6934,7 +6981,7 @@ POSITION_SIZING_PENDING_TOOLS = frozenset("local.backtesting_py." + name for nam
     "bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout "
     "double_bottom inverse_head_shoulders macd_bullish_divergence rsi_bullish_divergence chan_3buy "
     "macd_bearish_divergence rsi_bearish_divergence "
-    "fibonacci_retracement us_open_momentum cme_weekend_gap double_top head_shoulders").split())
+    "fibonacci_retracement us_open_momentum cme_weekend_gap double_top head_shoulders chan_3sell").split())
 for _pending_tool in POSITION_SIZING_PENDING_TOOLS:
     for _sizing_key in POSITION_SIZE_KEYS:
         TOOL_SPECS[_pending_tool]["param_schema_properties"].pop(_sizing_key)

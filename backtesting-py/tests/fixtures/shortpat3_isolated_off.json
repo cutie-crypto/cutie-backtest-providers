@@ -1,0 +1,16 @@
+{
+  "base_sha": "c72c4a1",
+  "cases": {
+    "chan_3sell/0": {
+      "assumptions": "3f5cbf8b86edd0feb1546eff253fc3d29304eff8b3de925f9475716b8806d96b",
+      "raw_report": "05e9a66af48166a442775284cef18c24715822909f6b2ce8f01fa49d07fac1ff",
+      "v2": "177cbd038bdd4e3b69b1008b5c162d0e1f2019c4cfdddf9abefe4c60cdc4ef51"
+    },
+    "chan_3sell/10": {
+      "assumptions": "6b63c121842e547313c2b97569de584b892e6eb8466c08cbc58406614ddd6799",
+      "raw_report": "6819e36ecd2d4ed80127dce930e32cd6d5265311793ee3df36c27d6718a3d993",
+      "v2": "4e841a4aead3519be401ebddccaff4b7b6a40db80dcf469bc418bd2420363dbf"
+    }
+  },
+  "note": "SHORT-PAT-3 off-state golden captured on branch feat/1009-short-pat3-chan-3sell (base c72c4a1); implicit and explicit leverage=1 + time defaults hash equal"
+}
