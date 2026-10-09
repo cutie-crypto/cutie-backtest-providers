@@ -2561,7 +2561,11 @@ class _TimeLayerMixin:
 def _with_time_config(build):
     @functools.wraps(build)
     def configured(params, **kwargs):
-        config = TimeConfig.parse(params)
+        # VWAP price is intrinsic to that template, including when the optional
+        # time gate is disabled; other templates still reject this unknown key.
+        time_params = ({k: v for k, v in params.items() if k != "time_vwap_price"}
+                       if build.__name__ == "_build_vwap_reversion" else params)
+        config = TimeConfig.parse(time_params)
         built = build(params, **kwargs)
         if config.enabled:
             built["strategy"]._time_config = config
@@ -5077,6 +5081,175 @@ def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: f
 
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
+@_with_time_config
+@_with_filter_config
+def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """UTC daily, causal VWAP; frozen signal prices and shared expiry arbitration."""
+    properties = TOOL_SPECS["local.backtesting_py.vwap_reversion"]["param_schema_properties"]
+    error = _validate_params_against_schema(params, properties)
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    deviation = params.get("vwap_deviation_pct", 1.5)
+    price_source = params.get("time_vwap_price", "hlc3")
+    pricing_keys = ("stop_loss_pct", "take_profit_pct", "atr_stop_multiplier", "take_profit_r",
+                    "trailing_stop_pct", "breakeven_stop",
+                    *(f"tp{n}_{suffix}" for n in (1, 2, 3) for suffix in ("r", "close_pct")))
+    effective = dict(params)
+    if not any(key in params for key in pricing_keys):
+        effective["stop_loss_pct"] = 2
+    risk = _parse_fixed_risk_params(effective)
+    from backtesting import Strategy
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    from dataclasses import replace
+    from strategy_time_layer import HoldingExpiry
+    from strategy_time_series import PeriodDefinition, SeriesBar, prefix_vwap
+    from strategy_risk_overlay import initial_risk_state, decide_exit
+    from strategy_dynamic_stop import initial_stop_state
+
+    class VwapReversionStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+        _f5_step_ms = None
+        _warmup_index = ()
+
+        def init(self):
+            self._risk_init()
+            self._risk_trade = None
+            self._f5_order = self._f5_frozen = None
+            self._f5_skips = []
+            self._f5_history = []
+            self._f5_expiries = []
+            self._f5_stop_beyond_liquidation = 0
+            main_index = [utc_datetime(t) for t in self.data.index]
+            step = timedelta(milliseconds=self._f5_step_ms) if self._f5_step_ms else main_index[1] - main_index[0]
+            if step <= timedelta(0) or step >= timedelta(days=1) or timedelta(days=1) % step:
+                raise ValueError("INVALID_PARAMS:VWAP requires an intraday timeframe dividing the UTC day")
+            midnight = main_index[0].replace(hour=0, minute=0, second=0, microsecond=0)
+            if any((t - midnight) % step for t in main_index) or any(
+                    b != a + step for a, b in zip(main_index, main_index[1:])):
+                raise TimeDataGapError("TIME_DATA_GAP:VWAP requires a complete UTC candle grid")
+            # This intrinsic UTC clock is independent of the optional time gate.
+            # Reuse expiry_due(flatten_at=00:00); never turn on time_layer_enabled.
+            self._f5_clock = TimeContext(TimeConfig(enabled=True, flatten_at="00:00"),
+                                         ZoneInfo("UTC"), step, main_index[-1])
+            warm_index = [utc_datetime(t) for t in self._warmup_index]
+            selected = [i for i, t in enumerate(warm_index) if midnight <= t < main_index[0]]
+            history_index = [warm_index[i] for i in selected] + main_index
+            columns = {c: np.concatenate([np.asarray(self._warmup_cols[c])[selected],
+                        np.asarray(getattr(self.data, c))]) if selected else np.asarray(getattr(self.data, c))
+                       for c in _WARMUP_COLUMNS}
+            complete_prefix = (history_index[0] == midnight and all(
+                b == a + step for a, b in zip(history_index, history_index[1:])))
+            if not complete_prefix:
+                self._f5_history.append(dict(reason="opening_utc_day_history_incomplete",
+                    day=midnight.date().isoformat(), action="skip_entries_until_next_utc_day"))
+                # Discard the incomplete first cycle; remaining cycles are full.
+                selected = []
+                history_index = main_index
+                columns = {c: np.asarray(getattr(self.data, c)) for c in _WARMUP_COLUMNS}
+                offset = next((i for i, t in enumerate(main_index) if t >= midnight + timedelta(days=1)), len(main_index))
+            else:
+                offset = 0
+            bars = [SeriesBar(t, columns["High"][i], columns["Low"][i], columns["Close"][i], columns["Volume"][i])
+                    for i, t in enumerate(history_index) if i >= offset]
+            points = prefix_vwap(bars, self._f5_clock, PeriodDefinition(),
+                                 backtest_start=main_index[0], price_source=price_source)
+            values = [float("nan")] * offset + [p.value if p.value is not None else float("nan") for p in points]
+            self._f5_vwap = np.asarray(values[-len(main_index):])
+            process_orders = self._broker._process_orders
+            def guarded_orders():
+                order = self._f5_order
+                if order is not None and order in self.orders:
+                    stop = self._f5_frozen.initial_stop
+                    if stop is not None and Decimal(str(self.data.Open[-1])) <= stop:
+                        self._f5_skips.append(dict(reason="frozen_stop_wrong_side_of_entry_open",
+                            signal_at=self._f5_signal_at, execution_at=int(self.data.index[-1].timestamp()),
+                            frozen_stop=str(stop), entry_open=str(self.data.Open[-1])))
+                        order.cancel()
+                        self._f5_order = None
+                process_orders()
+            self._broker._process_orders = guarded_orders
+
+        def _holding_expiry(self):
+            optional = super()._holding_expiry()
+            trade = self.trades[-1]
+            daily = expiry_due(holding_bars=0, entry_bar=trade.entry_bar, bar=len(self.data)-1,
+                entry_utc=trade.entry_time, bar_open=self.data.index[-1], context=self._f5_clock)
+            self._f5_daily_due = daily.due
+            return HoldingExpiry(optional.due or daily.due, optional.flatten_delay_bars)
+
+        def _record_holding_expiry(self, fact):
+            super()._record_holding_expiry(fact)
+            self._f5_expiries.append(dict(decision_at=int(self._f5_clock.decision_utc(self.data.index[-1]).timestamp()),
+                reason="utc_day_end" if self._f5_daily_due else "configured_time_expiry"))
+
+        def _risk_check_exit(self):
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            if self._risk_trade is not trade:
+                self._risk_trade = trade
+                state = self._f5_frozen
+                managed = (initial_stop_state(direction="long", entry_price=Decimal(str(trade.entry_price)),
+                    initial_stop=state.initial_stop, entry_at=int(pd.Timestamp(trade.entry_time).value))
+                    if state.stop_state is not None else None)
+                self._risk_state = replace(state, entry_price=Decimal(str(trade.entry_price)),
+                                           stop_state=managed, original_units=abs(trade.size))
+                if self._risk.get("leverage", 1) > 1:
+                    liquidation = _isolated_liquidation_price(Decimal(str(trade.entry_price)), self._risk["leverage"], True)
+                    if state.initial_stop is not None and state.initial_stop <= liquidation:
+                        self._f5_stop_beyond_liquidation += 1
+                        if any(self._risk.get(key) for key in ("atr_stop_multiplier", "trailing_stop_pct", "breakeven_stop")):
+                            self._isolated_stop_beyond_trades += 1
+            if self._risk.get("risk_layer_enabled"):
+                return self._risk_layer_check_exit()
+            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(self._risk_state.initial_stop):
+                return True
+            if any(order.parent_trade is trade for order in self.orders):
+                return True
+            fact = self._holding_expiry()
+            reason = decide_exit(self._risk_state, high=self.data.Close[-1], low=self.data.Close[-1], holding_due=fact.due)
+            if reason is None:
+                return False
+            self._risk_exit_reason = reason
+            if reason == "time_expiry":
+                self._record_holding_expiry(fact)
+            self.position.close()
+            return True
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            bar = len(self.data)-1
+            value = self._f5_vwap[bar]
+            if not math.isfinite(value):
+                return
+            if self.position:
+                if self.data.Close[-1] >= value:
+                    self._risk_exit_reason = "vwap_reversion"
+                    self.position.close()
+                return
+            opened = utc_datetime(self.data.index[-1])
+            if self.orders or opened >= self._f5_clock.last_open_utc:
+                return
+            if self._f5_clock.decision_utc(opened).date() != opened.date():
+                return
+            if self.data.Close[-1] > value * (1 - deviation / 100):
+                return
+            if not self._time_allow_entry() or not self._filter_allow_entry():
+                return
+            self._risk_prepare_entry()
+            self._f5_frozen = initial_risk_state(risk=risk, entry_price=self.data.Close[-1], direction="long",
+                atr_value=getattr(self, "_risk_entry_atr", None))
+            self._f5_signal_at = int(self.data.index[-1].timestamp())
+            size = self._risk_entry_size()
+            self._f5_order = self.buy() if size is None else self.buy(size=size)
+
+    return dict(strategy=VwapReversionStrategy, min_bars=2,
+                executed_name=f"VWAP Reversion (UTC day, {price_source}, -{deviation:g}%)")
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     "local.backtesting_py.stoch_oversold_cross": {
         "name": "Local Backtesting.py Stochastic Oversold Cross",
@@ -5620,6 +5793,19 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
         },
     },
+    "local.backtesting_py.vwap_reversion": {
+        "name": "Local Backtesting.py Daily VWAP Reversion",
+        "description": "Long-only intraday UTC daily VWAP reversion; close-confirmed entry/exit, next-open fills, daily flatten and default 2% stop. Maps to KOL 'VWAP 偏离回归'.",
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_vwap_reversion,
+        "timeframes": ["15m", "30m", "1h", "4h"],
+        "param_schema_properties": {
+            "vwap_deviation_pct": {"type": "number", "default": 1.5, "minimum": 0.5, "maximum": 5},
+            "time_vwap_price": {"type": "string", "default": "hlc3", "enum": ["hlc3", "close"]},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
 }
 
 # A6 二层：固定止损/止盈/仓位对全部 13 个内置模板统一生效，直接合并进每个工具的
@@ -5736,7 +5922,7 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
                 "Public OHLCV fetched via ccxt; Cutie does not verify "
                 "coverage, gaps, or unclosed candles."
             ),
-            "coverage_hint": f"{', '.join(supported_symbols[:5])} {'/'.join(CATALOG_TIMEFRAMES_EXCHANGE)} from exchange public API",
+            "coverage_hint": f"{', '.join(supported_symbols[:5])} {'/'.join(spec.get('timeframes', CATALOG_TIMEFRAMES_EXCHANGE))} from exchange public API",
             "external_unverified": True,
         },
         # 123 B2 / SPEC §6.1：组合 tool 对 supported_symbols 不填——server 对
@@ -5744,7 +5930,7 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
         # 各自校验中心行情覆盖。
         "supported_symbols": [] if spec.get("runner") == "kernel_v3" else supported_symbols,
         "markets": list(spec.get("markets", ["spot", "futures"])),
-        "timeframes": list(CATALOG_TIMEFRAMES_EXCHANGE),
+        "timeframes": list(spec.get("timeframes", CATALOG_TIMEFRAMES_EXCHANGE)),
         "is_default": spec.get("is_default", False),
         "execution": {
             "mode": "sync",
@@ -7348,6 +7534,16 @@ async def run_backtest(
         except ValueError as e:
             return _validation_failure("INVALID_PARAMS", str(e).replace("time layer", "entry filters"))
 
+    is_vwap = effective_tool_id == "local.backtesting_py.vwap_reversion"
+    if is_vwap:
+        try:
+            vwap_step_ms = fixed_timeframe_milliseconds(timeframe)
+            if vwap_step_ms >= 86400000 or 86400000 % vwap_step_ms:
+                raise ValueError("INVALID_PARAMS:VWAP requires an intraday timeframe dividing the UTC day")
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e))
+        strategy_class._f5_step_ms = vwap_step_ms
+
     # --- Fetch OHLCV ---
     try:
         df = _fetch_ohlcv(exchange_id, market, symbol, timeframe, start_at, end_at)
@@ -7386,10 +7582,10 @@ async def run_backtest(
         logger.exception("OHLCV fetch unexpected error")
         return _business_failure(run_id, "ENGINE_ERROR", f"Failed to fetch market data: {e}")
 
-    if filter_config is not None:
+    if filter_config is not None or is_vwap:
         # Only completed signal candles are visible, including when time is disabled.
         cutoff = min(end_at * 1000, int(time.time() * 1000))
-        df = df.loc[df.index.map(lambda value: pd.Timestamp(value).value // 1000000) + filter_step_ms <= cutoff].copy()
+        df = df.loc[df.index.map(lambda value: pd.Timestamp(value).value // 1000000) + (vwap_step_ms if is_vwap else filter_step_ms) <= cutoff].copy()
 
     if len(df) < min_bars:
         return _business_failure(
@@ -7419,6 +7615,16 @@ async def run_backtest(
             exchange_id=exchange_id,
         )
 
+    if is_vwap:
+        try:
+            # Check the main grid even when the optional time layer is off.
+            opens = [utc_datetime(t) for t in df.index]
+            if any(int(pd.Timestamp(t).value // 1000000) % vwap_step_ms for t in df.index) or any(
+                    int((b-a).total_seconds()*1000) != vwap_step_ms for a,b in zip(opens, opens[1:])):
+                raise TimeDataGapError("TIME_DATA_GAP:VWAP requires a complete UTC candle grid")
+        except TimeDataGapError as e:
+            return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
+
     if time_config is not None:
         try:
             strategy_class._time_context = TimeContext.build(time_config, timeframe, df.index)
@@ -7431,10 +7637,14 @@ async def run_backtest(
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
     risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
     filter_warmup = filter_config.required_bars if filter_config is not None else 0
-    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup), df)
+    vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
+        hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
+    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, max(min_bars, risk_warmup, filter_warmup, vwap_warmup), df)
     if filter_config is not None and len(warmup_df) + len(df) < filter_warmup:
         return _business_failure(run_id, "INSUFFICIENT_DATA", "Entry filter indicator history is insufficient",
                                  reason="filter_history_insufficient")
+    if is_vwap:
+        strategy_class._warmup_index = warmup_df.index
     indicator_warmup_bars = len(warmup_df)
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
@@ -7608,6 +7818,13 @@ async def run_backtest(
                     "final_bar": "engine_finalize_trades_settlement",
                 }
             turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"], reasons)}
+        f5_isolated_assumptions = {}
+        if is_vwap and isolated:
+            f5_isolated_assumptions = _build_isolated_margin_assumptions(
+                leverage=leverage, market=market,
+                stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
+            f5_isolated_assumptions["isolated_margin"]["stop_beyond_liquidation"] = bool(
+                stats["_strategy"]._f5_stop_beyond_liquidation)
         response_body = _json_safe({
             "schema": RESPONSE_SCHEMA,
             "result_status": "success",
@@ -7641,9 +7858,26 @@ async def run_backtest(
                     leverage=leverage, market=market, stop_loss_pct=params.get("stop_loss_pct"),
                     stop_beyond_liquidation_trades=stats["_strategy"]._isolated_stop_beyond_trades)
                    if isolated else {}),
+                **f5_isolated_assumptions,
                 **turtle_assumptions,
                 **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
                    if strategy_class._time_context is not None else {}),
+                **({"vwap_reversion": {
+                    "reset": "UTC_00:00", "price_source": params.get("time_vwap_price", "hlc3"),
+                    "vwap_includes_signal_bar": True, "deviation_pct": params.get("vwap_deviation_pct", 1.5),
+                    "entry": "close_lte_vwap_times_one_minus_positive_deviation",
+                    "exit": "close_gte_current_vwap", "entry_fill": "next_bar_open_market", "exit_fill": "next_bar_open_market",
+                    "daily_flatten": "last_utc_bar_close_submit_next_day_first_open_fill",
+                    "initial_levels_based_on": "entry_signal_close",
+                    "stop_loss_pct": risk["stop_loss_pct"]*100 if "stop_loss_pct" in risk else None,
+                    "risk_trigger": "current_bar_high_low" if risk.get("risk_layer_enabled") else "current_bar_close",
+                    "same_bar_priority": "liquidation_then_stop_loss_then_time_expiry_then_take_profit_then_template_signal",
+                    "wrong_side_entry": "cancel_before_fill_and_record_in_raw_report",
+                    "final_bar": "engine_finalize_trades_settlement_without_next_open",
+                }, **({"risk_layer": {**risk_assumptions(risk)["risk_layer"],
+                    "initial_levels_based_on": "entry_signal_close",
+                    "same_bar_priority": "stop_loss_before_time_expiry_before_take_profit_before_template_signal"}}
+                    if risk.get("risk_layer_enabled") else {})} if is_vwap else {}),
                 "real_market_data": True,
                 "no_live_trading": True,
             },
@@ -7675,6 +7909,9 @@ async def run_backtest(
                     liquidation_units=stats["_strategy"]._isolated_liquidation_units,
                     equity_scale_dec=equity_scale_dec)
                    if isolated else {}),
+                **({"vwap_reversion": {"skipped_entries": stats["_strategy"]._f5_skips,
+                    "history_notes": stats["_strategy"]._f5_history,
+                    "time_exits": stats["_strategy"]._f5_expiries}} if is_vwap else {}),
                 **turtle_raw_report,
                 **({"entry_filters": filter_config.report()} if filter_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),

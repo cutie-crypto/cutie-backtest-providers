@@ -24,6 +24,9 @@ BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_ledger_11e8c
 ADDED_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_da027cd.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(ADDED_BASELINE['single'])
 BASELINE['single'] = {**BASELINE['single'], **ADDED_BASELINE['single']}
+F5_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_single_f5_b42210b.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(F5_BASELINE['single'])
+BASELINE['single'].update(F5_BASELINE['single'])
 MIXINS = compat.enumerate_mixin_cases()
 
 
