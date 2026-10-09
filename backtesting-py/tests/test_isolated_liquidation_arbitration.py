@@ -29,16 +29,20 @@ SHORT_PAT1_GOLDEN = json.loads((Path(__file__).parent/'fixtures/short_pat1_off.j
 
 
 
+# Wave-B 时未接过滤层的 12 个工具（原 test_entry_filters.FROZEN_UNWIRED_WAVE_B；7-P4 名单清空时冻结集合到期删除，此处内联）。
+WAVEB_TOOLS = frozenset((
+    'opening_range_breakout asia_range_breakout calendar_schedule red_streak_rsi bullish_engulfing '
+    'hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal inside_bar_breakout '
+    'double_bottom inverse_head_shoulders').split())
+
+
 def test_waveb_golden_covers_exactly_the_filter_unwired_tools():
-    from test_entry_filters import FROZEN_UNWIRED_WAVE_B
-    assert set(WAVEB_GOLDEN['cases'])=={t.removeprefix('local.backtesting_py.') for t in FROZEN_UNWIRED_WAVE_B}
+    assert set(WAVEB_GOLDEN['cases'])==WAVEB_TOOLS
     # Keep Wave-B bytes intact; the two futures-only SHORT-PAT-1 tools have their own head golden.
-    # 集成 D：做空二两个工具同在过滤层名单，故用子集而非做空一原来的相等断言。
-    # 7-P3 起名单只缩：已接过滤层的工具离开名单，其 Wave-B 关态金样不变；仍在名单的必须没有过滤能力。
-    unwired = {t.removeprefix('local.backtesting_py.') for t in p.FILTER_LAYER_UNWIRED_TOOLS}
-    wired = {name for name in WAVEB_GOLDEN['cases'] if name not in unwired}
+    # 7-P4 起过滤层名单为空：Wave-B 与做空一的工具都已接过滤层，其关态金样不变。
+    assert not p.FILTER_LAYER_UNWIRED_TOOLS
+    wired = set(WAVEB_GOLDEN['cases']) | set(SHORT_PAT1_GOLDEN['single'])
     assert all(getattr(p.TOOL_SPECS['local.backtesting_py.'+name]['build'], '_supports_entry_filters', False) for name in wired)
-    assert (set(WAVEB_GOLDEN['cases']) - wired) | set(SHORT_PAT1_GOLDEN['single']) <= unwired
     assert all(set(v)=={'futures','spot'} for v in WAVEB_GOLDEN['cases'].values())
 
 
