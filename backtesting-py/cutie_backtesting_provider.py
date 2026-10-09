@@ -32,6 +32,10 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 from canonical_json import canonical_decimal_str, canonical_json_sha256
+from strategy_time_layer import (
+    TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
+    _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime,
+)
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from strategy_execution import (
@@ -2392,7 +2396,36 @@ def _parse_fixed_risk_params(params: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-class _FixedRiskMixin:
+class _TimeLayerMixin:
+    _time_config = None
+    _time_context = None
+
+    def _time_allow_entry(self) -> bool:
+        if self._time_config is None:
+            return True
+        context = self._time_context
+        if context is None:
+            raise ValueError("INVALID_PARAMS:enabled time layer requires a request clock")
+        bar_open = self.data.index[-1]
+        # No next bar exists at the tail: finalize_trades must not back-fill a
+        # newly queued entry at the current (earlier) open.
+        if utc_datetime(bar_open) >= context.last_open_utc:
+            return False
+        return context.allow_entry(context.decision_utc(bar_open))
+
+
+def _with_time_config(build):
+    @functools.wraps(build)
+    def configured(params, **kwargs):
+        config = TimeConfig.parse(params)
+        built = build(params, **kwargs)
+        if config.enabled:
+            built["strategy"]._time_config = config
+        return built
+    return configured
+
+
+class _FixedRiskMixin(_TimeLayerMixin):
     """13 模板共用覆盖层；risk_layer_enabled=false 完整保留旧层。
 
     3a 显式开启时用 High/Low 判触发，仍提交下一根开盘市价平仓。
@@ -2491,12 +2524,14 @@ class _FixedRiskMixin:
         return None
 
     def _risk_buy(self) -> None:
+        if not self._time_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
         self.buy() if size is None else self.buy(size=size)
 
     def _risk_sell(self) -> None:
+        if not self._time_allow_entry(): return
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
@@ -4850,7 +4885,9 @@ for _tool_spec in TOOL_SPECS.values():
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
         **_FIXED_RISK_PARAM_SCHEMA_PROPERTIES,
+        **_TIME_PARAM_SCHEMA_PROPERTIES,
     }
+    _tool_spec["build"] = _with_time_config(_tool_spec["build"])
 del _tool_spec
 
 DEFAULT_TOOL_ID = "local.backtesting_py.ema_cross"
@@ -6241,6 +6278,12 @@ async def run_backtest(
     min_bars = int(built["min_bars"])
     executed_name = str(built["executed_name"])
     strategy_class = built["strategy"]
+    time_config = getattr(strategy_class, "_time_config", None)
+    if time_config is not None:
+        try:
+            fixed_timeframe_milliseconds(timeframe)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e))
 
     # --- Fetch OHLCV ---
     try:
@@ -6307,6 +6350,12 @@ async def run_backtest(
             slippage_bps=slippage_bps,
             exchange_id=exchange_id,
         )
+
+    if time_config is not None:
+        try:
+            strategy_class._time_context = TimeContext.build(time_config, timeframe, df.index)
+        except TimeDataGapError as e:
+            return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
 
     # 1008：start_at 之前再取 min_bars 根做指标预热（尽力而为，见 _fetch_template_warmup）。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
@@ -6479,6 +6528,7 @@ async def run_backtest(
                 **strategy_assumptions,
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **risk_assumptions(risk),
+                **(strategy_class._time_context.assumptions() if strategy_class._time_context is not None else {}),
                 "real_market_data": True,
                 "no_live_trading": True,
             },
