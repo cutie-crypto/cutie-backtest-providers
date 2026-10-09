@@ -2932,6 +2932,71 @@ def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float 
     }
 
 
+def _keltner_arrays(high: Any, low: Any, close: Any, ema_period: int,
+                     atr_period: int, multiplier: float) -> dict[str, Any]:
+    """Causal EMA channel; first true range seeds the Wilder ATR, as in Supertrend."""
+    h, l, c = (np.asarray(x, dtype="float64") for x in (high, low, close))
+    tr = np.empty(len(c), dtype="float64")
+    if len(c):
+        tr[0] = h[0] - l[0]
+        tr[1:] = np.maximum(h[1:] - l[1:],
+                            np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+    mid = pd.Series(c).ewm(span=ema_period, adjust=False).mean().to_numpy()
+    atr = pd.Series(tr).ewm(alpha=1 / atr_period, adjust=False).mean().to_numpy()
+    return {"mid": mid, "atr": atr, "upper": mid + multiplier * atr}
+
+
+def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    risk = _parse_fixed_risk_params(params)
+    values = {}
+    for key, default, lo, hi in (("ema_period", 20, 5, 100),
+                                 ("atr_period", 14, 2, 100),
+                                 ("multiplier", 2, 1, 4)):
+        value = params.get(key, default)
+        integer = key != "multiplier"
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or (integer and not isinstance(value, int)) or not lo <= value <= hi
+                or not math.isfinite(value)):
+            kind = "integer" if integer else "number"
+            raise ValueError(f"INVALID_PARAMS:{key} must be a finite {kind} within {lo}-{hi}")
+        values[key] = value
+    ema_period, atr_period, multiplier = (values[k] for k in ("ema_period", "atr_period", "multiplier"))
+    min_bars = max(ema_period, atr_period) + 1
+
+    from backtesting import Strategy
+
+    class KeltnerBreakoutStrategy(_FixedRiskMixin, Strategy):
+        _risk = risk
+        _initial_capital = initial_capital
+
+        def init(self):
+            for key in ("mid", "upper"):
+                def indicator(high, low, close, key=key):
+                    return _keltner_arrays(high, low, close, ema_period, atr_period, multiplier)[key]
+                setattr(self, key, self.I(self._warm(indicator, "High", "Low", "Close"),
+                                         self.data.High, self.data.Low, self.data.Close,
+                                         name=f"Keltner {key}"))
+            self._risk_init()
+
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            price = self.data.Close[-1]
+            if not self.position:
+                if self._warmup_bars + len(self.data) < min_bars:
+                    return
+                if price > self.upper[-1]:
+                    self._risk_buy()
+            elif price < self.mid[-1]:
+                self.position.close()
+
+    return {
+        "strategy": KeltnerBreakoutStrategy,
+        "executed_name": f"Keltner Breakout ({ema_period}/{atr_period}/{multiplier:g})",
+        "min_bars": min_bars,
+    }
+
+
 def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -4548,6 +4613,23 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "param_schema_properties": {
             "bb_period": {"type": "integer", "default": 20, "minimum": 2, "maximum": 200},
             "bb_std": {"type": "number", "default": 2.0, "minimum": 0.1, "maximum": 10},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.keltner_breakout": {
+        "name": "Local Backtesting.py Keltner Breakout",
+        "description": (
+            "Long-only Keltner / ATR channel breakout: buy when Close > EMA + multiplier * "
+            "Wilder ATR; exit when Close < EMA. Signals confirm at close and fill at the next open. "
+            "Maps to KOL 'Keltner 通道突破'. Optional ATR stops use the shared risk layer."
+        ),
+        "strategy_family": "breakout",
+        "is_default": False,
+        "build": _build_keltner_breakout,
+        "param_schema_properties": {
+            "ema_period": {"type": "integer", "default": 20, "minimum": 5, "maximum": 100},
+            "atr_period": {"type": "integer", "default": 14, "minimum": 2, "maximum": 100},
+            "multiplier": {"type": "number", "default": 2, "minimum": 1, "maximum": 4},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
