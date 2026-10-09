@@ -499,4 +499,16 @@ def test_bullish_builders_and_catalog_source_bytes_unchanged():
                         result[key.value]=ast.get_source_segment(source,value)
         return result
     assert len(sections(current))==5
-    assert sections(current)==sections(original)
+    # 10-B2a: the only sanctioned bullish delta wires risk sizing to the frozen L2 stop.
+    expected=sections(original)
+    for old,new in (
+        ("    risk = _parse_fixed_risk_params(params)\n",
+         "    # Divergence rejects user stops; its L2 stop is frozen at the signal (10-B2a).\n"
+         "    risk = _parse_fixed_risk_params(params, template_initial_stop=True)\n"),
+        ("                                  initial_capital=initial_capital, rsi_series=_rsi_series)\n",
+         "                                  initial_capital=initial_capital, rsi_series=_rsi_series)\n"
+         "    # 10-B2a: risk distance = |actual fill - Low(L2) * 0.999| frozen in the order tag.\n"
+         "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n")):
+        assert expected['_build_divergence'].count(old)==1
+        expected['_build_divergence']=expected['_build_divergence'].replace(old,new)
+    assert sections(current)==expected
