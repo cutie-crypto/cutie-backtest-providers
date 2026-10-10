@@ -18,6 +18,11 @@ from strategy_risk_overlay import RiskState
 from strategy_time_layer import HoldingExpiry, utc_datetime
 
 KINDS = ('macro_release_breakout', 'macro_surprise_direction', 'fomc_reversal')
+# P2: funding_settlement_reversal reuses the surprise engine (actual - expected vs threshold, direction map,
+# timed exit, percent stop). Its events come from settled funding rows, not inline params, and carry a 5th
+# element (extra record fields). It is deliberately not in KINDS/SCHEMAS (those are the inline macro catalog).
+FUNDING_KIND = 'funding_settlement_reversal'
+SURPRISE_KINDS = (KINDS[1], FUNDING_KIND)
 
 
 def integer(default, minimum=1):
@@ -132,8 +137,10 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
                 if activation < 1:
                     self._skip(record, 'entry_before_first_decision', 'skipped_out_of_range')
                     continue
-                if config.kind == KINDS[1]:
+                if config.kind in SURPRISE_KINDS:
                     record.update(expected=event[2], actual=event[3])
+                    if len(event) > 4:
+                        record.update(event[4])
                 else:
                     duration = timedelta(minutes=config.values['pre_window_minutes']) if config.kind == KINDS[0] else timedelta(hours=config.values['lookback_hours'])
                     start = ts - duration
@@ -240,7 +247,7 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
             bar = self._next_bar = len(self.data) - 1
             # Judge overlap at release, before a due close is queued. A delayed entry is checked again.
             for record in self._by_event.get(bar, ()):
-                if config.kind == KINDS[1] and (record['expected'] is None or record['actual'] is None):
+                if config.kind in SURPRISE_KINDS and (record['expected'] is None or record['actual'] is None):
                     self._skip(record, 'missing_expected_or_actual', 'skipped_null')
                     continue
                 if self.position or self.orders:
@@ -249,11 +256,12 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
                 if config.kind == KINDS[0]:
                     self._watching.append(record)
                     continue
-                if config.kind == KINDS[1]:
+                if config.kind in SURPRISE_KINDS:
                     delta = Decimal(str(record['actual'])) - Decimal(str(record['expected']))
                     record['surprise'] = str(delta)
                     if delta == 0 or abs(delta) < Decimal(str(config.values['surprise_threshold'])):
-                        self._skip(record, 'surprise_below_threshold')
+                        self._skip(record, 'rate_below_threshold' if config.kind == FUNDING_KIND
+                                   else 'surprise_below_threshold')
                         continue
                     direction = config.values['direction_map']['above' if delta > 0 else 'below']
                     delay = 0

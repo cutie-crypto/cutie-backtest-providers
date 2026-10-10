@@ -251,6 +251,11 @@ def test_fixed_risk_keys_are_merged_into_every_tool_schema():
             supported = {"stop_loss_pct", "take_profit_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
             assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
             continue
+        if tool_id == "local.backtesting_py.funding_settlement_reversal":
+            # P2：同 Q18 surprise 类，只发布定仓两键和自带的 stop_loss_pct。
+            assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == {
+                "position_size_pct", "position_size_notional", "stop_loss_pct"}
+            continue
         if tool_id.removeprefix("local.backtesting_py.") in {
                 "macro_release_breakout", "macro_surprise_direction", "fomc_reversal"}:
             supported = {"position_size_pct", "position_size_notional"} | (

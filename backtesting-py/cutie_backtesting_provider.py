@@ -50,6 +50,8 @@ from strategy_range_breakout import RangeConfig, make_strategy, range_assumption
 from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
 from strategy_event_window import EventWindowConfig, make_event_window_strategy, event_window_assumptions, settle_event_window_exits, SCHEMA as EVENT_WINDOW_SCHEMA
 from strategy_macro_events import MacroConfig, make_macro_strategy, macro_assumptions, macro_report, SCHEMAS as MACRO_SCHEMAS
+from strategy_funding_reversal import FundingReversalConfig, FundingSeriesError, SCHEMA as FUNDING_REVERSAL_SCHEMA
+from funding_history import fetch_history
 from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -5914,6 +5916,25 @@ def _build_macro_event(params, *, kind, initial_capital=10000.0):
                 template_assumptions={kind: macro_assumptions(config)})
 
 
+# P2: pre-settlement funding-rate reversal. Rides the Q18 surprise engine; the events are planned and
+# bound from Binance settled funding rows in run_backtest (after the params are validated, before OHLCV).
+FUNDING_REVERSAL_TOOL_ID = "local.backtesting_py.funding_settlement_reversal"
+
+
+def _build_funding_reversal(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS[FUNDING_REVERSAL_TOOL_ID]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = FundingReversalConfig.parse(params)
+    # Intrinsic percent stop (frozen at the actual fill) like the Q18 surprise template.
+    effective = dict(params)
+    effective["risk_layer_enabled"] = True
+    risk = _parse_fixed_risk_params(effective, template_initial_stop=True)
+    return dict(strategy=make_macro_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Funding Settlement Reversal", min_bars=2, macro_config=config,
+                template_assumptions={config.kind: config.assumptions})
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 # Explicit pricing keys switch VWAP / Fibonacci off their built-in frozen price group.
@@ -5977,7 +5998,8 @@ def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     """Whether the template supplies its own frozen stop when the user gives none."""
-    if tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS:
+    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id == FUNDING_REVERSAL_TOOL_ID
+            or tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
         return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
@@ -7699,6 +7721,24 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    # P2：资金费率结算前反向。只做 Binance U 本位永续、15m；判据是上一期已结算费率（不看本期）。
+    FUNDING_REVERSAL_TOOL_ID: {
+        "name": "Local Futures Funding Settlement Reversal",
+        "description": (
+            "Futures-only 15m template on Binance USD-M settled funding rates (8h: 00/08/16 UTC). "
+            "lead_minutes before each settlement it enters AGAINST the sign of the previous period's "
+            "settled rate (rate >= +threshold shorts, <= -threshold longs), holds hold_minutes or until "
+            "stop_loss_pct, one trade per settlement. The period's own rate is never read (it is only "
+            "fixed at settlement); the live predicted rate can differ. A missing funding period fails "
+            "the run. Maps to KOL 'funding rate settlement reversal'"
+        ),
+        "strategy_family": "calendar",
+        "is_default": False,
+        "build": _build_funding_reversal,
+        "markets": ["futures"],
+        "timeframes": ["15m"],
+        "param_schema_properties": dict(FUNDING_REVERSAL_SCHEMA),
+    },
     "local.backtesting_py.parabolic_sar": {
         "name": "Local Backtesting.py Parabolic SAR Flip",
         "description": (
@@ -7894,6 +7934,15 @@ for _macro_kind, _macro_schema in MACRO_SCHEMAS.items():
         "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
     }
 del _macro_kind, _macro_schema
+
+# P2: same shared sizing/leverage keys as the Q18 intrinsic-stop templates, no time layer / filters /
+# max_holding_bars (those are not wired to this template: sent keys are rejected as unknown before any fetch).
+# The funding evidence is Binance-only, so exchange defaults to binance and anything else is rejected.
+TOOL_SPECS[FUNDING_REVERSAL_TOOL_ID]["param_schema_properties"] = {
+    **deepcopy(FUNDING_REVERSAL_SCHEMA), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
+    **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
+    "exchange": {"type": "string", "default": "binance"},
+}
 
 POSITION_SIZING_UNWIRED_TOOLS = frozenset({
     "local.backtesting_py.rsi_scale_in_out", "local.backtesting_py.grid",
@@ -9689,7 +9738,8 @@ async def run_backtest(
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
-            if effective_tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS:
+            if (effective_tool_id == FUNDING_REVERSAL_TOOL_ID
+                    or effective_tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
                 _parse_fixed_risk_params({k: v for k, v in params.items() if k != "take_profit_r"},
                                          template_initial_stop=True)
             elif effective_tool_id == "local.backtesting_py.vwap_reversion":
@@ -9769,6 +9819,23 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "this template requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
+    funding_symbol = None
+    if effective_tool_id == FUNDING_REVERSAL_TOOL_ID:
+        # Funding evidence is Binance USD-M only (F108: never substitute one venue's funding for another),
+        # so candles come from the same venue; 15m only. Both are rejected before any fetch.
+        exchange_id = str(raw_exchange).lower() if raw_exchange else "binance"
+        if exchange_id != "binance":
+            return _validation_failure(
+                "INVALID_PARAMS", "funding_settlement_reversal requires exchange=binance (Binance USD-M funding only)")
+        if timeframe not in tool_spec["timeframes"]:
+            return _validation_failure(
+                "TIMEFRAME_UNSUPPORTED",
+                f"Unsupported timeframe for this template: {timeframe}. Supported: {tool_spec['timeframes']}",
+            )
+        funding_symbol = str(symbol).replace("/", "").split(":")[0]
+        if not re.fullmatch(r"[A-Z0-9]+USDT", funding_symbol):
+            return _validation_failure(
+                "INVALID_PARAMS", "funding_settlement_reversal requires a Binance USDT perpetual symbol")
     try:
         built = tool_spec["build"](params, initial_capital=float(initial_capital))
     except ValueError as e:
@@ -9786,6 +9853,10 @@ async def run_backtest(
         if (macro_config.kind == "macro_release_breakout" and macro_config.values["direction"] != "long"
                 or macro_config.kind == "macro_surprise_direction" and "short" in macro_config.values["direction_map"].values()):
             return _validation_failure("INVALID_PARAMS", "macro event short/both direction requires futures market")
+    if funding_symbol is not None:
+        funding_failure = _bind_funding_reversal(run_id, macro_config, funding_symbol, start_at, end_at)
+        if funding_failure is not None:
+            return funding_failure
     if "validate_timeframe" in built:
         try:
             built["validate_timeframe"](timeframe)
@@ -10534,6 +10605,42 @@ async def run_backtest(
     except Exception as e:
         logger.exception("Result post-processing failed")
         return _business_failure(run_id, "ENGINE_ERROR", f"Result processing failed: {e}")
+
+
+def _bind_funding_reversal(run_id, config, funding_symbol, start_at, end_at):
+    """P2: fetch the settled funding rows the window needs and bind them as events; fail closed.
+
+    Only previous-period rows are requested (see strategy_funding_reversal), so the period's own
+    rate never enters the run. Returns a failure response, or None when the config is bound.
+    """
+    points = config.settlement_points(start_at, end_at)
+    if not points:
+        config.unbound_assumptions()
+        return None
+    start_ms, end_ms = config.fetch_range_ms(points, int(time.time() * 1000))
+    try:
+        history = fetch_history(funding_symbol, start_ms, end_ms)
+    except Exception as exc:
+        logger.warning("funding history fetch failed symbol=%s: %s", funding_symbol, exc)
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:Binance funding history is unavailable for {funding_symbol} ({exc}); "
+            "this template does not run without the settled funding series",
+            reason="funding_history_unavailable",
+            details={"symbol": funding_symbol},
+        )
+    try:
+        config.bind(points, history)
+    except FundingSeriesError as exc:
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:{exc.message}",
+            reason=exc.reason,
+            details=exc.details,
+        )
+    return None
 
 
 def _bounded_template_response(run_id, body):
