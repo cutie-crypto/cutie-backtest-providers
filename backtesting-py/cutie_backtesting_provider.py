@@ -7307,17 +7307,27 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
 # RS0：每个不接定仓 runner 的「定量允许键」白名单（⊆ POSITION_SIZE_KEYS）。本期全部为空集（行为不变），
 # 某个 runner 日后接好某个定仓键，只往这里放该键；请求里不在允许键内的定仓键仍在取数前拒绝。
 RUNNER_SIZING_ALLOWED_KEYS: dict[str, frozenset[str]] = {
-    tool: frozenset() for tool in sorted(POSITION_SIZING_UNWIRED_TOOLS)
-}
+    "local.backtesting_py.rsi_scale_in_out": frozenset(),
+    "local.backtesting_py.grid": frozenset(),
+    "local.backtesting_py.dca": frozenset(),
+    "local.backtesting_py.turtle": frozenset(),
+    "local.backtesting_py.basket_ratio_sma_cross": frozenset(),
+    "local.backtesting_py.basket_ratio_roc": frozenset(),
+    "local.backtesting_py.basket_ratio_zscore": frozenset(),
+    "local.backtesting_py.portfolio_rotation": frozenset(),
+}  # 字面量逐个登记：新增不接定仓的 runner 忘了登记，下面的 import 期检查报红
 
 
-def _assert_runner_sizing_allowed_keys(allowed=None, unwired=None, size_keys=None):
+def _assert_runner_sizing_allowed_keys(allowed=None, unwired=None, size_keys=None, tool_specs=None):
     allowed = RUNNER_SIZING_ALLOWED_KEYS if allowed is None else allowed
     unwired = POSITION_SIZING_UNWIRED_TOOLS if unwired is None else unwired
     size_keys = POSITION_SIZE_KEYS if size_keys is None else size_keys
+    tool_specs = TOOL_SPECS if tool_specs is None else tool_specs
     assert set(allowed) == set(unwired), "RUNNER_SIZING_ALLOWED_KEYS must cover exactly the unwired runners"
     for tool, keys in allowed.items():
         assert frozenset(keys) <= size_keys, f"{tool}: allowed sizing keys must be a subset of POSITION_SIZE_KEYS"
+        assert frozenset(keys) <= set(tool_specs[tool]["param_schema_properties"]), \
+            f"{tool}: every allowed sizing key must appear in the runner's own param_schema_properties"
 
 
 _assert_runner_sizing_allowed_keys()
