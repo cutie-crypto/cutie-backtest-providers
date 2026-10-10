@@ -115,7 +115,8 @@ def make_bottom_strategy(mixin, *, kind, risk, initial_capital, config):
                             self.bottom_pattern_report['skipped_entry_count'] += 1
                             self.bottom_pattern_report['skipped_entries'].append(dict(
                                 reason='entry_open_at_or_above_frozen_target', signal_bar=order.tag.signal_bar,
-                                entry_bar=len(self.data)-1, entry_open=opening, frozen_target=order.tag.target))
+                                entry_bar=len(self.data)-1, entry_open=opening, frozen_target=order.tag.target,
+                                adjusted_open=self._broker._adjusted_price(order.size, opening)))
                             order.cancel()
                 process_orders()
             self._broker._process_orders = guarded_process_orders

@@ -2653,6 +2653,9 @@ def _with_filter_config(build=None, *, default_direction="long", pattern_confirm
     return configured
 
 
+PATTERN_CONFIRM_RISK_DISTANCE_CAP = 2.0
+
+
 def _pattern_confirm_strategy(strategy):
     """P-PATCONF-2a: per-request subclass that advances pending pattern signals on every bar.
 
@@ -2663,6 +2666,7 @@ def _pattern_confirm_strategy(strategy):
         def init(self):
             super().init()
             self._pattern_confirm_queue = PatternConfirmQueue(self._filter_config.pattern_confirm_bars)
+            self._pattern_confirm_skips = []
             # init() sees the whole main range; next() later sees it growing bar by bar.
             self._pattern_confirm_last_bar = len(self.data) - 1
 
@@ -2794,6 +2798,51 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
 
         if self._risk.get("position_sizing_enabled"):
             self._sizing_install()
+        if (self._filter_config is not None and self._filter_config.pattern_confirm_enabled
+                and getattr(self, "_sizing_template_stop", None) is not None):
+            # Installed inside template guards, outside sizing: stop/target guards run first,
+            # then the cap cancels before sizing or the broker can fill the entry.
+            self._pattern_confirm_install_risk_cap()
+
+    def _pattern_confirm_install_risk_cap(self) -> None:
+        process_orders = self._broker._process_orders
+
+        def guarded_orders():
+            if self._pattern_confirm_queue is not None:
+                for order in list(self.orders):
+                    frozen = getattr(order, "_pattern_confirm_risk", None)
+                    if order.parent_trade is not None or frozen is None:
+                        continue
+                    signal_bar, reference, stop = frozen
+                    opening = float(self.data.Open[-1])
+                    adjusted = Decimal(str(self._broker._adjusted_price(order.size, opening)))
+                    signal_distance = abs(reference - stop)
+                    entry_distance = abs(adjusted - stop)
+                    # Multiplication keeps equality inclusive and never divides by zero.
+                    if entry_distance <= signal_distance * Decimal(str(PATTERN_CONFIRM_RISK_DISTANCE_CAP)):
+                        continue
+                    record = dict(reason="confirm_risk_distance_exceeds_cap", signal_bar=signal_bar,
+                        entry_bar=len(self.data)-1, entry_open=opening, adjusted_open=float(adjusted),
+                        signal_entry_price=float(reference), frozen_stop=float(stop),
+                        signal_risk_distance=float(signal_distance), entry_risk_distance=float(entry_distance),
+                        risk_distance_cap_multiple=PATTERN_CONFIRM_RISK_DISTANCE_CAP,
+                        risk_distance_multiple=float(entry_distance / signal_distance) if signal_distance else None)
+                    self._pattern_confirm_skips.append(record)
+                    for name in ("bottom_pattern_report", "top_pattern_report", "pattern_report",
+                                 "divergence_report", "chan_report"):
+                        report = getattr(self, name, None)
+                        if report is not None:
+                            report["skipped_entries"].append(dict(record))
+                            if "skipped_entry_count" in report:
+                                report["skipped_entry_count"] += 1
+                            break
+                    for prefix in ("_f5", "_f6", "_fib"):
+                        if getattr(self, prefix + "_order", None) is order:
+                            getattr(self, prefix + "_skips").append(dict(record))
+                            setattr(self, prefix + "_order", None)
+                    order.cancel()
+            process_orders()
+        self._broker._process_orders = guarded_orders
 
     def _risk_prepare_entry(self) -> None:
         if not self._risk.get("atr_stop_multiplier"):
@@ -3029,6 +3078,17 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             return
         blocked = self._pattern_confirm_open(hit[1] == "long", queue.payload)
         if blocked is None:
+            # Close[s] is the signal's decision-price reference (also used by the
+            # close-based risk-state builders). High/Low[s] are confirmation levels only.
+            # Tagged stops stay at s; untagged template/user stops retain their k freeze.
+            template_stop = getattr(self, "_sizing_template_stop", None)
+            if template_stop is not None:
+                for order in self.orders:
+                    if order.parent_trade is None:
+                        stop = template_stop(order)
+                        if stop is not None:
+                            order._pattern_confirm_risk = (hit[0], Decimal(str(self.data.Close[hit[0]])),
+                                                           Decimal(str(stop)))
             queue.submitted()
         else:
             # isolated_liquidation_bar is not a confirmation reason: unreachable on the confirmation
@@ -5671,9 +5731,12 @@ def _pattern_confirm_assumptions(strategy, tool_id):
         note = "止损及止盈按确认根 k 收盘冻结，k+1 开盘成交。"
     else:
         return report
-    report["frozen_stop_risk"] = dict(stop_anchor=anchor, risk_distance=distance, distance_cap=None,
+    report.update(skipped_entry_count=len(strategy._pattern_confirm_skips),
+                  skipped_entries=list(strategy._pattern_confirm_skips))
+    report["frozen_stop_risk"] = dict(stop_anchor=anchor, risk_distance=distance,
+        distance_cap=PATTERN_CONFIRM_RISK_DISTANCE_CAP, signal_entry_reference="Close[s]",
         note=note + "position_size_notional / position_size_pct 不会按风险距离反向缩减数量；"
-             "确认延迟或成交跳空可能扩大每单位风险距离及单笔风险，本版本不设距离上限。")
+             "存在冻结止损时，确认延迟或成交跳空使有效成交价至冻结止损的距离超过 |Close[s] - 冻结止损| 的 2 倍时跳过入场；等于 2 倍允许入场。")
     return report
 
 
@@ -5822,7 +5885,8 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                           >= self._f5_frozen.take_price):
                         self._f5_skips.append(dict(reason="entry_open_at_or_above_frozen_target",
                             signal_at=self._f5_signal_at, execution_at=int(self.data.index[-1].timestamp()),
-                            frozen_target=str(self._f5_frozen.take_price), entry_open=str(self.data.Open[-1])))
+                            frozen_target=str(self._f5_frozen.take_price), entry_open=str(self.data.Open[-1]),
+                            adjusted_open=str(self._broker._adjusted_price(order.size, self.data.Open[-1]))))
                         order.cancel()
                         self._f5_order = None
                 process_orders()
@@ -6009,7 +6073,8 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                           >= self._f6_frozen.take_price):
                         self._f6_skips.append(dict(reason="entry_open_at_or_above_frozen_target",
                             signal_at=self._f6_signal_at, execution_at=int(self.data.index[-1].timestamp()),
-                            frozen_target=str(self._f6_frozen.take_price), entry_open=str(self.data.Open[-1])))
+                            frozen_target=str(self._f6_frozen.take_price), entry_open=str(self.data.Open[-1]),
+                            adjusted_open=str(self._broker._adjusted_price(order.size, self.data.Open[-1]))))
                         order.cancel()
                         self._f6_order = None
                 process_orders()
@@ -6366,6 +6431,8 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                             execution_index=self._warmup_bars + len(self.data) - 1,
                             entry_open=str(opening), frozen_stop=str(state.initial_stop),
                             frozen_target=str(state.take_price)))
+                        if self._pattern_confirm_queue is not None and reason == "entry_open_at_or_above_frozen_target":
+                            self._fib_skips[-1]["adjusted_open"] = str(target_fill)
                         order.cancel()
                         self._fib_order = None
                 process_orders()

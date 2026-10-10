@@ -539,7 +539,8 @@ BOTTOM_Q17B_TARGET_GUARD = (
     b"                            self.bottom_pattern_report['skipped_entry_count'] += 1\n"
     b"                            self.bottom_pattern_report['skipped_entries'].append(dict(\n"
     b"                                reason='entry_open_at_or_above_frozen_target', signal_bar=order.tag.signal_bar,\n"
-    b"                                entry_bar=len(self.data)-1, entry_open=opening, frozen_target=order.tag.target))\n"
+    b"                                entry_bar=len(self.data)-1, entry_open=opening, frozen_target=order.tag.target,\n"
+    b"                                adjusted_open=self._broker._adjusted_price(order.size, opening)))\n"
     b"                            order.cancel()\n"
     b"                process_orders()\n")
 
