@@ -69,7 +69,7 @@ def test_omitted_time_keys_response_byte_identical(case):
     # TURTLE-NSTOP 给 turtle_groups 每组追加 n / stop；金样不重抓，测试侧剔除这两键后逐字节比。
     stripped, removed = re.subn(r',"n":"[^"]*","stop":"[^"]*"', '', capture.response(case))
     assert stripped == BASELINE['responses'][case]
-    assert ('"exit_reason"' in stripped) == (removed > 0)
+    assert removed == stripped.count('"group_id"') > 0  # 普通海龟也出：每组都被剔除一次
 
 
 # ---- schema ----
