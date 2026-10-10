@@ -9989,10 +9989,13 @@ def _bounded_template_response(run_id, body):
     Matches legacy callback field limits in StrategyBacktestService. JSON uses
     UTF-8 compact encoding, like connector JSON.stringify; individual fields are
     checked because the callback sends each as a separate FormData string.
+    raw_report is 1048576 (1MB), kept in sync with the raw_report_json callback
+    field limit in cutie-server/services/strategy_backtest_service.py, which is
+    raised to 1MB on the server side first; every other field limit is unchanged.
     """
     for field, limit in {"metrics": 262144, "equity_curve": 262144, "trades": 262144,
                          "assumptions": 262144, "limitations": 262144,
-                         "raw_report": 262144, "data_manifest": 8192}.items():
+                         "raw_report": 1048576, "data_manifest": 8192}.items():
         if len(json.dumps(body.get(field), ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > limit:
             return _business_failure(
                 run_id, "INVALID_PARAMS",
