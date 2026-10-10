@@ -297,8 +297,9 @@ def test_http_details_only_in_raw_report_and_result_keys_frozen():
     assert set(result['data_manifest']) == {'source','symbol','market','timeframe','start_at','end_at','kline_count','checksum_algo','checksum'}
     chan = result['raw_report']['chan']
     assert (chan['centers'][0]['zg'], chan['centers'][0]['zd']) == (151,134)
-    assert chan['third_sells'][0]['pullback']['end']['raw_index'] == 11
-    assert chan['third_sells'][0]['departure']['end']['raw_index'] == 9
+    # CHANSLIM: segments keep direction/high/low/confirmed_at; top11 confirmed by bar12, bottom9 by bar10.
+    assert chan['third_sells'][0]['pullback'] == dict(direction='up', high=126, low=109, confirmed_at=12)
+    assert chan['third_sells'][0]['departure']['confirmed_at'] == 10
     assert chan['entries'][0]['frozen_target'] == pytest.approx(92.748)
     assert 'chan' not in result['metrics']
     execution = result['assumptions']['chan_execution']
@@ -340,7 +341,8 @@ def test_short_isolated_risk_arbitration_and_accounting(case):
 
 @pytest.mark.parametrize('warm', [0,10])
 @pytest.mark.parametrize('explicit', [False,True])
-def test_branch_head_isolated_off_golden(warm,explicit):
+def test_branch_head_isolated_off_golden(warm,explicit,monkeypatch):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     from canonical_json import canonical_json
     import hashlib
     fixture = json.loads((Path(__file__).parent/'fixtures/shortpat3_isolated_off.json').read_text())
@@ -379,6 +381,9 @@ def test_chan_3buy_response_bytes_match_original_engine(market,params,warm,monke
     import strategy_chan as engine
     from test_9t6_chan_3buy import frame as long_frame
     tool = 'local.backtesting_py.chan_3buy'
+    # CHANSLIM: the original engine has no slim projection; compare its bytes with the debug path
+    # (test_chan_slim_evidence pins default == slim projection of this debug body).
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')
     current = http_response(params,long_frame(),warm,tool,market)
     if not params:
         assert current['trades']
@@ -386,7 +391,8 @@ def test_chan_3buy_response_bytes_match_original_engine(market,params,warm,monke
     original = types.ModuleType('shortpat3_original_chan')
     monkeypatch.setitem(sys.modules,original.__name__,original)
     exec(compile(source,engine.__file__,'exec'),original.__dict__)
-    monkeypatch.setattr(engine,'make_chan_strategy',original.make_chan_strategy)
+    monkeypatch.setattr(engine,'make_chan_strategy',
+                        lambda *a, chan_debug=False, **k: original.make_chan_strategy(*a, **k))
     before = http_response(params,long_frame(),warm,tool,market)
     for key in ('schema_version','metrics','trades','equity_curve','data_manifest','assumptions','raw_report'):
         assert json.dumps(current[key],sort_keys=True,separators=(',',':')) == json.dumps(before[key],sort_keys=True,separators=(',',':')),key
@@ -432,7 +438,8 @@ def test_chan_3buy_builder_and_catalog_source_bytes_unchanged():
          "    # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).\n"
          "    risk = _parse_fixed_risk_params(params, template_initial_stop=True)\n"),
         ("    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)\n",
-         "    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)\n"
+         "    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital,\n"
+         "                             chan_debug=_chan_debug_enabled())\n"  # CHANSLIM: debug-only chan traces
          "    # 10-B2b: risk distance = |actual fill - pullback Low * 0.999| frozen in the order tag.\n"
          "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n")):
         assert expected['_build_chan_3buy'].count(old) == 1
