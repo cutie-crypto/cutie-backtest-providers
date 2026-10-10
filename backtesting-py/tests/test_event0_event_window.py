@@ -99,6 +99,11 @@ def test_golden_three_events_hand_computed(monkeypatch, tmp_path):
     assert [(r['entry_price'], r['exit_price'], r['exit_reason'], r['exit_utc']) for r in entered] == [
         (104.0, 107.0, 'window_end', '2026-01-01T07:00:00+00:00'),
         (109.0, 112.0, 'window_end', '2026-01-01T12:00:00+00:00')]
+    assert [r['exits'] for r in entered] == [
+        [dict(time='2026-01-01T07:00:00+00:00', price=107.0, reason='window_end')],
+        [dict(time='2026-01-01T12:00:00+00:00', price=112.0, reason='window_end')]]
+    assert 'exits' not in records[1]
+    assert body['assumptions']['event_window']['entry'] == 'open_of_bar_bars_before_earlier_than_event_bar'
     assert records[2]['ts_utc'] == '2026-01-01T10:20:00+00:00'
     # result.v2 review rule: every fill lies inside its own bucket's [low, high].
     data = frame()
@@ -330,6 +335,50 @@ def test_catalog_entry():
     assert spec.get('markets', ['spot', 'futures']) == ['spot', 'futures']
     built = spec['build'](GOLDEN_PARAMS)
     assert issubclass(built['strategy'], p._FixedRiskMixin)
+
+
+@pytest.mark.parametrize('key', ['atr_stop_multiplier', 'risk_atr_period'])
+def test_atr_keys_not_declared_and_rejected_before_fetch(client, key):
+    # No risk_warmup prefix is fetched for event_window, so an ATR stop could not be served.
+    assert key not in p.TOOL_SPECS[TOOL]['param_schema_properties']
+    assert key not in p._catalog_tool(TOOL, p.TOOL_SPECS[TOOL], ['BTCUSDT'])['param_schema']['properties']
+    body = submit(client, {**ev(), 'risk_layer_enabled': True, 'atr_stop_multiplier': 2, 'risk_atr_period': 14})
+    assert (body['error_type'], body['error_message']) == (
+        'INVALID_PARAMS', "unknown parameter 'atr_stop_multiplier' (not in tool param_schema)")
+    body = submit(client, {**ev(), key: 2})
+    assert (body['error_type'], body['error_message']) == (
+        'INVALID_PARAMS', f"unknown parameter '{key}' (not in tool param_schema)")
+
+
+# --- exits: one entered event = one holding lifecycle, possibly several result.v2 rows ---------------
+
+PARTIAL = {**one('2026-01-01T05:00:00Z', bars_before=1, bars_after=3), 'risk_layer_enabled': True,
+           'stop_loss_pct': 2, 'tp1_r': 0.5, 'tp1_close_pct': 50, 'tp2_r': 10, 'tp2_close_pct': 50}
+
+
+def test_partial_take_profit_then_window_end_lists_both_exits(monkeypatch, tmp_path):
+    body = post(monkeypatch, tmp_path, PARTIAL)
+    assert body['result_status'] == 'success', body.get('error_message')
+    # Entry bar 4 open 104, stop 101.92, R 2.08: tp1 0.5R = 105.04 is touched by bar 5's high 106 ->
+    # half closed at bar 6 open 106; tp2 10R = 124.8 is never reached, so the window (held 4,5,6)
+    # closes the rest at bar 7 open 107.
+    assert legs(body) == [(4, '104', 6, '106', 'long'), (4, '104', 7, '107', 'long')]
+    record = events_of(body)[0]
+    assert record['exits'] == [dict(time='2026-01-01T06:00:00+00:00', price=106.0, reason='take_profit_levels'),
+                               dict(time='2026-01-01T07:00:00+00:00', price=107.0, reason='window_end')]
+    assert (record['exit_reason'], record['exit_price'], record['exit_utc']) == (
+        'window_end', 107.0, '2026-01-01T07:00:00+00:00')
+
+
+@pytest.mark.parametrize('params', [GOLDEN_PARAMS, PARTIAL, {**GOLDEN_PARAMS, 'direction': 'short'},
+                                    {**PARTIAL, 'events': EVENTS, 'tp2_r': 2}],
+                         ids=['golden', 'partial', 'short', 'partial_three_events'])
+def test_exits_count_equals_result_rows(monkeypatch, tmp_path, params):
+    body = post(monkeypatch, tmp_path, params)
+    entered = [r for r in events_of(body) if r['status'] == 'entered']
+    assert entered and sum(len(r['exits']) for r in entered) == len(body['trades'])
+    assert [(e['time'], e['price']) for r in entered for e in r['exits']] == [
+        (pd.Timestamp(t['closed_at'], unit='s', tz='UTC').isoformat(), float(t['exit_price'])) for t in body['trades']]
 
 
 if __name__ == '__main__':
