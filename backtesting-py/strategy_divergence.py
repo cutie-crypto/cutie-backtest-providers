@@ -171,18 +171,29 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
             if self.position:
                 self._risk_check_exit()
                 return
-            if (self.orders or len(self.data) >= self._main_bars
-                    or self._warmup_bars + len(self.data) < config['indicator_bars']
+            queue = self._pattern_confirm_queue
+            # P-PATCONF-2b2: with confirmation on, the signal bar s only registers; the entry gates
+            # are judged at the confirming bar k (_pattern_confirm_open_tagged).
+            if self._warmup_bars + len(self.data) < config['indicator_bars'] or queue is None and (
+                    self.orders or len(self.data) >= self._main_bars
                     or not self._time_allow_entry() or not self._filter_allow_entry()):
                 return
             signal = self._signals[self._warmup_bars + len(self.data) - 1]
             if signal is None:
                 return
             tag = DivergenceEntry(len(self.data)-1, signal.stop, signal.setup)
+            if queue is not None:
+                # P-PATCONF-2b2: the stop (and the setup) stay frozen at s and travel with the signal.
+                queue.register(len(self.data) - 1, "short" if short else "long",
+                               self.data.Low[-1] if short else self.data.High[-1], tag)
+                return
             size = self._risk_entry_size()
             entry = self.sell if short else self.buy
             order = entry(tag=tag) if size is None else entry(size=size, tag=tag)
             if self._risk.get("position_sizing_enabled"):
                 order._sizing_signal_bar = len(self.data) - 1
+
+        def _pattern_confirm_open(self, is_long, payload):
+            return self._pattern_confirm_open_tagged(is_long, payload)
 
     return DivergenceStrategy

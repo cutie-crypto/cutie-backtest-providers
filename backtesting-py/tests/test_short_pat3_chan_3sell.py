@@ -437,4 +437,8 @@ def test_chan_3buy_builder_and_catalog_source_bytes_unchanged():
          "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n")):
         assert expected['_build_chan_3buy'].count(old) == 1
         expected['_build_chan_3buy'] = expected['_build_chan_3buy'].replace(old,new)
+    # P-PATCONF-2b2: chan_3buy opts into pattern confirmation (decorator argument only).
+    old, new = '@_with_filter_config\n', '@_with_filter_config(pattern_confirm=True)\n'
+    assert expected['_build_chan_3buy'].count(old) == 1
+    expected['_build_chan_3buy'] = expected['_build_chan_3buy'].replace(old, new)
     assert sections(current) == expected
