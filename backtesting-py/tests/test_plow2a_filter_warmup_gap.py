@@ -64,12 +64,14 @@ def test_filter_on_gapped_warmup_fails_insufficient(tool, monkeypatch, tmp_path)
 
 @pytest.mark.parametrize('tool', TOOLS)
 def test_filter_on_contiguous_warmup_byte_identical_to_base(tool, monkeypatch, tmp_path):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     case = cap.cases()['on/' + tool]
     assert cap.snapshot(monkeypatch, tmp_path, *case) == GOLDEN['cases']['on/' + tool]
 
 
 @pytest.mark.parametrize('tool', TOOLS)
 def test_filter_off_gapped_warmup_byte_identical_to_base(tool, monkeypatch, tmp_path):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     case = cap.cases()['off/' + tool]
     assert 'filter_layer_enabled' not in case[1]
     expected = GOLDEN['cases']['off/' + tool]
