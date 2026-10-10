@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import re
 
 from backtesting import Strategy
+from backtesting._util import _indicator_warmup_nbars
 from strategy_time_layer import utc_datetime
 
 MAX_EVENTS = 50
@@ -89,6 +90,9 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
 
         def init(self):
             self._risk_init()
+            # Scheduling and break detection require next() to start at main bar 1.
+            # This is engine indicator warmup, not the external filter-history prefix.
+            assert _indicator_warmup_nbars(self) == 0, "event_window requires zero engine indicator warmup"
             opens = [utc_datetime(t) for t in self.data.index]
             period_ns = getattr(self, '_risk_timeframe_ns', None) or int(
                 (self.data.index[1] - self.data.index[0]).total_seconds() * 10**9)

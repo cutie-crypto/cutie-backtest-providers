@@ -528,6 +528,22 @@ BOTTOM_PATCONF2B1_OPEN = (
     b"    return BottomStrategy\n")
 
 
+# Q17b: only this confirmation-on target guard is allowed; historical goldens stay immutable.
+BOTTOM_Q17B_TARGET_GUARD = (
+    b"                            order.cancel()\n"
+    b"                process_orders()\n",
+    b"                            order.cancel()\n"
+    b"                        elif (self._pattern_confirm_queue is not None and\n"
+    b"                              self._broker._adjusted_price(order.size, opening) >= order.tag.target):\n"
+    b"                            # Confirmation carries s's target to k+1; no remaining reward means no entry.\n"
+    b"                            self.bottom_pattern_report['skipped_entry_count'] += 1\n"
+    b"                            self.bottom_pattern_report['skipped_entries'].append(dict(\n"
+    b"                                reason='entry_open_at_or_above_frozen_target', signal_bar=order.tag.signal_bar,\n"
+    b"                                entry_bar=len(self.data)-1, entry_open=opening, frozen_target=order.tag.target))\n"
+    b"                            order.cancel()\n"
+    b"                process_orders()\n")
+
+
 def test_long_source_and_golden_files_byte_unchanged():
     root=Path(__file__).resolve().parents[2]
     for relative in ('backtesting-py/strategy_bottom_patterns.py','backtesting-py/tests/test_9t3_patterns.py',
@@ -535,7 +551,8 @@ def test_long_source_and_golden_files_byte_unchanged():
         expected=subprocess.check_output(['git','show','32ae030:'+relative],cwd=root)
         if relative.endswith('strategy_bottom_patterns.py'):
             for allowed in (BOTTOM_7P3B2_GATE, BOTTOM_PLOW2B_SIGNAL_BAR, BOTTOM_PLIQ1_DECIMAL, BOTTOM_PLIQ1_EXIT,
-                            BOTTOM_PATCONF2B1_GATE, BOTTOM_PATCONF2B1_REGISTER, BOTTOM_PATCONF2B1_OPEN):
+                            BOTTOM_PATCONF2B1_GATE, BOTTOM_PATCONF2B1_REGISTER, BOTTOM_PATCONF2B1_OPEN,
+                            BOTTOM_Q17B_TARGET_GUARD):
                 assert expected.count(allowed[0])==1
                 expected=expected.replace(*allowed)
         assert (root/relative).read_bytes()==expected
