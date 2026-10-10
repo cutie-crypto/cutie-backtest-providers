@@ -3641,6 +3641,7 @@ class _TurtleGroupMixin(_TimeLayerMixin):
         self._group_entry_bar = None
         self._group_take = None
         self._group_exit_reasons = {}
+        self._group_n_stop = {}
 
     def _turtle_sync(self) -> bool:
         # Called after broker.next(): a queued market order has either filled or
@@ -3659,6 +3660,7 @@ class _TurtleGroupMixin(_TimeLayerMixin):
                 self._group_units = len(self.trades)
                 self._last_fill = self.trades[-1].entry_price
                 self._group_stop = self._last_fill - self._group_side * self._stop_multiple * self._group_n
+                self._group_n_stop[self._group_id] = (self._group_n, self._group_stop)
             elif self._group_units:
                 self.units_skipped += 1
             else:
@@ -7370,6 +7372,55 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
     tool for tool, spec in TOOL_SPECS.items()
     if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3", ROTATION_RUNNER)
 }, "Every unwired runner must be explicitly listed"
+# RS0：每个不接定仓 runner 的「定量允许键」白名单（⊆ POSITION_SIZE_KEYS）。本期全部为空集（行为不变），
+# 某个 runner 日后接好某个定仓键，只往这里放该键；请求里不在允许键内的定仓键仍在取数前拒绝。
+RUNNER_SIZING_ALLOWED_KEYS: dict[str, frozenset[str]] = {
+    "local.backtesting_py.rsi_scale_in_out": frozenset(),
+    "local.backtesting_py.grid": frozenset(),
+    "local.backtesting_py.dca": frozenset(),
+    "local.backtesting_py.turtle": frozenset(),
+    "local.backtesting_py.basket_ratio_sma_cross": frozenset(),
+    "local.backtesting_py.basket_ratio_roc": frozenset(),
+    "local.backtesting_py.basket_ratio_zscore": frozenset(),
+    "local.backtesting_py.portfolio_rotation": frozenset(),
+}  # 字面量逐个登记：新增不接定仓的 runner 忘了登记，下面的 import 期检查报红
+
+
+def _assert_runner_sizing_allowed_keys(allowed=None, unwired=None, size_keys=None, tool_specs=None):
+    allowed = RUNNER_SIZING_ALLOWED_KEYS if allowed is None else allowed
+    unwired = POSITION_SIZING_UNWIRED_TOOLS if unwired is None else unwired
+    size_keys = POSITION_SIZE_KEYS if size_keys is None else size_keys
+    tool_specs = TOOL_SPECS if tool_specs is None else tool_specs
+    assert set(allowed) == set(unwired), "RUNNER_SIZING_ALLOWED_KEYS must cover exactly the unwired runners"
+    for tool, keys in allowed.items():
+        assert frozenset(keys) <= size_keys, f"{tool}: allowed sizing keys must be a subset of POSITION_SIZE_KEYS"
+        assert frozenset(keys) <= set(tool_specs[tool]["param_schema_properties"]), \
+            f"{tool}: every allowed sizing key must appear in the runner's own param_schema_properties"
+
+
+_assert_runner_sizing_allowed_keys()
+
+_RUNNER_SIZING_HINTS = {
+    "local.backtesting_py.rsi_scale_in_out": "per-order amount is set by buy_notional / sell_notional",
+    "local.backtesting_py.grid": "per-grid amount is set by amount_per_grid",
+    "local.backtesting_py.dca": "per-period amount is set by amount and the add-on by dip_multiplier",
+    "local.backtesting_py.turtle": "risk per unit is set by unit_risk_pct and equity already compounds, "
+                                   "so position_size_risk_pct is not an alias and compound is not accepted",
+    "local.backtesting_py.basket_ratio_sma_cross": "margin per leg is set by margin_per_leg",
+    "local.backtesting_py.basket_ratio_roc": "margin per leg is set by margin_per_leg",
+    "local.backtesting_py.basket_ratio_zscore": "margin per leg is set by margin_per_leg",
+    ROTATION_TOOL_ID: "it rebalances to equal 1/K weights of net value and has no single-position sizing",
+}
+assert set(_RUNNER_SIZING_HINTS) == set(POSITION_SIZING_UNWIRED_TOOLS), "every unwired runner needs a sizing hint"
+
+
+def _unwired_sizing_rejected_message(tool_id, params):
+    """Message when params carry a sizing key outside the runner's allowed keys, else None."""
+    if not isinstance(params, dict) or tool_id not in POSITION_SIZING_UNWIRED_TOOLS:
+        return None
+    if not (set(params) & POSITION_SIZE_KEYS) - RUNNER_SIZING_ALLOWED_KEYS[tool_id]:
+        return None
+    return f"position sizing is not wired to this runner; {_RUNNER_SIZING_HINTS[tool_id]}"
 # 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
@@ -7682,7 +7733,8 @@ def _build_result_v2_trades(
 
 
 def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]],
-                         exit_reasons: Optional[dict[str, str]] = None) -> list[dict[str, Any]]:
+                         exit_reasons: Optional[dict[str, str]] = None,
+                         n_stop: Optional[dict[str, tuple[float, float]]] = None) -> list[dict[str, Any]]:
     """Map internal tags to the unchanged result.v2 sequence, or fail closed.
 
     Use the same stable (closed_at, opened_at) second-resolution ordering as
@@ -7705,8 +7757,21 @@ def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]],
             raise ValueError("turtle group mapping has missing tag or inconsistent trade sequence")
         groups.setdefault(tag, []).append(seq)
     return [{"group_id": group_id, "trade_seqs": seqs, "units": len(seqs),
-             **({"exit_reason": exit_reasons.get(group_id, "end_of_data")} if exit_reasons is not None else {})}
+             **({"exit_reason": exit_reasons.get(group_id, "end_of_data")} if exit_reasons is not None else {}),
+             **_turtle_group_n_stop(group_id, n_stop)}
             for group_id, seqs in groups.items()]
+
+
+def _turtle_group_n_stop(group_id: str, n_stop: Optional[dict[str, tuple[float, float]]]) -> dict[str, str]:
+    """开组 N 与整组最后一次成交后的止损价；与 trades 价格同口径（float 转 Decimal 规范串）。"""
+    if n_stop is None:
+        return {}
+    # n / stop 只是展示用元数据：缺组时只让这一组不出两键，不抛错，以免作废整份已算完的回测。
+    if group_id not in n_stop:
+        return {}
+    n, stop = n_stop[group_id]
+    return {"n": canonical_decimal_str(Decimal(str(float(n)))),
+            "stop": canonical_decimal_str(Decimal(str(float(stop))))}
 
 
 def _isolated_liquidation_fills(
@@ -8959,8 +9024,9 @@ async def run_backtest(
     effective_tool_id = tool_id or DEFAULT_TOOL_ID
     if effective_tool_id == ROTATION_TOOL_ID:
         # 集成 D：轮动是不接定仓的 runner，带定仓键与其它不接 runner 同形状在取数前拒（下方定仓检查走不到这里）
-        if isinstance(params, dict) and set(params) & POSITION_SIZE_KEYS:
-            return _position_sizing_failure("position sizing is not wired to this runner")
+        _rotation_sizing_message = _unwired_sizing_rejected_message(effective_tool_id, params)
+        if _rotation_sizing_message:
+            return _position_sizing_failure(_rotation_sizing_message)
         return rotation_response(body, bt_req, run_id, sys.modules[__name__])
 
     # --- Validate symbol ---
@@ -9022,8 +9088,9 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "provider_params must be an object")
     tool_spec = TOOL_SPECS[effective_tool_id]
     if set(params) & POSITION_SIZE_KEYS:
-        if effective_tool_id in POSITION_SIZING_UNWIRED_TOOLS:
-            return _position_sizing_failure("position sizing is not wired to this runner")
+        _unwired_sizing_message = _unwired_sizing_rejected_message(effective_tool_id, params)
+        if _unwired_sizing_message:
+            return _position_sizing_failure(_unwired_sizing_message)
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
@@ -9548,6 +9615,7 @@ async def run_backtest(
             }
             turtle_risk = strategy_class._turtle_risk
             reasons = None
+            n_stop = dict(stats["_strategy"]._group_n_stop)  # 关闭态无关，普通海龟也出
             if strategy_class._time_config is not None:
                 turtle_assumptions["turtle_time_layer"] = {
                     "gate": "entry_and_add",
@@ -9571,7 +9639,7 @@ async def run_backtest(
                     "same_bar_priority": "stop_before_time_expiry_before_take_profit_before_channel_before_add_before_entry",
                     "final_bar": "engine_finalize_trades_settlement",
                 }
-            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"], reasons)}
+            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"], reasons, n_stop)}
         f5_isolated_assumptions = {}
         if is_vwap and isolated:
             f5_isolated_assumptions = _build_isolated_margin_assumptions(
