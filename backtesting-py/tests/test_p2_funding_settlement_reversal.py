@@ -1,13 +1,14 @@
-"""P2 funding_settlement_reversal: 15m hand-computed candles, mocked Binance funding history (no network).
+"""P2 funding_settlement_reversal: 15m hand-computed candles, mocked central 1h funding series (no network).
 
-Grid: 15m candles from T0 (2026-01-01 00:00 UTC). Funding period k starts at T0 + k * 8h; its row is
-stamped a few ms after the boundary. The settlement point S_k = T0 + k * 8h judges on period k-1's row
-(the previous, already settled period) and, with lead_minutes=30, enters at the open of bar 32k - 2.
+Grid: 15m candles from T0 (2026-01-01 00:00 UTC). Funding period k starts at T0 + k * 8h; since P5 its rate
+is the 1h row opened at T0 + k * 8h - 1h (value in pct). The settlement point S_k = T0 + k * 8h judges on
+period k-1's row (the previous period) and, with lead_minutes=30, enters at the open of bar 32k - 2.
+The 1h hours that are not a judged row hold FILLER (a huge rate that would trade if ever read).
 """
-import hashlib
-import json
 import sys
 from pathlib import Path
+
+from decimal import Decimal
 
 import pandas as pd
 import pytest
@@ -35,18 +36,36 @@ def frame(n=BARS):
                         index=pd.date_range('2026-01-01', periods=n, freq='15min'))
 
 
-def rows_for(rates, jitter_ms=5):
-    return [dict(time_ms=(T0 + k * SLOT) * 1000 + jitter_ms, rate_type='Regular', rate=str(rate),
-                 mark_price='100') for k, rate in sorted(rates.items())]
+HOUR = 3600
+FILLER = '9.99'  # pct: any read of a non-judged hour would flip the direction / pass the threshold
+LABELS = ('BTC', 'Binance', 'funding_rate', '1h')
 
 
-def install(monkeypatch, tmp_path, rates, data=None, *, drop=(), honor_range=True, extra_rows=(),
-            fail=None, ohlcv_calls=None):
-    """rates: {period index k: rate string}. Periods missing from ``rates`` default to 0."""
-    full = {k: rates.get(k, '0.00000000') for k in range(-1, 8)}
-    for k in drop:
-        del full[k]
-    all_rows = rows_for(full) + list(extra_rows)
+def central_rows(rates):
+    """Hourly central rows covering the judged rows of ``rates`` ({k: pct string}); other hours FILLER."""
+    first, last = min(rates) * SLOT - HOUR, max(rates) * SLOT - HOUR
+    rows = {}
+    for ts in range(T0 + first, T0 + last + 1, HOUR):
+        rows[ts] = FILLER
+    for k, pct in rates.items():
+        rows[T0 + k * SLOT - HOUR] = pct
+    return rows
+
+
+def install(monkeypatch, tmp_path, rates, data=None, *, drop=(), honor_range=True, fail=None, ohlcv_calls=None,
+            last_period=None):
+    """rates: {period index k: rate string as a decimal FRACTION}. Periods missing from ``rates`` default to 0.
+
+    The mock central series holds the same rate in pct (x100, the unit of the central table).
+    """
+    full = {k: str(Decimal(rates.get(k, '0.00000000')) * 100) for k in range(-1, 8)}
+    store = central_rows(full)
+    for k in drop:  # the whole hour row of that period is absent (a hole in the 1h series)
+        del store[T0 + k * SLOT - HOUR]
+    if last_period is not None:  # the central table ends with that period's row (series ends early)
+        store = {ts: v for ts, v in store.items() if ts <= T0 + last_period * SLOT - HOUR}
+    if len(drop) == len(full):  # nothing left in the central table
+        store = {}
     calls = []
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
@@ -57,23 +76,22 @@ def install(monkeypatch, tmp_path, rates, data=None, *, drop=(), honor_range=Tru
             ohlcv_calls.append(a)
         return frame_data.copy()
 
-    def fetch_history(symbol, start_ms, end_ms, **kwargs):
-        calls.append(dict(symbol=symbol, start_ms=start_ms, end_ms=end_ms))
+    def fetch_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+        calls.append(dict(symbol=symbol, metric=metric, interval=interval, exchange=exchange,
+                          start_at=start_at, end_at=end_at))
         if fail:
             raise fail
-        picked = [r for r in all_rows if not honor_range or start_ms <= r['time_ms'] <= end_ms]
-        picked.sort(key=lambda r: r['time_ms'])
-        encoded = json.dumps(picked, sort_keys=True, separators=(',', ':')).encode()
-        return dict(exchange='binance', market='usdt_perpetual', symbol=symbol, start_ms=start_ms,
-                    end_ms=end_ms, fetched_at_ms=1, source='https://fapi.binance.com/fapi/v1/fundingRate',
-                    rows_sha256=hashlib.sha256(encoded).hexdigest(), rows=picked)
+        if (symbol, exchange, metric, interval) != LABELS:
+            return []
+        return [{'ts': ts, 'value': v} for ts, v in sorted(store.items())
+                if not honor_range or start_at <= ts <= end_at]
 
     def no_warmup(*a, **k):
         pytest.fail('funding_settlement_reversal must fetch zero warmup')
 
     monkeypatch.setattr(p, '_fetch_ohlcv', fetch_ohlcv)
     monkeypatch.setattr(p, '_fetch_template_warmup', no_warmup)
-    monkeypatch.setattr(p, 'fetch_history', fetch_history)
+    monkeypatch.setattr(p, '_fetch_artifact_metric_chunk', fetch_chunk)
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     return calls
 
@@ -113,7 +131,7 @@ def test_positive_rate_opens_short_and_exits_on_hold(monkeypatch, tmp_path):
     assert first['exit_reason'] == 'time_expiry'
     assert first['settlement_utc'] == '2026-01-01T08:00:00+00:00'
     assert first['judged_rate_period_utc'] == '2026-01-01T00:00:00+00:00'
-    assert first['judged_rate'] == '0.00060000'
+    assert first['judged_rate'] == '0.0006' and first['judged_rate_pct'] == '0.06'
 
 
 def test_negative_rate_opens_long(monkeypatch, tmp_path):
@@ -145,8 +163,8 @@ def test_current_period_rate_never_triggers(monkeypatch, tmp_path):
     body, calls = run(monkeypatch, tmp_path, {0: '0.00010000', 1: '0.00090000'}, honor_range=False)
     assert [(leg[0], leg[4]) for leg in legs(body)] == [(bar_of(2), 'short')]
     assert events(body)[0]['status'] == 'skipped' and events(body)[0]['reason'] == 'rate_below_threshold'
-    assert events(body)[0]['judged_rate'] == '0.00010000'
-    assert events(body)[1]['judged_rate'] == '0.00090000'
+    assert events(body)[0]['judged_rate_pct'] == '0.01'
+    assert events(body)[1]['judged_rate_pct'] == '0.09'
     # Every event judged on the period right before its settlement, never its own.
     for record in events(body):
         settlement = pd.Timestamp(record['settlement_utc'])
@@ -160,10 +178,12 @@ def test_previous_period_rate_triggers_even_if_current_is_flat(monkeypatch, tmp_
 
 def test_fetch_never_requests_the_settlement_period_row(monkeypatch, tmp_path):
     _, calls = run(monkeypatch, tmp_path, {0: '0.00090000'})
-    assert len(calls) == 1 and calls[0]['symbol'] == 'BTCUSDT'
-    # Last settlement in the window is k=6, whose previous period is k=5: nothing later is asked for.
-    assert calls[0]['start_ms'] == T0 * 1000
-    assert calls[0]['end_ms'] == (T0 + 5 * SLOT) * 1000 + 59_999
+    assert len(calls) == 1 and calls[0]['symbol'] == 'BTC'
+    # Last settlement in the window is k=6, whose previous period is k=5 (row ts T0 + 5*SLOT - 1h): the
+    # request (inclusive end) stops right after it, so the own-period row of S_6 is never asked for.
+    assert calls[0]['start_at'] == T0 - HOUR
+    assert calls[0]['end_at'] == T0 + 5 * SLOT - 1
+    assert calls[0]['end_at'] < T0 + 6 * SLOT - HOUR
 
 
 # ------------------------------------------------------------------ exits and one trade per settlement
@@ -212,7 +232,8 @@ def test_missing_period_fails_closed_before_ohlcv(monkeypatch, tmp_path):
     body = post()
     assert body['result_status'] == 'failed' and body['error_type'] == 'TIME_DATA_GAP'
     assert body['limitations']['reason'] == 'funding_data_gap'
-    assert body['limitations']['missing_period_utc'] == '2026-01-01T16:00:00+00:00'
+    assert body['limitations']['missing_row_utc'] == '2026-01-01T15:00:00+00:00'
+    assert body['limitations']['required_first_period_utc'] == '2026-01-01T00:00:00+00:00'
     assert body['error_message'].startswith('TIME_DATA_GAP:')
     assert ohlcv == []
 
@@ -226,19 +247,13 @@ def test_empty_series_and_unavailable_history_fail_closed(monkeypatch, tmp_path)
     assert body['error_type'] == 'TIME_DATA_GAP' and body['limitations']['reason'] == 'funding_history_unavailable'
 
 
-def test_non_8h_cadence_is_unsupported(monkeypatch, tmp_path):
-    extra = [dict(time_ms=(T0 + 4 * 3600) * 1000 + 3, rate_type='Regular', rate='0.0001', mark_price='100')]
-    install(monkeypatch, tmp_path, {0: '0.00090000'}, extra_rows=extra)
+def test_series_ending_early_names_the_missing_period(monkeypatch, tmp_path):
+    # Periods 4 and 5 absent at the END of the series (no mid-series gap): bind names the period/settlement.
+    install(monkeypatch, tmp_path, {0: '0.00090000'}, last_period=3)
     body = post()
-    assert body['error_type'] == 'TIME_DATA_GAP'
-    assert body['limitations']['reason'] == 'funding_interval_unsupported'
-
-
-def test_special_rows_are_ignored_not_judged(monkeypatch, tmp_path):
-    extra = [dict(time_ms=T0 * 1000 + 5, rate_type='Special', rate='0.0900', mark_price='100')]
-    body, _ = run(monkeypatch, tmp_path, {0: '0.00010000'}, extra_rows=extra)
-    assert body['trades'] == []
-    assert body['assumptions'][KIND]['funding_series']['special_rows_ignored'] == 1
+    assert body['limitations']['reason'] == 'funding_data_gap'
+    assert body['limitations']['missing_period_utc'] == '2026-01-02T08:00:00+00:00'
+    assert body['limitations']['settlement_utc'] == '2026-01-02T16:00:00+00:00'
 
 
 # ------------------------------------------------------------------ parameter and market validation
@@ -296,7 +311,7 @@ def test_exchange_binance_and_perp_symbol_forms_are_accepted(monkeypatch, tmp_pa
     assert post(dict(exchange='binance'))['result_status'] == 'success'
     calls = install(monkeypatch, tmp_path, {0: '0.00090000'})
     assert post(symbol='BTC/USDT:USDT')['result_status'] == 'success'
-    assert calls[0]['symbol'] == 'BTCUSDT'
+    assert calls[0]['symbol'] == 'BTC'
 
 
 def test_leverage_key_is_consumed(monkeypatch, tmp_path):
@@ -322,11 +337,14 @@ def test_leverage_one_off_state_skips_isolated_margin(monkeypatch, tmp_path, val
 def test_assumptions_state_basis_range_and_deviation(monkeypatch, tmp_path):
     body, _ = run(monkeypatch, tmp_path, {0: '0.00090000'})
     a = body['assumptions'][KIND]
-    assert a['rate_basis'] == 'previous_settled_rate'
-    assert '上一期已结算费率' in a['deviation_note'] and '偏差' in a['deviation_note']
+    assert a['rate_basis'] == 'previous_period_pre_settlement_1h_close'
+    assert a['data_source'] == 'central_metrics:coinglass_funding_rate_1h'
+    assert '结算前 1 小时收盘费率' in a['deviation_note'] and '偏差' in a['deviation_note']
+    assert '上一期已结算费率' not in a['deviation_note'] and a['judgement'] == a['deviation_note']
     series = a['funding_series']
     assert series['exchange'] == 'binance' and series['market'] == 'usdt_perpetual'
-    assert series['symbol'] == 'BTCUSDT' and series['interval_hours'] == 8
+    assert series['symbol'] == 'BTCUSDT' and series['central_symbol'] == 'BTC'
+    assert series['series_interval_hours'] == 1 and series['settlement_interval_hours'] == 8
     assert series['first_period_utc'] == '2026-01-01T00:00:00+00:00'
     assert series['last_period_utc'] == '2026-01-02T16:00:00+00:00'
     assert series['count'] == 6 and series['gap_policy'] == 'fail_closed'
