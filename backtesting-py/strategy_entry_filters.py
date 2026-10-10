@@ -23,6 +23,14 @@ FILTER_PARAM_SCHEMA_PROPERTIES = {
     'filter_supertrend_atr_period': {'type': 'integer', 'default': 10, 'minimum': 5, 'maximum': 30},
     'filter_supertrend_multiplier': {'type': 'number', 'default': 3, 'minimum': 1, 'maximum': 6},
 }
+# P-PATCONF-1: pattern confirmation is not a bar mask; a template must defer its own signal through
+# pattern_confirm_entries(). Kept apart from FILTER_PARAM_SCHEMA_PROPERTIES (published to every filter
+# template): the catalog merges these two only into templates wired for them; parse accepts both sets.
+PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES = {
+    'filter_pattern_confirm_enabled': {'type': 'boolean', 'default': False},
+    'filter_pattern_confirm_bars': {'type': 'integer', 'default': 2, 'minimum': 1, 'maximum': 5},
+}
+_PARSED_FILTER_PROPERTIES = {**FILTER_PARAM_SCHEMA_PROPERTIES, **PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES}
 
 
 @dataclass(frozen=True)
@@ -37,14 +45,16 @@ class FilterConfig:
     supertrend_enabled: bool = False
     supertrend_atr_period: int = 10
     supertrend_multiplier: float = 3
+    pattern_confirm_enabled: bool = False
+    pattern_confirm_bars: int = 2
 
     @classmethod
     def parse(cls, params: Mapping[str, Any]) -> FilterConfig:
         for key in params:
-            if key.startswith('filter_') and key not in FILTER_PARAM_SCHEMA_PROPERTIES:
+            if key.startswith('filter_') and key not in _PARSED_FILTER_PROPERTIES:
                 raise ValueError(f'INVALID_PARAMS:unknown filter parameter {key}')
-        values = {key: params.get(key, spec['default']) for key, spec in FILTER_PARAM_SCHEMA_PROPERTIES.items()}
-        for key, spec in FILTER_PARAM_SCHEMA_PROPERTIES.items():
+        values = {key: params.get(key, spec['default']) for key, spec in _PARSED_FILTER_PROPERTIES.items()}
+        for key, spec in _PARSED_FILTER_PROPERTIES.items():
             value = values[key]
             if spec['type'] == 'number':
                 try:
@@ -59,17 +69,20 @@ class FilterConfig:
                 raise ValueError(f'INVALID_PARAMS:{key} must be one of {spec["enum"]}')
             if 'minimum' in spec and not spec['minimum'] <= value <= spec['maximum']:
                 raise ValueError(f'INVALID_PARAMS:{key} must be within {spec["minimum"]}-{spec["maximum"]}')
-        if not values['filter_layer_enabled'] and any(values[k] != s['default'] for k, s in FILTER_PARAM_SCHEMA_PROPERTIES.items()):
+        if not values['filter_layer_enabled'] and any(values[k] != s['default'] for k, s in _PARSED_FILTER_PROPERTIES.items()):
             raise ValueError('INVALID_PARAMS:non-default filter parameters require filter_layer_enabled=true')
-        groups = {'ema': ('period',), 'macd': ('fast', 'slow'), 'supertrend': ('atr_period', 'multiplier')}
+        groups = {'ema': ('period',), 'macd': ('fast', 'slow'), 'supertrend': ('atr_period', 'multiplier'),
+                  'pattern_confirm': ('bars',)}
         for name, options in groups.items():
             if not values[f'filter_{name}_enabled'] and any(
-                values[f'filter_{name}_{option}'] != FILTER_PARAM_SCHEMA_PROPERTIES[f'filter_{name}_{option}']['default']
+                values[f'filter_{name}_{option}'] != _PARSED_FILTER_PROPERTIES[f'filter_{name}_{option}']['default']
                 for option in options
             ):
                 raise ValueError(f'INVALID_PARAMS:non-default {name} parameters require filter_{name}_enabled=true')
         if values['filter_layer_enabled'] and not any(values[f'filter_{name}_enabled'] for name in groups):
             raise ValueError('INVALID_PARAMS:enabled filter layer requires at least one filter')
+        if values['filter_timeframe'] and not any(values[f'filter_{name}_enabled'] for name in ('ema', 'macd', 'supertrend')):
+            raise ValueError('INVALID_PARAMS:filter_timeframe requires an ema, macd or supertrend filter')
         if values['filter_macd_fast'] >= values['filter_macd_slow']:
             raise ValueError('INVALID_PARAMS:filter_macd_fast must be less than filter_macd_slow')
         return cls(**{key.removeprefix('filter_').replace('layer_enabled', 'enabled'): value for key, value in values.items()})
@@ -98,6 +111,11 @@ class FilterConfig:
             predicates['supertrend'] = dict(rule='trend == -1' if short else 'trend == +1',
                                            atr_period=self.supertrend_atr_period,
                                            multiplier=self.supertrend_multiplier)
+        if self.pattern_confirm_enabled:
+            predicates['pattern_confirm'] = dict(
+                rule=('close < signal_bar_low' if short else 'close > signal_bar_high'),
+                window=f'signal_bar+1..signal_bar+{self.pattern_confirm_bars}', timeframe='primary',
+                entry='first_confirming_bar_close_then_next_open', unconfirmed='discard_signal')
         return dict(combine='AND', direction=direction, clock='closed_signal_bar',
                     scope='entry_only', fill='next_bar_open', required_bars=self.required_bars,
                     blocked_signal='discard_without_replay', predicates=predicates)
@@ -153,6 +171,37 @@ def _short_entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertre
         allowed &= np.isfinite(trend) & (trend == -1)
     allowed[:max(0, config.required_bars - 1)] = False
     return allowed
+
+
+def pattern_confirm_entries(signals: Any, high: Any, low: Any, close: Any, *, direction: str,
+                            bars: int) -> tuple[np.ndarray, np.ndarray]:
+    """Defer pattern signals to the first confirming close; unconfirmed signals are discarded.
+
+    Signal bar s confirms at the first k in s+1..s+bars whose close is strictly above high[s] (long)
+    or strictly below low[s] (short). Returns (entries, source): entries[k] is True when some pending
+    signal confirms at k; source[k] is that signal's bar (the latest one when several confirm at k),
+    -1 elsewhere. Causal: entries[k] reads only bars <= k. Non-finite closes or levels never confirm.
+    """
+    short = _is_short(direction)
+    if type(bars) is not int or not 1 <= bars <= 5:
+        raise ValueError('pattern confirmation bars must be an integer within 1-5')
+    signals = np.asarray(signals, dtype=bool)
+    level = np.asarray(low if short else high, dtype='float64')
+    close = np.asarray(close, dtype='float64')
+    n = len(signals)
+    if not len(level) == len(close) == n:
+        raise ValueError('pattern confirmation arrays must have equal length')
+    entries = np.zeros(n, dtype=bool)
+    source = np.full(n, -1, dtype=np.int64)
+    for s in np.flatnonzero(signals):
+        if not math.isfinite(level[s]):
+            continue
+        for k in range(s + 1, min(n, s + bars + 1)):
+            if math.isfinite(close[k]) and (close[k] < level[s] if short else close[k] > level[s]):
+                entries[k] = True
+                source[k] = max(source[k], s)
+                break
+    return entries, source
 
 
 class FilterHistoryError(ValueError):
