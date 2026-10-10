@@ -24,7 +24,10 @@ GOLDEN = json.loads((Path(__file__).parent / 'fixtures/plow2a_b48e65e.json').rea
 # SHORT-PAT-4's three tools postdate the b48e65e golden; their filter gate is covered in test_short_pat4_candles.py.
 SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
                     'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5 +2
-TOOLS = [tool for tool in cap.tools() if tool not in SHORT_PAT4]
+# P-EVENT0: event_window postdates b48e65e; its filter-on gapped-warmup guard and off-state golden are in
+# test_event0_event_window.py.
+EVENT0 = {'event_window'}
+TOOLS = [tool for tool in cap.tools() if tool not in SHORT_PAT4 | EVENT0]
 
 
 def test_template_table_is_the_43_filter_capable_templates():

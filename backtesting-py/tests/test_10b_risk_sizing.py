@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as p
 from strategy_position_sizing import risk_quantity, SizingRejected, POSITION_SIZE_KEYS
 from test_leverage_params import request
-from test_risk_overlay_compatibility import fingerprint, fixture_cases, enumerate_mixin_cases
+from test_risk_overlay_compatibility import fingerprint, fixture_cases, enumerate_mixin_cases, required_params
 
 PARAMS = dict(position_size_risk_pct=1, stop_loss_pct=2, risk_layer_enabled=True,
               position_size_qty_step=.5)
@@ -181,7 +181,7 @@ def test_catalog_and_builders_cover_actual_mixins():
             # 10-B2a: template-stop tools size against their own frozen stop (divergence rejects user stops).
             params = ({k: v for k, v in PARAMS.items() if k != 'stop_loss_pct'}
                       if tool in p.POSITION_SIZING_TEMPLATE_STOP_TOOLS else PARAMS)
-            cls = spec['build'](params)['strategy']
+            cls = spec['build']({**params, **required_params(tool)})['strategy']
             assert issubclass(cls, p._FixedRiskMixin)
             assert cls._risk['compound'] is False
     assert p.POSITION_SIZING_UNWIRED_TOOLS == {tool for tool,spec in p.TOOL_SPECS.items()

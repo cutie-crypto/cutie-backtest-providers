@@ -68,7 +68,10 @@ MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
 # SHORT-PAT-4 tools postdate the 11e8cfb baseline; their off state is pinned in test_short_pat4_candles.py.
 SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
                     'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5 +2
-LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4}
+# P-EVENT0: event_window postdates every baseline above; its off state is pinned by
+# tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
+EVENT0 = {'event_window'}
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0}
 
 
 @pytest.mark.parametrize('name', compat.PARAMS)
@@ -111,7 +114,7 @@ def test_schema_only_runtime_single_position_templates():
     actual = {tool.removeprefix('local.backtesting_py.') for tool, spec in provider.TOOL_SPECS.items()
               if 'time_layer_enabled' in spec['param_schema_properties']}
     assert actual == {compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS) | {"red_streak_rsi"}
-    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 == set(MIXINS)
+    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 == set(MIXINS)
 
 
 @pytest.mark.parametrize('name', MIXINS)
@@ -197,6 +200,10 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         tf = '15m'
     if name == 'cme_weekend_gap':
         params.update(direction='long', time_session_start='21:00', time_session_end='23:30')
+    if name in EVENT0:
+        # Entries at 07:00 (inside 06:00-10:00) exit 12 bars later at 19:00 (outside); the 03:00 one is gated.
+        params['events'] = [dict(ts_utc=f'2026-01-0{day}T{hour}:00:00Z', label=f'gate-{day}')
+                            for day, hour in ((2, '07'), (3, '07'), (4, '03'), (5, '07'))]
     cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
     ctx = TimeContext.build(cls._time_config, tf, data.index)
     cls._time_context = ctx
