@@ -1,6 +1,6 @@
 {
-  "_note": "来源：生产实跑 run_id=362234588539392000（2026-09-26，基础组合策略 basket_ratio_sma_cross，ETHUSDT 多/BTCUSDT 空，4h，账号为内部测试账号 Fan MetaMask 走助理任务产出）。K 线取自生产中心行情缓存导出的 600 根原样副本，按生产实际抓数口径丢弃末尾 1 根未闭合于 end_at 的 bar（_fetch_ohlcv_raw 内部 `end_ms = min(end_sec*1000, int(time.time()*1000))` 把 end 钳到抓数时的墙钟 now，production 抓数时那根 4h bar 尚未收盘；本 fixture 的 tests 直接 monkeypatch provider._fetch_ohlcv_raw，不复用这条钳制逻辑，所以显式裁到与生产同样的 599 根/腿，让窗口内 [start_at, end_at) 落在 539 根，与生产 data_manifests 的 kline_count 对齐）。trades_json/metrics_json/integrity_evidence 均为生产 run 记录原样副本，未做任何修改。instrument_rules 用币安 USDT 永续默认规则（生产 记录未落库该字段，取自 tests/fixtures/strategy_kernel_conformance_v3.json 里同两个 symbol 的既有 case，本地复现与生产逐笔一致，反证这组规则与生产一致）。\n\n2026-09-29 §2.6 每腿数量改为名义锚定后，expected 由新内核重生成，本 fixture 从「复现生产 run」变为「生产真实 K 线下的内核回归 golden」；改前生产 run 为 17 笔、净 pnl 25.588076780，改后 17 笔、净 pnl 4.418384620。",
-  "run_id": 362234588539392000,
+  "_note": "来源：2026-09-26 一次生产实跑（基础组合策略 basket_ratio_sma_cross，ETHUSDT 多/BTCUSDT 空，4h，内部测试账号走助理任务产出）。K 线取自生产中心行情缓存导出的 600 根原样副本，按生产实际抓数口径丢弃末尾 1 根未闭合于 end_at 的 bar（_fetch_ohlcv_raw 内部 `end_ms = min(end_sec*1000, int(time.time()*1000))` 把 end 钳到抓数时的墙钟 now，production 抓数时那根 4h bar 尚未收盘；本 fixture 的 tests 直接 monkeypatch provider._fetch_ohlcv_raw，不复用这条钳制逻辑，所以显式裁到与生产同样的 599 根/腿，让窗口内 [start_at, end_at) 落在 539 根，与生产 data_manifests 的 kline_count 对齐）。trades_json/metrics_json/integrity_evidence 均为生产 run 记录原样副本，未做任何修改。instrument_rules 用币安 USDT 永续默认规则（生产 记录未落库该字段，取自 tests/fixtures/strategy_kernel_conformance_v3.json 里同两个 symbol 的既有 case，本地复现与生产逐笔一致，反证这组规则与生产一致）。\n\n2026-09-29 §2.6 每腿数量改为名义锚定后，expected 由新内核重生成，本 fixture 从「复现生产 run」变为「生产真实 K 线下的内核回归 golden」；改前生产 run 为 17 笔、净 pnl 25.588076780，改后 17 笔、净 pnl 4.418384620。",
+  "run_id": "prod-golden-0926",
   "klines": {
     "a": [
       {
