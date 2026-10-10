@@ -1,14 +1,19 @@
-"""P2: pre-settlement funding-rate reversal (Binance USD-M perpetual, 15m only).
+"""P2/P5: pre-settlement funding-rate reversal (Binance USD-M perpetual, 15m only).
 
 At every 8h settlement point S (00/08/16 UTC) the template enters ``lead_minutes`` before S, against
-the sign of the PREVIOUS PERIOD's settled funding rate, and holds ``hold_minutes`` (or until the
-percent stop). Look-ahead rule: the period-S rate is only fixed at S, so the judgement reads the row
-of S - 8h, never the row of S. The funding request never asks past the last previous-period row.
+the sign of the PREVIOUS PERIOD's funding rate, and holds ``hold_minutes`` (or until the percent stop).
 
-The trading engine is the Q18 surprise engine (strategy_macro_events): ``actual`` = previous settled
-rate in percent, ``expected`` = 0, threshold = ``rate_threshold_pct``; ``rate >= +threshold`` -> short,
-``rate <= -threshold`` -> long. This module only plans the events, validates the funding series
-(fail-closed) and reports the evidence; it never touches the network itself.
+P5 data path: the rate comes from the central ``/metrics`` 1h series (symbol = base coin, exchange
+Binance, metric ``funding_rate``, value already in percent). The rate of a period P (= S - 8h) is the
+close of the 1h bar opened at P - 1h, i.e. the last hour BEFORE that period settled (a small, documented
+deviation from the settled value). Look-ahead rule: the judgement at S reads the row ts = S - 8h - 1h,
+never the row of S's own period (ts = S - 1h, available only at S). The fetch range ends before the
+last settlement's own-period row, so it is never even requested.
+
+The trading engine is the Q18 surprise engine (strategy_macro_events): ``actual`` = previous-period rate
+in percent (used as stored, no rescale), ``expected`` = 0, threshold = ``rate_threshold_pct``;
+``rate >= +threshold`` -> short, ``rate <= -threshold`` -> long. This module only plans the events,
+validates the series (fail-closed) and reports the evidence; it never touches the network itself.
 """
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -17,11 +22,16 @@ from decimal import Decimal, InvalidOperation
 from strategy_macro_events import FUNDING_KIND
 
 SLOT_SECONDS = 8 * 3600
-SLOT_MS = SLOT_SECONDS * 1000
-# A settlement row is stamped a few ms/s after the 8h boundary; anything further out is not an 8h cadence row.
-JITTER_MS = 60_000
+SERIES_STEP_SECONDS = 3600
 GRID_MINUTES = 15
 SOURCE = {"exchange": "binance", "market": "usdt_perpetual"}
+# Central /metrics labels, passed through byte-exact (symbol is the base coin, see central_symbol()).
+CENTRAL_EXCHANGE = "Binance"
+CENTRAL_METRIC = "funding_rate"
+CENTRAL_INTERVAL = "1h"
+RATE_BASIS = "previous_period_pre_settlement_1h_close"
+DATA_SOURCE = "central_metrics:coinglass_funding_rate_1h"
+SERIES_SOURCE = "central_metrics /metrics Binance funding_rate 1h (CoinGlass)"
 
 SCHEMA = {
     "lead_minutes": {"type": "integer", "default": 30, "minimum": 15, "maximum": 120},
@@ -29,10 +39,16 @@ SCHEMA = {
     "rate_threshold_pct": {"type": "number", "default": 0.05, "minimum": 0.005, "maximum": 1},
     "stop_loss_pct": {"type": "number", "default": 1, "minimum": 0.1, "maximum": 10},
 }
-DEVIATION_NOTE = (
-    "按上一期已结算费率判断，与实盘看到的预测费率有偏差 "
-    "(judged on the previous period's settled funding rate; the live predicted rate can differ)"
+DEVIATION_NOTE_ZH = (
+    "费率来源：CoinGlass 结算前 1 小时收盘费率（与币安结算值有微小偏差，90 期样本最大绝对偏差 0.0017 pct）；"
+    "仅覆盖中心库 1h 序列范围（当前自 2026-01-08 起）"
 )
+DEVIATION_NOTE_EN = (
+    "Rate source: CoinGlass funding rate, close of the last 1h bar before settlement (a small deviation "
+    "from the Binance settled value; maximum absolute deviation 0.0017 pct over a 90-period sample); "
+    "only covers the central 1h series range (currently from 2026-01-08)"
+)
+DEVIATION_NOTE = f"{DEVIATION_NOTE_ZH} ({DEVIATION_NOTE_EN})"
 
 
 class FundingSeriesError(Exception):
@@ -119,118 +135,123 @@ class FundingReversalConfig:
             settlement += SLOT_SECONDS
         return points
 
-    def fetch_range_ms(self, points, now_ms):
-        """Inclusive [start_ms, end_ms] covering only the PREVIOUS-period rows of ``points``."""
-        first_previous = points[0] - SLOT_SECONDS
-        last_previous = points[-1] - SLOT_SECONDS
-        return first_previous * 1000, min(last_previous * 1000 + JITTER_MS - 1, now_ms)
+    def fetch_range(self, points):
+        """Half-open ``[start_at, end_at)`` seconds covering only the previous-period rows of ``points``.
+
+        The first needed row is ``points[0] - 8h - 1h``; the last is ``points[-1] - 8h - 1h``. The range
+        ends right after that row (``points[-1] - 8h``), so the last settlement's own-period row
+        (``points[-1] - 1h``) is never requested.
+        """
+        return (points[0] - SLOT_SECONDS - SERIES_STEP_SECONDS, points[-1] - SLOT_SECONDS)
+
+    @staticmethod
+    def iso(seconds):
+        return _iso(seconds)
+
+    @staticmethod
+    def required_period_details(points):
+        return {
+            "required_first_period_utc": _iso(points[0] - SLOT_SECONDS),
+            "required_last_period_utc": _iso(points[-1] - SLOT_SECONDS),
+        }
 
     # ---- binding --------------------------------------------------------------------------------
-    def bind(self, points, history):
-        """Turn the fetched history into engine events; fail closed on any gap.
+    def bind(self, points, series):
+        """Turn the fetched central series into engine events; fail closed on any gap.
 
-        Only rows whose slot is a previous period of some point are ever read; a row of the
-        settlement's own period is ignored even when the caller's history contains it.
+        Only the row ``ts = S - 8h - 1h`` of each point is ever read; the series also holds the 1h rows
+        in between (including other points' own-period rows) and they are ignored.
+        ``series``: symbol (Binance perp symbol), central_symbol, rows (``_fetch_metric_series`` rows),
+        fetched_at_ms.
         """
-        symbol = history.get("symbol")
-        regular = {}
-        special_ignored = 0
-        for row in history.get("rows", ()):
-            if row.get("rate_type") != "Regular":
-                special_ignored += 1
-                continue
-            time_ms = row["time_ms"]
-            slot = time_ms // SLOT_MS
-            if time_ms - slot * SLOT_MS >= JITTER_MS:
-                raise FundingSeriesError(
-                    "funding_interval_unsupported",
-                    f"funding row at {_iso(time_ms // 1000)} is not on the 8h settlement cadence "
-                    f"(00/08/16 UTC); this template only supports 8h funding symbols",
-                    {"row_time_utc": _iso(time_ms // 1000), "symbol": symbol},
-                )
-            if slot in regular:
-                raise FundingSeriesError(
-                    "funding_interval_unsupported",
-                    f"two funding rows in the 8h period starting {_iso(slot * SLOT_SECONDS)}",
-                    {"period_utc": _iso(slot * SLOT_SECONDS), "symbol": symbol},
-                )
-            regular[slot] = row
+        symbol = series.get("symbol")
+        by_ts = {row["ts"]: row for row in series.get("rows", ())}
         events, used = [], []
         for settlement in points:
-            slot = settlement // SLOT_SECONDS - 1
-            row = regular.get(slot)
+            period = settlement - SLOT_SECONDS
+            row = by_ts.get(period - SERIES_STEP_SECONDS)
             if row is None:
                 raise FundingSeriesError(
                     "funding_data_gap",
-                    f"funding series has no settled rate for the period starting "
-                    f"{_iso(slot * SLOT_SECONDS)} (needed for the {_iso(settlement)} settlement); "
+                    f"funding series has no pre-settlement 1h rate for the period starting "
+                    f"{_iso(period)} (needed for the {_iso(settlement)} settlement); "
                     "this template does not run on a partial series",
                     {
                         "symbol": symbol,
-                        "missing_period_utc": _iso(slot * SLOT_SECONDS),
+                        "missing_period_utc": _iso(period),
                         "settlement_utc": _iso(settlement),
                         "required_first_period_utc": _iso(points[0] - SLOT_SECONDS),
                         "required_last_period_utc": _iso(points[-1] - SLOT_SECONDS),
                     },
                 )
             try:
-                rate = Decimal(str(row["rate"]))
+                rate_pct = Decimal(str(row["value"]))
             except (InvalidOperation, KeyError):
-                rate = None
-            if rate is None or not rate.is_finite():
+                rate_pct = None
+            if rate_pct is None or not rate_pct.is_finite():
                 raise FundingSeriesError(
-                    "funding_data_gap", f"funding row for the period {_iso(slot * SLOT_SECONDS)} is unreadable",
-                    {"symbol": symbol, "period_utc": _iso(slot * SLOT_SECONDS)})
-            rate_pct = rate * 100
+                    "funding_data_gap", f"funding row for the period {_iso(period)} is unreadable",
+                    {"symbol": symbol, "period_utc": _iso(period)})
             lead = self.values["lead_minutes"] * 60
             entry_ts = _utc(settlement - lead)
             events.append((
                 entry_ts,
                 f"funding_settlement_{_iso(settlement)}",
                 "0",
-                str(rate_pct),
+                str(row["value"]),
                 dict(
                     settlement_utc=_iso(settlement),
-                    judged_rate_period_utc=_iso(slot * SLOT_SECONDS),
-                    judged_rate_time_ms=row["time_ms"],
-                    judged_rate=str(rate),
-                    judged_rate_pct=str(rate_pct),
-                    rate_basis="previous_settled_rate",
+                    judged_rate_period_utc=_iso(period),
+                    judged_rate_row_ts=row["ts"],
+                    judged_rate_row_utc=_iso(row["ts"]),
+                    judged_rate_time_ms=row["ts"] * 1000,
+                    judged_rate=format(rate_pct.scaleb(-2), "f"),
+                    judged_rate_pct=str(row["value"]),
+                    rate_basis=RATE_BASIS,
                 ),
             ))
             used.append(row)
         self.events = tuple(events)
         first_period = points[0] - SLOT_SECONDS
         last_period = points[-1] - SLOT_SECONDS
+        rows = series.get("rows", ())
         self.assumptions.update(
             lead_minutes=self.values["lead_minutes"],
             hold_minutes=self.values["hold_minutes"],
             rate_threshold_pct=self.values["rate_threshold_pct"],
             stop_loss_pct=self.values["stop_loss_pct"],
-            rate_basis="previous_settled_rate",
-            rate_rule="previous settled rate >= +rate_threshold_pct -> short; <= -rate_threshold_pct -> long; "
-                      "in between no trade; boundary values trade",
+            rate_basis=RATE_BASIS,
+            rate_rule="previous-period pre-settlement 1h-close rate (pct) >= +rate_threshold_pct -> short; "
+                      "<= -rate_threshold_pct -> long; in between no trade; boundary values trade",
             judgement=DEVIATION_NOTE,
             deviation_note=DEVIATION_NOTE,
             entry="open of the 15m candle that starts lead_minutes before the settlement "
                   "(market order queued at the previous candle close)",
             exit="stop_loss_pct by candle high/low, or the first candle close at or after "
                  "entry + hold_minutes then the next open; one trade per settlement",
-            data_source="binance_usdm_public_funding_history",
+            data_source=DATA_SOURCE,
             warmup_bars=0,
             funding_series=dict(
                 **SOURCE,
                 symbol=symbol,
-                source=history.get("source"),
-                interval_hours=8,
+                central_symbol=series.get("central_symbol"),
+                central_exchange=CENTRAL_EXCHANGE,
+                central_metric=CENTRAL_METRIC,
+                source=SERIES_SOURCE,
+                unit="pct",
+                series_interval=CENTRAL_INTERVAL,
+                series_interval_hours=1,
+                settlement_interval_hours=SLOT_SECONDS // 3600,
+                settlement_cadence_verified=False,
+                row_rule="row ts = judged period start - 1h (1h bar close)",
                 first_period_utc=_iso(first_period),
                 last_period_utc=_iso(last_period),
-                first_ts=first_period,
-                last_ts=last_period,
+                first_ts=used[0]["ts"],
+                last_ts=used[-1]["ts"],
                 count=len(used),
-                rows_sha256=history.get("rows_sha256"),
-                fetched_at_ms=history.get("fetched_at_ms"),
-                special_rows_ignored=special_ignored,
+                rows_fetched=len(rows),
+                rows_sha256=rows[0]["revision"] if rows else None,
+                fetched_at_ms=series.get("fetched_at_ms"),
                 gap_policy="fail_closed",
                 current_period_rate_used=False,
             ),
@@ -245,10 +266,10 @@ class FundingReversalConfig:
             hold_minutes=self.values["hold_minutes"],
             rate_threshold_pct=self.values["rate_threshold_pct"],
             stop_loss_pct=self.values["stop_loss_pct"],
-            rate_basis="previous_settled_rate",
+            rate_basis=RATE_BASIS,
             judgement=DEVIATION_NOTE,
             deviation_note=DEVIATION_NOTE,
-            data_source="binance_usdm_public_funding_history",
+            data_source=DATA_SOURCE,
             warmup_bars=0,
             funding_series=dict(**SOURCE, count=0, gap_policy="fail_closed", current_period_rate_used=False),
             settlement_points=dict(count=0),

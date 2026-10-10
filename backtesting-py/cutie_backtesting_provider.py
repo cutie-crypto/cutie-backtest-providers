@@ -50,8 +50,12 @@ from strategy_range_breakout import RangeConfig, make_strategy, range_assumption
 from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
 from strategy_event_window import EventWindowConfig, make_event_window_strategy, event_window_assumptions, settle_event_window_exits, SCHEMA as EVENT_WINDOW_SCHEMA
 from strategy_macro_events import MacroConfig, make_macro_strategy, macro_assumptions, macro_report, SCHEMAS as MACRO_SCHEMAS
-from strategy_funding_reversal import FundingReversalConfig, FundingSeriesError, SCHEMA as FUNDING_REVERSAL_SCHEMA
-from funding_history import fetch_history
+from strategy_funding_reversal import (
+    CENTRAL_EXCHANGE as FUNDING_CENTRAL_EXCHANGE,
+    CENTRAL_INTERVAL as FUNDING_CENTRAL_INTERVAL,
+    CENTRAL_METRIC as FUNDING_CENTRAL_METRIC,
+    FundingReversalConfig, FundingSeriesError, SCHEMA as FUNDING_REVERSAL_SCHEMA,
+)
 from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -1520,6 +1524,15 @@ def _fetch_artifact_klines(
     return rows
 
 
+class CentralMetricTransportError(RuntimeError):
+    """Central ``/metrics`` was not reachable or answered with an error (P5).
+
+    Only raised when a caller opts in with ``raise_on_transport_error=True``; by default the
+    fetch keeps returning an empty list so the P1 fear & greed and generic feature streams
+    behave exactly as before.
+    """
+
+
 def _fetch_artifact_metric_chunk(
     *,
     symbol: str,
@@ -1528,14 +1541,21 @@ def _fetch_artifact_metric_chunk(
     exchange: str,
     start_at: int,
     end_at: int,
+    raise_on_transport_error: bool = False,
 ) -> list[dict[str, Any]]:
     """One inclusive ``/metrics`` request; every label is sent verbatim (P1).
 
     The caller owns label normalisation (quote-suffix stripping, exchange
     casing): the artifact path passes its historical values, the fear & greed
     template passes ``MARKET`` / ``alternative_me`` unchanged.
+
+    With ``raise_on_transport_error`` an unconfigured endpoint, a transport / parse error or
+    ``err_code != 100`` raises CentralMetricTransportError instead of returning ``[]``, so a
+    caller can tell "could not fetch" from a genuinely empty series (HTTP 200, err_code 100).
     """
     if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_TOKEN:
+        if raise_on_transport_error:
+            raise CentralMetricTransportError("central market data is not configured")
         return []
     params = {
         "symbol": symbol,
@@ -1566,9 +1586,17 @@ def _fetch_artifact_metric_chunk(
         TimeoutError,
         OSError,
         ValueError,
-    ):
+    ) as exc:
+        if raise_on_transport_error:
+            raise CentralMetricTransportError(
+                f"central /metrics request failed: {type(exc).__name__}"
+            ) from exc
         return []
     if body.get("err_code") != 100:
+        if raise_on_transport_error:
+            raise CentralMetricTransportError(
+                f"central /metrics returned err_code={body.get('err_code')}"
+            )
         return []
     return list((body.get("data") or {}).get("items") or [])
 
@@ -1641,6 +1669,7 @@ def _fetch_metric_series(
     start_at: int,
     end_at: int,
     path: str = "$.data_streams.feature",
+    raise_on_transport_error: bool = False,
 ) -> list[dict[str, Any]]:
     """Generic external metric series over the half-open ``[start_at, end_at)``.
 
@@ -1651,6 +1680,8 @@ def _fetch_metric_series(
     """
     raw_rows: list[dict[str, Any]] = []
     chunk_seconds = 90 * 24 * 60 * 60
+    # Forwarded only when opted in, so the default call is identical to the pre-P5 one.
+    chunk_options = {"raise_on_transport_error": True} if raise_on_transport_error else {}
     cursor = start_at
     while cursor < end_at:
         chunk_end = min(end_at, cursor + chunk_seconds)
@@ -1664,6 +1695,7 @@ def _fetch_metric_series(
                 exchange=exchange,
                 start_at=cursor,
                 end_at=chunk_end - 1,
+                **chunk_options,
             )
         )
         cursor = chunk_end
@@ -10608,30 +10640,57 @@ async def run_backtest(
 
 
 def _bind_funding_reversal(run_id, config, funding_symbol, start_at, end_at):
-    """P2: fetch the settled funding rows the window needs and bind them as events; fail closed.
+    """P5: fetch the central 1h funding series the window needs and bind it as events; fail closed.
 
-    Only previous-period rows are requested (see strategy_funding_reversal), so the period's own
-    rate never enters the run. Returns a failure response, or None when the config is bound.
+    Only the row ``ts = S - 8h - 1h`` of each settlement point is judged and the request ends before the
+    last settlement's own-period row (see strategy_funding_reversal), so a period's own rate never
+    enters the run. Returns a failure response, or None when the config is bound.
     """
     points = config.settlement_points(start_at, end_at)
     if not points:
         config.unbound_assumptions()
         return None
-    start_ms, end_ms = config.fetch_range_ms(points, int(time.time() * 1000))
+    fetch_start, fetch_end = config.fetch_range(points)
+    central_symbol = re.sub(r"(?:USDT|USDC|BUSD)$", "", funding_symbol.upper())
+    gap_details = {"symbol": funding_symbol, **config.required_period_details(points)}
     try:
-        history = fetch_history(funding_symbol, start_ms, end_ms)
-    except Exception as exc:
-        logger.warning("funding history fetch failed symbol=%s: %s", funding_symbol, exc)
+        rows = _fetch_metric_series(
+            symbol=central_symbol,
+            exchange=FUNDING_CENTRAL_EXCHANGE,
+            metric=FUNDING_CENTRAL_METRIC,
+            interval=FUNDING_CENTRAL_INTERVAL,
+            start_at=fetch_start,
+            end_at=fetch_end,
+            path=f"$.funding_series.{FUNDING_CENTRAL_METRIC}",
+            raise_on_transport_error=True,
+        )
+    except StrategyContractError as exc:
+        if exc.code != ERR_COVERAGE_INCOMPLETE:
+            raise
+        details = dict(gap_details)
+        if isinstance(exc.required, int):
+            details["missing_row_utc"] = config.iso(exc.required)
         return _business_failure(
             run_id,
             "TIME_DATA_GAP",
-            f"TIME_DATA_GAP:Binance funding history is unavailable for {funding_symbol} ({exc}); "
-            "this template does not run without the settled funding series",
+            f"TIME_DATA_GAP:funding series is incomplete for {funding_symbol} ({exc.message}); "
+            "this template does not run on a partial series",
+            reason="funding_data_gap",
+            details=details,
+        )
+    except Exception as exc:
+        logger.warning("funding series fetch failed symbol=%s: %s", funding_symbol, exc)
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:central funding series is unavailable for {funding_symbol} ({exc}); "
+            "this template does not run without the funding series",
             reason="funding_history_unavailable",
             details={"symbol": funding_symbol},
         )
     try:
-        config.bind(points, history)
+        config.bind(points, dict(symbol=funding_symbol, central_symbol=central_symbol, rows=rows,
+                                 fetched_at_ms=int(time.time() * 1000)))
     except FundingSeriesError as exc:
         return _business_failure(
             run_id,
