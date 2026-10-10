@@ -279,7 +279,9 @@ def baseline_provider():
                                   # Q18 postdates the frozen baseline; explicit L=1 bytes live in its route suite.
                                   'macro_release_breakout', 'macro_surprise_direction', 'fomc_reversal',
                                   # P2 postdates the frozen baseline; L=1 off state is pinned in test_p2_funding_settlement_reversal.py.
-                                  'funding_settlement_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
+                                  'funding_settlement_reversal',
+                                  # S3 postdates the frozen baseline; its route suite is test_s3_top_long_short_reversal.py.
+                                  'top_long_short_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
