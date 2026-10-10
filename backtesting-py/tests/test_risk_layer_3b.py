@@ -509,6 +509,8 @@ def test_new_schema_consumed_only_by_runtime_mixins(key):
             included = key == 'max_holding_bars'
         if tool_id.removeprefix('local.backtesting_py.') in p.MACRO_SCHEMAS:
             included = False  # Q18 intrinsic stops and elapsed-minute holds only.
+        if tool_id == p.FEAR_GREED_TOOL_ID:
+            included = False  # P1 fear_greed_scale_in publishes no time layer / max_holding_bars.
         assert (key in spec['param_schema_properties']) == included
 
 @pytest.mark.parametrize('side',['long','short'])
