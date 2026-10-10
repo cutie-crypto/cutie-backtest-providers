@@ -178,12 +178,24 @@ def test_range_cut_through_bar_rejected_before_fetch(monkeypatch):
     assert TestClient(p.app).post('/cutie/backtest', json=req).json()['error_type'] == 'INVALID_PARAMS'
 
 
-@pytest.mark.parametrize('missing', [0, 2, 8])
-def test_registered_missing_history_fails(monkeypatch, tmp_path, missing):
+def test_registered_missing_history_fails(monkeypatch, tmp_path):
+    # The strict window must still start at the cycle start; only interior holes are masked (P-LOW5-F1).
     data = market_frame()
-    response = http_run(monkeypatch, tmp_path, data.drop(data.index[missing]))
+    response = http_run(monkeypatch, tmp_path, data.drop(data.index[0]))
     assert response['error_type'] == 'INSUFFICIENT_DATA'
     assert response['limitations']['reason'] == 'time_history_incomplete'
+
+
+@pytest.mark.parametrize('missing', [2, 8])
+def test_registered_interior_missing_masks_cycle(monkeypatch, tmp_path, missing):
+    # P-LOW5-F1: 1 of 16 interior candles missing is within the tolerance; the one cycle is masked.
+    data = market_frame()
+    response = http_run(monkeypatch, tmp_path, data.drop(data.index[missing]))
+    assert response['result_status'] == 'success', response
+    assert response['trades'] == []
+    gaps = response['assumptions']['range_main_gaps']
+    assert (gaps['missing_bars'], gaps['masked_cycles']) == (
+        1, [{'cycle_start_utc': '2026-01-01T00:00:00+00:00', 'local_date': '2026-01-01'}])
 
 
 def test_strict_prefix_never_trades_before_start(monkeypatch, tmp_path):

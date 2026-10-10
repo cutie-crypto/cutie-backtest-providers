@@ -27,9 +27,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -1154,7 +1156,7 @@ def _fetch_template_warmup(
 def _fetch_strict_time_history(
     exchange_id: str, market: str, symbol: str, timeframe: str,
     start_sec: int, end_sec: int, definition,
-    *, observation_start=None,
+    *, observation_start=None, allow_gaps=False,
 ) -> pd.DataFrame:
     """Fetch complete time history + main interval; never degrade to warmup.
 
@@ -1163,7 +1165,7 @@ def _fetch_strict_time_history(
     """
     from datetime import datetime, timezone
     from strategy_time_layer import TimeConfig, TimeContext, utc_datetime
-    from strategy_time_series import TimeHistoryError, required_history_start, validate_time_history
+    from strategy_time_series import TimeHistoryError, required_history_start, time_history_gaps, validate_time_history
 
     start = datetime.fromtimestamp(start_sec, timezone.utc)
     end = datetime.fromtimestamp(end_sec, timezone.utc)
@@ -1178,13 +1180,17 @@ def _fetch_strict_time_history(
         result = fetched.iloc[selected].loc[:, list(_WARMUP_COLUMNS)].astype('float64').copy()
         if not np.isfinite(result.to_numpy()).all() or (result['Volume'] < 0).any():
             raise TimeHistoryError('nonfinite OHLCV or negative volume')
-        validate_time_history(result.index, since, end, context)
+        # P-LOW5-F1: allow_gaps reports interior holes (attrs) for the caller to judge and mask.
+        gaps = time_history_gaps(result.index, since, end, context) if allow_gaps else (
+            validate_time_history(result.index, since, end, context))
     except TimeHistoryError:
         raise
     except Exception as exc:
         raise TimeHistoryError('strict time-history source unavailable or invalid') from exc
     result.attrs['time_warmup_only'] = [utc_datetime(value) < start for value in result.index]
     result.attrs['time_history_start_utc'] = since.isoformat()
+    if gaps:
+        result.attrs['time_history_gaps'] = gaps
     return result
 
 
@@ -5791,14 +5797,12 @@ def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
 def _time_context_allowing_gaps(config: TimeConfig, timeframe: str, opens) -> TimeContext:
     """P-LOW5-VWAP: TimeContext.build minus its contiguity check; TimeContext.build itself stays strict.
 
-    Only VWAP uses it, after its run-level grid gate masked every UTC day holding a missing candle;
-    VWAP flattens at 00:00 UTC, so no position spans a masked day.
+    Used after a run-level gap gate masked everything a missing candle could reach: VWAP (every UTC day
+    holding one; it flattens at 00:00 UTC), F1 (whole local range cycles) and F2 (gap days and entries
+    whose holding window touches a gap), so no position spans a missing candle.
     """
-    from datetime import timedelta
-    from zoneinfo import ZoneInfo
-    config.validate_timeframe(timeframe)
-    return TimeContext(config, ZoneInfo(config.timezone_name),
-                       timedelta(milliseconds=fixed_timeframe_milliseconds(timeframe)), utc_datetime(opens[-1]))
+    from strategy_time_layer import gap_tolerant_context
+    return gap_tolerant_context(config, timeframe, opens)
 
 
 @_with_time_config
@@ -9536,9 +9540,33 @@ async def run_backtest(
 
     # --- Fetch OHLCV ---
     source_market = tool_spec.get("ohlcv_market", market)
+    range_main_gaps = None
     try:
         if range_config is not None:
-            history = _fetch_strict_time_history(exchange_id, market, symbol, timeframe, start_at, end_at, range_config.definition)
+            history = _fetch_strict_time_history(exchange_id, market, symbol, timeframe, start_at, end_at,
+                                                 range_config.definition, allow_gaps=True)
+            # P-LOW5-F1: interior holes within CENTRAL_GAP_TOLERANCE_RATIO (the VWAP / P-LOW3 formula, over
+            # the strict window) mask every local range cycle they reach; beyond it TIME_DATA_GAP + details.
+            range_gaps = history.attrs.get("time_history_gaps") or []
+            if range_gaps:
+                missing_bars = sum(n for _, _, n in range_gaps)
+                segments = [{"after": a.isoformat(), "before": b.isoformat(), "missing_bars": n} for a, b, n in range_gaps]
+                if len(history) < (len(history) + missing_bars) * CENTRAL_GAP_TOLERANCE_RATIO:
+                    return _business_failure(run_id, "TIME_DATA_GAP",
+                                             "TIME_DATA_GAP:range breakout main range gaps exceed tolerance",
+                                             reason="time_data_gap", details={"gap_count": len(range_gaps),
+                                             "missing_bars": missing_bars, "segments": segments})
+                step = timedelta(milliseconds=fixed_timeframe_milliseconds(timeframe))
+                cycles = range_config.masked_cycles(timeframe, [a + k * step for a, _, n in range_gaps
+                                                                for k in range(1, n + 1)])
+                strategy_class._range_masked_cycles = frozenset(c.start_utc for c in cycles)
+                zone = ZoneInfo(range_config.definition.timezone_name)
+                range_main_gaps = {"tolerance_ratio": CENTRAL_GAP_TOLERANCE_RATIO, "gap_count": len(range_gaps),
+                                   "missing_bars": missing_bars, "segments": segments,
+                                   "masked_cycles": [{"cycle_start_utc": c.start_utc.isoformat(),
+                                                      "local_date": c.start_utc.astimezone(zone).date().isoformat()}
+                                                     for c in cycles],
+                                   "masked": "whole_local_range_cycle_no_range_no_entry"}
             start = datetime.fromtimestamp(start_at, timezone.utc)
             prefix = history.loc[[utc_datetime(value) < start for value in history.index]]
             df = history.loc[[utc_datetime(value) >= start for value in history.index]].copy()
@@ -9646,16 +9674,45 @@ async def run_backtest(
                               "masked_utc_days": [day.isoformat() for day in gap_days],
                               "masked": "whole_utc_day_no_entry_vwap_restarts_next_utc_day"}
 
+    calendar_main_gaps = None
     if calendar_config is not None:
-        try:
-            TimeContext.build(calendar_config.clock, timeframe, df.index)
-        except TimeDataGapError as exc:
-            return _business_failure(run_id, "TIME_DATA_GAP", str(exc), reason="time_data_gap")
+        # P-LOW5-F2: a hole whose spacing is a whole number of candles, within CENTRAL_GAP_TOLERANCE_RATIO
+        # (the VWAP / P-LOW3 formula), skips entries on every local calendar day holding a missing candle
+        # and entries whose holding window touches one; beyond it TIME_DATA_GAP + details. Off-grid,
+        # duplicate or disordered opens still fail in TimeContext.build below.
+        cal_step_ms = fixed_timeframe_milliseconds(timeframe)
+        cal_stamps = [pd.Timestamp(t).value // 1000000 for t in df.index]
+        cal_spacings = [b - a for a, b in zip(cal_stamps, cal_stamps[1:])]
+        cal_gaps = ([] if any(d <= 0 or d % cal_step_ms for d in cal_spacings) else
+                    [(k, d // cal_step_ms - 1) for k, d in enumerate(cal_spacings, 1) if d > cal_step_ms])
+        if cal_gaps:
+            missing_bars = sum(n for _, n in cal_gaps)
+            segments = [{"after": utc_datetime(pd.Timestamp(df.index[k - 1])).isoformat(),
+                         "before": utc_datetime(pd.Timestamp(df.index[k])).isoformat(),
+                         "missing_bars": n} for k, n in cal_gaps]
+            if len(df) < (len(df) + missing_bars) * CENTRAL_GAP_TOLERANCE_RATIO:
+                return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:calendar main range gaps exceed tolerance",
+                                         reason="time_data_gap", details={"gap_count": len(cal_gaps),
+                                         "missing_bars": missing_bars, "segments": segments})
+            strategy_class._calendar_gap_opens = tuple(
+                utc_datetime(pd.Timestamp(cal_stamps[k - 1] + j * cal_step_ms, unit="ms"))
+                for k, n in cal_gaps for j in range(1, n + 1))
+            calendar_main_gaps = {"tolerance_ratio": CENTRAL_GAP_TOLERANCE_RATIO, "gap_count": len(cal_gaps),
+                                  "missing_bars": missing_bars, "segments": segments,
+                                  "masked_local_days": sorted({t.astimezone(ZoneInfo(calendar_config.clock.timezone_name))
+                                                               .date().isoformat()
+                                                               for t in strategy_class._calendar_gap_opens})}
+        else:
+            try:
+                TimeContext.build(calendar_config.clock, timeframe, df.index)
+            except TimeDataGapError as exc:
+                return _business_failure(run_id, "TIME_DATA_GAP", str(exc), reason="time_data_gap")
 
     if time_config is not None:
         try:
             strategy_class._time_context = (_time_context_allowing_gaps(time_config, timeframe, df.index)
-                                            if vwap_main_gaps else TimeContext.build(time_config, timeframe, df.index))
+                                            if vwap_main_gaps or range_main_gaps or calendar_main_gaps
+                                            else TimeContext.build(time_config, timeframe, df.index))
         except TimeDataGapError as e:
             return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
 
@@ -10003,6 +10060,11 @@ async def run_backtest(
                 **({"pattern_confirm": _pattern_confirm_assumptions(stats["_strategy"], effective_tool_id)}
                    if filter_config is not None and filter_config.pattern_confirm_enabled else {}),
                 **({"vwap_main_gaps": vwap_main_gaps} if vwap_main_gaps else {}),
+                **({"range_main_gaps": range_main_gaps} if range_main_gaps else {}),
+                **({"calendar_main_gaps": {**calendar_main_gaps,
+                    "masked_events": list(stats["_strategy"].calendar_gap_masked_events),
+                    "masked": "gap_local_day_no_entry_and_entries_whose_holding_window_touches_gap"}}
+                   if calendar_main_gaps else {}),
                 **risk_assumptions(risk),
                 **({"fibonacci_retracement": {
                     "swing_confirmation": "left_right_N_closed_bars_strict_extrema",

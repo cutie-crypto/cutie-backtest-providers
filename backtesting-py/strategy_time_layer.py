@@ -220,3 +220,16 @@ def expiry_due(*, holding_bars: int, entry_bar: int, bar: int,
                     break
             day += timedelta(days=1)
     return HoldingExpiry(bars_due or minutes_due or delay is not None, delay)
+
+
+def gap_tolerant_context(config: TimeConfig, timeframe: str, opens: Sequence[datetime]) -> TimeContext:
+    """P-LOW5: TimeContext.build minus its contiguity check; TimeContext.build itself stays strict.
+
+    Only for templates whose run already masked every period / entry a missing candle could reach
+    (VWAP: whole UTC days; F1: whole local range cycles; F2: gap days and holding windows touching a gap).
+    """
+    config.validate_timeframe(timeframe)
+    if len(opens) == 0:
+        raise TimeDataGapError('TIME_DATA_GAP:time layer requires bar timestamps')
+    return TimeContext(config, ZoneInfo(config.timezone_name),
+                       timedelta(milliseconds=fixed_timeframe_milliseconds(timeframe)), utc_datetime(opens[-1]))

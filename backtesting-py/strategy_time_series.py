@@ -113,6 +113,32 @@ def validate_time_history(opens: Sequence[datetime], required_start: datetime,
         raise TimeHistoryError(f'history ends at {expected.isoformat()}, requires {end.isoformat()}')
 
 
+def time_history_gaps(opens: Sequence[datetime], required_start: datetime,
+                      end_utc: datetime, context: TimeContext) -> list[tuple[datetime, datetime, int]]:
+    """P-LOW5-F1: validate_time_history, except that interior missing candles are reported, not raised.
+
+    The first candle must open at required_start and the last must close at end_utc; duplicates,
+    disorder and off-grid opens still raise. Returns (open before, open after, missing count) per hole.
+    validate_time_history itself stays strict for every other caller.
+    """
+    start, end = utc_datetime(required_start), utc_datetime(end_utc)
+    if end <= start or (end - start) % context.period:
+        raise ValueError('INVALID_PARAMS:history bounds must align with complete candles')
+    stamps = [utc_datetime(value) for value in opens]
+    if not stamps or stamps[0] != start:
+        raise TimeHistoryError(f'expected {start.isoformat()}, got {stamps[0].isoformat() if stamps else "none"}')
+    gaps = []
+    for current, following in zip(stamps, stamps[1:]):
+        spacing = following - current
+        if spacing <= timedelta(0) or spacing % context.period or following >= end:
+            raise TimeHistoryError(f'expected {(current + context.period).isoformat()}, got {following.isoformat()}')
+        if spacing != context.period:
+            gaps.append((current, following, spacing // context.period - 1))
+    if stamps[-1] + context.period != end:
+        raise TimeHistoryError(f'history ends at {(stamps[-1] + context.period).isoformat()}, requires {end.isoformat()}')
+    return gaps
+
+
 @dataclass(frozen=True)
 class SeriesBar:
     open_utc: datetime

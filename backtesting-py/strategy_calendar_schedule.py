@@ -1,4 +1,5 @@
 """Intrinsic wall-clock events, causal close decisions and next-open market fills."""
+import bisect
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -6,7 +7,8 @@ import re
 from zoneinfo import ZoneInfo
 
 from backtesting import Strategy
-from strategy_time_layer import TimeConfig, TimeContext, expiry_due, utc_datetime, fixed_timeframe_milliseconds, tzdata_version
+from strategy_time_layer import (TimeConfig, TimeContext, expiry_due, utc_datetime, fixed_timeframe_milliseconds, tzdata_version,
+                                 gap_tolerant_context)
 from strategy_risk_overlay import RiskState
 
 ENTRY_SCHEMA = {
@@ -76,12 +78,39 @@ class CalendarConfig:
                     raise ValueError('INVALID_PARAMS:calendar flatten cuts through a candle')
             day += timedelta(days=1)
 
+    def latest_exit_fill(self, entry, period, holding_bars):
+        """P-LOW5-F2: the latest open an entry filled at `entry` can exit-fill at (expiry_due's clocks).
+
+        Each configured clock is checked from the fill bar's close on; the first due decision fills at the
+        next open. Price exits (stop / take) only fill earlier. None: no clock bounds the holding.
+        """
+        first = entry + period  # the fill bar's own close is the first exit decision
+        candidates = []
+        if self.clock.max_holding_minutes:
+            candidates.append(max(entry + timedelta(minutes=self.clock.max_holding_minutes), first))
+        if holding_bars:
+            candidates.append(entry + holding_bars * period)
+        if self.clock.flatten_at:
+            zone = ZoneInfo(self.clock.timezone_name)
+            hour, minute = map(int, self.clock.flatten_at.split(':'))
+            day = entry.astimezone(zone).date()
+            for _ in range(15):
+                if self.clock.flatten_weekdays & (1 << day.weekday()):
+                    wall = datetime(day.year, day.month, day.day, hour, minute)
+                    cutoff = wall.replace(tzinfo=zone, fold=0).astimezone(timezone.utc)
+                    if cutoff.astimezone(zone).replace(tzinfo=None) == wall and entry <= cutoff:
+                        candidates.append(max(cutoff, first))
+                        break
+                day += timedelta(days=1)
+        return min(candidates) if candidates else None
+
 
 def make_calendar_strategy(mixin, config, risk, initial_capital):
     class CalendarScheduleStrategy(mixin, Strategy):
         _risk = risk
         _initial_capital = initial_capital
         _calendar_timeframe = None
+        _calendar_gap_opens = ()  # P-LOW5-F2: UTC opens of missing main-range candles (set by the run)
 
         def init(self):
             timeframe = self._calendar_timeframe
@@ -90,7 +119,13 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
                 if milliseconds <= 0 or milliseconds % 60000:
                     raise ValueError('INVALID_PARAMS:calendar requires fixed minute candles')
                 timeframe = f'{milliseconds//60000}m'
-            self._calendar_clock = TimeContext.build(config.clock, timeframe, self.data.index)
+            # P-LOW5-F2: holes only reach this engine after the run judged them within tolerance; every
+            # entry they could reach is skipped in _submit_entry.
+            build = gap_tolerant_context if self._calendar_gap_opens else TimeContext.build
+            self._calendar_clock = build(config.clock, timeframe, self.data.index)
+            self._gap_opens = sorted(map(utc_datetime, self._calendar_gap_opens))
+            self._gap_days = {t.astimezone(self._calendar_clock.zone).date() for t in self._gap_opens}
+            self.calendar_gap_masked_events = []
             config.validate_grid(timeframe, self.data.index[0], self._calendar_clock.decision_utc(self.data.index[-1]))
             self.calendar_events = []
             self._seen_events = set()
@@ -187,11 +222,28 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
             self._submit_entry(event, float(self.data.Close[-1]),
                 has_next=utc_datetime(opened) < self._calendar_clock.last_open_utc, bar=len(self.data)-1)
 
+        def _gap_mask_reason(self, event):
+            # P-LOW5-F2: no entry on a local day holding a missing candle, nor when the holding window
+            # (signal bar .. latest exit fill) touches one -- holding bars would otherwise count across it.
+            if event.astimezone(self._calendar_clock.zone).date() in self._gap_days:
+                return 'main_range_gap_day'
+            period = self._calendar_clock.period
+            end = config.latest_exit_fill(event, period, self._risk.get('max_holding_bars', 0))
+            k = bisect.bisect_left(self._gap_opens, event - period)
+            if k < len(self._gap_opens) and (end is None or self._gap_opens[k] <= end):
+                return 'main_range_gap_holding_window'
+            return None
+
         def _submit_entry(self, event, signal_close, *, has_next, bar):
             record = dict(event_utc=event.isoformat(), status='skipped', reason=None)
             self.calendar_events.append(record)
             if not has_next:
                 record['reason'] = 'no_next_open'
+                return
+            reason = self._gap_mask_reason(event) if self._gap_opens else None
+            if reason:
+                record['reason'] = reason
+                self.calendar_gap_masked_events.append(dict(event_utc=event.isoformat(), reason=reason))
                 return
             if self._time_config is not None and not self._time_context.allow_entry(event):
                 record['reason'] = 'entry_gate'
