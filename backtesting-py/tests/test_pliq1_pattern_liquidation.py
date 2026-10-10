@@ -143,8 +143,7 @@ def test_signal_on_liquidation_bar_places_no_order(monkeypatch, tmp_path, name, 
     # Pins the outcome only: no entry on the liquidation bar. That is guaranteed today by next()'s
     # position branch returning early (the liquidation close merely queues an order, so the position
     # is still open on that bar; a full-equity run ends via _OutOfMoneyError). The _isolated_blocked_bar
-    # guard (pattern / bottom, mirror of top) is unreachable defence: replacing it with a raise keeps
-    # this test green (opus55 + pi 1010 review), so it does NOT prove the guard itself.
+    # guard that used to follow it (pattern / bottom / top) was unreachable and is deleted (P-LOW4).
     data, k = q.scenario_frame(name, 'B1')
     signal_bar = q.SETUP[name]['fill'] - 1
     module, factory = ((strategy_bottom_patterns, 'make_bottom_strategy') if name in q.c.BOTTOM

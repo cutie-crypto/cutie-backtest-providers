@@ -299,7 +299,9 @@ def test_catalog_existing_entries_byte_identical():
     symbols = ['BTCUSDT', 'ETHUSDT']
     for tool_id, spec in baseline.TOOL_SPECS.items():
         old = json.dumps(baseline._catalog_tool(tool_id, spec, symbols), ensure_ascii=False, separators=(',', ':')).encode()
-        entry = api._catalog_tool(tool_id, api.TOOL_SPECS[tool_id], symbols)
+        # _catalog_tool 的 param_schema.properties 是 spec["param_schema_properties"] 本身（不拷贝）；下面会 pop 定仓键，
+        # 不深拷贝 spec 就会把全局 TOOL_SPECS 改掉，污染同进程后跑的 10b* / plow1 用例（not in tool param_schema）。
+        entry = api._catalog_tool(tool_id, deepcopy(api.TOOL_SPECS[tool_id]), symbols)
         properties = entry['param_schema']['properties']
         if tool_id in api.POSITION_SIZING_TEMPLATE_STOP_TOOLS or (
                 tool_id in getattr(baseline, 'POSITION_SIZING_PENDING_TOOLS', ())
@@ -323,6 +325,12 @@ def test_catalog_existing_entries_byte_identical():
             added = {key for key in properties if key.startswith('filter_')}
             assert added == set(FILTER_PARAM_SCHEMA_PROPERTIES), tool_id
             entry['param_schema']['properties'] = {k: v for k, v in properties.items() if k not in added}
+        # TURTLE-TIME：海龟 runner 接入时间层，只允许多出 time_* 9 键，其余逐字节不变。
+        if spec.get('runner') == api.TURTLE_RUNNER:
+            current = entry['param_schema']['properties']
+            added = {key for key in current if key.startswith('time_')}
+            assert added == set(api._TIME_PARAM_SCHEMA_PROPERTIES), tool_id
+            entry['param_schema']['properties'] = {k: v for k, v in current.items() if k not in added}
         new = json.dumps(entry, ensure_ascii=False, separators=(',', ':')).encode()
         assert old == new, tool_id
     # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。
