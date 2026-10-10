@@ -296,7 +296,7 @@ def test_catalog_existing_entries_byte_identical():
     root = Path(__file__).resolve().parents[2]
     # 集成 D：基线由 10-D 头 b0e150a（基于旧 main 09bd963）改为集成起点 main 32ae030；
     # 10-D 不改 provider，32ae030 即「轮动注册前」，旧基线会把 main 自 09bd963 起的 catalog 变化误判为轮动改动。
-    source = subprocess.check_output(['git', 'show', '32ae030:backtesting-py/cutie_backtesting_provider.py'], cwd=root, text=True)
+    source = subprocess.check_output(['git', 'show', '3fe906a:backtesting-py/cutie_backtesting_provider.py'], cwd=root, text=True)
     baseline = types.ModuleType('rotation_catalog_baseline')
     baseline.__file__ = str(root/'backtesting-py/cutie_backtesting_provider.py')
     sys.modules[baseline.__name__] = baseline
@@ -356,6 +356,7 @@ def test_catalog_existing_entries_byte_identical():
         'local.backtesting_py.event_window',  # P-EVENT0
         'local.backtesting_py.macro_release_breakout', 'local.backtesting_py.macro_surprise_direction',
         'local.backtesting_py.fomc_reversal',  # Q18
+        'local.backtesting_py.fear_greed_scale_in',  # P1
     }
     entry = api._catalog_tool(TOOL_ID, api.TOOL_SPECS[TOOL_ID], symbols)
     assert entry['markets'] == ['spot']

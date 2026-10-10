@@ -260,7 +260,7 @@ def test_http_raw_stop_percentage_and_dynamic_count(monkeypatch,tmp_path):
 @pytest.fixture(scope='module')
 def baseline_provider():
     # Read immutable source from the assigned starting SHA, never regenerate a fixture.
-    source=subprocess.check_output(['git','show','e25886e:backtesting-py/cutie_backtesting_provider.py'],text=True)
+    source=subprocess.check_output(['git','show','764fdf7:backtesting-py/cutie_backtesting_provider.py'],text=True)
     module=types.ModuleType('t22b_baseline_provider')
     module.__file__=p.__file__
     sys.modules[module.__name__]=module
