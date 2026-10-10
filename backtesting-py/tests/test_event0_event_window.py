@@ -67,6 +67,21 @@ def events_of(body):
     return body['assumptions']['event_window']['events']
 
 
+def check_event_records(body):
+    """Every event carries a status; an entered event's prices are the result.v2 row strings, not floats."""
+    from datetime import datetime
+    for record in events_of(body):
+        assert 'status' in record, record
+        if record['status'] != 'entered':
+            continue
+        opened = int(datetime.fromisoformat(record['entry_utc']).timestamp())
+        rows = [t for t in body['trades'] if t['opened_at'] == opened]
+        assert rows and type(record['entry_price']) is str and record['entry_price'] == rows[0]['entry_price']
+        assert [type(e['price']) for e in record['exits']] == [str] * len(rows)
+        assert [e['price'] for e in record['exits']] == [t['exit_price'] for t in rows]
+        assert type(record['exit_price']) is str and record['exit_price'] == rows[-1]['exit_price']
+
+
 def legs(body):
     return [((t['opened_at'] - T0) // H, t['entry_price'], (t['closed_at'] - T0) // H, t['exit_price'], t['side'])
             for t in body['trades']]
@@ -91,17 +106,17 @@ def test_golden_three_events_hand_computed(monkeypatch, tmp_path):
     records = events_of(body)
     assert [(r['label'], r['status']) for r in records] == [
         ('E1 on-grid', 'entered'), ('E2 in window', 'skipped_in_position'), ('E3 off-grid', 'entered')]
-    assert [(r['event_bar_utc'], r['entry_bar_utc'], r['exit_decision_bar_utc']) for r in records] == [
+    assert [(r['event_bar_utc'], r['entry_bar_utc'], r['planned_exit_decision_bar_utc']) for r in records] == [
         ('2026-01-01T05:00:00+00:00', '2026-01-01T04:00:00+00:00', '2026-01-01T06:00:00+00:00'),
         ('2026-01-01T06:00:00+00:00', '2026-01-01T05:00:00+00:00', '2026-01-01T07:00:00+00:00'),
         ('2026-01-01T10:00:00+00:00', '2026-01-01T09:00:00+00:00', '2026-01-01T11:00:00+00:00')]
     entered = [r for r in records if r['status'] == 'entered']
     assert [(r['entry_price'], r['exit_price'], r['exit_reason'], r['exit_utc']) for r in entered] == [
-        (104.0, 107.0, 'window_end', '2026-01-01T07:00:00+00:00'),
-        (109.0, 112.0, 'window_end', '2026-01-01T12:00:00+00:00')]
+        ('104', '107', 'window_end', '2026-01-01T07:00:00+00:00'),
+        ('109', '112', 'window_end', '2026-01-01T12:00:00+00:00')]
     assert [r['exits'] for r in entered] == [
-        [dict(time='2026-01-01T07:00:00+00:00', price=107.0, reason='window_end')],
-        [dict(time='2026-01-01T12:00:00+00:00', price=112.0, reason='window_end')]]
+        [dict(time='2026-01-01T07:00:00+00:00', price='107', reason='window_end')],
+        [dict(time='2026-01-01T12:00:00+00:00', price='112', reason='window_end')]]
     assert 'exits' not in records[1]
     assert body['assumptions']['event_window']['entry'] == 'open_of_bar_bars_before_earlier_than_event_bar'
     assert records[2]['ts_utc'] == '2026-01-01T10:20:00+00:00'
@@ -198,7 +213,7 @@ def test_stop_exit_precedes_window_end(monkeypatch, tmp_path, risk_layer, reason
     # window-end fill at bar 7.
     assert legs(body) == [(4, '104', 6, '95', 'long')]
     record = events_of(body)[0]
-    assert (record['status'], record['exit_reason'], record['exit_price']) == ('entered', reason, 95.0)
+    assert (record['status'], record['exit_reason'], record['exit_price']) == ('entered', reason, '95')
 
 
 def test_time_layer_closed_gate_is_recorded(monkeypatch, tmp_path):
@@ -365,10 +380,10 @@ def test_partial_take_profit_then_window_end_lists_both_exits(monkeypatch, tmp_p
     # closes the rest at bar 7 open 107.
     assert legs(body) == [(4, '104', 6, '106', 'long'), (4, '104', 7, '107', 'long')]
     record = events_of(body)[0]
-    assert record['exits'] == [dict(time='2026-01-01T06:00:00+00:00', price=106.0, reason='take_profit_levels'),
-                               dict(time='2026-01-01T07:00:00+00:00', price=107.0, reason='window_end')]
+    assert record['exits'] == [dict(time='2026-01-01T06:00:00+00:00', price='106', reason='take_profit_levels'),
+                               dict(time='2026-01-01T07:00:00+00:00', price='107', reason='window_end')]
     assert (record['exit_reason'], record['exit_price'], record['exit_utc']) == (
-        'window_end', 107.0, '2026-01-01T07:00:00+00:00')
+        'window_end', '107', '2026-01-01T07:00:00+00:00')
 
 
 def liquidation_frame():
@@ -397,9 +412,9 @@ def test_isolated_liquidation_exit_uses_settled_fill(monkeypatch, tmp_path):
     (detail,) = body['raw_report']['isolated_risk']['liquidations']
     assert (detail['seq'], detail['fill_price']) == (1, '98')
     record = events_of(body)[0]
-    assert record['exits'] == [dict(time='2026-01-01T05:00:00+00:00', price=98.0, reason='liquidation')]
+    assert record['exits'] == [dict(time='2026-01-01T05:00:00+00:00', price='98', reason='liquidation')]
     assert (record['exit_reason'], record['exit_price'], record['exit_utc']) == (
-        'liquidation', 98.0, '2026-01-01T05:00:00+00:00')
+        'liquidation', '98', '2026-01-01T05:00:00+00:00')
 
 
 def test_unlevered_short_blowout_is_insolvency(monkeypatch, tmp_path):
@@ -410,7 +425,7 @@ def test_unlevered_short_blowout_is_insolvency(monkeypatch, tmp_path):
     assert legs(body) == [(4, '104', 5, '255', 'short')]
     assert 'isolated_risk' not in body['raw_report']
     record = events_of(body)[0]
-    assert record['exits'] == [dict(time='2026-01-01T05:00:00+00:00', price=255.0, reason='insolvency')]
+    assert record['exits'] == [dict(time='2026-01-01T05:00:00+00:00', price='255', reason='insolvency')]
     assert record['exit_reason'] == 'insolvency'
 
 
@@ -431,10 +446,10 @@ def test_insolvent_on_the_entry_bar_is_entered_with_one_insolvency_exit(monkeypa
     assert legs(body) == [(4, '104', 4, '250', 'short')]
     record = events_of(body)[0]
     assert (record['status'], record['entry_utc'], record['entry_price']) == (
-        'entered', '2026-01-01T04:00:00+00:00', 104.0)
-    assert record['exits'] == [dict(time='2026-01-01T04:00:00+00:00', price=250.0, reason='insolvency')]
+        'entered', '2026-01-01T04:00:00+00:00', '104')
+    assert record['exits'] == [dict(time='2026-01-01T04:00:00+00:00', price='250', reason='insolvency')]
     assert (record['exit_reason'], record['exit_price'], record['exit_utc']) == (
-        'insolvency', 250.0, '2026-01-01T04:00:00+00:00')
+        'insolvency', '250', '2026-01-01T04:00:00+00:00')
 
 
 LAST_BAR = {**PARTIAL, 'bars_after': 19, 'tp2_r': 9, 'tp2_close_pct': 25, 'trailing_stop_pct': 50}
@@ -464,8 +479,8 @@ def test_settle_derives_outcomes_and_fails_closed_on_unattributable_rows():
         return events[0]
     record = settle([submitted()], [row], decisions={6: 'window_end'})
     assert (record['status'], record['entry_utc'], record['entry_price']) == (
-        'entered', '2026-01-01T04:00:00+00:00', 104.0)
-    assert record['exits'] == [dict(time='2026-01-01T07:00:00+00:00', price=107.0, reason='window_end')]
+        'entered', '2026-01-01T04:00:00+00:00', '104')
+    assert record['exits'] == [dict(time='2026-01-01T07:00:00+00:00', price='107', reason='window_end')]
     # No row opened on the entry bar: the order was dropped at the fill.
     assert settle([submitted()], []) == dict(submitted(), status='rejected_at_fill')
     # Reason priority: liquidation > the decision one bar earlier > the break bar > finalize.
@@ -496,10 +511,11 @@ def test_settle_derives_outcomes_and_fails_closed_on_unattributable_rows():
                               'insolvency_on_entry_bar'])
 def test_exits_count_equals_result_rows(monkeypatch, tmp_path, params, data):
     body = post(monkeypatch, tmp_path, params, data=data())
+    check_event_records(body)
     entered = [r for r in events_of(body) if r['status'] == 'entered']
     assert entered and sum(len(r['exits']) for r in entered) == len(body['trades'])
     assert [(e['time'], e['price']) for r in entered for e in r['exits']] == [
-        (pd.Timestamp(t['closed_at'], unit='s', tz='UTC').isoformat(), float(t['exit_price'])) for t in body['trades']]
+        (pd.Timestamp(t['closed_at'], unit='s', tz='UTC').isoformat(), t['exit_price']) for t in body['trades']]
 
 
 if __name__ == '__main__':

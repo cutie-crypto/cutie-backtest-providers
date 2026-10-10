@@ -123,7 +123,7 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
                 if exit_bar + 1 > last:
                     record.update(status='skipped_out_of_range', reason='window_past_data_end')
                     continue
-                record.update(entry_bar_utc=opens[entry].isoformat(), exit_decision_bar_utc=opens[exit_bar].isoformat())
+                record.update(entry_bar_utc=opens[entry].isoformat(), planned_exit_decision_bar_utc=opens[exit_bar].isoformat())
                 self._by_decision.setdefault(entry - 1, []).append(record)
             self._decisions = {}   # decision bar -> reason of the close order queued at its close
             self._next_bar = -1    # last bar next() ran on; short of the last bar => the run broke there
@@ -176,6 +176,13 @@ def settle_event_window_exits(events, trades_v2, isolated_risk, decisions, bar_o
     Reason per row: isolated liquidation (row listed in isolated_risk) > the decision whose close order
     filled at the row's closed_at > insolvency (row closed on the bar the run broke on) >
     engine_finalize_trades_settlement. exit_reason / exit_utc / exit_price follow the last exit.
+    Prices (entry_price, exits[].price, exit_price) are the decimal strings of the result.v2 rows, never floats.
+    Event status values: skipped_out_of_range, skipped_in_position, blocked_by_time_or_filter,
+    rejected_at_fill, entered, and skipped_run_ended (reason insolvency_break: the run broke on
+    insolvency before the event's decision bar, so no decision was ever made for it). Any event still
+    without a status at the end gets skipped_run_ended; with no early break that is impossible and raises.
+    planned_exit_decision_bar_utc is the plan fixed at init: a due close that meets an order still in
+    flight is postponed by one bar, the actual exits are in exits.
     A decision's close order fills at the next bar's open; one queued on the last bar is filled by the
     engine's finalize re-run at that bar's open, ahead of finalize's own close. Every decision is one
     close order on the single open trade, so it accounts for at most one row: rows sharing a closed_at
@@ -210,12 +217,19 @@ def settle_event_window_exits(events, trades_v2, isolated_risk, decisions, bar_o
         if not own:
             record.update(status='rejected_at_fill')
             continue
-        exits = [dict(time=_utc(row['closed_at']), price=float(row['exit_price']), reason=reason_of(row))
+        exits = [dict(time=_utc(row['closed_at']), price=row['exit_price'], reason=reason_of(row))
                  for row in own]
         record.update(status='entered', entry_utc=_utc(own[0]['opened_at']),
-                      entry_price=float(own[0]['entry_price']), exits=exits)
+                      entry_price=own[0]['entry_price'], exits=exits)
         last = exits[-1]
         record.update(exit_reason=last['reason'], exit_utc=last['time'], exit_price=last['price'])
+    for record in events:
+        if 'status' in record:
+            continue
+        if stop_bar is None:
+            raise ValueError(f"event_window: event ts_utc={record.get('ts_utc')} has no status "
+                             'although the run did not break early')
+        record.update(status='skipped_run_ended', reason='insolvency_break')
 
 
 def event_window_assumptions(config):
@@ -227,4 +241,9 @@ def event_window_assumptions(config):
                 note='事件根 = 开盘 ≤ ts < 下一根开盘；入场 = 事件根往前 bars_before 根的开盘价（前一根收盘下单）；'
                      '到期 = 持有第 bars_after 根收盘下单、下一根开盘成交；风控出场先到者优先。'
                      '一条 entered 事件 = 一次持仓生命周期，result.v2 可能有多行（分批止盈每次成交一行），'
-                     '逐次出场见该事件的 exits；exit_reason / exit_price 取最后一次出场。')
+                     '逐次出场见该事件的 exits；exit_reason / exit_price 取最后一次出场。'
+                     '价格（entry_price、exits[].price、exit_price）为 result.v2 行上的十进制字符串。'
+                     '事件 status：skipped_out_of_range / skipped_in_position / blocked_by_time_or_filter / '
+                     'rejected_at_fill / entered / skipped_run_ended（资不抵债提前结束，该事件的决策根未到，'
+                     'reason=insolvency_break）。'
+                     'planned_exit_decision_bar_utc 为初始化时的计划值，到期平仓遇在途挂单会顺延一根，实际出场见 exits。')

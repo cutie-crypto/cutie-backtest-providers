@@ -17,10 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from test_event0_event_window import falling, frame, legs, one, post, events_of
+from test_event0_event_window import (BLOWOUT, blowout_frame, check_event_records, events_of, falling, frame,
+                                      legs, one, post)
 
 GOLDEN = Path(__file__).parent / 'fixtures' / 'event0_window_scenarios_golden.json'
-GOLDEN_SHA256 = '404cd9350b01e5554a0d32e4447c1a0db49b8299cdb6d8866b29c39879c372df'
+GOLDEN_SHA256 = '7382c2ee13b6410e847608b6f02134a5c680482a205c46ffe3302885dbe765c7'
 LADDER = dict(risk_layer_enabled=True, stop_loss_pct=2, tp1_r=0.5, tp1_close_pct=50, tp2_r=10, tp2_close_pct=50)
 SCENARIOS = {
     # Long: entry bar 4 open 104, stop 101.92, R 2.08; tp1 105.04 touched by bar 5 high 106 -> half
@@ -33,11 +34,11 @@ SCENARIOS = {
 }
 EXPECTED = {
     'partial_tp_long': ([(4, '104', 6, '106', 'long'), (4, '104', 7, '107', 'long')],
-                        [('2026-01-01T06:00:00+00:00', 106.0, 'take_profit_levels'),
-                         ('2026-01-01T07:00:00+00:00', 107.0, 'window_end')]),
+                        [('2026-01-01T06:00:00+00:00', '106', 'take_profit_levels'),
+                         ('2026-01-01T07:00:00+00:00', '107', 'window_end')]),
     'partial_tp_short_futures': ([(4, '69', 5, '68', 'short'), (4, '69', 7, '66', 'short')],
-                                 [('2026-01-01T05:00:00+00:00', 68.0, 'take_profit_levels'),
-                                  ('2026-01-01T07:00:00+00:00', 66.0, 'window_end')]),
+                                 [('2026-01-01T05:00:00+00:00', '68', 'take_profit_levels'),
+                                  ('2026-01-01T07:00:00+00:00', '66', 'window_end')]),
 }
 
 
@@ -64,16 +65,34 @@ def test_scenario_hand_computed(monkeypatch, tmp_path, name):
     assert legs(body) == expected_legs
     (record,) = events_of(body)
     assert (record['status'], record['entry_utc'], record['entry_price']) == (
-        'entered', '2026-01-01T04:00:00+00:00', float(expected_legs[0][1]))
+        'entered', '2026-01-01T04:00:00+00:00', expected_legs[0][1])
     assert [(e['time'], e['price'], e['reason']) for e in record['exits']] == expected_exits
     assert (record['exit_utc'], record['exit_price'], record['exit_reason']) == expected_exits[-1]
     assert len(record['exits']) == len(body['trades'])
+    check_event_records(body)
 
 
 def test_golden_bytes_and_sha(monkeypatch, tmp_path):
     text = GOLDEN.read_text()
     assert hashlib.sha256(text.encode()).hexdigest() == GOLDEN_SHA256
     assert capture(monkeypatch, tmp_path) == text
+
+
+def test_events_after_an_insolvency_break_are_closed_out_with_a_status(monkeypatch, tmp_path):
+    # Short entered at bar 4 open 104; bar 5 gaps to 250 and wipes the account, the run breaks before next()
+    # sees bar 5. Event 15:00Z (decision bar 13) is never reached: no status without the end-of-run closing.
+    params = dict(events=[dict(ts_utc='2026-01-01T05:00:00Z', label='hit'),
+                          dict(ts_utc='2026-01-01T15:00:00Z', label='after break')],
+                  bars_before=1, bars_after=3, direction='short')
+    assert params['direction'] == BLOWOUT['direction']
+    body = post(monkeypatch, tmp_path, params, data=blowout_frame(), market='futures')
+    assert body['result_status'] == 'success', body.get('error_message')
+    first, second = events_of(body)
+    assert (first['status'], first['exits'][0]['reason']) == ('entered', 'insolvency')
+    assert (second['status'], second['reason']) == ('skipped_run_ended', 'insolvency_break')
+    assert 'exits' not in second and 'entry_price' not in second
+    assert all('status' in record for record in events_of(body))
+    check_event_records(body)
 
 
 if __name__ == '__main__':
