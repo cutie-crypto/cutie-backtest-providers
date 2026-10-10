@@ -151,3 +151,5 @@ def test_pending_list_empty_and_all_single_position_schemas_have_sizing_keys():
     for tool, spec in p.TOOL_SPECS.items():
         if tool not in p.POSITION_SIZING_UNWIRED_TOOLS:
             assert POSITION_SIZE_KEYS <= set(spec['param_schema_properties']), tool
+        else:
+            assert POSITION_SIZE_KEYS & set(spec['param_schema_properties']) == p.RUNNER_SIZING_ALLOWED_KEYS[tool], tool
