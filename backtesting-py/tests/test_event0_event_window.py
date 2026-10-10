@@ -437,6 +437,20 @@ def test_insolvent_on_the_entry_bar_is_entered_with_one_insolvency_exit(monkeypa
         'insolvency', 250.0, '2026-01-01T04:00:00+00:00')
 
 
+LAST_BAR = {**PARTIAL, 'bars_after': 19, 'tp2_r': 9, 'tp2_close_pct': 25, 'trailing_stop_pct': 50}
+
+
+def test_close_decided_on_the_last_bar_keeps_its_reason(monkeypatch, tmp_path):
+    body = post(monkeypatch, tmp_path, LAST_BAR)
+    assert body['result_status'] == 'success', body.get('error_message')
+    # tp1 as in PARTIAL (bar 6 open 106); tp2 9R = 122.72 is first touched by bar 22's high 123, so a quarter
+    # closes at bar 23 open 123 -- which defers the window close (held 4..22) to bar 23's close. Bar 23 is
+    # the last: finalize fills that queued close at the same open 123, ahead of its own close.
+    assert legs(body) == [(4, '104', 6, '106', 'long'), (4, '104', 23, '123', 'long'), (4, '104', 23, '123', 'long')]
+    assert [e['reason'] for e in events_of(body)[0]['exits']] == [
+        'take_profit_levels', 'take_profit_levels', 'window_end']
+
+
 def test_settle_derives_outcomes_and_fails_closed_on_unattributable_rows():
     from strategy_event_window import settle_event_window_exits
 
@@ -459,6 +473,14 @@ def test_settle_derives_outcomes_and_fails_closed_on_unattributable_rows():
     assert settle([submitted()], [row], None, {6: 'stop_loss'}, 7)['exit_reason'] == 'stop_loss'
     assert settle([submitted()], [row], None, {7: 'stop_loss'}, 7)['exit_reason'] == 'insolvency'
     assert settle([submitted()], [row], None, {5: 'stop_loss'})['exit_reason'] == 'engine_finalize_trades_settlement'
+    # One decision = one close order = at most one row: a second row at the same closed_at is the engine's.
+    twin = {**row, 'seq': 2}
+    assert [e['reason'] for e in settle([submitted()], [row, twin], None, {6: 'take_profit_levels'}, 7)['exits']] == [
+        'take_profit_levels', 'insolvency']
+    # A close queued on the last bar (11) is filled by finalize at that bar's open, after bar 10's decision.
+    late = [{**row, 'closed_at': T0 + 11 * H}, {**twin, 'closed_at': T0 + 11 * H}]
+    assert [e['reason'] for e in settle([submitted()], late, None, {10: 'take_profit_levels', 11: 'window_end'})[
+        'exits']] == ['take_profit_levels', 'window_end']
     with pytest.raises(ValueError, match='matches 0 submitted events'):
         settle([submitted()], [row, {**row, 'seq': 2, 'opened_at': T0 + 9 * H}])
     with pytest.raises(ValueError, match='matches 2 submitted events'):

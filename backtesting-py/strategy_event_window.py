@@ -173,12 +173,19 @@ def settle_event_window_exits(events, trades_v2, isolated_risk, decisions, bar_o
     A row belongs to the submitted event whose entry bar opened it (opened_at); no row => the order
     was dropped at the fill (rejected_at_fill). A row owned by no submitted event or by several breaks
     the construction (every fill comes from an event order) and raises.
-    Reason per row: isolated liquidation (row listed in isolated_risk) > the decision whose next open
-    is the row's closed_at > insolvency (row closed on the bar the run broke on) >
+    Reason per row: isolated liquidation (row listed in isolated_risk) > the decision whose close order
+    filled at the row's closed_at > insolvency (row closed on the bar the run broke on) >
     engine_finalize_trades_settlement. exit_reason / exit_utc / exit_price follow the last exit.
+    A decision's close order fills at the next bar's open; one queued on the last bar is filled by the
+    engine's finalize re-run at that bar's open, ahead of finalize's own close. Every decision is one
+    close order on the single open trade, so it accounts for at most one row: rows sharing a closed_at
+    take the decisions in bar order, and the rows left over are the engine's own closes (the
+    insolvency close at that bar's close, or finalize).
     """
     liquidated = {item['seq'] for item in (isolated_risk or {}).get('liquidations', ())}
-    by_fill = {bar_opens[bar + 1]: reason for bar, reason in decisions.items() if bar + 1 < len(bar_opens)}
+    by_fill = {}
+    for bar in sorted(decisions):
+        by_fill.setdefault(bar_opens[min(bar + 1, len(bar_opens) - 1)], []).append(decisions[bar])
     insolvent_at = bar_opens[stop_bar] if stop_bar is not None else None
     submitted = [record for record in events if record.get('status') == 'submitted']
     rows = {id(record): [] for record in submitted}
@@ -192,8 +199,8 @@ def settle_event_window_exits(events, trades_v2, isolated_risk, decisions, bar_o
     def reason_of(row):
         if row['seq'] in liquidated:
             return 'liquidation'
-        if row['closed_at'] in by_fill:
-            return by_fill[row['closed_at']]
+        if by_fill.get(row['closed_at']):
+            return by_fill[row['closed_at']].pop(0)
         if row['closed_at'] == insolvent_at:
             return 'insolvency'
         return 'engine_finalize_trades_settlement'
