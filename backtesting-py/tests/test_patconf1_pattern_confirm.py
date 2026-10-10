@@ -51,9 +51,9 @@ def test_golden_covers_every_filter_template():
     tools = base.filter_tools()
     assert len(tools) == 52 and EVENT0 <= set(tools)
     assert {k.split('/', 1)[1] for k in CASES if k.startswith('off/')} == set(tools) - EVENT0
-    assert (Path(__file__).parent / 'fixtures/event0_window_golden.json').is_file()
+    assert json.loads((Path(__file__).parent / 'fixtures/event0_window_golden.json').read_text())['trades']
     traded = {k.split('/', 1)[1] for k, v in GOLDEN['cases'].items() if json.loads(v)['trades']}
-    assert set(tools) - traded == {'volume_breakout'}
+    assert set(tools) - EVENT0 - traded == {'volume_breakout'}
 
 
 # --- schema / parse ---------------------------------------------------------------------------------
