@@ -53,7 +53,7 @@ def frame(name):
     return b.CASES[name][0]()
 
 
-def post(monkeypatch, tmp_path, name, params, data):
+def post(monkeypatch, tmp_path, name, params, data, capital='10000'):
     step = int((data.index[1] - data.index[0]).total_seconds())
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
@@ -63,7 +63,7 @@ def post(monkeypatch, tmp_path, name, params, data):
     request = dict(run_id='patconf2b1', provider_tool_id=PREFIX + name, provider_params=dict(params),
                    symbol='BTCUSDT', market='futures' if name in SHORT else 'spot', timeframe='1h',
                    start_at=int(data.index[0].timestamp()), end_at=int(data.index[-1].timestamp()) + step,
-                   initial_capital='10000', fee_bps='0', slippage_bps='0')
+                   initial_capital=capital, fee_bps='0', slippage_bps='0')
     body = TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json()
     assert body['result_status'] == 'success', body
     return body
@@ -353,3 +353,120 @@ def test_queue_hands_back_the_payload_of_the_latest_confirming_signal():
     assert queue.advance(3, 200) is None and queue.payload is None  # consumed: never confirms twice
     queue.register(3, 'short', 99)  # 2a callers: no payload
     assert queue.advance(4, 98) == (3, 'short') and queue.payload is None
+
+
+# --- placed orders (pi MEDIUM on 2b1): random signals with positions open, all 15 templates ----------------
+# Orders really fill here, so positions are open at many confirming bars. Every confirming bar k is checked
+# against the trades the run produced: a position open at k (entry bar <= k < exit bar) discards the signal
+# as position_or_order_open and places nothing; otherwise exactly one order is placed at k for source[k].
+
+PLACED_FACTORIES = {**{name: (strategy_pattern_template, 'make_pattern_strategy', None) for name in c.CANDLE},
+                    **{name: (strategy_pattern_template, 'make_short_pattern_strategy', None) for name in sp.SHORT},
+                    **{name: (strategy_bottom_patterns, 'make_bottom_strategy', strategy_bottom_patterns.BottomEntry)
+                       for name in c.BOTTOM},
+                    **{name: (strategy_top_patterns, 'make_top_strategy', strategy_top_patterns.TopEntry)
+                       for name in ('double_top', 'head_shoulders')}}
+
+
+def run_placed(name, seed, monkeypatch, tmp_path):
+    """One placed run; asserts every confirming bar and returns the bars discarded at an open position."""
+    rng = random.Random(1000 + seed)
+    n, bars = 90, rng.randint(1, 5)
+    data = random_frame(rng, n)
+    short = name in SHORT
+    # No signal within 5 bars of the end: no confirmation lands on the tail, every k has a next open.
+    signals = [20 <= i < n - 6 and rng.random() < .5 for i in range(n)]
+    module, factory, entry = PLACED_FACTORIES[name]
+    make = getattr(module, factory)
+    high, low = data['High'].to_numpy(), data['Low'].to_numpy()
+
+    def with_signals(*args, **kwargs):
+        class Injected(make(*args, **kwargs)):
+            def init(self):
+                super().init()
+                if entry is None:
+                    self._signals = list(signals)
+                elif short:  # stop above, target below
+                    self._signals = [entry(i, high[i] + 2, low[i] - 3) if on else None for i, on in enumerate(signals)]
+                else:
+                    self._signals = [entry(i, low[i] - 2, high[i] + 3) if on else None for i, on in enumerate(signals)]
+        return Injected
+    monkeypatch.setattr(module, factory, with_signals)
+    registered, runs = [], []
+    register, run = PatternConfirmQueue.register, Backtest.run
+
+    def record_register(self, s, *args, **kwargs):
+        registered.append(s)
+        return register(self, s, *args, **kwargs)
+
+    def record_run(self, *args, **kwargs):
+        runs.append(run(self, *args, **kwargs))
+        return runs[-1]
+    monkeypatch.setattr(PatternConfirmQueue, 'register', record_register)
+    monkeypatch.setattr(Backtest, 'run', record_run)
+    orders = record_orders(monkeypatch)  # real orders: they fill at k + 1 and hold positions
+    body = post(monkeypatch, tmp_path, name, {**LAYER, 'filter_pattern_confirm_bars': bars}, data,
+                capital='100000000')
+    trades = runs[-1]['_trades']
+    spans = list(zip(trades['EntryBar'], trades['ExitBar']))
+
+    def held(k):
+        return any(e <= k < x for e, x in spans)
+    entries, source = pattern_confirm_entries([i in registered for i in range(n)], data['High'], data['Low'],
+                                              data['Close'], direction='short' if short else 'long', bars=bars)
+    confirmed = list(np.flatnonzero(entries))
+    assert confirmed and all(k < n - 1 for k in confirmed)
+    blocked = [k for k in confirmed if held(k)]
+    placed = [k for k in confirmed if not held(k)]
+    assert [bar for bar, _ in orders] == placed  # no order at a bar with an open position
+    assert [tag.signal_bar for _, tag in orders] == [source[k] for k in placed]
+    assert all(e - 1 in placed for e in trades['EntryBar'])  # every fill comes from one of those orders
+    counts = body['assumptions']['pattern_confirm']
+    # confirmed counts signals, entries count bars: the signals beaten at the same k are superseded
+    assert counts['registered'] == len(registered)
+    assert counts['confirmed'] - counts['discarded']['superseded_by_later_signal'] == len(confirmed)
+    assert counts['submitted'] == len(placed)
+    assert counts['discarded']['position_or_order_open'] == len(blocked)
+    return blocked
+
+
+@pytest.mark.parametrize('seed', range(4))
+@pytest.mark.parametrize('name', sorted(PLACED_FACTORIES))
+def test_placed_random_signals_discard_at_an_open_position_without_a_second_order(name, seed, monkeypatch,
+                                                                                  tmp_path):
+    run_placed(name, seed, monkeypatch, tmp_path)
+
+
+def test_placed_random_runs_do_hit_open_positions(tmp_path):
+    # The suite above is only evidence if open positions really block confirmations on these seeds.
+    for name in sorted(PLACED_FACTORIES):
+        hits = 0
+        for seed in range(4):
+            with pytest.MonkeyPatch.context() as mp:
+                hits += len(run_placed(name, seed, mp, tmp_path))
+        assert hits >= 1, name
+
+
+# --- the frozen-stop skip (guarded_process_orders) still applies to a confirmed order ---------------------
+
+REPORT_KEY = {'bullish_engulfing': 'candle_pattern', 'double_top': 'top_pattern'}
+
+
+@pytest.mark.parametrize('name', sorted(REPORT_KEY))
+def test_confirmed_order_opening_beyond_the_frozen_stop_is_skipped(name, monkeypatch, tmp_path):
+    data = frame(name)
+    s, frozen = signal_of(monkeypatch, tmp_path, name, data)
+    short = name in SHORT
+    level = data['Low' if short else 'High'].iloc[s]
+    set_close(data, s + 1, level - 1 if short else level + 1)  # k = s + 1, order placed at k
+    gap = frozen.stop + 0.5 if short else frozen.stop - 0.5  # Open[k + 1] beyond the stop frozen at s
+    set_bar(data, s + 2, gap, gap + 0.5, gap - 0.5, gap)
+    assert signal_of(monkeypatch, tmp_path, name, data) == (s, frozen)
+    orders = record_orders(monkeypatch)
+    body = post(monkeypatch, tmp_path, name, {**LAYER, 'filter_pattern_confirm_bars': 1}, data)
+    assert [(bar, tag) for bar, tag in orders if tag.signal_bar == s] == [(s + 1, frozen)]
+    assert all(bar != s + 2 for bar, _ in opened(body, data))
+    skipped = body['raw_report'][REPORT_KEY[name]]['skipped_entries']
+    assert [(e['signal_bar'], e['entry_bar'], e['frozen_stop']) for e in skipped if e['signal_bar'] == s] == [
+        (s, s + 2, frozen.stop)]
+    assert body['assumptions']['pattern_confirm']['submitted'] >= 1
