@@ -9394,8 +9394,6 @@ async def run_backtest(
             **_leverage_backtest_kwargs(leverage),
         )
         stats = bt.run()
-        if event_window_config is not None:
-            stats["_strategy"].event_window_finish()
         if calendar_config is not None:
             for event in stats["_strategy"].calendar_events:
                 if event["status"] == "filled" and "exit_reason" not in event:
@@ -9733,9 +9731,11 @@ async def run_backtest(
             },
         })
         if event_window_config is not None:
-            # After result.v2 and isolated_risk are final: exits carry the settled rows, not broker fills.
+            # After result.v2 and isolated_risk are final: every submitted event's outcome (entered /
+            # rejected_at_fill, exits) is derived from the settled rows, never from live broker fills.
             settle_event_window_exits(response_body["assumptions"]["event_window"]["events"],
-                                      response_body["trades"], response_body["raw_report"].get("isolated_risk"))
+                                      response_body["trades"], response_body["raw_report"].get("isolated_risk"),
+                                      **stats["_strategy"].event_window_log)
         return _bounded_template_response(run_id, response_body)
 
     except Exception as e:
