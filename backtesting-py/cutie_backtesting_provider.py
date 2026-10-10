@@ -3038,6 +3038,18 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         """Entry for a confirmed signal; templates with their own entry path override it (2b1)."""
         return self._risk_open(is_long)
 
+    def _pattern_confirm_gate(self) -> Optional[str]:
+        """The shared entry gates of a confirmed signal, judged at the confirming bar k (2b1 / 2b2)."""
+        # Unreachable on the confirmation path; if ever hit, the call-order premise has been broken
+        # (_pattern_confirm_advance files it under position_or_order_open).
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+            return "isolated_liquidation_bar"
+        if not self._time_allow_entry():
+            return "time_gate"
+        if not self._filter_allow_entry():
+            return "filter_gate"
+        return None
+
     def _pattern_confirm_open_tagged(self, is_long: bool, tag) -> Optional[str]:
         """P-PATCONF-2b1: confirmed entry of the self-entering pattern templates (candle / bottom / top).
 
@@ -3046,15 +3058,10 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         liquidation-bar guard of _risk_open. The tail (no next open) is discarded by
         _pattern_confirm_advance before this is called.
         """
+        blocked = self._pattern_confirm_gate()
+        if blocked is not None:
+            return blocked
         bar = len(self.data) - 1
-        # Unreachable on the confirmation path; if ever hit, the call-order premise has been broken
-        # (_pattern_confirm_advance files it under position_or_order_open).
-        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == bar:
-            return "isolated_liquidation_bar"
-        if not self._time_allow_entry():
-            return "time_gate"
-        if not self._filter_allow_entry():
-            return "filter_gate"
         size = self._risk_entry_size()
         if is_long:
             order = self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
@@ -5674,7 +5681,7 @@ def _time_context_allowing_gaps(config: TimeConfig, timeframe: str, opens) -> Ti
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """UTC daily, causal VWAP; frozen signal prices and shared expiry arbitration."""
     properties = TOOL_SPECS["local.backtesting_py.vwap_reversion"]["param_schema_properties"]
@@ -5841,6 +5848,13 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                     self.position.close()
                 return
             opened = utc_datetime(self.data.index[-1])
+            queue = self._pattern_confirm_queue
+            if queue is not None:
+                # P-PATCONF-2b2: with confirmation on, s only registers its UTC day; the clock gates,
+                # the time / filter gates and the risk state are all judged at the confirming bar k.
+                if self.data.Close[-1] <= value * (1 - deviation / 100):
+                    queue.register(bar, "long", self.data.High[-1], opened.date())
+                return
             if self.orders or opened >= self._f5_clock.last_open_utc:
                 return
             if self._f5_clock.decision_utc(opened).date() != opened.date():
@@ -5849,6 +5863,21 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                 return
             if not self._time_allow_entry() or not self._filter_allow_entry():
                 return
+            self._f5_enter()
+
+        def _pattern_confirm_open(self, is_long, signal_day):
+            # The clock gates re-judged at k: k is not the run's last open, and the order placed at k
+            # fills on the signal's UTC day (VWAP and the position both end at 00:00 UTC).
+            opened = utc_datetime(self.data.index[-1])
+            if opened >= self._f5_clock.last_open_utc or self._f5_clock.decision_utc(opened).date() != signal_day:
+                return "template_gate"
+            blocked = self._pattern_confirm_gate()
+            if blocked is None:
+                self._f5_enter()
+            return blocked
+
+        def _f5_enter(self):
+            # Risk state frozen at the decision bar (s, or k under confirmation) from its close.
             self._risk_prepare_entry()
             self._f5_frozen = initial_risk_state(risk=risk, entry_price=self.data.Close[-1], direction="long",
                 atr_value=getattr(self, "_risk_entry_atr", None))
@@ -5863,7 +5892,7 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Jessie #18: exact Nth red close + RSI, frozen levels and shared 3b expiry."""
     properties = TOOL_SPECS["local.backtesting_py.red_streak_rsi"]["param_schema_properties"]
@@ -5973,7 +6002,8 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
             if self.position:
                 self._risk_check_exit()
                 return
-            if self.orders or self._warmup_bars + len(self.data) < min_bars:
+            queue = self._pattern_confirm_queue
+            if self._warmup_bars + len(self.data) < min_bars or queue is None and self.orders:
                 return
             # Include fetched history but never back-fill a signal or queue a
             # tail entry that finalize_trades would fill at an earlier open.
@@ -5981,9 +6011,23 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                 return
             if self.red_count[-1] != red_bars or not math.isfinite(self.rsi[-1]) or not self.rsi[-1] < oversold:
                 return
+            if queue is not None:
+                # P-PATCONF-2b2: s only registers; the gates and the risk state are judged at k.
+                queue.register(len(self.data) - 1, "long", self.data.High[-1])
+                return
             # Judgment bar = the exact Nth red close; a blocked signal is discarded, not delayed.
             if not self._time_allow_entry() or not self._filter_allow_entry():
                 return
+            self._f6_enter()
+
+        def _pattern_confirm_open(self, is_long, payload):
+            blocked = self._pattern_confirm_gate()
+            if blocked is None:
+                self._f6_enter()
+            return blocked
+
+        def _f6_enter(self):
+            # Risk state frozen at the decision bar (s, or k under confirmation) from its close.
             self._risk_prepare_entry()
             self._f6_frozen = initial_risk_state(risk=risk, entry_price=self.data.Close[-1], direction="long",
                 atr_value=getattr(self, "_risk_entry_atr", None))
@@ -6056,13 +6100,13 @@ def _build_bearish_divergence(params, *, kind, initial_capital):
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_macd_bearish_divergence(params, *, initial_capital=10000.0):
     return _build_bearish_divergence(params, kind='macd', initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_rsi_bearish_divergence(params, *, initial_capital=10000.0):
     return _build_bearish_divergence(params, kind='rsi', initial_capital=initial_capital)
 
@@ -6122,19 +6166,19 @@ def _build_divergence(params, *, kind, initial_capital):
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_macd_bullish_divergence(params, *, initial_capital=10000.0):
     return _build_divergence(params, kind='macd', initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_rsi_bullish_divergence(params, *, initial_capital=10000.0):
     return _build_divergence(params, kind='rsi', initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_chan_3buy(params, *, initial_capital=10000.0):
     # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
     risk = _parse_fixed_risk_params(params, template_initial_stop=True)
@@ -6169,7 +6213,7 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_chan_3sell(params, *, initial_capital=10000.0):
     """SHORT-PAT-3: strict mirror of chan_3buy, futures short only (market gate in run)."""
     # Chan rejects user stops; its pullback stop is frozen at the signal (10-B2b).
@@ -6209,7 +6253,7 @@ def _build_chan_3sell(params, *, initial_capital=10000.0):
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """9T5: confirmed adjacent low/high events; signal-close frozen risk prices."""
     error = _validate_params_against_schema(params, TOOL_SPECS["local.backtesting_py.fibonacci_retracement"]["param_schema_properties"])
@@ -6356,7 +6400,9 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                 self._risk_check_exit()
                 return
             wave = self._fib_active
-            if self.orders or len(self.data) >= self._fib_length or wave is None or wave["used"] or wave["invalid"]:
+            queue = self._pattern_confirm_queue
+            if wave is None or wave["used"] or wave["invalid"] or queue is None and (
+                    self.orders or len(self.data) >= self._fib_length):
                 return
             if bar <= wave["high_confirmed_at"]:
                 return
@@ -6365,8 +6411,26 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                     and Decimal(str(self.data.Close[-1])) >= price * (1 - tolerance)
                     and self.data.Close[-1] > self.data.Open[-1]):
                 return
+            if queue is not None:
+                # P-PATCONF-2b2: s only registers its wave, whose stop / target stay frozen at s; the
+                # gates, the wave's used / invalid state and the close-based risk state are judged at k.
+                queue.register(len(self.data) - 1, "long", self.data.High[-1], wave)
+                return
             if not self._time_allow_entry() or not self._filter_allow_entry():
                 return
+            self._fib_enter(wave, bar)
+
+        def _pattern_confirm_open(self, is_long, wave):
+            if wave["used"] or wave["invalid"]:
+                return "template_gate"
+            blocked = self._pattern_confirm_gate()
+            if blocked is None:
+                self._fib_enter(wave, self._warmup_bars + len(self.data) - 1)
+            return blocked
+
+        def _fib_enter(self, wave, bar):
+            # Wave stop / target come from the wave; the entry reference and any user risk state are
+            # frozen at the decision bar (s, or k under confirmation) from its close.
             self._risk_prepare_entry()
             if intrinsic:
                 stop, take = Decimal(wave["stop_price"]), Decimal(wave["target_price"])
@@ -9732,7 +9796,10 @@ async def run_backtest(
                     "default_prices": "frozen_at_signal_close_whole_group_disabled_by_explicit_pricing_key",
                     "default_trigger": "high_low_touch_next_open_market",
                     "same_bar_priority": "stop_before_time_expiry_before_take_profit_before_signal",
-                    "pattern_confirmation": "not_implemented_engulfing_hammer_pending_shared_capability",
+                    # P-PATCONF-2b2: wired; with the switch on the shared assumptions.pattern_confirm
+                    # block replaces this placeholder (switch off: bytes unchanged).
+                    **({} if filter_config is not None and filter_config.pattern_confirm_enabled else
+                       {"pattern_confirmation": "not_implemented_engulfing_hammer_pending_shared_capability"}),
                     "cancelled_entry": "consumes_pair_once",
                 }} if effective_tool_id == "local.backtesting_py.fibonacci_retracement" else {}),
                 **(_build_isolated_margin_assumptions(

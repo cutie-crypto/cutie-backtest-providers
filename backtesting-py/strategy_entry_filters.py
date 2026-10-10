@@ -207,7 +207,10 @@ def pattern_confirm_entries(signals: Any, high: Any, low: Any, close: Any, *, di
 
 PATTERN_CONFIRM_DISCARD_REASONS = (
     'unconfirmed', 'superseded_by_later_signal', 'position_or_order_open', 'no_next_open',
-    'time_gate', 'filter_gate')
+    'time_gate', 'filter_gate',
+    # P-PATCONF-2b2: a template's own clock / structure gate re-judged at the confirming bar k
+    # (VWAP's same-UTC-day entry window, a Fibonacci wave already used or invalidated).
+    'template_gate')
 
 
 class PatternConfirmQueue:

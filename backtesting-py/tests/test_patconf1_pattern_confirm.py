@@ -42,7 +42,9 @@ ichimoku_cloud_breakout keltner_breakout macd macd_above_zero parabolic_sar roc 
 stoch_oversold_cross supertrend volume_breakout""".split()) | set("""
 bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal
 inside_bar_breakout bearish_engulfing shooting_star evening_star three_black_crows bearish_doji_reversal
-double_bottom inverse_head_shoulders double_top head_shoulders""".split())
+double_bottom inverse_head_shoulders double_top head_shoulders""".split()) | set("""
+macd_bullish_divergence rsi_bullish_divergence macd_bearish_divergence rsi_bearish_divergence
+chan_3buy chan_3sell fibonacci_retracement red_streak_rsi vwap_reversion""".split())  # P-PATCONF-2b2
 
 
 def unwired_tools():
@@ -77,7 +79,7 @@ def test_pattern_confirm_schema_is_two_keys_apart_from_published_filter_keys():
 
 def test_no_catalog_schema_publishes_the_keys_outside_the_whitelist(monkeypatch):
     # P-PATCONF-2a / 2b1: only the 22 _risk_buy/_risk_sell templates and the 15 self-entering pattern
-    # templates are wired; the other 14 stay unpublished.
+    # templates are wired, plus the 9 of P-PATCONF-2b2; the other 5 stay unpublished.
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     tools = TestClient(p.app).get('/catalog').json()['tools']
     assert len(tools) == 59
@@ -128,8 +130,8 @@ def test_report_names_the_confirmation_rule():
                                                         'filter_ema_enabled': True}).report()['predicates']
 
 
-def test_whitelist_splits_the_51_filter_templates_37_and_14():
-    assert WIRED <= set(base.filter_tools()) and len(WIRED) == 22 + 15 and len(unwired_tools()) == 14
+def test_whitelist_splits_the_51_filter_templates_46_and_5():
+    assert WIRED <= set(base.filter_tools()) and len(WIRED) == 22 + 15 + 9 and len(unwired_tools()) == 5
 
 
 @pytest.mark.parametrize('tool', unwired_tools())
