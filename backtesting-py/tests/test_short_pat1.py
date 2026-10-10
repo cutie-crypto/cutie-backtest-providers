@@ -354,7 +354,9 @@ def test_registered_isolated_arbitration(monkeypatch,tmp_path,name,risk_enabled,
 def test_signal_on_liquidation_bar_places_no_order(monkeypatch,tmp_path,name):
     # P-LOW4: the old _isolated_blocked_bar guard in next() was unreachable (the liquidation close is queued from
     # next()'s position branch, which returns first; the next bar has a larger len(self.data)) and was deleted.
-    # This pins the outcome that remains true: a signal repeated on the liquidation bar (56) opens no order.
+    # This pins the outcome, not the mechanism: a signal repeated on the liquidation bar (56) opens no order.
+    # Two layers hold it today -- the position branch's return and a non-empty self.orders (the queued close);
+    # removing either one alone does not turn this test red.
     import backtesting as bb
     import strategy_top_patterns as module
     make, sells, sell = module.make_top_strategy, [], bb.Strategy.sell

@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import bisect
+from copy import deepcopy
 import hashlib
 import json
 import logging
@@ -7418,7 +7419,8 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
         "param_schema": {
             "type": "object",
             "additionalProperties": False,
-            "properties": spec["param_schema_properties"],
+            # Copy: callers (and the rotation catalog) may mutate the entry; it must not alias the global TOOL_SPECS.
+            "properties": deepcopy(spec["param_schema_properties"]),
         },
         "output_schema": {
             "metrics": [
