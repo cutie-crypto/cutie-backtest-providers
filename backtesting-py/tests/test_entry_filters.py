@@ -29,8 +29,11 @@ SHORT_7P4_NAMES = {'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_
 # SHORT-PAT-4：三个做空 K 线模板在 5b8320a 之后才有；关态与过滤门由 test_short_pat4_candles.py 覆盖。
 SHORT_PAT4_NAMES = {'bearish_engulfing', 'shooting_star', 'evening_star',
                     'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5 +2
+# P-EVENT0：event_window 在 5b8320a 之后才有；关态由 test_event0_event_window.py 的全响应金样钉住，
+# 开态（过滤层挡入场记 blocked_by_time_or_filter）由同文件手算用例覆盖。
+EVENT0_NAMES = {'event_window'}
 CASES = {key: case for key, case in capture.cases().items()
-         if case[0] not in F1F2_FILTER_NAMES | SHORT_7P4_NAMES | SHORT_PAT4_NAMES}
+         if case[0] not in F1F2_FILTER_NAMES | SHORT_7P4_NAMES | SHORT_PAT4_NAMES | EVENT0_NAMES}
 BASELINE = json.loads((Path(__file__).parent / 'fixtures/entry_filters_5b8320a.json').read_text())
 # S4b changes only EMA warmup disclosure, not disabled-filter result.v2 bytes.
 EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
@@ -245,7 +248,7 @@ def test_filter_unwired_list_only_shrinks_and_expires():
 def test_runtime_schema_and_baseline_cover_every_single_direction():
     actual = {key.removeprefix('local.backtesting_py.') for key, tool in p.TOOL_SPECS.items()
               if 'filter_layer_enabled' in tool['param_schema_properties']}
-    assert actual == set(SINGLE_NAMES) | F1F2_FILTER_NAMES | SHORT_7P4_NAMES | SHORT_PAT4_NAMES
+    assert actual == set(SINGLE_NAMES) | F1F2_FILTER_NAMES | SHORT_7P4_NAMES | SHORT_PAT4_NAMES | EVENT0_NAMES
     assert set(BASELINE['cases']) == {case+'/'+str(int(warm)) for case in CASES for warm in (False, True)}
     for name in sorted(set(SINGLE_NAMES) | SHORT_7P4_NAMES | SHORT_PAT4_NAMES):
         assert issubclass(p.TOOL_SPECS['local.backtesting_py.'+name]['build']({})['strategy'], p._FilterLayerMixin)

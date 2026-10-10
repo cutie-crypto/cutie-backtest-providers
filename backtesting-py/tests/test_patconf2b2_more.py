@@ -98,8 +98,9 @@ def test_whitelist_is_46_and_the_catalog_publishes_both_keys_only_for_them(monke
     unwired = sorted(k.removeprefix(PREFIX) for k, v in p.TOOL_SPECS.items()
                      if getattr(v.get('build'), '_supports_entry_filters', False)
                      and not v['build']._supports_pattern_confirm)
-    assert unwired == ['asia_range_breakout', 'calendar_schedule', 'cme_weekend_gap', 'opening_range_breakout',
-                       'us_open_momentum']
+    # the 5 range / calendar templates + event_window (P-EVENT0, filter layer but no pattern confirmation)
+    assert unwired == ['asia_range_breakout', 'calendar_schedule', 'cme_weekend_gap', 'event_window',
+                       'opening_range_breakout', 'us_open_momentum']
 
 
 @pytest.mark.parametrize('name', ['asia_range_breakout', 'calendar_schedule', 'cme_weekend_gap',
