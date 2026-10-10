@@ -22,7 +22,8 @@ import test_risk_overlay_compatibility as compat  # noqa: E402
 
 GOLDEN = json.loads((Path(__file__).parent / 'fixtures/plow2a_b48e65e.json').read_text())
 # SHORT-PAT-4's three tools postdate the b48e65e golden; their filter gate is covered in test_short_pat4_candles.py.
-SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star'}
+SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
+                    'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5 +2
 TOOLS = [tool for tool in cap.tools() if tool not in SHORT_PAT4]
 
 

@@ -1,4 +1,4 @@
-"""Candle pattern orders: long templates and their futures short mirrors (SHORT-PAT-4).
+"""Candle pattern orders: long templates and their futures short mirrors (SHORT-PAT-4 / SHORT-PAT-5).
 Only these strategies guard the next-open fill.
 
 The broker guard reads the currently arriving Open before calling the engine's
@@ -148,8 +148,9 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
     return LongPatternStrategy
 
 
-def make_short_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initial_capital):
-    """SHORT-PAT-4: bearish engulfing / shooting star / evening star, the mirror of the long template.
+def make_short_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initial_capital, rsi_series=None):
+    """SHORT-PAT-4: bearish engulfing / shooting star / evening star; SHORT-PAT-5: three black crows /
+    bearish doji reversal. The mirror of the long template.
 
     Stop = pattern anchor High * 1.001 frozen at the signal; target = entry - (stop - entry) * reward_r;
     an entry open at or above the frozen stop is skipped; the stop precedes holding expiry, which
@@ -176,6 +177,8 @@ def make_short_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk,
             elif kind == "pin_bar":
                 indicators = {f"ema{period}": close.ewm(span=period, adjust=False, min_periods=period).mean().to_numpy()
                               for period in (20, 60)}
+            elif kind == "doji":
+                indicators = {"rsi": rsi_series(arrays[3], 14)}
             else:
                 indicators = {}
             patterns = candle_patterns(kind, geometry, indicators=indicators)
@@ -184,6 +187,14 @@ def make_short_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk,
             if kind == "engulfing":
                 self._anchors = [max(geometry.high[max(0, i - 1):i + 1]) for i in range(n)]
             elif kind == "star":
+                self._anchors = [geometry.high[max(0, i - 1)] for i in range(n)]
+            elif kind == "soldiers":
+                self._anchors = [geometry.high[max(0, i - 2)] for i in range(n)]
+            elif kind == "doji":
+                # Only the immediately following close below the doji low confirms; stop uses the doji high.
+                candidates = self._signals
+                self._signals = [i > 0 and candidates[i - 1] and geometry.close[i] < geometry.low[i - 1]
+                                 for i in range(n)]
                 self._anchors = [geometry.high[max(0, i - 1)] for i in range(n)]
             else:
                 self._anchors = list(geometry.high)

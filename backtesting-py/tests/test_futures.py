@@ -89,7 +89,9 @@ def test_catalog_declares_futures_market(client):
                                "local.backtesting_py.chan_3sell",
                                # SHORT-PAT-4
                                "local.backtesting_py.bearish_engulfing", "local.backtesting_py.shooting_star",
-                               "local.backtesting_py.evening_star"):
+                               "local.backtesting_py.evening_star",
+                               # SHORT-PAT-5
+                               "local.backtesting_py.three_black_crows", "local.backtesting_py.bearish_doji_reversal"):
             assert tool["markets"] == ["futures"]
             continue
         assert "spot" in tool["markets"]

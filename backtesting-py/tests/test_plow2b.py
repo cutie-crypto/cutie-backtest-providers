@@ -17,7 +17,8 @@ import cutie_backtesting_provider as p
 
 RISK = dict(position_size_risk_pct=1, position_size_qty_step=0.001)
 SHORT = {'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell',
-         'bearish_engulfing', 'shooting_star', 'evening_star'}  # SHORT-PAT-4
+         'bearish_engulfing', 'shooting_star', 'evening_star',  # SHORT-PAT-4
+         'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5
 # Templates whose stop needs a user stop_loss_pct to exist at all.
 EXTRA = {'red_streak_rsi': dict(stop_loss_pct=2)}
 # Closes walk to the stop: legacy close-only stop decisions (risk layer off), and RSI divergences whose

@@ -39,8 +39,9 @@ def run(monkeypatch, tmp_path, tool, data, warm, **extra):
 
 
 def test_template_table():
-    # 43 at P-LOW3; SHORT-PAT-4 adds bearish_engulfing / shooting_star / evening_star => 46.
-    assert len(TOOLS) == 46 and set(EARLIER_GRID_GATE) <= set(TOOLS)
+    # 43 at P-LOW3; SHORT-PAT-4 adds bearish_engulfing / shooting_star / evening_star => 46;
+    # SHORT-PAT-5 adds three_black_crows / bearish_doji_reversal => 48.
+    assert len(TOOLS) == 48 and set(EARLIER_GRID_GATE) <= set(TOOLS)
     assert len(plow1.F12) == 3
 
 
