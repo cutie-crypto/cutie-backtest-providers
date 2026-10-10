@@ -312,7 +312,9 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
                 elif direction in ('short', 'both') and close < record['range_low']:
                     self._submit(record, 'short', bar)
                 elif bar == len(self._opens)-1:
-                    self._skip(record, 'no_breakout_before_data_end')
+                    # Data ending on or after the N-th candle's close without a breakout means the window ran out.
+                    self._skip(record, 'breakout_window_expired' if bar >= self._expiry[id(record)]
+                               else 'no_breakout_before_data_end')
     return MacroEventStrategy
 
 

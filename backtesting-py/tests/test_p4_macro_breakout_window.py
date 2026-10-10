@@ -82,6 +82,17 @@ def test_data_ending_inside_the_window_keeps_the_data_end_reason(monkeypatch, tm
     assert not body['trades'] and event_record(body)['reason'] == 'no_breakout_before_data_end'
 
 
+def test_data_ending_exactly_on_the_last_window_candle_expires(monkeypatch, tmp_path):
+    # Event candle 12, window 3: the data stops at the close of candle 15 with no breakout -> window ran out.
+    body = post(monkeypatch, tmp_path, H1, params(H1, breakout_window_bars=3), frame(EVENT_BAR + 3 + 1))
+    assert not body['trades'] and event_record(body)['reason'] == 'breakout_window_expired'
+
+
+def test_data_ending_one_candle_before_the_window_closes_keeps_data_end(monkeypatch, tmp_path):
+    body = post(monkeypatch, tmp_path, H1, params(H1, breakout_window_bars=3), frame(EVENT_BAR + 3))
+    assert not body['trades'] and event_record(body)['reason'] == 'no_breakout_before_data_end'
+
+
 def test_breakout_34_days_after_the_event_is_expired(monkeypatch, tmp_path):
     # The production replay: nothing broke out after the release, and the entry came about 34 days later.
     bars = 34 * 288 + 6
