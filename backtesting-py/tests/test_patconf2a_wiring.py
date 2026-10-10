@@ -318,6 +318,9 @@ def test_real_order_on_bar_k_discards_the_signal_registered_and_confirmed_while_
     signals[4] = signals[6] = True
 
     class Ordered(p._FixedRiskMixin, Strategy):
+        # 10% per order: a second same-bar order would also fill instead of failing on margin.
+        _risk = dict(position_size_pct=0.1)
+
         def init(self):
             self._risk_init()
 
