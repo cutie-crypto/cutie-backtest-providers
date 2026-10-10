@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import bisect
+from copy import deepcopy
 import hashlib
 import json
 import logging
@@ -7418,7 +7419,8 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
         "param_schema": {
             "type": "object",
             "additionalProperties": False,
-            "properties": spec["param_schema_properties"],
+            # Copy: callers (and the rotation catalog) may mutate the entry; it must not alias the global TOOL_SPECS.
+            "properties": deepcopy(spec["param_schema_properties"]),
         },
         "output_schema": {
             "metrics": [
@@ -9226,7 +9228,8 @@ async def run_backtest(
     # feed EMA/MACD/Supertrend a discontinuous series (silent misjudgment). A main-range gap within
     # CENTRAL_GAP_TOLERANCE_RATIO (same formula as the central-source gap check) re-warms the filter
     # mask after the gap; beyond it the run fails. Filter off / filter_timeframe: filter_warmup is 0,
-    # nothing here is judged. An empty prefix passes (the mask then starts on the main range only)
+    # nothing here is judged. Both segments judge a spacing != step as a gap (sub-period / non-integer
+    # multiples included) and count it as max(1, spacing // step - 1) missing bars. An empty prefix passes (the mask then starts on the main range only)
     # and falls to the bar-count check below.
     entry_filter_main_gaps = None
     if filter_warmup:
@@ -9240,7 +9243,7 @@ async def run_backtest(
         if len(warmup_df):
             index = list(warmup_df.index) + [df.index[0]]
             stamps = [pd.Timestamp(t).value for t in index]
-            gaps = [(k, max(0, (b - a) // step_ns - 1)) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
+            gaps = [(k, max(1, (b - a) // step_ns - 1)) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
                     if b - a != step_ns]
             if gaps:
                 segment = "warmup_boundary" if gaps[0][0] == len(stamps) - 1 else "warmup"
@@ -9249,7 +9252,7 @@ async def run_backtest(
                                          details=_gap_details(segment, index, gaps))
         stamps = [pd.Timestamp(t).value for t in df.index]
         gaps = [(k, max(1, (b - a) // step_ns - 1)) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
-                if b - a > step_ns]
+                if b - a != step_ns]
         if gaps:
             missing_bars = sum(n for _, n in gaps)
             if len(df) < (len(df) + missing_bars) * CENTRAL_GAP_TOLERANCE_RATIO:
