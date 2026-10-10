@@ -40,6 +40,7 @@ from strategy_time_layer import (
 )
 from strategy_entry_filters import (
     FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES, entry_mask, HigherTimeframeContext, FilterHistoryError,
+    PatternConfirmQueue,
 )
 from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
                                       parse_position_sizing, PositionSizingMixin)
@@ -2631,11 +2632,13 @@ def _with_filter_config(build=None, *, default_direction="long", pattern_confirm
         direction = params.get("direction", default_direction)
         if config.enabled and direction not in ("long", "short"):
             raise ValueError("INVALID_PARAMS:entry filters support long or short; both is not supported")
-        # P-PATCONF-1: the engine exists, no template defers its signals through it yet (wiring is
-        # P-PATCONF-2); fail closed instead of accepting a switch that would silently do nothing.
+        # P-PATCONF-1: only templates whose entries all go through _risk_buy/_risk_sell defer their
+        # signals (P-PATCONF-2a); any other template fails closed instead of silently ignoring it.
         if config.pattern_confirm_enabled and not pattern_confirm:
             raise ValueError("INVALID_PARAMS:filter_pattern_confirm_enabled is not supported by this template")
         built = build(params, **kwargs)
+        if config.pattern_confirm_enabled:
+            built["strategy"] = _pattern_confirm_strategy(built["strategy"])
         if config.enabled:
             built["strategy"]._filter_config = config
             built["strategy"]._filter_direction = direction
@@ -2645,6 +2648,28 @@ def _with_filter_config(build=None, *, default_direction="long", pattern_confirm
     # Exposed so tests can pin it against the template's own direction default (pi LOW on 7-P4).
     configured._filter_default_direction = default_direction
     return configured
+
+
+def _pattern_confirm_strategy(strategy):
+    """P-PATCONF-2a: per-request subclass that advances pending pattern signals on every bar.
+
+    The advance runs before the template's own next(), whichever branch that next() takes; the
+    template body is untouched -- its _risk_buy/_risk_sell only register while the queue exists.
+    """
+    class PatternConfirmed(strategy):
+        def init(self):
+            super().init()
+            self._pattern_confirm_queue = PatternConfirmQueue(self._filter_config.pattern_confirm_bars)
+            # init() sees the whole main range; next() later sees it growing bar by bar.
+            self._pattern_confirm_last_bar = len(self.data) - 1
+
+        def next(self):
+            self._pattern_confirm_advance()
+            super().next()
+
+    PatternConfirmed.__name__ = strategy.__name__
+    PatternConfirmed.__qualname__ = strategy.__qualname__
+    return PatternConfirmed
 
 
 class _FilterLayerMixin:
@@ -2706,6 +2731,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
     _risk: dict[str, Any] = {}
     _initial_capital: float = 10000.0
     _start_equity: float = 0.0
+    # P-PATCONF-2a: set per run by _pattern_confirm_strategy only when the switch is on.
+    _pattern_confirm_queue: Optional[PatternConfirmQueue] = None
     # 1008 指标预热：run_backtest 把 start_at 之前取到的 K 线（列名 -> float 数组）挂在
     # 策略类上。指标在「预热段 + 主区间」上算，只把尾部与 self.data 等长的一段交给
     # backtesting.py；Backtest() 收到的 df 仍只有主区间，stats/trades/权益曲线不受影响。
@@ -2943,29 +2970,68 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         return None
 
     def _risk_buy(self) -> None:
-        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+        if self._pattern_confirm_queue is not None:
+            # P-PATCONF-2a: the signal bar only registers; gates are judged at the confirming bar.
+            self._pattern_confirm_queue.register(len(self.data) - 1, "long", self.data.High[-1])
             return
-        if not self._time_allow_entry(): return
-        if not self._filter_allow_entry(): return
-        if self._risk.get("risk_layer_enabled"):
-            self._risk_prepare_entry()
-        size = self._risk_entry_size()
-        order = self.buy() if size is None else self.buy(size=size)
-        if self._risk.get("position_sizing_enabled"):
-            order._sizing_signal_bar = len(self.data) - 1
+        self._risk_open(True)
 
     def _risk_sell(self) -> None:
-        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+        if self._pattern_confirm_queue is not None:
+            self._pattern_confirm_queue.register(len(self.data) - 1, "short", self.data.Low[-1])
             return
-        if not self._time_allow_entry(): return
+        self._risk_open(False)
+
+    def _risk_open(self, is_long: bool) -> Optional[str]:
+        """Shared market-entry path; returns the blocking gate, None once the order is queued."""
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
+            return "isolated_liquidation_bar"
+        if not self._time_allow_entry():
+            return "time_gate"
         # 7-P4: short entries pass the mirrored filter (off => always True, so off-state is unchanged).
-        if not self._filter_allow_entry(): return
+        if not self._filter_allow_entry():
+            return "filter_gate"
         if self._risk.get("risk_layer_enabled"):
             self._risk_prepare_entry()
         size = self._risk_entry_size()
-        order = self.sell() if size is None else self.sell(size=size)
+        if is_long:
+            order = self.buy() if size is None else self.buy(size=size)
+        else:
+            order = self.sell() if size is None else self.sell(size=size)
         if self._risk.get("position_sizing_enabled"):
             order._sizing_signal_bar = len(self.data) - 1
+        return None
+
+    def _pattern_confirm_advance(self) -> None:
+        """Run once per bar k before the template: submit the latest signal confirming at k.
+
+        A confirmed signal is consumed whatever happens next: an open position or order at k, k being
+        the last bar (no next open to fill at), or a time / filter gate closed at k, discards it
+        without retry. The order fills at the next open; signals the template registers later on
+        bar k never get a second order here.
+        """
+        queue = self._pattern_confirm_queue
+        bar = len(self.data) - 1
+        hit = queue.advance(bar, self.data.Close[-1])
+        if hit is None:
+            return
+        # This runs before the template's next(): on an isolated liquidation bar the position is still
+        # open here (the liquidation is only booked later in next()), so the signal ends up in
+        # position_or_order_open and _risk_open's isolated_liquidation_bar gate is never reached.
+        if self.position or self.orders:
+            queue.discard("position_or_order_open")
+            return
+        # The tail has no next open; told apart before the gates, which also refuse it.
+        if bar >= self._pattern_confirm_last_bar:
+            queue.discard("no_next_open")
+            return
+        blocked = self._risk_open(hit[1] == "long")
+        if blocked is None:
+            queue.submitted()
+        else:
+            # isolated_liquidation_bar is not a confirmation reason (unreachable, see above); were it
+            # ever returned, the liquidated position was open at k.
+            queue.discard("position_or_order_open" if blocked == "isolated_liquidation_bar" else blocked)
 
     def _risk_check_exit(self) -> bool:
         if not self.position or not self.trades:
@@ -3014,7 +3080,7 @@ MAX_EMA_WARMUP_BARS = 20000
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3078,7 +3144,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_rsi_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3353,7 +3419,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3407,7 +3473,7 @@ def _build_bollinger_reversal(params: dict[str, Any], *, initial_capital: float 
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_bollinger_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3474,7 +3540,7 @@ def _keltner_arrays(high: Any, low: Any, close: Any, ema_period: int,
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_keltner_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     values = {}
@@ -3734,7 +3800,7 @@ def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3807,7 +3873,7 @@ def _build_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3889,7 +3955,7 @@ def _build_volume_breakout(params: dict[str, Any], *, initial_capital: float = 1
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_macd(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -3962,7 +4028,7 @@ def _cci_series(high: Any, low: Any, close: Any, period: int):
 
 
 @_with_time_config
-@_with_filter_config(default_direction="both")
+@_with_filter_config(default_direction="both", pattern_confirm=True)
 def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -4042,7 +4108,7 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """R1-T4：EMA 趋势过滤 + RSI 回调（Jessie #3）。只做多。
 
@@ -4120,7 +4186,7 @@ def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_roc(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     try:
@@ -4180,7 +4246,7 @@ def _stoch_arrays(high: Any, low: Any, close: Any, period: int, smooth: int, d_p
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_stoch_oversold_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.stoch_oversold_cross"]["param_schema_properties"]
@@ -4244,7 +4310,7 @@ def _bollinger_squeeze_arrays(close: Any, period: int, std_mult: float, lookback
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_bollinger_squeeze_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.bollinger_squeeze_breakout"]["param_schema_properties"]
@@ -4317,7 +4383,7 @@ def _adx_di_arrays(high: Any, low: Any, close: Any, period: int) -> dict[str, An
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_adx_di_cross(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.adx_di_cross"]["param_schema_properties"]
@@ -4407,7 +4473,7 @@ def _supertrend_arrays(high: Any, low: Any, close: Any, atr_period: int, multipl
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """R1-T2：Supertrend 翻转，本批只做多。down→up 翻转那一根收盘确认、下一根开盘买入；
     up→down 翻转那一根收盘确认、下一根开盘平仓。"""
@@ -4472,7 +4538,7 @@ def _build_supertrend(params: dict[str, Any], *, initial_capital: float = 10000.
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """108 顺序 5a-P：两条件 AND（EMA 趋势过滤 + RSI 入场）。契约唯一权威见 TokenBeep 仓
     docs/features/108_策略自动发信号执行器扩容/IMPL_顺序5a_两条件AND回测.md §2/§3。
@@ -4565,7 +4631,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Directional EMA pullback; rearm only on a later flat bar beyond the zone."""
     risk = _parse_fixed_risk_params(params)
@@ -5124,7 +5190,7 @@ def _build_head_shoulders(params, *, initial_capital=10000.0):
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only close-confirmed BIAS reversion, filled at the next open."""
     risk = _parse_fixed_risk_params(params)
@@ -5177,7 +5243,7 @@ def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Long-only entry on the first bar forming short > mid > long EMA alignment."""
     risk = _parse_fixed_risk_params(params)
@@ -5242,7 +5308,7 @@ def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: floa
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_macd_above_zero(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     """Separate long-only MACD template; both DIF and DEA must be above zero."""
     risk = _parse_fixed_risk_params(params)
@@ -5339,7 +5405,7 @@ def _parabolic_sar_arrays(high: Any, low: Any, close: Any, af_start: float,
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_parabolic_sar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     values = {}
@@ -5409,7 +5475,7 @@ def _ichimoku_arrays(high: Any, low: Any, tenkan_period: int,
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_ichimoku_cloud_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_fixed_risk_params(params)
     periods = {}
@@ -9622,6 +9688,8 @@ async def run_backtest(
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **ema_warmup_assumptions,
                 **({"entry_filter_main_gaps": entry_filter_main_gaps} if entry_filter_main_gaps else {}),
+                **({"pattern_confirm": stats["_strategy"]._pattern_confirm_queue.report()}
+                   if filter_config is not None and filter_config.pattern_confirm_enabled else {}),
                 **({"vwap_main_gaps": vwap_main_gaps} if vwap_main_gaps else {}),
                 **risk_assumptions(risk),
                 **({"fibonacci_retracement": {
