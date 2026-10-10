@@ -1,6 +1,6 @@
 """P-EVENT0: inline event windows (no data table is read).
 
-Entry = the open of the bar ``bars_before`` bars ahead of the event bar (the bar with
+Entry = the open of the bar ``bars_before`` bars before the event bar (the bar with
 open <= ts < next open); the order is queued at the close of the bar before it and fills
 at that open. Exit = the close of the ``bars_after``-th held bar (entry bar counts as 1,
 same count as max_holding_bars), filled at the next open like calendar_schedule's timed
@@ -128,6 +128,7 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
             self._pending = None   # (order, record) queued, not yet filled
             self._active = None    # (trade, record) open
             self._exit_reason = None
+            self._closed_seen = 0  # closed_trades already attributed to an event
 
         def _settle(self):
             if self._pending is not None:
@@ -135,18 +136,37 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
                 if self.trades and (self._active is None or self.trades[-1] is not self._active[0]):
                     trade = self.trades[-1]
                     record.update(status='entered', entry_utc=utc_datetime(trade.entry_time).isoformat(),
-                                  entry_price=trade.entry_price)
+                                  entry_price=trade.entry_price, exits=[])
                     self._active, self._pending, self._exit_reason = (trade, record), None, None
+                    self._closed_seen = len(self.closed_trades)
                 elif order not in self.orders:
                     # Dropped at the fill (e.g. position sizing rejection) without a trade.
                     record.update(status='rejected_at_fill')
                     self._pending = None
-            if self._active is not None and self._active[0] not in self.trades:
-                trade, record = self._active
-                closed = next(t for t in reversed(self.closed_trades) if t.entry_time == trade.entry_time)
-                record.update(exit_reason=self._exit_reason or 'risk_exit',
-                              exit_utc=utc_datetime(closed.exit_time).isoformat(), exit_price=closed.exit_price)
+            if self._active is None:
+                return
+            trade, record = self._active
+            # Every fill that closed (part of) the held trade is one result.v2 row: partial take-profits
+            # and the final close alike. Only one close order is in flight at a time, so the reason set
+            # when it was queued belongs to the fill.
+            for closed in self.closed_trades[self._closed_seen:]:
+                if closed.entry_time == trade.entry_time:
+                    record['exits'].append(dict(time=utc_datetime(closed.exit_time).isoformat(),
+                                                price=closed.exit_price, reason=self._exit_reason or 'risk_exit'))
+            self._closed_seen = len(self.closed_trades)
+            if trade not in self.trades:
+                last = record['exits'][-1]
+                record.update(exit_reason=last['reason'], exit_utc=last['time'], exit_price=last['price'])
                 self._active = None
+
+        def event_window_finish(self, reason):
+            """After bt.run(): attribute closes made by finalize_trades (reason given by the caller)."""
+            if self._active is not None and self._active[0] not in self.trades:
+                self._exit_reason = reason
+                self._settle()
+            for record in self.event_window_events:
+                if record['status'] == 'entered' and 'exit_reason' not in record:
+                    record['exit_reason'] = reason
 
         def next(self):
             bar = len(self.data) - 1
@@ -176,9 +196,11 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
 
 def event_window_assumptions(config):
     return dict(bars_before=config.bars_before, bars_after=config.bars_after, direction=config.direction,
-                event_bar='open_le_ts_lt_next_open', entry='open_of_bar_bars_before_ahead_of_event_bar',
+                event_bar='open_le_ts_lt_next_open', entry='open_of_bar_bars_before_earlier_than_event_bar',
                 entry_fill='queued_at_previous_close_next_open_market',
                 exit='close_of_bars_after_th_held_bar_entry_bar_counts_1_next_open_market_or_risk_exit_first',
                 in_position='skip_next_event', out_of_range='skip', data_source='inline_params_only',
                 note='事件根 = 开盘 ≤ ts < 下一根开盘；入场 = 事件根往前 bars_before 根的开盘价（前一根收盘下单）；'
-                     '到期 = 持有第 bars_after 根收盘下单、下一根开盘成交；风控出场先到者优先。')
+                     '到期 = 持有第 bars_after 根收盘下单、下一根开盘成交；风控出场先到者优先。'
+                     '一条 entered 事件 = 一次持仓生命周期，result.v2 可能有多行（分批止盈每次成交一行），'
+                     '逐次出场见该事件的 exits；exit_reason / exit_price 取最后一次出场。')

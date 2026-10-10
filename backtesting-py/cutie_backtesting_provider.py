@@ -7314,6 +7314,14 @@ for _calendar_key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
 _calendar_properties["stop_loss_pct"] = {**_calendar_properties["stop_loss_pct"], "default": 3}
 del _calendar_properties, _calendar_key
 
+# P-EVENT0 fetches no risk_warmup prefix (template warmup branch), so an ATR stop would raise on any
+# early event and kill the whole run: do not advertise the ATR keys; requests carrying them are
+# rejected by the schema check before fetch.
+_event_window_properties = TOOL_SPECS["local.backtesting_py.event_window"]["param_schema_properties"]
+for _event_window_key in ("atr_stop_multiplier", "risk_atr_period"):
+    del _event_window_properties[_event_window_key]
+del _event_window_properties, _event_window_key
+
 POSITION_SIZING_UNWIRED_TOOLS = frozenset({
     "local.backtesting_py.rsi_scale_in_out", "local.backtesting_py.grid",
     "local.backtesting_py.dca", "local.backtesting_py.turtle",
@@ -9387,9 +9395,7 @@ async def run_backtest(
         )
         stats = bt.run()
         if event_window_config is not None:
-            for event in stats["_strategy"].event_window_events:
-                if event["status"] == "entered" and "exit_reason" not in event:
-                    event["exit_reason"] = "engine_finalize_trades_settlement"
+            stats["_strategy"].event_window_finish("engine_finalize_trades_settlement")
         if calendar_config is not None:
             for event in stats["_strategy"].calendar_events:
                 if event["status"] == "filled" and "exit_reason" not in event:
