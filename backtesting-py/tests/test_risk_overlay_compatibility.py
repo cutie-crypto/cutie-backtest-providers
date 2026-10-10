@@ -62,13 +62,24 @@ def tool_name(name):
     return 'ema_pullback' if name == 'ema_pullback_short' else name
 
 
+# P-EVENT0: event_window has no default event list (1-50 inline events are required), so
+# enumerations build it with one inline event; every other template still builds from {}.
+REQUIRED_PARAMS = {'event_window': dict(bars_after=96, events=[
+    dict(ts_utc='2026-01-03T02:00:00Z', label='enum-1'), dict(ts_utc='2026-01-07T16:00:00Z', label='enum-2'),
+    dict(ts_utc='2026-01-12T06:00:00Z', label='enum-3')])}
+
+
+def required_params(name):
+    return dict(REQUIRED_PARAMS.get(name.removeprefix('local.backtesting_py.'), {}))
+
+
 def enumerate_mixin_cases():
     """Discover actual default-built mixins; future tools need no old fingerprint."""
     cases = {}
     for tool_id, spec in provider.TOOL_SPECS.items():
         if spec.get('runner') in ('kernel_v3', 'scale_in_out_ledger', provider.ROTATION_RUNNER):
             continue
-        cls = spec['build']({})['strategy']
+        cls = spec['build'](required_params(tool_id))['strategy']
         if isinstance(cls, type) and issubclass(cls, provider._FixedRiskMixin):
             name = tool_id.removeprefix('local.backtesting_py.')
             cases[name] = cls

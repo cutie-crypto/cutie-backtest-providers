@@ -32,7 +32,10 @@ from strategy_entry_filters import (FILTER_PARAM_SCHEMA_PROPERTIES, PATTERN_CONF
 PATTERN_CONFIRM_SCHEMA_KEYS = tuple(PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES)
 
 GOLDEN = json.loads((Path(__file__).parent / 'fixtures/patconf1_5ddd8eb.json').read_text())
-CASES = base.cases()
+# P-EVENT0: event_window postdates 5ddd8eb (not in the immutable golden); its keys-omitted body is pinned
+# byte-for-byte by tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
+EVENT0 = {'event_window'}
+CASES = {key: case for key, case in base.cases().items() if case[0] not in EVENT0}
 LAYER = dict(filter_layer_enabled=True, filter_pattern_confirm_enabled=True)
 # P-PATCONF-2a whitelist: templates whose entries all go through _risk_buy / _risk_sell.
 WIRED = set("""adx_di_cross bias_reversion bollinger_breakout bollinger_reversal bollinger_squeeze_breakout
@@ -55,10 +58,11 @@ def test_omitted_keys_byte_identical_to_5ddd8eb(case, monkeypatch, tmp_path):
 def test_golden_covers_every_filter_template():
     assert GOLDEN['baseline_sha'] == '5ddd8eb' and set(GOLDEN['cases']) == set(CASES)
     tools = base.filter_tools()
-    assert len(tools) == 51
-    assert {k.split('/', 1)[1] for k in CASES if k.startswith('off/')} == set(tools)
+    assert len(tools) == 52 and EVENT0 <= set(tools)
+    assert {k.split('/', 1)[1] for k in CASES if k.startswith('off/')} == set(tools) - EVENT0
+    assert json.loads((Path(__file__).parent / 'fixtures/event0_window_golden.json').read_text())['trades']
     traded = {k.split('/', 1)[1] for k, v in GOLDEN['cases'].items() if json.loads(v)['trades']}
-    assert set(tools) - traded == {'volume_breakout'}
+    assert set(tools) - EVENT0 - traded == {'volume_breakout'}
 
 
 # --- schema / parse ---------------------------------------------------------------------------------
@@ -75,7 +79,7 @@ def test_no_catalog_schema_publishes_the_keys_outside_the_whitelist(monkeypatch)
     # P-PATCONF-2a: only the 22 _risk_buy/_risk_sell templates are wired; the other 29 stay unpublished.
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     tools = TestClient(p.app).get('/catalog').json()['tools']
-    assert len(tools) == 59
+    assert len(tools) == 60  # main 59 + P-EVENT0 event_window
     published = set()
     for tool in tools:
         keys = set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(tool['param_schema']['properties'])
@@ -124,7 +128,9 @@ def test_report_names_the_confirmation_rule():
 
 
 def test_whitelist_splits_the_51_filter_templates_22_and_29():
-    assert WIRED <= set(base.filter_tools()) and len(WIRED) == 22 and len(unwired_tools()) == 29
+    assert WIRED <= set(base.filter_tools()) and len(WIRED) == 22
+    # 29 pre-EVENT0 unwired templates + event_window (P-EVENT0, also unwired)
+    assert len(unwired_tools()) == 29 + len(EVENT0) and EVENT0 <= set(unwired_tools())
 
 
 @pytest.mark.parametrize('tool', unwired_tools())

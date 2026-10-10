@@ -46,6 +46,7 @@ from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
                                       parse_position_sizing, PositionSizingMixin)
 from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
 from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
+from strategy_event_window import EventWindowConfig, make_event_window_strategy, event_window_assumptions, settle_event_window_exits, SCHEMA as EVENT_WINDOW_SCHEMA
 from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -5575,6 +5576,20 @@ def _build_calendar_schedule(params, *, initial_capital=10000.0):
                 executed_name="Calendar Schedule", min_bars=2, calendar_config=config)
 
 
+@_with_time_config
+@_with_filter_config
+def _build_event_window(params, *, initial_capital=10000.0):
+    # P-EVENT0: events are inline params only. Entries go through _risk_buy / _risk_sell, so the
+    # time and filter gates apply; no intrinsic stop, so risk sizing needs a user stop (generic path).
+    error = _validate_params_against_schema(params, TOOL_SPECS["local.backtesting_py.event_window"]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = EventWindowConfig.parse(params)
+    risk = _parse_fixed_risk_params(params)
+    return dict(strategy=make_event_window_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Event Window", min_bars=2, event_window_config=config)
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 # Explicit pricing keys switch VWAP / Fibonacci off their built-in frozen price group.
@@ -6382,6 +6397,12 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "direction": {"type": "string", "default": "long", "enum": ["long", "short"]},
             "calendar_stop_enabled": {"type": "boolean", "default": True},
         },
+    },
+    "local.backtesting_py.event_window": {
+        "name": "Local Backtesting.py Event Window",
+        "description": "Inline UTC event list; enter at the open bars_before bars before each event bar, exit at the close of the bars_after-th held bar (next-open fill) or an earlier risk exit.",
+        "strategy_family": "calendar", "is_default": False, "build": _build_event_window,
+        "param_schema_properties": dict(EVENT_WINDOW_SCHEMA),
     },
     "local.backtesting_py.opening_range_breakout": {
         "name": "Local Backtesting.py Opening Range Breakout",
@@ -7360,6 +7381,14 @@ for _calendar_key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
         _calendar_properties.pop(_calendar_key, None)
 _calendar_properties["stop_loss_pct"] = {**_calendar_properties["stop_loss_pct"], "default": 3}
 del _calendar_properties, _calendar_key
+
+# P-EVENT0 fetches no risk_warmup prefix (template warmup branch), so an ATR stop would raise on any
+# early event and kill the whole run: do not advertise the ATR keys; requests carrying them are
+# rejected by the schema check before fetch.
+_event_window_properties = TOOL_SPECS["local.backtesting_py.event_window"]["param_schema_properties"]
+for _event_window_key in ("atr_stop_multiplier", "risk_atr_period"):
+    del _event_window_properties[_event_window_key]
+del _event_window_properties, _event_window_key
 
 POSITION_SIZING_UNWIRED_TOOLS = frozenset({
     "local.backtesting_py.rsi_scale_in_out", "local.backtesting_py.grid",
@@ -9150,6 +9179,8 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "range breakout short/both requires futures market")
     if effective_tool_id == "local.backtesting_py.calendar_schedule" and market == "spot" and params.get("direction", "long") != "long":
         return _validation_failure("INVALID_PARAMS", "calendar short requires futures market")
+    if effective_tool_id == "local.backtesting_py.event_window" and market == "spot" and params.get("direction", "long") != "long":
+        return _validation_failure("INVALID_PARAMS", "event window short requires futures market")
     if effective_tool_id == "local.backtesting_py.ema_pullback" and market != "futures" and params.get("direction", "long") != "long":
         return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     if tool_spec.get("long_only_spot") and market != "futures" and params.get("direction", "both") != "long":
@@ -9221,6 +9252,8 @@ async def run_backtest(
         except ValueError as exc:
             return _validation_failure("INVALID_PARAMS", str(exc))
         strategy_class._calendar_timeframe = timeframe
+
+    event_window_config = built.get("event_window_config")
 
     # --- Fetch OHLCV ---
     source_market = tool_spec.get("ohlcv_market", market)
@@ -9365,11 +9398,11 @@ async def run_backtest(
     filter_warmup = filter_config.required_bars if filter_config is not None and not filter_config.timeframe else 0
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
-    # F1/F2 have no indicators of their own: only an enabled same-timeframe filter fetches
+    # F1/F2 and P-EVENT0 have no indicators of their own: only an enabled same-timeframe filter fetches
     # its required_bars prefix; off-state (and filter_timeframe) stays empty.
     warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
                   if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
-                 if range_config is not None or calendar_config is not None else
+                 if range_config is not None or calendar_config is not None or event_window_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
@@ -9711,6 +9744,9 @@ async def run_backtest(
                 **turtle_assumptions,
                 **(range_assumptions(range_config) if range_config is not None else {}),
                 **(calendar_assumptions(calendar_config) if calendar_config is not None else {}),
+                **({"event_window": {**event_window_assumptions(event_window_config),
+                                     "events": stats["_strategy"].event_window_events}}
+                   if event_window_config is not None else {}),
                 **built.get("pattern_assumptions", {}),
                 **built.get("divergence_assumptions", {}),
                 **built.get("chan_assumptions", {}),
@@ -9830,6 +9866,12 @@ async def run_backtest(
                 },
             },
         })
+        if event_window_config is not None:
+            # After result.v2 and isolated_risk are final: every submitted event's outcome (entered /
+            # rejected_at_fill, exits) is derived from the settled rows, never from live broker fills.
+            settle_event_window_exits(response_body["assumptions"]["event_window"]["events"],
+                                      response_body["trades"], response_body["raw_report"].get("isolated_risk"),
+                                      **stats["_strategy"].event_window_log)
         return _bounded_template_response(run_id, response_body)
 
     except Exception as e:

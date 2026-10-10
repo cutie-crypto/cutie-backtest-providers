@@ -21,6 +21,7 @@ import capture_plow2a_b48e65e as cap  # noqa: E402
 import capture_plow3_451b879 as base  # noqa: E402
 import cutie_backtesting_provider as p  # noqa: E402
 import test_plow1 as plow1  # noqa: E402
+from test_risk_overlay_compatibility import required_params  # noqa: E402
 
 GOLDEN = json.loads((Path(__file__).parent / 'fixtures/plow3_451b879.json').read_text())
 TOOLS = cap.tools()
@@ -34,14 +35,17 @@ def iso(stamp):
 
 def run(monkeypatch, tmp_path, tool, data, warm, **extra):
     freq = cap.TIMEFRAME.get(tool, '1h')
-    params = {**cap.params_for(tool), **cap.EMA10, **extra}
+    # P-EVENT0: event_window needs its inline events (no default list); every other tool adds nothing.
+    params = {**cap.params_for(tool), **required_params(tool), **cap.EMA10, **extra}
     return base.post(monkeypatch, tmp_path, tool, params, data, warm, timeframe={'1h': '1h', '30min': '30m'}[freq])
 
 
 def test_template_table():
     # 43 at P-LOW3; SHORT-PAT-4 adds bearish_engulfing / shooting_star / evening_star => 46;
     # SHORT-PAT-5 adds three_black_crows / bearish_doji_reversal => 48.
-    assert len(TOOLS) == 48 and set(EARLIER_GRID_GATE) <= set(TOOLS)
+    # P-EVENT0 adds event_window => 49: like F1/F2 it fetches no warmup unless a same-timeframe filter is on,
+    # but it builds no strict clock of its own, so a main-range gap reaches the shared filter guard.
+    assert len(TOOLS) == 49 and 'event_window' in TOOLS and set(EARLIER_GRID_GATE) <= set(TOOLS)
     assert len(plow1.F12) == 3
 
 
