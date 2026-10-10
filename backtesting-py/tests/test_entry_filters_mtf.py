@@ -199,6 +199,7 @@ def test_http_off_state_does_not_fetch_coarse(monkeypatch,tmp_path,warm):
 @pytest.mark.parametrize('case',single.CASES)
 @pytest.mark.parametrize('warm',[False,True])
 def test_explicit_default_timeframe_preserves_frozen_off_bytes(case,warm,monkeypatch):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     name,values=single.CASES[case]
     monkeypatch.setattr(p.HigherTimeframeContext,'build',lambda *args:pytest.fail('off state fetched coarse'))
     assert single.capture.snapshot(name,{**values,'filter_timeframe':''},warm)==single.BASELINE['cases'][case+'/'+str(int(warm))]

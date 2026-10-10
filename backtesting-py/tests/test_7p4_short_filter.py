@@ -157,6 +157,7 @@ def test_higher_timeframe_short_uses_closed_bar_and_mirrors():
 @pytest.mark.parametrize('case', sorted(off4.cases()))
 @pytest.mark.parametrize('explicit_defaults', [False, True])
 def test_short_templates_off_state_byte_identical_to_base(case, explicit_defaults, monkeypatch, tmp_path):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     tool, params = off4.cases()[case]
     if explicit_defaults:
         params = {**params, **DEFAULTS}

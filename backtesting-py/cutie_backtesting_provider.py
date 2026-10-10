@@ -6192,6 +6192,16 @@ def _build_rsi_bullish_divergence(params, *, initial_capital=10000.0):
     return _build_divergence(params, kind='rsi', initial_capital=initial_capital)
 
 
+def _chan_debug_enabled() -> bool:
+    """CHANSLIM: full Chan intermediate traces in raw_report.chan are a local diagnosis switch.
+
+    Deliberately an environment variable read per request, not a tool parameter: the param
+    schema rejects unknown keys and is published in the catalog, and this must never reach the
+    server schema or users. Default off keeps raw_report.chan to the slim decision evidence.
+    """
+    return os.environ.get("CUTIE_BACKTEST_CHAN_DEBUG", "").strip().lower() in ("1", "true")
+
+
 @_with_time_config
 @_with_filter_config(pattern_confirm=True)
 def _build_chan_3buy(params, *, initial_capital=10000.0):
@@ -6209,7 +6219,8 @@ def _build_chan_3buy(params, *, initial_capital=10000.0):
            for key in frozen_exit_keys):
         raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
     from strategy_chan import make_chan_strategy
-    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital)
+    cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital,
+                             chan_debug=_chan_debug_enabled())
     # 10-B2b: risk distance = |actual fill - pullback Low * 0.999| frozen in the order tag.
     cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name='Chan Third Buy ('+bi_mode+')', min_bars=3,
@@ -6246,7 +6257,7 @@ def _build_chan_3sell(params, *, initial_capital=10000.0):
         raise ValueError('INVALID_PARAMS:Chan frozen exits conflict with risk exit overrides')
     from strategy_chan import make_chan_strategy
     cls = make_chan_strategy(_FixedRiskMixin, bi_mode=bi_mode, risk=risk, initial_capital=initial_capital,
-                             direction='short')
+                             direction='short', chan_debug=_chan_debug_enabled())
     # 10-B2b: risk distance = |actual fill - pullback High * 1.001| frozen in the order tag.
     cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return dict(strategy=cls, executed_name='Chan Third Sell ('+bi_mode+')', min_bars=3,
@@ -9997,9 +10008,14 @@ def _bounded_template_response(run_id, body):
                          "assumptions": 262144, "limitations": 262144,
                          "raw_report": 1048576, "data_manifest": 8192}.items():
         if len(json.dumps(body.get(field), ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > limit:
+            # CHANSLIM: the data was fetched; keep its real provenance instead of the
+            # "never attempted" default so the failure does not read as a fetch miss.
+            raw_report = body.get("raw_report")
             return _business_failure(
                 run_id, "INVALID_PARAMS",
                 f"Complete {field} evidence exceeds callback limit ({limit} bytes); shorten the backtest range.",
+                market_data_provenance=(raw_report.get("market_data_provenance")
+                                        if isinstance(raw_report, dict) else None),
             )
     return JSONResponse(content=body)
 

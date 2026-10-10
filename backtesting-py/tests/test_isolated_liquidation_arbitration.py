@@ -279,6 +279,7 @@ def baseline_provider():
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     golden=WAVEB_GOLDEN['cases'].get(name) or WAVEC_GOLDEN['cases'].get(name)
     data=compat.frame().iloc[WAVEB_GOLDEN['data_offset'].get(name,60):].copy()
     params={'direction':'short'} if name.endswith('_short') else {}
