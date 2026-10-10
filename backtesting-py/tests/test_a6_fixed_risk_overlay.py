@@ -249,6 +249,12 @@ def test_fixed_risk_keys_are_merged_into_every_tool_schema():
             supported = {"stop_loss_pct", "take_profit_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
             assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
             continue
+        if tool_id.removeprefix("local.backtesting_py.") in {
+                "macro_release_breakout", "macro_surprise_direction", "fomc_reversal"}:
+            supported = {"position_size_pct", "position_size_notional"} | (
+                {"take_profit_r"} if tool_id.endswith("macro_release_breakout") else {"stop_loss_pct"})
+            assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
+            continue
         if tool_id == "local.backtesting_py.event_window":
             # P-EVENT0 fetches no risk_warmup prefix: only the two ATR keys are withheld.
             atr = {"atr_stop_multiplier", "risk_atr_period"}

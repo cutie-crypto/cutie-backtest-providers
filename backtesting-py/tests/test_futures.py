@@ -86,7 +86,7 @@ def test_catalog_declares_futures_market(client):
         # 做空形态一 / 二（集成 D 合并）、三（缠论三卖）只做合约：spot 不得出现在 catalog
         if tool["tool_id"] in ("local.backtesting_py.macd_bearish_divergence", "local.backtesting_py.rsi_bearish_divergence",
                                "local.backtesting_py.double_top", "local.backtesting_py.head_shoulders",
-                               "local.backtesting_py.chan_3sell",
+                               "local.backtesting_py.chan_3sell", "local.backtesting_py.fomc_reversal",
                                # SHORT-PAT-4
                                "local.backtesting_py.bearish_engulfing", "local.backtesting_py.shooting_star",
                                "local.backtesting_py.evening_star",

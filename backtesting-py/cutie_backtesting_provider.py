@@ -47,6 +47,7 @@ from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
 from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
 from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
 from strategy_event_window import EventWindowConfig, make_event_window_strategy, event_window_assumptions, settle_event_window_exits, SCHEMA as EVENT_WINDOW_SCHEMA
+from strategy_macro_events import MacroConfig, make_macro_strategy, macro_assumptions, macro_report, SCHEMAS as MACRO_SCHEMAS
 from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -5629,6 +5630,21 @@ def _build_event_window(params, *, initial_capital=10000.0):
                 executed_name="Event Window", min_bars=2, event_window_config=config)
 
 
+def _build_macro_event(params, *, kind, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS[f"local.backtesting_py.{kind}"]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = MacroConfig.parse(params, kind)
+    # Intrinsic stops/targets use the shared intrabar risk arbitration. Do not pass
+    # H1's take_profit_r into the generic user-stop parser: H1 owns its range stop.
+    effective = {key: value for key, value in params.items() if key != "take_profit_r"}
+    effective["risk_layer_enabled"] = True
+    risk = _parse_fixed_risk_params(effective, template_initial_stop=True)
+    return dict(strategy=make_macro_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name=kind.replace("_", " ").title(), min_bars=2, macro_config=config,
+                template_assumptions={kind: macro_assumptions(config)})
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 # Explicit pricing keys switch VWAP / Fibonacci off their built-in frozen price group.
@@ -5649,7 +5665,7 @@ _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name
     # SHORT-PAT-5: three black crows / bearish doji reversal.
     "three_black_crows", "bearish_doji_reversal",
     # 10-B2d: ORB / Asia size against the opposite range side frozen before the signal.
-    "opening_range_breakout", "asia_range_breakout"))
+    "opening_range_breakout", "asia_range_breakout", "macro_release_breakout"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
     "local.backtesting_py." + name for name in ("fibonacci_retracement", "vwap_reversion",
                                                  "calendar_schedule", "red_streak_rsi", "us_open_momentum"))
@@ -5664,7 +5680,7 @@ def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     """Whether the template supplies its own frozen stop when the user gives none."""
-    if tool_id in _SIZING_INTRINSIC_STOP_TOOLS:
+    if tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS:
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
         return not any(key in params for key in _TEMPLATE_PRICING_KEYS)
@@ -6489,6 +6505,14 @@ def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
 
 
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    **{f"local.backtesting_py.{kind}": {
+        "name": f"Local Backtesting.py {kind.replace('_', ' ').title()}",
+        "description": "Inline UTC macro events; one trade per event; intrinsic stop and timed next-open exits; zero warmup.",
+        "strategy_family": "calendar", "is_default": False,
+        "build": functools.partial(_build_macro_event, kind=kind),
+        "param_schema_properties": deepcopy(schema),
+        **({"markets": ["futures"]} if kind == "fomc_reversal" else {}),
+    } for kind, schema in MACRO_SCHEMAS.items()},
     "local.backtesting_py.calendar_schedule": {
         "name": "Local Backtesting.py Calendar Schedule",
         "description": "Weekly/monthly wall-clock entries and timed exits; next-open market fills; default 3% frozen stop.",
@@ -7491,6 +7515,16 @@ for _event_window_key in ("atr_stop_multiplier", "risk_atr_period"):
     del _event_window_properties[_event_window_key]
 del _event_window_properties, _event_window_key
 
+# Q18 has intrinsic exits and strictly zero warmup: advertise only consumed shared
+# sizing/leverage keys, not optional indicators, filters or alternate stop/clock rules.
+for _macro_kind, _macro_schema in MACRO_SCHEMAS.items():
+    TOOL_SPECS[f"local.backtesting_py.{_macro_kind}"]["param_schema_properties"] = {
+        **deepcopy(_macro_schema), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
+        **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
+        "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+    }
+del _macro_kind, _macro_schema
+
 POSITION_SIZING_UNWIRED_TOOLS = frozenset({
     "local.backtesting_py.rsi_scale_in_out", "local.backtesting_py.grid",
     "local.backtesting_py.dca", "local.backtesting_py.turtle",
@@ -7685,6 +7719,7 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
             "additionalProperties": False,
             # Copy: callers (and the rotation catalog) may mutate the entry; it must not alias the global TOOL_SPECS.
             "properties": deepcopy(spec["param_schema_properties"]),
+            **({"required": ["events"]} if tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS else {}),
         },
         "output_schema": {
             "metrics": [
@@ -9224,7 +9259,10 @@ async def run_backtest(
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
-            if effective_tool_id == "local.backtesting_py.vwap_reversion":
+            if effective_tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS:
+                _parse_fixed_risk_params({k: v for k, v in params.items() if k != "take_profit_r"},
+                                         template_initial_stop=True)
+            elif effective_tool_id == "local.backtesting_py.vwap_reversion":
                 _parse_fixed_risk_params(_vwap_effective_params(params))
             else:
                 _parse_fixed_risk_params(params, template_initial_stop=_sizing_template_initial_stop(
@@ -9302,6 +9340,11 @@ async def run_backtest(
     except Exception as e:  # F8: don't let build bugs become bare 500s with lost context
         logger.exception("strategy build failed tool=%s", effective_tool_id)
         return _business_failure(run_id, "ENGINE_ERROR", f"Strategy build failed: {e}")
+    macro_config = built.get("macro_config")
+    if macro_config is not None and market == "spot":
+        if (macro_config.kind == "macro_release_breakout" and macro_config.values["direction"] != "long"
+                or macro_config.kind == "macro_surprise_direction" and "short" in macro_config.values["direction_map"].values()):
+            return _validation_failure("INVALID_PARAMS", "macro event short/both direction requires futures market")
     if "validate_timeframe" in built:
         try:
             built["validate_timeframe"](timeframe)
@@ -9503,7 +9546,7 @@ async def run_backtest(
     # its required_bars prefix; off-state (and filter_timeframe) stays empty.
     warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
                   if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
-                 if range_config is not None or calendar_config is not None or event_window_config is not None else
+                 if range_config is not None or calendar_config is not None or event_window_config is not None or macro_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
@@ -9976,6 +10019,11 @@ async def run_backtest(
             settle_event_window_exits(response_body["assumptions"]["event_window"]["events"],
                                       response_body["trades"], response_body["raw_report"].get("isolated_risk"),
                                       **stats["_strategy"].event_window_log)
+        if macro_config is not None:
+            events = stats["_strategy"].macro_events
+            settle_event_window_exits(events, response_body["trades"], response_body["raw_report"].get("isolated_risk"),
+                                      **stats["_strategy"].event_window_log)
+            response_body["raw_report"][macro_config.kind] = macro_report(events)
         return _bounded_template_response(run_id, response_body)
 
     except Exception as e:

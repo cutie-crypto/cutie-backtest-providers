@@ -54,6 +54,8 @@ def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
                 supported = key == 'risk_layer_enabled'
             if tool_id == 'local.backtesting_py.event_window' and key in ('atr_stop_multiplier', 'risk_atr_period'):
                 supported = False  # P-EVENT0: no risk_warmup prefix, ATR keys withheld
+            if tool_id.removeprefix('local.backtesting_py.') in p.MACRO_SCHEMAS:
+                supported = tool_id.endswith('macro_release_breakout') and key == 'take_profit_r'
             assert (key in spec['param_schema_properties']) == supported
 
 

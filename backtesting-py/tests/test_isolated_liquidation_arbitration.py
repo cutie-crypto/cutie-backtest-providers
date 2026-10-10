@@ -275,7 +275,9 @@ def baseline_provider():
                                   # P-EVENT0: event_window postdates e25886e (no baseline output to compare)
                                   # and needs inline events; its L=1 off state is pinned byte-for-byte by
                                   # tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
-                                  'event_window')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
+                                  'event_window',
+                                  # Q18 postdates the frozen baseline; explicit L=1 bytes live in its route suite.
+                                  'macro_release_breakout', 'macro_surprise_direction', 'fomc_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
