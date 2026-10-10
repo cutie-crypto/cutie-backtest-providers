@@ -236,7 +236,9 @@ def test_fixed_risk_keys_are_merged_into_every_tool_schema():
             # basket_take_profit_pct / margin_per_leg（SPEC_组合策略v3契约 §6.1），
             # v3 内核不消费这 4 个 legacy 键，声明出来就是 catalog 里的死键。
             for key in _FIXED_RISK_PARAM_SCHEMA_PROPERTIES:
-                if spec.get("runner") == "scale_in_out_ledger" and key == "max_holding_bars":
+                # P1 恐贪分批不发布 max_holding_bars（时间层未接）。
+                if (spec.get("runner") == "scale_in_out_ledger" and key == "max_holding_bars"
+                        and tool_id != "local.backtesting_py.fear_greed_scale_in"):
                     assert key in props
                 else:
                     assert key not in props, f"{tool_id} must not declare legacy risk key {key}"

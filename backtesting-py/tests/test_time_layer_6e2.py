@@ -246,7 +246,8 @@ def test_calendar_schema_matches_consumers(tool, spec):
     schema = spec['param_schema_properties']
     # TURTLE-TIME: 海龟 runner 已接时间层（含 time_calendar），不再排除。
     excluded = (spec.get('runner') in ('kernel_v3', p.ROTATION_RUNNER)
-                or tool.removeprefix('local.backtesting_py.') in p.MACRO_SCHEMAS)
+                or tool.removeprefix('local.backtesting_py.') in p.MACRO_SCHEMAS
+                or tool == p.FEAR_GREED_TOOL_ID)  # P1：恐贪分批不发布时间层
     assert ('time_calendar' in schema) is not excluded
     if not excluded:
         assert schema['time_calendar'] == {'type':'string', 'default':'none',

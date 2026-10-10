@@ -145,6 +145,7 @@ UNWIRED_OWN_PARAMS = {
     'dca': ('amount', 'dip_multiplier'), 'turtle': ('unit_risk_pct',),
     'basket_ratio_sma_cross': ('margin_per_leg',), 'basket_ratio_roc': ('margin_per_leg',),
     'basket_ratio_zscore': ('margin_per_leg',), 'portfolio_rotation': ('1/K',),
+    'fear_greed_scale_in': ('buy_notional', 'max_lots'),  # P1
 }
 
 
