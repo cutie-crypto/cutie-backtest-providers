@@ -3575,6 +3575,7 @@ class _TurtleGroupMixin(_TimeLayerMixin):
         self._group_entry_bar = None
         self._group_take = None
         self._group_exit_reasons = {}
+        self._group_n_stop = {}
 
     def _turtle_sync(self) -> bool:
         # Called after broker.next(): a queued market order has either filled or
@@ -3593,6 +3594,7 @@ class _TurtleGroupMixin(_TimeLayerMixin):
                 self._group_units = len(self.trades)
                 self._last_fill = self.trades[-1].entry_price
                 self._group_stop = self._last_fill - self._group_side * self._stop_multiple * self._group_n
+                self._group_n_stop[self._group_id] = (self._group_n, self._group_stop)
             elif self._group_units:
                 self.units_skipped += 1
             else:
@@ -7665,7 +7667,8 @@ def _build_result_v2_trades(
 
 
 def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]],
-                         exit_reasons: Optional[dict[str, str]] = None) -> list[dict[str, Any]]:
+                         exit_reasons: Optional[dict[str, str]] = None,
+                         n_stop: Optional[dict[str, tuple[float, float]]] = None) -> list[dict[str, Any]]:
     """Map internal tags to the unchanged result.v2 sequence, or fail closed.
 
     Use the same stable (closed_at, opened_at) second-resolution ordering as
@@ -7688,8 +7691,21 @@ def _build_turtle_groups(stats_trades: Any, trades_v2: list[dict[str, Any]],
             raise ValueError("turtle group mapping has missing tag or inconsistent trade sequence")
         groups.setdefault(tag, []).append(seq)
     return [{"group_id": group_id, "trade_seqs": seqs, "units": len(seqs),
-             **({"exit_reason": exit_reasons.get(group_id, "end_of_data")} if exit_reasons is not None else {})}
+             **({"exit_reason": exit_reasons.get(group_id, "end_of_data")} if exit_reasons is not None else {}),
+             **_turtle_group_n_stop(group_id, n_stop)}
             for group_id, seqs in groups.items()]
+
+
+def _turtle_group_n_stop(group_id: str, n_stop: Optional[dict[str, tuple[float, float]]]) -> dict[str, str]:
+    """开组 N 与整组最后一次成交后的止损价；与 trades 价格同口径（float 转 Decimal 规范串）。"""
+    if n_stop is None:
+        return {}
+    # n / stop 只是展示用元数据：缺组时只让这一组不出两键，不抛错，以免作废整份已算完的回测。
+    if group_id not in n_stop:
+        return {}
+    n, stop = n_stop[group_id]
+    return {"n": canonical_decimal_str(Decimal(str(float(n)))),
+            "stop": canonical_decimal_str(Decimal(str(float(stop))))}
 
 
 def _isolated_liquidation_fills(
@@ -9533,6 +9549,7 @@ async def run_backtest(
             }
             turtle_risk = strategy_class._turtle_risk
             reasons = None
+            n_stop = dict(stats["_strategy"]._group_n_stop)  # 关闭态无关，普通海龟也出
             if strategy_class._time_config is not None:
                 turtle_assumptions["turtle_time_layer"] = {
                     "gate": "entry_and_add",
@@ -9556,7 +9573,7 @@ async def run_backtest(
                     "same_bar_priority": "stop_before_time_expiry_before_take_profit_before_channel_before_add_before_entry",
                     "final_bar": "engine_finalize_trades_settlement",
                 }
-            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"], reasons)}
+            turtle_raw_report = {"turtle_groups": _build_turtle_groups(stats["_trades"], result_v2["trades"], reasons, n_stop)}
         f5_isolated_assumptions = {}
         if is_vwap and isolated:
             f5_isolated_assumptions = _build_isolated_margin_assumptions(
