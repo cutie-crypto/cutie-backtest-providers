@@ -6508,6 +6508,9 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             **ENTRY_SCHEMA,
             "direction": {"type": "string", "default": "long", "enum": ["long", "short"]},
             "calendar_stop_enabled": {"type": "boolean", "default": True},
+            # CALEXCH: same shape/default as opening_range_breakout, so a server-sent
+            # exchange reaches the fetch and data_manifest.source instead of being rejected.
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
     "local.backtesting_py.event_window": {
