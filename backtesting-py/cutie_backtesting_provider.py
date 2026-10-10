@@ -38,7 +38,7 @@ from strategy_time_layer import (
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
 )
 from strategy_entry_filters import (
-    FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, entry_mask, HigherTimeframeContext, FilterHistoryError,
+    FilterConfig, FILTER_PARAM_SCHEMA_PROPERTIES, PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES, entry_mask, HigherTimeframeContext, FilterHistoryError,
 )
 from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
                                       parse_position_sizing, PositionSizingMixin)
@@ -2619,9 +2619,10 @@ def _isolated_liquidation_candidate(*, entry_price, leverage: int, is_long: bool
             "fill_price": opening if gap else price}
 
 
-def _with_filter_config(build=None, *, default_direction="long"):
+def _with_filter_config(build=None, *, default_direction="long", pattern_confirm=False):
     if build is None:
-        return functools.partial(_with_filter_config, default_direction=default_direction)
+        return functools.partial(_with_filter_config, default_direction=default_direction,
+                                 pattern_confirm=pattern_confirm)
 
     @functools.wraps(build)
     def configured(params, **kwargs):
@@ -2629,12 +2630,17 @@ def _with_filter_config(build=None, *, default_direction="long"):
         direction = params.get("direction", default_direction)
         if config.enabled and direction not in ("long", "short"):
             raise ValueError("INVALID_PARAMS:entry filters support long or short; both is not supported")
+        # P-PATCONF-1: the engine exists, no template defers its signals through it yet (wiring is
+        # P-PATCONF-2); fail closed instead of accepting a switch that would silently do nothing.
+        if config.pattern_confirm_enabled and not pattern_confirm:
+            raise ValueError("INVALID_PARAMS:filter_pattern_confirm_enabled is not supported by this template")
         built = build(params, **kwargs)
         if config.enabled:
             built["strategy"]._filter_config = config
             built["strategy"]._filter_direction = direction
         return built
     configured._supports_entry_filters = True
+    configured._supports_pattern_confirm = pattern_confirm
     # Exposed so tests can pin it against the template's own direction default (pi LOW on 7-P4).
     configured._filter_default_direction = default_direction
     return configured
@@ -7249,6 +7255,8 @@ TOOL_SPECS["local.backtesting_py.red_streak_rsi"]["param_schema_properties"]["ma
 for _filter_tool_spec in TOOL_SPECS.values():
     if getattr(_filter_tool_spec.get("build"), "_supports_entry_filters", False):
         _filter_tool_spec["param_schema_properties"].update(FILTER_PARAM_SCHEMA_PROPERTIES)
+        if _filter_tool_spec["build"]._supports_pattern_confirm:
+            _filter_tool_spec["param_schema_properties"].update(PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES)
 del _filter_tool_spec
 
 # F1 owns its frozen range prices; publish only shared risk parameters it consumes.
