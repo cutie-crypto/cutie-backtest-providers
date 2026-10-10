@@ -209,8 +209,16 @@ def test_incomplete_calendar_rejected(params):
 
 
 def test_http_missing_candle_and_unsupported_period(monkeypatch, tmp_path):
+    # P-LOW5-F2: 1 of 12 candles missing is within the tolerance; the gap day's 02:00 event is skipped.
     data = frame().drop(pd.Timestamp('2026-01-01T05:00'))
-    assert http_run(monkeypatch, tmp_path, data)['error_type'] == 'TIME_DATA_GAP'
+    body = http_run(monkeypatch, tmp_path, data)
+    assert body['result_status'] == 'success' and body['trades'] == [], body
+    assert body['raw_report']['calendar_events'] == [
+        {'event_utc': '2026-01-01T02:00:00+00:00', 'status': 'skipped', 'reason': 'main_range_gap_day'}]
+    assert body['assumptions']['calendar_main_gaps']['missing_bars'] == 1
+    shifted = frame()
+    shifted.index = shifted.index.where(shifted.index != shifted.index[5], shifted.index[5] + pd.Timedelta(minutes=30))
+    assert http_run(monkeypatch, tmp_path, shifted)['error_type'] == 'TIME_DATA_GAP'
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a: pytest.fail('unsupported period fetched'))
     req = dict(provider_tool_id=TOOL, provider_params=SCHEDULE, symbol='BTCUSDT', market='spot',
         timeframe='1M', start_at=1767225600, end_at=1767268800)

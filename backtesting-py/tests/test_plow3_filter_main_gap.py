@@ -148,24 +148,30 @@ def test_beyond_tolerance_fails_with_details(tool, monkeypatch, tmp_path):
                                    'first_gap_after': iso(full.index[99]), 'first_gap_segment': 'main'}
 
 
-# F1 (ORB / Asia) fetch the main range strictly and F2 (calendar) builds its clock over it: a main-range gap
-# fails there, before the filter guard, whether within the tolerance or not.
-F12_SHAPE = {'opening_range_breakout': ('INSUFFICIENT_DATA', 'time_history_incomplete'),
-             'asia_range_breakout': ('INSUFFICIENT_DATA', 'time_history_incomplete'),
-             'calendar_schedule': ('TIME_DATA_GAP', 'time_data_gap')}
+# F1 (ORB / Asia) and F2 (calendar) judge a main-range gap themselves before the filter guard (P-LOW5-F1F2):
+# within the tolerance the run goes on with both masks (template mask + filter re-warm, intersected),
+# beyond it the template fails TIME_DATA_GAP with its own details.
+F12_GAPS = {'opening_range_breakout': 'range_main_gaps', 'asia_range_breakout': 'range_main_gaps',
+            'calendar_schedule': 'calendar_main_gaps'}
 
 
 @pytest.mark.parametrize('tool', sorted(plow1.F12))
 @pytest.mark.parametrize('share', ['one_bar', 'beyond_tolerance'])
-def test_f12_main_gap_fails_before_guard(tool, share, monkeypatch, tmp_path):
+def test_f12_main_gap_judged_by_template_before_guard(tool, share, monkeypatch, tmp_path):
     params, make, timeframe, market = plow1.F12[tool]
     data = make()
     n = len(data)
     gapped = data.drop(data.index[n // 2]) if share == 'one_bar' else data.drop(data.index[n // 4:n // 4 + n // 5])
     body, _ = plow1.run_f12(monkeypatch, tmp_path, tool, {**params, **cap.EMA10}, gapped, timeframe, market,
                             plow1.prefix_for('contiguous', data, timeframe))
-    assert (body['result_status'], body['error_type'], body['limitations']) == (
-        'failed', F12_SHAPE[tool][0], {'reason': F12_SHAPE[tool][1]}), body
+    if share == 'one_bar':
+        assert body['result_status'] == 'success', body
+        assert body['assumptions'][F12_GAPS[tool]]['missing_bars'] == 1
+        assert body['assumptions']['entry_filter_main_gaps']['missing_bars'] == 1
+        return
+    limits = body['limitations']
+    assert (body['result_status'], body['error_type'], limits['reason'], limits['gap_count'], limits['missing_bars']) == (
+        'failed', 'TIME_DATA_GAP', 'time_data_gap', 1, n // 5), body
 
 
 # --- byte-identical to 451b879 ------------------------------------------------------------------------

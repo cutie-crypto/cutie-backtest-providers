@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from backtesting import Strategy
-from strategy_time_layer import TimeConfig, TimeContext, HoldingExpiry, expiry_due, utc_datetime, fixed_timeframe_milliseconds
+from strategy_time_layer import (TimeConfig, TimeContext, HoldingExpiry, expiry_due, utc_datetime, fixed_timeframe_milliseconds,
+                                 gap_tolerant_context)
 from strategy_time_series import PeriodDefinition, SeriesBar, period_bounds, range_window, freeze_range, TimeHistoryError
 from strategy_risk_overlay import RiskState
 from strategy_position_sizing import SizingRejected
@@ -83,6 +84,23 @@ class RangeConfig:
                 raise ValueError('INVALID_PARAMS:flatten endpoint cuts through a candle')
             cycle = period_bounds(cycle.end_utc, self.definition)
 
+    def masked_cycles(self, timeframe, missing_opens):
+        """P-LOW5-F1: the whole local cycles (timezone + range_start, daily reset) a missing candle reaches.
+
+        A cycle's candles -- range window, breakout window and every exit fill up to the flatten fill --
+        lie in [cycle start, entry window end]; the flatten fill is the next cycle's first open only when
+        flatten_at == range_start, so a hole there masks the previous cycle as well.
+        """
+        step = timedelta(milliseconds=fixed_timeframe_milliseconds(timeframe))
+        masked = {}
+        for missing in map(utc_datetime, missing_opens):
+            cycle = period_bounds(missing, self.definition)
+            masked[cycle.start_utc] = cycle
+            previous = period_bounds(missing - step, self.definition)
+            if previous.start_utc != cycle.start_utc and missing <= self.entry_window(previous).end_utc:
+                masked[previous.start_utc] = previous
+        return [masked[key] for key in sorted(masked)]
+
 
 def make_strategy(mixin, config, risk, initial_capital):
     class RangeBreakoutStrategy(mixin, Strategy):
@@ -92,6 +110,7 @@ def make_strategy(mixin, config, risk, initial_capital):
         _range_prefix = ()
         _range_timeframe = None
         _range_backtest_start = None
+        _range_masked_cycles = frozenset()  # P-LOW5-F1: UTC starts of local cycles a missing candle reaches
 
         def init(self):
             timeframe = self._range_timeframe
@@ -105,7 +124,9 @@ def make_strategy(mixin, config, risk, initial_capital):
             self._series = list(self._range_prefix) + [SeriesBar(t, float(h), float(l), float(c), float(v))
                 for t, h, l, c, v in zip(self.data.index, self.data.High, self.data.Low, self.data.Close, self.data.Volume)]
             self._series_opens = [utc_datetime(bar.open_utc) for bar in self._series]
-            self._range_clock = TimeContext.build(intrinsic, timeframe, [b.open_utc for b in self._series])
+            # P-LOW5-F1: holes only reach this engine after the run masked every cycle they touch.
+            build = gap_tolerant_context if self._range_masked_cycles else TimeContext.build
+            self._range_clock = build(intrinsic, timeframe, [b.open_utc for b in self._series])
             self._backtest_start = self._range_backtest_start or utc_datetime(self.data.index[0])
             config.validate_grid(timeframe, self._backtest_start, self._range_clock.decision_utc(self.data.index[-1]))
             self._snapshots = {}
@@ -180,7 +201,11 @@ def make_strategy(mixin, config, risk, initial_capital):
                 self.daily_ranges[key] = dict(date=cycle.start_utc.astimezone(self._range_clock.zone).date().isoformat(),
                     high=None, low=None, freeze_utc=window.end_utc.isoformat(), available=False,
                     triggered=False, exit_reason=None)
-            if key not in self._snapshots and decision >= window.end_utc:
+            masked = cycle.start_utc in self._range_masked_cycles
+            if masked:
+                # P-LOW5-F1: no range frozen for a cycle holding a missing candle, hence no entry.
+                self.daily_ranges[key]['masked_reason'] = 'main_range_gap'
+            if not masked and key not in self._snapshots and decision >= window.end_utc:
                 left = bisect.bisect_left(self._series_opens, window.start_utc)
                 right = bisect.bisect_left(self._series_opens, window.end_utc)
                 snapshot = freeze_range(self._series[left:right], self._range_clock, cycle, config.definition, config.start, config.end,
