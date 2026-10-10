@@ -258,9 +258,9 @@ def test_enabled_no_rules_preserves_off_response_except_optin_metadata(monkeypat
         assert off[key]==on[key]
     assert 'turtle_risk' not in off['assumptions']
     assert [g['exit_reason'] for g in on['raw_report']['turtle_groups']]==['stop','channel','channel']
-    groups=copy.deepcopy(strip_n_stop(on['raw_report']['turtle_groups']))
+    groups=copy.deepcopy(on['raw_report']['turtle_groups'])
     for group in groups:
-        group.pop('exit_reason')
+        group.pop('exit_reason')  # n / stop 关闭态与开启态必须相同，不剔除
     assert groups==off['raw_report']['turtle_groups']
 
 

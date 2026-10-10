@@ -9495,7 +9495,7 @@ async def run_backtest(
             }
             turtle_risk = strategy_class._turtle_risk
             reasons = None
-            n_stop = None
+            n_stop = dict(stats["_strategy"]._group_n_stop)  # 关闭态无关，普通海龟也出
             if strategy_class._time_config is not None:
                 turtle_assumptions["turtle_time_layer"] = {
                     "gate": "entry_and_add",
@@ -9506,7 +9506,6 @@ async def run_backtest(
             if turtle_risk.get("risk_layer_enabled") or strategy_class._time_config is not None:
                 instance = stats["_strategy"]
                 reasons = dict(instance._group_exit_reasons)
-                n_stop = dict(instance._group_n_stop)
                 if instance._group_id is not None:
                     reasons[instance._group_id] = "end_of_data"
             if turtle_risk.get("risk_layer_enabled"):

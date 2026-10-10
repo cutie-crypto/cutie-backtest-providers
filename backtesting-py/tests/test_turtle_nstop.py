@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 import cutie_backtesting_provider as p
 from test_turtle_template import (directional_fixture, directional_hand, expected_groups,
-                                  fixture, frame, hand, request)
+                                  fixture, frame, hand, request, strip_n_stop)
 
 
 def http_groups(monkeypatch, tmp_path, fx, extra):
@@ -93,11 +93,18 @@ def test_single_unit_group_stop_is_first_fill(monkeypatch, tmp_path, direction):
 
 
 @pytest.mark.parametrize('direction', ['long', 'short', 'both'])
-def test_without_risk_or_time_layer_groups_carry_neither_key(monkeypatch, tmp_path, direction):
+def test_plain_turtle_also_emits_n_and_stop_matching_hand(monkeypatch, tmp_path, direction):
     fx, expected = scenario(direction)
     groups = http_groups(monkeypatch, tmp_path, fx, {})
-    assert groups == expected_groups(expected)
-    assert all(set(g) == {'group_id', 'trade_seqs', 'units'} for g in groups)
+    assert all(set(g) == {'group_id', 'trade_seqs', 'units', 'n', 'stop'} for g in groups)
+    assert strip_n_stop(groups) == expected_groups(expected)
+    wanted = hand_n_stop(fx, expected)
+    for group in groups:
+        n, stop, _ = wanted[group['group_id']]
+        assert close(group['n'], n) and close(group['stop'], stop)
+    # 与开启风控层的结果在 n / stop 上逐字相同。
+    assert groups == [{k: v for k, v in g.items() if k != 'exit_reason'}
+                      for g in http_groups(monkeypatch, tmp_path, fx, {'risk_layer_enabled': True})]
 
 
 def test_builder_maps_n_stop_by_group_id_and_omits_when_absent():
@@ -111,6 +118,6 @@ def test_builder_maps_n_stop_by_group_id_and_omits_when_absent():
     assert [(g['group_id'], g['n'], g['stop']) for g in groups] == [
         ('turtle-1', '1.5', '90.25'), ('turtle-2', '2.5', '80'), ('turtle-3', '0.125', '70')]
     plain = p._build_turtle_groups(trades, v2, {g: 'channel' for g in n_stop}, None)
-    assert all(set(g) == {'group_id', 'trade_seqs', 'units', 'exit_reason'} for g in plain)
+    assert all(set(g) == {'group_id', 'trade_seqs', 'units', 'exit_reason'} for g in plain)  # 无实例状态才省略
     with pytest.raises(KeyError):
         p._build_turtle_groups(trades, v2, None, {'turtle-1': (1.0, 2.0)})
