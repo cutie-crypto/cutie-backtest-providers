@@ -52,6 +52,8 @@ def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
             supported = included or (spec.get('runner') == p.TURTLE_RUNNER and key in p._TURTLE_RISK_KEYS)
             if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout', 'local.backtesting_py.calendar_schedule'):
                 supported = key == 'risk_layer_enabled'
+            if tool_id == 'local.backtesting_py.event_window' and key in ('atr_stop_multiplier', 'risk_atr_period'):
+                supported = False  # P-EVENT0: no risk_warmup prefix, ATR keys withheld
             assert (key in spec['param_schema_properties']) == supported
 
 
