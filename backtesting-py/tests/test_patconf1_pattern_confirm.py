@@ -37,6 +37,15 @@ GOLDEN = json.loads((Path(__file__).parent / 'fixtures/patconf1_5ddd8eb.json').r
 EVENT0 = {'event_window'}
 CASES = {key: case for key, case in base.cases().items() if case[0] not in EVENT0}
 LAYER = dict(filter_layer_enabled=True, filter_pattern_confirm_enabled=True)
+# P-PATCONF-2a whitelist: templates whose entries all go through _risk_buy / _risk_sell.
+WIRED = set("""adx_di_cross bias_reversion bollinger_breakout bollinger_reversal bollinger_squeeze_breakout
+breakout cci_rsi ema_cross ema_pullback ema_rsi_pullback ema_trend_rsi ema_triple_alignment
+ichimoku_cloud_breakout keltner_breakout macd macd_above_zero parabolic_sar roc rsi_reversal
+stoch_oversold_cross supertrend volume_breakout""".split())
+
+
+def unwired_tools():
+    return [tool for tool in base.filter_tools() if tool not in WIRED]
 
 
 # --- keys omitted: byte-identical -------------------------------------------------------------------
@@ -66,15 +75,21 @@ def test_pattern_confirm_schema_is_two_keys_apart_from_published_filter_keys():
     assert not set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(FILTER_PARAM_SCHEMA_PROPERTIES)
 
 
-def test_no_catalog_schema_publishes_the_keys_while_unwired(monkeypatch):
+def test_no_catalog_schema_publishes_the_keys_outside_the_whitelist(monkeypatch):
+    # P-PATCONF-2a: only the 22 _risk_buy/_risk_sell templates are wired; the other 29 stay unpublished.
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     tools = TestClient(p.app).get('/catalog').json()['tools']
-    assert len(tools) == 60  # P-EVENT0 +1
+    assert len(tools) == 60  # main 59 + P-EVENT0 event_window
+    published = set()
     for tool in tools:
-        assert not set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(tool['param_schema']['properties']), tool['tool_id']
-    for spec in p.TOOL_SPECS.values():
+        keys = set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(tool['param_schema']['properties'])
+        assert keys in (set(), set(PATTERN_CONFIRM_SCHEMA_KEYS)), tool['tool_id']
+        if keys:
+            published.add(tool['tool_id'].removeprefix('local.backtesting_py.'))
+    assert published == WIRED
+    for name, spec in p.TOOL_SPECS.items():
         if getattr(spec.get('build'), '_supports_entry_filters', False):
-            assert spec['build']._supports_pattern_confirm is False
+            assert spec['build']._supports_pattern_confirm is (name.removeprefix('local.backtesting_py.') in WIRED)
 
 
 def test_parse_defaults_and_range():
@@ -112,7 +127,13 @@ def test_report_names_the_confirmation_rule():
                                                         'filter_ema_enabled': True}).report()['predicates']
 
 
-@pytest.mark.parametrize('tool', base.filter_tools())
+def test_whitelist_splits_the_51_filter_templates_22_and_29():
+    assert WIRED <= set(base.filter_tools()) and len(WIRED) == 22
+    # 29 pre-EVENT0 unwired templates + event_window (P-EVENT0, also unwired)
+    assert len(unwired_tools()) == 29 + len(EVENT0) and EVENT0 <= set(unwired_tools())
+
+
+@pytest.mark.parametrize('tool', unwired_tools())
 def test_enabling_the_switch_fails_closed_on_every_unwired_template(tool, monkeypatch, tmp_path):
     if tool in cap.PLOW1_TOOLS:
         body = range_cases.post(monkeypatch, tmp_path, tool, LAYER)
@@ -123,7 +144,7 @@ def test_enabling_the_switch_fails_closed_on_every_unwired_template(tool, monkey
     assert body['error_message'] == "unknown parameter 'filter_pattern_confirm_enabled' (not in tool param_schema)"
 
 
-@pytest.mark.parametrize('tool', base.filter_tools())
+@pytest.mark.parametrize('tool', unwired_tools())
 def test_build_guard_rejects_the_switch_behind_the_schema_gate(tool):
     # second gate: a build reached without the schema check (or a schema published before wiring)
     params = {**(cap.params_for(tool) if tool not in cap.PLOW1_TOOLS else {}), **LAYER}
