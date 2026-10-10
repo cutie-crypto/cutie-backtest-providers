@@ -7668,7 +7668,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         },
     },
     # P1：恐贪分批。外部序列走中心 /metrics（MARKET / alternative_me / fear_greed_index / 1d），
-    # 不用内联事件通道（建单入参上限 8 KB）。只做现货、只支持 1d。
+    # 不用内联事件通道（建单入参上限 8 KB）。只做现货、只支持 1d。本模板不接时间层与 max_holding_bars（下方 del 掉，带了按未知键拒；统领 1011 第 56 封）。
     FEAR_GREED_TOOL_ID: {
         "name": "Local Spot Fear & Greed Scale In",
         "description": (
