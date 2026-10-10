@@ -205,6 +205,69 @@ def pattern_confirm_entries(signals: Any, high: Any, low: Any, close: Any, *, di
     return entries, source
 
 
+PATTERN_CONFIRM_DISCARD_REASONS = (
+    'unconfirmed', 'superseded_by_later_signal', 'position_or_order_open',
+    'isolated_liquidation_bar', 'time_gate', 'filter_gate')
+
+
+class PatternConfirmQueue:
+    """Bar-by-bar form of pattern_confirm_entries() for a strategy's next() (P-PATCONF-2a).
+
+    register() records a signal at its bar s; advance(k, close[k]) must be called once per bar in
+    order, before any signal of bar k is registered. It returns (s, direction) of the latest signal
+    confirming at k, or None. Every confirming signal is consumed; the ones beaten by a later s are
+    discarded here, the caller settles the winner via submitted() or discard(reason).
+    """
+
+    def __init__(self, bars: int) -> None:
+        if type(bars) is not int or not 1 <= bars <= 5:
+            raise ValueError('pattern confirmation bars must be an integer within 1-5')
+        self.bars = bars
+        self._pending: list[tuple[int, str, float]] = []
+        self.registered = 0
+        self.confirmed = 0
+        self.submitted_count = 0
+        self.discarded = dict.fromkeys(PATTERN_CONFIRM_DISCARD_REASONS, 0)
+
+    def register(self, bar: int, direction: str, level: float) -> None:
+        _is_short(direction)
+        self._pending.append((bar, direction, float(level)))
+        self.registered += 1
+
+    def advance(self, bar: int, close: float) -> tuple[int, str] | None:
+        close = float(close)
+        pending, hits = [], []
+        for s, direction, level in self._pending:
+            if s >= bar:
+                pending.append((s, direction, level))
+                continue
+            if math.isfinite(close) and math.isfinite(level) and (
+                    close < level if direction == 'short' else close > level):
+                hits.append((s, direction))
+            elif bar >= s + self.bars:
+                self.discarded['unconfirmed'] += 1
+            else:
+                pending.append((s, direction, level))
+        self._pending = pending
+        if not hits:
+            return None
+        self.confirmed += len(hits)
+        self.discarded['superseded_by_later_signal'] += len(hits) - 1
+        return max(hits)
+
+    def submitted(self) -> None:
+        self.submitted_count += 1
+
+    def discard(self, reason: str) -> None:
+        if reason not in self.discarded:
+            raise ValueError(f'unknown pattern confirmation discard reason {reason!r}')
+        self.discarded[reason] += 1
+
+    def report(self) -> dict[str, Any]:
+        return dict(registered=self.registered, confirmed=self.confirmed, submitted=self.submitted_count,
+                    discarded=dict(self.discarded), pending_at_end=len(self._pending))
+
+
 class FilterHistoryError(ValueError):
     """The requested closed higher-timeframe history cannot be proven complete."""
 
