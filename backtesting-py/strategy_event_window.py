@@ -129,6 +129,7 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
             self._active = None    # (trade, record) open
             self._exit_reason = None
             self._closed_seen = 0  # closed_trades already attributed to an event
+            self._next_bar = -1    # last bar next() ran on; short of the last bar => the broker went insolvent
 
         def _settle(self):
             if self._pending is not None:
@@ -148,28 +149,46 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
             trade, record = self._active
             # Every fill that closed (part of) the held trade is one result.v2 row: partial take-profits
             # and the final close alike. Only one close order is in flight at a time, so the reason set
-            # when it was queued belongs to the fill.
+            # when it was queued belongs to the fill (and is consumed by it). Time and price here are
+            # the broker's; settle_event_window_exits replaces them with the result.v2 settlement.
+            self._attribute(lambda closed: self._exit_reason or 'risk_exit')
+
+        def _attribute(self, reason_of):
+            trade, record = self._active
+            filled = False
             for closed in self.closed_trades[self._closed_seen:]:
                 if closed.entry_time == trade.entry_time:
                     record['exits'].append(dict(time=utc_datetime(closed.exit_time).isoformat(),
-                                                price=closed.exit_price, reason=self._exit_reason or 'risk_exit'))
+                                                price=closed.exit_price, reason=reason_of(closed)))
+                    filled = True
             self._closed_seen = len(self.closed_trades)
+            if filled:
+                self._exit_reason = None
             if trade not in self.trades:
                 last = record['exits'][-1]
                 record.update(exit_reason=last['reason'], exit_utc=last['time'], exit_price=last['price'])
                 self._active = None
 
-        def event_window_finish(self, reason):
-            """After bt.run(): attribute closes made by finalize_trades (reason given by the caller)."""
-            if self._active is not None and self._active[0] not in self.trades:
-                self._exit_reason = reason
-                self._settle()
-            for record in self.event_window_events:
-                if record['status'] == 'entered' and 'exit_reason' not in record:
-                    record['exit_reason'] = reason
+        def event_window_finish(self):
+            """After bt.run(): attribute the closes the engine made after the last next().
+
+            The broker's insolvency check (``_OutOfMoneyError``) closes every open trade at that bar's
+            close and ends the run before next() sees the bar: ``insolvency``. Otherwise a close order
+            the strategy queued keeps its reason, and only what is left is the finalize_trades close.
+            """
+            if self._active is None or self._active[0] in self.trades:
+                return
+            stop = self._next_bar + 1  # the bar the run broke on, if it broke
+            insolvent = stop < len(self.data)
+
+            def reason_of(closed):
+                if insolvent and closed.exit_bar == stop and closed.exit_price == self.data.Close[stop]:
+                    return 'insolvency'
+                return self._exit_reason or 'engine_finalize_trades_settlement'
+            self._attribute(reason_of)
 
         def next(self):
-            bar = len(self.data) - 1
+            bar = self._next_bar = len(self.data) - 1
             self._settle()
             if self.position and self._active is not None:
                 trade, record = self._active
@@ -192,6 +211,37 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
                 record.update(status='submitted')
                 self._pending = (self.orders[-1], record)
     return EventWindowStrategy
+
+
+def settle_event_window_exits(events, trades_v2, isolated_risk=None):
+    """Fill every entered event's exits from the settled result.v2 rows (time and price), fail-closed.
+
+    A row belongs to the one entered event whose entry opened it (opened_at); a row that matches no
+    event or several is an error, as is a count that differs from the fills the strategy recorded.
+    Reason priority: isolated liquidation (row listed in raw_report.isolated_risk) > insolvency >
+    the reason the strategy recorded > engine_finalize_trades_settlement (the last two are decided
+    while the engine runs). exit_reason / exit_utc / exit_price follow the last exit.
+    """
+    liquidated = {item['seq'] for item in (isolated_risk or {}).get('liquidations', ())}
+    entered = [record for record in events if record.get('status') == 'entered']
+    rows = {id(record): [] for record in entered}
+    for row in sorted(trades_v2, key=lambda trade: trade['seq']):
+        owners = [record for record in entered
+                  if int(datetime.fromisoformat(record['entry_utc']).timestamp()) == row['opened_at']]
+        if len(owners) != 1:
+            raise ValueError(f"event_window: result.v2 row seq {row['seq']} matches {len(owners)} entered events")
+        rows[id(owners[0])].append(row)
+    for record in entered:
+        own, exits = rows[id(record)], record.get('exits', [])
+        if not own or len(own) != len(exits):
+            raise ValueError(f"event_window: event {record['ts_utc']} has {len(exits)} recorded exits "
+                             f"but {len(own)} result.v2 rows")
+        for exit_, row in zip(exits, own):
+            exit_.update(time=datetime.fromtimestamp(row['closed_at'], timezone.utc).isoformat(),
+                         price=float(row['exit_price']),
+                         reason='liquidation' if row['seq'] in liquidated else exit_['reason'])
+        last = exits[-1]
+        record.update(exit_reason=last['reason'], exit_utc=last['time'], exit_price=last['price'])
 
 
 def event_window_assumptions(config):
