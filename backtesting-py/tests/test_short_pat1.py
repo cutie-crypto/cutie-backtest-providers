@@ -502,6 +502,31 @@ BOTTOM_PLIQ1_EXIT = (
     b'                self._risk_check_exit()\n'
     b'                return\n')
 
+# P-PATCONF-2b1：双底 / 头肩底接入形态确认，底部源文件第五、六、七处允许的差异：确认开时判定根只登记
+# （入场门挪到确认根判）、登记时带冻结的 tag、确认根入场走 _pattern_confirm_open_tagged。
+BOTTOM_PATCONF2B1_GATE = (
+    b"            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():\n",
+    b"            queue = self._pattern_confirm_queue\n"
+    b"            # P-PATCONF-2b1: with confirmation on, the signal bar s only registers; the entry gates\n"
+    b"            # are judged at the confirming bar k (_pattern_confirm_open_tagged).\n"
+    b"            if queue is None and (self.orders or len(self.data) >= self._main_bars\n"
+    b"                                  or not self._time_allow_entry() or not self._filter_allow_entry()):\n")
+BOTTOM_PATCONF2B1_REGISTER = (
+    b"            tag = BottomEntry(len(self.data)-1, signal.stop, signal.target)\n",
+    b"            tag = BottomEntry(len(self.data)-1, signal.stop, signal.target)\n"
+    b"            if queue is not None:\n"
+    b"                # Stop and target stay frozen at s and travel with the signal.\n"
+    b"                queue.register(len(self.data) - 1, \"long\", self.data.High[-1], tag)\n"
+    b"                return\n")
+BOTTOM_PATCONF2B1_OPEN = (
+    b"                order._sizing_signal_bar = len(self.data) - 1\n"
+    b"    return BottomStrategy\n",
+    b"                order._sizing_signal_bar = len(self.data) - 1\n"
+    b"\n"
+    b"        def _pattern_confirm_open(self, is_long, payload):\n"
+    b"            return self._pattern_confirm_open_tagged(is_long, payload)\n"
+    b"    return BottomStrategy\n")
+
 
 def test_long_source_and_golden_files_byte_unchanged():
     root=Path(__file__).resolve().parents[2]
@@ -509,7 +534,8 @@ def test_long_source_and_golden_files_byte_unchanged():
                      'backtesting-py/tests/fixtures/9t3_bottom_off.json'):
         expected=subprocess.check_output(['git','show','32ae030:'+relative],cwd=root)
         if relative.endswith('strategy_bottom_patterns.py'):
-            for allowed in (BOTTOM_7P3B2_GATE, BOTTOM_PLOW2B_SIGNAL_BAR, BOTTOM_PLIQ1_DECIMAL, BOTTOM_PLIQ1_EXIT):
+            for allowed in (BOTTOM_7P3B2_GATE, BOTTOM_PLOW2B_SIGNAL_BAR, BOTTOM_PLIQ1_DECIMAL, BOTTOM_PLIQ1_EXIT,
+                            BOTTOM_PATCONF2B1_GATE, BOTTOM_PATCONF2B1_REGISTER, BOTTOM_PATCONF2B1_OPEN):
                 assert expected.count(allowed[0])==1
                 expected=expected.replace(*allowed)
         assert (root/relative).read_bytes()==expected
