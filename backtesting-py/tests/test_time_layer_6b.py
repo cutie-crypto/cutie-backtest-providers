@@ -250,6 +250,8 @@ def test_every_registered_single_template_consumes_holding_bars(name):
         params['rsi_exit'] = 85
     if name == 'ichimoku_cloud_breakout':
         params.update(tenkan_period=5, kijun_period=10, senkou_b_period=20)
+    if name == 'event_window':
+        params.update(compat.required_params(name))  # P-EVENT0: inline events, no default list
     if name == 'chan_3buy':
         from test_9t6_chan_3buy import frame as chan_frame
         data = chan_frame()
