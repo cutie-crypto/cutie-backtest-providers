@@ -7304,6 +7304,45 @@ assert POSITION_SIZING_UNWIRED_TOOLS == {
     tool for tool, spec in TOOL_SPECS.items()
     if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3", ROTATION_RUNNER)
 }, "Every unwired runner must be explicitly listed"
+# RS0：每个不接定仓 runner 的「定量允许键」白名单（⊆ POSITION_SIZE_KEYS）。本期全部为空集（行为不变），
+# 某个 runner 日后接好某个定仓键，只往这里放该键；请求里不在允许键内的定仓键仍在取数前拒绝。
+RUNNER_SIZING_ALLOWED_KEYS: dict[str, frozenset[str]] = {
+    tool: frozenset() for tool in sorted(POSITION_SIZING_UNWIRED_TOOLS)
+}
+
+
+def _assert_runner_sizing_allowed_keys(allowed=None, unwired=None, size_keys=None):
+    allowed = RUNNER_SIZING_ALLOWED_KEYS if allowed is None else allowed
+    unwired = POSITION_SIZING_UNWIRED_TOOLS if unwired is None else unwired
+    size_keys = POSITION_SIZE_KEYS if size_keys is None else size_keys
+    assert set(allowed) == set(unwired), "RUNNER_SIZING_ALLOWED_KEYS must cover exactly the unwired runners"
+    for tool, keys in allowed.items():
+        assert frozenset(keys) <= size_keys, f"{tool}: allowed sizing keys must be a subset of POSITION_SIZE_KEYS"
+
+
+_assert_runner_sizing_allowed_keys()
+
+_RUNNER_SIZING_HINTS = {
+    "local.backtesting_py.rsi_scale_in_out": "per-order amount is set by buy_notional / sell_notional",
+    "local.backtesting_py.grid": "per-grid amount is set by amount_per_grid",
+    "local.backtesting_py.dca": "per-period amount is set by amount and the add-on by dip_multiplier",
+    "local.backtesting_py.turtle": "risk per unit is set by unit_risk_pct and equity already compounds, "
+                                   "so position_size_risk_pct is not an alias and compound is not accepted",
+    "local.backtesting_py.basket_ratio_sma_cross": "margin per leg is set by margin_per_leg",
+    "local.backtesting_py.basket_ratio_roc": "margin per leg is set by margin_per_leg",
+    "local.backtesting_py.basket_ratio_zscore": "margin per leg is set by margin_per_leg",
+    ROTATION_TOOL_ID: "it rebalances to equal 1/K weights of net value and has no single-position sizing",
+}
+assert set(_RUNNER_SIZING_HINTS) == set(POSITION_SIZING_UNWIRED_TOOLS), "every unwired runner needs a sizing hint"
+
+
+def _unwired_sizing_rejected_message(tool_id, params):
+    """Message when params carry a sizing key outside the runner's allowed keys, else None."""
+    if not isinstance(params, dict) or tool_id not in POSITION_SIZING_UNWIRED_TOOLS:
+        return None
+    if not (set(params) & POSITION_SIZE_KEYS) - RUNNER_SIZING_ALLOWED_KEYS[tool_id]:
+        return None
+    return f"position sizing is not wired to this runner; {_RUNNER_SIZING_HINTS[tool_id]}"
 # 10-B 起点 b42210b 之后合入的单仓模板（集成 B、集成 C），尚未逐个核过按风险定仓 / 复利（INTEG-C 裁定，fail-closed）：
 # 区间、形态、背离、缠论模板自带冻结出场、拒绝 stop_loss_pct；其余模板的入场单形态与初始止损口径也未核。
 # schema 不出现定仓新键，请求带新键在取数前拒绝；某个模板核完（新键生效 + 省略新键逐字节不变）后从本名单移出。
@@ -8893,8 +8932,9 @@ async def run_backtest(
     effective_tool_id = tool_id or DEFAULT_TOOL_ID
     if effective_tool_id == ROTATION_TOOL_ID:
         # 集成 D：轮动是不接定仓的 runner，带定仓键与其它不接 runner 同形状在取数前拒（下方定仓检查走不到这里）
-        if isinstance(params, dict) and set(params) & POSITION_SIZE_KEYS:
-            return _position_sizing_failure("position sizing is not wired to this runner")
+        _rotation_sizing_message = _unwired_sizing_rejected_message(effective_tool_id, params)
+        if _rotation_sizing_message:
+            return _position_sizing_failure(_rotation_sizing_message)
         return rotation_response(body, bt_req, run_id, sys.modules[__name__])
 
     # --- Validate symbol ---
@@ -8956,8 +8996,9 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "provider_params must be an object")
     tool_spec = TOOL_SPECS[effective_tool_id]
     if set(params) & POSITION_SIZE_KEYS:
-        if effective_tool_id in POSITION_SIZING_UNWIRED_TOOLS:
-            return _position_sizing_failure("position sizing is not wired to this runner")
+        _unwired_sizing_message = _unwired_sizing_rejected_message(effective_tool_id, params)
+        if _unwired_sizing_message:
+            return _position_sizing_failure(_unwired_sizing_message)
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:

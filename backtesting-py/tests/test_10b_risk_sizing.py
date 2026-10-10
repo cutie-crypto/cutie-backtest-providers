@@ -140,13 +140,30 @@ def test_invalid_atr_stop_rejected_at_fill():
     assert result['_strategy']._sizing_report['rejections'][0]['reason'] == 'invalid_initial_stop'
 
 
+UNWIRED_OWN_PARAMS = {
+    'rsi_scale_in_out': ('buy_notional', 'sell_notional'), 'grid': ('amount_per_grid',),
+    'dca': ('amount', 'dip_multiplier'), 'turtle': ('unit_risk_pct',),
+    'basket_ratio_sma_cross': ('margin_per_leg',), 'basket_ratio_roc': ('margin_per_leg',),
+    'basket_ratio_zscore': ('margin_per_leg',), 'portfolio_rotation': ('1/K',),
+}
+
+
+def test_unwired_runner_own_params_table_covers_every_unwired_tool():
+    assert {'local.backtesting_py.' + n for n in UNWIRED_OWN_PARAMS} == set(p.POSITION_SIZING_UNWIRED_TOOLS)
+
+
 @pytest.mark.parametrize('tool', sorted(p.POSITION_SIZING_UNWIRED_TOOLS))
 @pytest.mark.parametrize('key,value', [('position_size_risk_pct',1),('compound',False),('position_size_qty_step',.1)])
 def test_unwired_runner_rejected_before_fetch(monkeypatch, tool, key, value):
+    # 只有不在该 runner 允许键内的新键才拒；RS0 起允许键全空，所以三键全拒。
+    assert key not in p.RUNNER_SIZING_ALLOWED_KEYS[tool]
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: pytest.fail('data fetched'))
     result = TestClient(p.app).post('/cutie/backtest', json=request({key:value}, name=tool.split('.')[-1])).json()
     assert result['error_type'] == 'INVALID_PARAMS'
-    assert 'not wired' in result['raw_report']['position_sizing']['rejections'][0]['reason']
+    reason = result['raw_report']['position_sizing']['rejections'][0]['reason']
+    assert 'position sizing is not wired to this runner' in reason
+    for own in UNWIRED_OWN_PARAMS[tool.split('.')[-1]]:
+        assert own in reason, (tool, own)
 
 
 @pytest.mark.parametrize('params', [dict(position_size_risk_pct=1), dict(position_size_risk_pct=0,stop_loss_pct=2),
@@ -171,6 +188,29 @@ def test_pending_list_is_empty_and_every_single_position_template_has_sizing_key
     for tool, spec in p.TOOL_SPECS.items():
         if tool not in p.POSITION_SIZING_UNWIRED_TOOLS:
             assert POSITION_SIZE_KEYS <= set(spec['param_schema_properties']), tool
+        else:
+            # schema 里出现的新键 == 该 runner 的允许键（RS0 为空）
+            assert POSITION_SIZE_KEYS & set(spec['param_schema_properties']) == p.RUNNER_SIZING_ALLOWED_KEYS[tool], tool
+
+
+def test_runner_sizing_allowed_keys_assert_checks_subset_and_coverage():
+    p._assert_runner_sizing_allowed_keys()  # 全局当前状态通过
+    good = {t: frozenset() for t in p.POSITION_SIZING_UNWIRED_TOOLS}
+    ok = dict(good, **{'local.backtesting_py.grid': frozenset({'compound'})})
+    p._assert_runner_sizing_allowed_keys(allowed=ok)
+    bad = dict(good, **{'local.backtesting_py.grid': frozenset({'amount_per_grid'})})
+    with pytest.raises(AssertionError, match='subset'):
+        p._assert_runner_sizing_allowed_keys(allowed=bad)
+    with pytest.raises(AssertionError, match='cover'):
+        p._assert_runner_sizing_allowed_keys(allowed={})
+
+
+def test_allowed_key_is_not_rejected_by_unwired_gate(monkeypatch):
+    tool = 'local.backtesting_py.grid'
+    monkeypatch.setitem(p.RUNNER_SIZING_ALLOWED_KEYS, tool, frozenset({'compound'}))
+    assert p._unwired_sizing_rejected_message(tool, {'compound': False}) is None
+    assert 'position_size_risk_pct' not in p.RUNNER_SIZING_ALLOWED_KEYS[tool]
+    assert 'amount_per_grid' in p._unwired_sizing_rejected_message(tool, {'compound': False, 'position_size_risk_pct': 1})
 
 
 def test_catalog_and_builders_cover_actual_mixins():
