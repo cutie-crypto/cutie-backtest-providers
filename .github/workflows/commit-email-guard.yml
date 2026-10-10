@@ -1,0 +1,32 @@
+name: commit-email-guard
+
+# 历史重写后保证私邮不再进 main：PR 核 base..head，push 核 before..after（含 GitHub 生成的 merge commit）。
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-emails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 核提交邮箱
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          if [[ $EVENT == pull_request ]]; then
+            bash scripts/check-commit-emails.sh "$PR_BASE" "$PR_HEAD"
+          else
+            bash scripts/check-commit-emails.sh "$PUSH_BEFORE" "$PUSH_AFTER"
+          fi
