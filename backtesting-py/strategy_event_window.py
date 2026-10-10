@@ -92,7 +92,8 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
             self._risk_init()
             # Scheduling and break detection require next() to start at main bar 1.
             # This is engine indicator warmup, not the external filter-history prefix.
-            assert _indicator_warmup_nbars(self) == 0, "event_window requires zero engine indicator warmup"
+            if _indicator_warmup_nbars(self) != 0:
+                raise ValueError("event_window requires zero engine indicator warmup")
             opens = [utc_datetime(t) for t in self.data.index]
             period_ns = getattr(self, '_risk_timeframe_ns', None) or int(
                 (self.data.index[1] - self.data.index[0]).total_seconds() * 10**9)
