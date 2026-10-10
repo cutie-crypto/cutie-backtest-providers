@@ -292,7 +292,9 @@ def test_catalog_existing_entries_byte_identical():
     symbols = ['BTCUSDT', 'ETHUSDT']
     for tool_id, spec in baseline.TOOL_SPECS.items():
         old = json.dumps(baseline._catalog_tool(tool_id, spec, symbols), ensure_ascii=False, separators=(',', ':')).encode()
-        entry = api._catalog_tool(tool_id, api.TOOL_SPECS[tool_id], symbols)
+        # _catalog_tool 的 param_schema.properties 是 spec["param_schema_properties"] 本身（不拷贝）；下面会 pop 定仓键，
+        # 不深拷贝 spec 就会把全局 TOOL_SPECS 改掉，污染同进程后跑的 10b* / plow1 用例（not in tool param_schema）。
+        entry = api._catalog_tool(tool_id, deepcopy(api.TOOL_SPECS[tool_id]), symbols)
         properties = entry['param_schema']['properties']
         if tool_id in api.POSITION_SIZING_TEMPLATE_STOP_TOOLS or (
                 tool_id in getattr(baseline, 'POSITION_SIZING_PENDING_TOOLS', ())
