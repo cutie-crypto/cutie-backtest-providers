@@ -49,6 +49,9 @@ def _module(name):
 
 
 def _frame(name):
+    if name == 'macro_release_breakout':
+        import test_q18_macro_events as macro
+        return macro.data_for(name)
     if name == 'vwap_reversion':
         return _vwap_early_frame()
     if name in p._SHORT_CANDLE_TOOL_NAMES.values():
@@ -62,6 +65,9 @@ def _frame(name):
 
 
 def _post(monkeypatch, tmp_path, name, data):
+    if name == 'macro_release_breakout':
+        import test_q18_macro_events as macro
+        return macro.post(monkeypatch, tmp_path, name, macro.params(name, **RISK), data)
     if name in p._SHORT_CANDLE_TOOL_NAMES.values():  # SHORT-PAT-4: futures-only, posted through its own suite
         import test_short_pat4_candles as pat4
         return pat4.post(monkeypatch, tmp_path, name, RISK, data)[0]

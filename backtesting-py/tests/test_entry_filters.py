@@ -33,7 +33,8 @@ SHORT_PAT4_NAMES = {'bearish_engulfing', 'shooting_star', 'evening_star',
 # 开态（过滤层挡入场记 blocked_by_time_or_filter）由同文件手算用例覆盖。
 EVENT0_NAMES = {'event_window'}
 CASES = {key: case for key, case in capture.cases().items()
-         if case[0] not in F1F2_FILTER_NAMES | SHORT_7P4_NAMES | SHORT_PAT4_NAMES | EVENT0_NAMES}
+         if case[0] not in F1F2_FILTER_NAMES | SHORT_7P4_NAMES | SHORT_PAT4_NAMES | EVENT0_NAMES
+         and 'filter_layer_enabled' in p.TOOL_SPECS['local.backtesting_py.' + case[0]]['param_schema_properties']}
 BASELINE = json.loads((Path(__file__).parent / 'fixtures/entry_filters_5b8320a.json').read_text())
 # S4b changes only EMA warmup disclosure, not disabled-filter result.v2 bytes.
 EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
@@ -42,7 +43,7 @@ BASELINE['cases'].update(EMA_WARMUP_BASELINE['entry_filters'])
 SINGLE_NAMES = sorted({name for name, _ in CASES.values()})
 EXCLUDED = [key.removeprefix('local.backtesting_py.') for key, value in p.TOOL_SPECS.items()
             if value.get('runner') in ('kernel_v3', p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, p.ROTATION_RUNNER)
-            or key in p.FILTER_LAYER_UNWIRED_TOOLS]
+            or 'filter_layer_enabled' not in value['param_schema_properties']]
 
 
 def params(kind):

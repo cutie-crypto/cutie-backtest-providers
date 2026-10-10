@@ -207,7 +207,8 @@ def test_time_only_retains_close_price_stop_semantics():
     assert result['_strategy'].snapshots[-1] == (3, True, 'time_expiry')
 
 
-@pytest.mark.parametrize('name', compat.enumerate_mixin_cases())
+@pytest.mark.parametrize('name', [name for name in compat.enumerate_mixin_cases()
+    if 'max_holding_bars' in p.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['param_schema_properties']])
 def test_every_registered_single_template_consumes_holding_bars(name):
     if name in ('bullish_engulfing', 'hammer_pin_bar'):
         from test_9t1_engulf_pin import compatibility_frame

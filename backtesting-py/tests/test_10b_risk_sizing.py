@@ -236,6 +236,9 @@ def test_catalog_and_builders_cover_actual_mixins():
             # 10-B2a: template-stop tools size against their own frozen stop (divergence rejects user stops).
             params = ({k: v for k, v in PARAMS.items() if k != 'stop_loss_pct'}
                       if tool in p.POSITION_SIZING_TEMPLATE_STOP_TOOLS else PARAMS)
+            # Intrinsic-only templates do not advertise the optional risk-layer switch.
+            if 'risk_layer_enabled' not in spec['param_schema_properties']:
+                params = {k: v for k, v in params.items() if k in spec['param_schema_properties']}
             cls = spec['build']({**params, **required_params(tool)})['strategy']
             assert issubclass(cls, p._FixedRiskMixin)
             assert cls._risk['compound'] is False

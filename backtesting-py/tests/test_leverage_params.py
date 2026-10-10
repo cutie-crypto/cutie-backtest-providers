@@ -44,7 +44,7 @@ def test_invalid_leverage_rejected_before_fetch(monkeypatch, name, value):
         pytest.fail('invalid leverage reached market data')
     monkeypatch.setattr(provider, '_fetch_ohlcv', no_fetch)
     body = TestClient(provider.app).post('/cutie/backtest',
-        content=json.dumps(request({**required_params(name), 'leverage': value}, name=name)),
+        content=json.dumps(request({**required_params(name), 'leverage': value}, name=name, market='futures')),
         headers={'Content-Type': 'application/json'}).json()
     assert body['error_type'] == 'INVALID_PARAMS', body
     with pytest.raises(ValueError, match='INVALID_PARAMS:leverage'):

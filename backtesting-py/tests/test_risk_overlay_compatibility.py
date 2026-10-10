@@ -63,10 +63,17 @@ def tool_name(name):
 
 
 # P-EVENT0: event_window has no default event list (1-50 inline events are required), so
-# enumerations build it with one inline event; every other template still builds from {}.
+# enumerations supply the required inline events (including Q18 macro templates).
 REQUIRED_PARAMS = {'event_window': dict(bars_after=96, events=[
     dict(ts_utc='2026-01-03T02:00:00Z', label='enum-1'), dict(ts_utc='2026-01-07T16:00:00Z', label='enum-2'),
     dict(ts_utc='2026-01-12T06:00:00Z', label='enum-3')])}
+
+REQUIRED_PARAMS.update({
+    'macro_release_breakout': dict(events=[dict(ts_utc='2026-01-07T16:00:00Z', label='enum')], direction='long'),
+    'macro_surprise_direction': dict(events=[dict(ts_utc='2026-01-07T16:00:00Z', label='enum', expected=1, actual=0)],
+                                     direction_map=dict(below='long', above='none')),
+    'fomc_reversal': dict(events=[dict(ts_utc='2026-01-07T16:00:00Z', label='enum')]),
+})
 
 
 def required_params(name):
