@@ -119,7 +119,7 @@ def test_ema_cross_confirmed_entry_fills_at_the_open_after_the_confirming_bar():
     assert trades['EntryPrice'].iloc[0] == data['Open'].iloc[S + 2] == 103.1
     assert strategy._pattern_confirm_queue.report() == dict(
         registered=1, confirmed=1, submitted=1, pending_at_end=0, discarded=dict(
-            unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0,
+            unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0, no_next_open=0,
             isolated_liquidation_bar=0, time_gate=0, filter_gate=0))
 
 
@@ -170,8 +170,8 @@ def post_frame(monkeypatch, tmp_path, tool, params, data, prefix):
     return TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json()
 
 
-def http_frames():
-    full = ema_cross_frame([103] * 6, lead=[100] * 200)
+def http_frames(after=(103,) * 6):
+    full = ema_cross_frame(after, lead=[100] * 200)
     full.index = pd.date_range(pd.Timestamp('2026-01-01 11:00') - pd.Timedelta(hours=200 + S), periods=len(full),
                                freq='h')
     prefix, data = full.iloc[:200], full.iloc[200:]
@@ -289,10 +289,12 @@ def test_mixin_bar_by_bar_matches_pattern_confirm_entries(seed):
     opened = []
     cls = scripted(signals, direction, opened)
     cls._filter_config = FilterConfig.parse({**LAYER, 'filter_pattern_confirm_bars': bars})
-    Backtest(data, cls, cash=100_000).run()
+    stats = Backtest(data, cls, cash=100_000).run()
     entries, _ = pattern_confirm_entries(signals, data['High'], data['Low'], data['Close'],
                                          direction=direction, bars=bars)
-    assert [bar for bar, _ in opened] == list(np.flatnonzero(entries))
+    # a confirmation on the last bar has no next open: discarded before the entry path is reached
+    assert [bar for bar, _ in opened] == list(np.flatnonzero(entries[:-1]))
+    assert stats['_strategy']._pattern_confirm_queue.report()['discarded']['no_next_open'] == int(entries[-1])
     assert {is_long for _, is_long in opened} <= {direction == 'long'}
 
 
@@ -356,3 +358,55 @@ def test_queue_matches_engine_source_on_random_sequences(seed):
     report = queue.report()
     assert report['registered'] == sum(signals)
     assert report['registered'] == report['confirmed'] + report['discarded']['unconfirmed'] + report['pending_at_end']
+
+
+# --- review fixes: judging bar of the filter gate, tail confirmation --------------------------------
+
+def masked(params, allow):
+    """ema_cross with the filter mask overwritten at the given main-range bars (pattern-only mask is all True)."""
+    class Masked(build('ema_cross', params)):
+        def init(self):
+            super().init()
+            self._filter_mask = self._filter_mask.copy()
+            for bar, ok in allow.items():
+                self._filter_mask[self._warmup_bars + bar] = ok
+    return Masked
+
+
+@pytest.mark.parametrize('s_ok, k_ok, entry', [(True, False, None), (False, True, S + 2)])
+def test_filter_gate_is_judged_on_the_confirming_bar_not_the_signal_bar(s_ok, k_ok, entry):
+    data = ema_cross_frame([103] * 6)  # s = 11 confirms at k = 12
+    stats = Backtest(data, masked({**EMA, **LAYER}, {S: s_ok, S + 1: k_ok}), cash=1_000_000,
+                     finalize_trades=True).run()
+    report = stats['_strategy']._pattern_confirm_queue.report()
+    assert (report['registered'], report['confirmed']) == (1, 1)
+    if entry is None:
+        assert len(stats['_trades']) == 0 and report['discarded']['filter_gate'] == 1
+    else:
+        assert list(stats['_trades']['EntryBar']) == [entry] and report['submitted'] == 1
+        assert report['discarded']['filter_gate'] == 0
+
+
+def test_signal_on_the_last_but_one_bar_confirming_on_the_last_bar_is_no_next_open():
+    data = ema_cross_frame([103])  # s = 11 = n - 2, close[12] = 103 > High[11] confirms on the tail
+    assert len(data) == S + 2
+    trades, strategy = run('ema_cross', {**EMA, **LAYER}, data)
+    assert len(trades) == 0
+    assert strategy._pattern_confirm_queue.report() == dict(
+        registered=1, confirmed=1, submitted=0, pending_at_end=0, discarded=dict(
+            unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0, no_next_open=1,
+            isolated_liquidation_bar=0, time_gate=0, filter_gate=0))
+
+
+@pytest.mark.parametrize('time_layer', [False, True])
+def test_tail_confirmation_counts_no_next_open_in_assumptions(time_layer, monkeypatch, tmp_path):
+    prefix, data = http_frames(after=(103,))
+    params = {**EMA, **LAYER}
+    if time_layer:  # the confirming bar decides at 13:00, inside the session: only the tail refuses it
+        params.update(time_layer_enabled=True, time_session_start='11:30', time_session_end='13:30')
+    body = post_frame(monkeypatch, tmp_path, 'ema_cross', params, data, prefix)
+    assert body['result_status'] == 'success', body
+    counts = body['assumptions']['pattern_confirm']
+    assert body['trades'] == [] and (counts['registered'], counts['confirmed'], counts['submitted']) == (1, 1, 0)
+    assert counts['discarded'] == dict(unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0,
+                                       no_next_open=1, isolated_liquidation_bar=0, time_gate=0, filter_gate=0)

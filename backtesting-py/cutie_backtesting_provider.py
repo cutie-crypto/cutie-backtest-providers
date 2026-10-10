@@ -2660,6 +2660,8 @@ def _pattern_confirm_strategy(strategy):
         def init(self):
             super().init()
             self._pattern_confirm_queue = PatternConfirmQueue(self._filter_config.pattern_confirm_bars)
+            # init() sees the whole main range; next() later sees it growing bar by bar.
+            self._pattern_confirm_last_bar = len(self.data) - 1
 
         def next(self):
             self._pattern_confirm_advance()
@@ -3003,16 +3005,22 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
     def _pattern_confirm_advance(self) -> None:
         """Run once per bar k before the template: submit the latest signal confirming at k.
 
-        A confirmed signal is consumed whatever happens next: an open position or order at k, or a
-        liquidation / time / filter gate closed at k, discards it without retry. The order fills at
-        the next open; signals the template registers later on bar k never get a second order here.
+        A confirmed signal is consumed whatever happens next: an open position or order at k, k being
+        the last bar (no next open to fill at), or a liquidation / time / filter gate closed at k,
+        discards it without retry. The order fills at the next open; signals the template registers
+        later on bar k never get a second order here.
         """
         queue = self._pattern_confirm_queue
-        hit = queue.advance(len(self.data) - 1, self.data.Close[-1])
+        bar = len(self.data) - 1
+        hit = queue.advance(bar, self.data.Close[-1])
         if hit is None:
             return
         if self.position or self.orders:
             queue.discard("position_or_order_open")
+            return
+        # The tail has no next open; told apart before the gates, which also refuse it.
+        if bar >= self._pattern_confirm_last_bar:
+            queue.discard("no_next_open")
             return
         blocked = self._risk_open(hit[1] == "long")
         if blocked is None:
