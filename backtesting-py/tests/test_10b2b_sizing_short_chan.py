@@ -30,6 +30,7 @@ def signed_qty(trade):
 
 @pytest.mark.parametrize('name,label', [(n, v) for n in c.GOLDEN_VARIANTS for v in c.GOLDEN_VARIANTS[n]])
 def test_omitted_sizing_keys_match_aa5f9e6_bytes(name, label, monkeypatch, tmp_path):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     golden = (c.GOLDEN_DIR / f'{name}.{label}.json').read_text()
     body = c.post(monkeypatch, tmp_path, name, c.GOLDEN_VARIANTS[name][label])
     assert body['result_status'] == 'success'

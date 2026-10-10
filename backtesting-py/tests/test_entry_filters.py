@@ -225,6 +225,7 @@ def test_monthly_and_signal_execution_rejected_before_fetch(client):
 @pytest.mark.parametrize('warm', [False, True])
 @pytest.mark.parametrize('explicit', [False, True])
 def test_runtime_disabled_fingerprints(case, warm, explicit, monkeypatch):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     name, values = CASES[case]
     if explicit:
         values = {**values, **DEFAULTS}
