@@ -56,6 +56,16 @@ from strategy_funding_reversal import (
     CENTRAL_METRIC as FUNDING_CENTRAL_METRIC,
     FundingReversalConfig, FundingSeriesError, SCHEMA as FUNDING_REVERSAL_SCHEMA,
 )
+from strategy_liquidation_reversal import (
+    CENTRAL_EXCHANGE as LIQUIDATION_CENTRAL_EXCHANGE,
+    CENTRAL_INTERVAL as LIQUIDATION_CENTRAL_INTERVAL,
+    CENTRAL_METRIC as LIQUIDATION_CENTRAL_METRIC,
+    EARLIEST_TS as LIQUIDATION_EARLIEST_TS,
+    GAP_REASON as LIQUIDATION_GAP_REASON,
+    HISTORY_REASON as LIQUIDATION_HISTORY_REASON,
+    LiquidationReversalConfig, LiquiditySeriesError, SCHEMA as LIQUIDATION_REVERSAL_SCHEMA,
+    make_liquidation_strategy, utc_date as liquidation_utc_date,
+)
 from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -5967,6 +5977,25 @@ def _build_funding_reversal(params, *, initial_capital=10000.0):
                 template_assumptions={config.kind: config.assumptions})
 
 
+# S4: long-liquidation spike reversal. Spot, long-only; rides the macro engine's single-position/stop plumbing
+# (strategy_liquidation_reversal). Day records are bound from the central 1d series in run_backtest, before OHLCV.
+LIQUIDATION_REVERSAL_TOOL_ID = "local.backtesting_py.liquidation_reversal"
+
+
+def _build_liquidation_reversal(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(
+        params, TOOL_SPECS[LIQUIDATION_REVERSAL_TOOL_ID]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = LiquidationReversalConfig.parse(params)
+    effective = {key: value for key, value in params.items() if key != "take_profit_pct"}
+    effective["risk_layer_enabled"] = True
+    risk = _parse_fixed_risk_params(effective, template_initial_stop=True)
+    return dict(strategy=make_liquidation_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Liquidation Reversal", min_bars=2, macro_config=config,
+                template_assumptions={config.kind: config.assumptions})
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 # Explicit pricing keys switch VWAP / Fibonacci off their built-in frozen price group.
@@ -6030,7 +6059,7 @@ def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     """Whether the template supplies its own frozen stop when the user gives none."""
-    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id == FUNDING_REVERSAL_TOOL_ID
+    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id in (FUNDING_REVERSAL_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID)
             or tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
@@ -7771,6 +7800,27 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "timeframes": ["15m"],
         "param_schema_properties": dict(FUNDING_REVERSAL_SCHEMA),
     },
+    # S4：多头爆仓量反转。取中心库 AGGREGATED / liquidation_long / 1d（美元，全市场聚合），只做多现货，1h/4h/1d。
+    LIQUIDATION_REVERSAL_TOOL_ID: {
+        "name": "Local Spot Long-Liquidation Reversal",
+        "description": (
+            "Spot long-only template on the aggregated daily long-liquidation volume (USD, whole market, "
+            "central database, from 2020-01-01). Day D's value is available at D+1 00:00 UTC and is judged "
+            "once, at the close of the first D+1 candle: when it is at or above the threshold (percentile of "
+            "the previous lookback_days days with day D excluded, or a fixed USD amount) AND day D fell by "
+            "at least min_drop_pct (last close of D vs last close of D-1), it buys at the next open while "
+            "flat. Exits: stop_loss_pct, hold_hours, take_profit_pct (stop first), detected on candle "
+            "High/Low and filled at the next open. Daily-series definition, not the original hourly one; "
+            "any missing day in the required window fails the run; look-back days before 2020-01-01 are "
+            "refused. Candles 1h/4h/1d only. Maps to KOL '多头爆仓放量后抄底'"
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_liquidation_reversal,
+        "markets": ["spot"],
+        "timeframes": ["1h", "4h", "1d"],
+        "param_schema_properties": dict(LIQUIDATION_REVERSAL_SCHEMA),
+    },
     "local.backtesting_py.parabolic_sar": {
         "name": "Local Backtesting.py Parabolic SAR Flip",
         "description": (
@@ -7974,6 +8024,14 @@ TOOL_SPECS[FUNDING_REVERSAL_TOOL_ID]["param_schema_properties"] = {
     **deepcopy(FUNDING_REVERSAL_SCHEMA), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
     "exchange": {"type": "string", "default": "binance"},
+}
+
+# S4: same shared sizing/leverage keys as P2, no time layer / filters / max_holding_bars (sent keys are rejected
+# as unknown before any fetch). Candles come from the request exchange (default binance), spot only.
+TOOL_SPECS[LIQUIDATION_REVERSAL_TOOL_ID]["param_schema_properties"] = {
+    **deepcopy(LIQUIDATION_REVERSAL_SCHEMA), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
+    **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
+    "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
 }
 
 POSITION_SIZING_UNWIRED_TOOLS = frozenset({
@@ -9770,7 +9828,7 @@ async def run_backtest(
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
-            if (effective_tool_id == FUNDING_REVERSAL_TOOL_ID
+            if (effective_tool_id in (FUNDING_REVERSAL_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID)
                     or effective_tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
                 _parse_fixed_risk_params({k: v for k, v in params.items() if k != "take_profit_r"},
                                          template_initial_stop=True)
@@ -9868,6 +9926,19 @@ async def run_backtest(
         if not re.fullmatch(r"[A-Z0-9]+USDT", funding_symbol):
             return _validation_failure(
                 "INVALID_PARAMS", "funding_settlement_reversal requires a Binance USDT perpetual symbol")
+    liquidation_symbol = None
+    if effective_tool_id == LIQUIDATION_REVERSAL_TOOL_ID:
+        # Spot only, 1h/4h/1d only; both rejected before any fetch.
+        if market != "spot":
+            return _validation_failure("INVALID_PARAMS", "this template requires spot market")
+        if timeframe not in tool_spec["timeframes"]:
+            return _validation_failure(
+                "TIMEFRAME_UNSUPPORTED",
+                f"Unsupported timeframe for this template: {timeframe}. Supported: {tool_spec['timeframes']}",
+            )
+        liquidation_symbol = str(symbol).replace("/", "").split(":")[0].upper()
+        if not re.fullmatch(r"[A-Z0-9]+", liquidation_symbol) or not re.sub(r"(?:USDT|USDC|BUSD)$", "", liquidation_symbol):
+            return _validation_failure("INVALID_PARAMS", "liquidation_reversal requires a spot symbol such as BTCUSDT")
     try:
         built = tool_spec["build"](params, initial_capital=float(initial_capital))
     except ValueError as e:
@@ -9889,6 +9960,15 @@ async def run_backtest(
         funding_failure = _bind_funding_reversal(run_id, macro_config, funding_symbol, start_at, end_at)
         if funding_failure is not None:
             return funding_failure
+    if liquidation_symbol is not None:
+        try:
+            macro_config.bind_timeframe(timeframe)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e).removeprefix("INVALID_PARAMS:"))
+        liquidation_failure = _bind_liquidation_reversal(
+            run_id, macro_config, liquidation_symbol, start_at, end_at)
+        if liquidation_failure is not None:
+            return liquidation_failure
     if "validate_timeframe" in built:
         try:
             built["validate_timeframe"](timeframe)
@@ -10692,6 +10772,83 @@ def _bind_funding_reversal(run_id, config, funding_symbol, start_at, end_at):
         config.bind(points, dict(symbol=funding_symbol, central_symbol=central_symbol, rows=rows,
                                  fetched_at_ms=int(time.time() * 1000)))
     except FundingSeriesError as exc:
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:{exc.message}",
+            reason=exc.reason,
+            details=exc.details,
+        )
+    return None
+
+
+def _bind_liquidation_reversal(run_id, config, liquidation_symbol, start_at, end_at):
+    """S4: fetch the central 1d liquidation_long series the window needs and bind the judged days; fail closed.
+
+    Day D (first judged day = start day + 1) reads the L days before it (percentile mode) and itself; the
+    needed range is refused before any fetch when it starts before LIQUIDATION_EARLIEST_TS (look-back
+    included). Returns a failure response, or None when the config is bound.
+    """
+    judged = config.judged_days(start_at, end_at)
+    if judged is None:
+        config.unbound_assumptions()
+        return None
+    first_day, last_day = judged
+    need_first, need_last = config.required_range(first_day, last_day)
+    if config.history_unavailable(need_first):
+        earliest = liquidation_utc_date(LIQUIDATION_EARLIEST_TS)
+        return _business_failure(
+            run_id,
+            "INSUFFICIENT_DATA",
+            (
+                f"{LIQUIDATION_CENTRAL_METRIC} history starts at {earliest} (UTC); the backtest window needs "
+                f"{liquidation_utc_date(need_first)} (look-back included). Choose start_at later"
+            ),
+            reason=LIQUIDATION_HISTORY_REASON,
+            details={"earliest_available_date": earliest, "series_metric": LIQUIDATION_CENTRAL_METRIC},
+        )
+    central_symbol = re.sub(r"(?:USDT|USDC|BUSD)$", "", liquidation_symbol)
+    gap_details = config.gap_details(need_first, need_last)
+    try:
+        rows = _fetch_metric_series(
+            symbol=central_symbol,
+            exchange=LIQUIDATION_CENTRAL_EXCHANGE,
+            metric=LIQUIDATION_CENTRAL_METRIC,
+            interval=LIQUIDATION_CENTRAL_INTERVAL,
+            start_at=need_first,
+            end_at=need_last + 86400,
+            path=f"$.liquidation_series.{LIQUIDATION_CENTRAL_METRIC}",
+            raise_on_transport_error=True,
+        )
+    except StrategyContractError as exc:
+        if exc.code != ERR_COVERAGE_INCOMPLETE:
+            raise
+        details = dict(gap_details)
+        if isinstance(exc.required, int):
+            details["missing_date"] = liquidation_utc_date(exc.required)
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:{LIQUIDATION_CENTRAL_METRIC} series is incomplete for the backtest window "
+            f"{gap_details['required_first_date']}..{gap_details['required_last_date']} ({exc.message}); "
+            "this template does not run on a partial series",
+            reason=LIQUIDATION_GAP_REASON,
+            details=details,
+        )
+    except Exception as exc:
+        logger.warning("liquidation series fetch failed symbol=%s: %s", central_symbol, exc)
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:central {LIQUIDATION_CENTRAL_METRIC} series is unavailable for {central_symbol} "
+            f"({exc}); this template does not run without the series",
+            reason=LIQUIDATION_HISTORY_REASON,
+            details=dict(gap_details),
+        )
+    try:
+        config.bind(first_day, last_day, dict(central_symbol=central_symbol, rows=rows,
+                                              fetched_at_ms=int(time.time() * 1000)))
+    except LiquiditySeriesError as exc:
         return _business_failure(
             run_id,
             "TIME_DATA_GAP",
