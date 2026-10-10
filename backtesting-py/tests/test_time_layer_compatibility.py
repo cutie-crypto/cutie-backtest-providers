@@ -93,6 +93,7 @@ def test_ledger_unchanged(name):
 @pytest.mark.parametrize('name', LEGACY_MIXINS)
 @pytest.mark.parametrize('warm', [False, True])
 def test_disabled_response_and_start_unchanged(monkeypatch, name, warm):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     params = {'direction': 'short'} if name.endswith('_short') else {}
     tool = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]
     expected = BASELINE['single'][name]
