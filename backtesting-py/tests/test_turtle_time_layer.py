@@ -8,6 +8,7 @@ time_expiry; a same-bar group stop still wins.
 from __future__ import annotations
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -65,7 +66,10 @@ def test_baseline_fixture_is_pinned_to_4d29dfa():
 
 @pytest.mark.parametrize('case', sorted(capture.CASES))
 def test_omitted_time_keys_response_byte_identical(case):
-    assert capture.response(case) == BASELINE['responses'][case]
+    # TURTLE-NSTOP 给 turtle_groups 每组追加 n / stop；金样不重抓，测试侧剔除这两键后逐字节比。
+    stripped, removed = re.subn(r',"n":"[^"]*","stop":"[^"]*"', '', capture.response(case))
+    assert stripped == BASELINE['responses'][case]
+    assert ('"exit_reason"' in stripped) == (removed > 0)
 
 
 # ---- schema ----
@@ -250,7 +254,10 @@ def test_http_time_layer_assumptions_and_group_reason(monkeypatch, tmp_path, ris
     assert layer['holding']['flatten_delay_bars']['count'] == 1
     assert result['assumptions']['turtle_time_layer']['gate'] == 'entry_and_add'
     assert ('turtle_risk' in result['assumptions']) is risk
-    assert result['raw_report']['turtle_groups'][0] == dict(
+    group = dict(result['raw_report']['turtle_groups'][0])
+    assert {'n', 'stop'} <= set(group)
+    del group['n'], group['stop']  # TURTLE-NSTOP 新键，剔除后与旧口径逐字节比
+    assert group == dict(
         group_id='turtle-1', trade_seqs=[1, 2], units=2, exit_reason='time_expiry')
     assert set(result['metrics']) == set(off['metrics'])
     assert all(set(t) == set(off['trades'][0]) for t in result['trades'])
