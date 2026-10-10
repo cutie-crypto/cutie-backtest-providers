@@ -374,6 +374,26 @@ def test_fifty_events_are_accepted_and_accounted(monkeypatch, tmp_path, kind):
     assert sum(report(body, kind)['counts'].values()) == 50
 
 
+def test_h3_zero_pre_event_open_skips_only_invalid_event(monkeypatch, tmp_path):
+    data = frame(960)
+    data.iloc[863] = data.iloc[899] = [100, 101, 94, 95, 1]
+    values = params(H3, lookback_hours=72, events=[event(864), event(900)])
+    baseline = post(monkeypatch, tmp_path, H3, values, data)
+    assert legs(baseline) == [(866, '100', 869, '100', 'long'),
+                              (902, '100', 905, '100', 'long')]
+
+    data.iloc[0] = [0, 101, 0, 100, 1]
+    body = post(monkeypatch, tmp_path, H3, values, data)
+    evidence = report(body, H3)
+    assert evidence['skipped_count'] == report(baseline, H3)['skipped_count'] + 1 == 1
+    assert evidence['counts'] == {'skipped': 1, 'entered': 1}
+    assert evidence['skipped_events'] == [dict(ts_utc=event(864)['ts_utc'],
+                                              reason='invalid_pre_event_price')]
+    assert evidence['events'][0]['reason'] == 'invalid_pre_event_price'
+    assert evidence['events'][1] == report(baseline, H3)['events'][1]
+    assert legs(body) == [(902, '100', 905, '100', 'long')]
+
+
 def test_h3_zero_delay_and_post_release_prices_do_not_change_direction(monkeypatch, tmp_path):
     data = data_for(H3, 'short')
     data.iloc[12:] = [50, 51, 49, 50, 1]
