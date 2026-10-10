@@ -213,6 +213,66 @@ def test_fibonacci_retracement_hand_computed(monkeypatch, tmp_path):
     assert trades == [(10, 'long', '109', 12, '120.5')]
 
 
+# --- fibonacci: the confirming bar only fills the wave that is still the active one ----------------------
+# 9T5 frame, swing_n = 2: wave low 100 (bar 2) -> high 120 (bar 5, confirmed at 7), level 107.64, stop 104.17572.
+# Signal s = 8 (level High[8] = 114). The registered wave W1 keeps its stop / target frozen from s, but at k
+# it must still be the active wave and neither used nor invalid, as the off state re-reads every bar.
+
+def fib_gate_run(monkeypatch, tmp_path, data, bars=5):
+    orders = record_orders(monkeypatch)
+    body = post(monkeypatch, tmp_path, 'fibonacci_retracement',
+                {**LAYER, 'filter_pattern_confirm_bars': bars}, data)
+    counts = body['assumptions']['pattern_confirm']
+    assert counts['registered'] == counts['submitted'] + sum(counts['discarded'].values()) + counts['pending_at_end']
+    return orders, body, counts
+
+
+def test_fibonacci_confirmation_does_not_fill_a_wave_replaced_before_k(monkeypatch, tmp_path):
+    # Bar 9's low 106 is a new swing low (lows of bars 7, 8, 10, 11 are higher), confirmed at bar 11 and
+    # replacing W1 as the active wave. Bar 11 closes 116 > 114 -> k = 11, which would fill W1 at Open[12].
+    data = frame('fibonacci_retracement')
+    set_bar(data, 9, 110, 112, 106, 109)
+    set_bar(data, 10, 109, 112, 108, 110)
+    set_bar(data, 11, 110, 117, 109, 116)
+    off = post(monkeypatch, tmp_path, 'fibonacci_retracement', {}, data)
+    assert opened(off, data)[0][0] == 9  # off state: s = 8 fills at Open[9] before the swing low exists
+    orders, body, counts = fib_gate_run(monkeypatch, tmp_path, data)
+    assert orders == [] and opened(body, data) == []
+    assert counts['registered'] == 1 and counts['confirmed'] == 1 and counts['submitted'] == 0
+    assert counts['discarded']['template_gate'] == 1
+
+
+def test_fibonacci_confirmation_discards_an_invalidated_wave(monkeypatch, tmp_path):
+    # Bar 9 closes 104 < stop 104.17572 -> W1 invalid (still the active wave: the bar-9 swing low is only
+    # confirmed at bar 11). Bar 10 closes 115 > High[8] = 114 inside the 5-bar window -> k = 10.
+    data = frame('fibonacci_retracement')
+    set_bar(data, 9, 108, 109, 103.9, 104)
+    set_bar(data, 10, 105, 116, 104.5, 115)
+    orders, body, counts = fib_gate_run(monkeypatch, tmp_path, data)
+    wave = body['raw_report']['fibonacci_retracement']['waves'][0]
+    assert wave['invalid'] is True and wave['invalidated_at'] == 9 and not wave['used']
+    assert orders == [] and opened(body, data) == []
+    assert counts['confirmed'] == 1 and counts['submitted'] == 0 and counts['discarded']['template_gate'] == 1
+
+
+def test_fibonacci_confirmation_discards_a_wave_already_used(monkeypatch, tmp_path):
+    # s = 8 (level 114) stays pending while the bullish bar 9 (level High[9] = 109) registers too. Bar 10
+    # closes 111 > 109 -> s = 9 confirms, W1 is entered (used) and fills at Open[11]; bar 11's low 104
+    # touches the stop 104.17572 -> exit at Open[12]. Bar 12 closes 116 > 114 with the position flat: the
+    # pending s = 8 confirms at k = 12 on a wave that is still active but used -> template_gate.
+    data = frame('fibonacci_retracement')
+    set_bar(data, 9, 107.5, 109, 106, 108.5)
+    set_bar(data, 10, 109, 111.5, 108, 111)
+    set_bar(data, 11, 110.5, 112, 104, 108)
+    set_bar(data, 12, 107, 117, 106, 116)
+    orders, body, counts = fib_gate_run(monkeypatch, tmp_path, data)
+    wave = body['raw_report']['fibonacci_retracement']['waves'][0]
+    assert wave['used'] is True and not wave['invalid'] and wave['signal_index'] == 10
+    assert [bar for bar, _ in orders] == [10]
+    assert [(bar_of(data, t['opened_at']), bar_of(data, t['closed_at'])) for t in body['trades']] == [(11, 12)]
+    assert counts['registered'] == 2 and counts['submitted'] == 1 and counts['discarded']['template_gate'] == 1
+
+
 # --- template gates and risk states judged at k ---------------------------------------------------------
 
 def test_vwap_confirmation_landing_on_the_next_utc_day_is_discarded(monkeypatch, tmp_path):
@@ -307,6 +367,8 @@ def run_placed(name, seed, monkeypatch, tmp_path):
     assert counts['confirmed'] - counts['discarded']['superseded_by_later_signal'] == len(confirmed)
     assert counts['submitted'] == len(placed)
     assert counts['discarded']['position_or_order_open'] == len(blocked)
+    # every registered signal ends submitted, discarded for exactly one reason, or still pending
+    assert counts['registered'] == counts['submitted'] + sum(counts['discarded'].values()) + counts['pending_at_end']
     return blocked, len(trades)
 
 

@@ -6436,7 +6436,12 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
             self._fib_enter(wave, bar)
 
         def _pattern_confirm_open(self, is_long, wave):
-            if wave["used"] or wave["invalid"]:
+            # The wrapper calls this before the template's next(), so bring the fib state up to k first
+            # (_fib_seen makes the later call in next() an empty loop). Only the wave that is still the
+            # active one may fill, as the off state re-reads self._fib_active every bar: a wave replaced
+            # by a new extremum between s and k is dead, whatever it froze at s.
+            self._fib_update(self._warmup_bars + len(self.data) - 1)
+            if wave is not self._fib_active or wave["used"] or wave["invalid"]:
                 return "template_gate"
             blocked = self._pattern_confirm_gate()
             if blocked is None:
