@@ -30,6 +30,7 @@ from canonical_json import canonical_json_sha256
 from strategy_entry_filters import FILTER_PARAM_SCHEMA_PROPERTIES
 from portfolio_rotation import RotationError, parse_rotation, fetch_rotation, run_rotation, ema200
 from portfolio_rotation_http import TOOL_ID
+from strategy_entry_filters import PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES
 from strategy_entry_filters import FILTER_PARAM_SCHEMA_PROPERTIES
 
 D = Decimal
@@ -280,6 +281,12 @@ def test_registered_http_runner_and_optional_metric(monkeypatch):
     assert response['fills'] == response2['fills']
 
 
+PATCONF2A_WIRED = set("""adx_di_cross bias_reversion bollinger_breakout bollinger_reversal bollinger_squeeze_breakout
+breakout cci_rsi ema_cross ema_pullback ema_rsi_pullback ema_trend_rsi ema_triple_alignment
+ichimoku_cloud_breakout keltner_breakout macd macd_above_zero parabolic_sar roc rsi_reversal
+stoch_oversold_cross supertrend volume_breakout""".split())
+
+
 def test_catalog_existing_entries_byte_identical():
     root = Path(__file__).resolve().parents[2]
     # 集成 D：基线由 10-D 头 b0e150a（基于旧 main 09bd963）改为集成起点 main 32ae030；
@@ -302,6 +309,15 @@ def test_catalog_existing_entries_byte_identical():
             assert set(api.POSITION_SIZE_KEYS) <= set(properties), tool_id
             for key in api.POSITION_SIZE_KEYS:
                 properties.pop(key)
+        # P-PATCONF-2a：白名单 22 个模板多出形态确认两键是唯一允许的差异，剔除后逐字节比对；其余模板不得出现这两键。
+        pattern_keys = {key for key in properties if key.startswith('filter_pattern_confirm_')}
+        if tool_id.removeprefix('local.backtesting_py.') in PATCONF2A_WIRED:
+            # 不 pop：properties 是 TOOL_SPECS 的活引用，pop 会删掉已发布 schema 污染后续用例；改为重建字典。
+            assert {k: properties[k] for k in pattern_keys} == PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES, tool_id
+            properties = entry['param_schema']['properties'] = {
+                k: v for k, v in properties.items() if k not in pattern_keys}
+        else:
+            assert not pattern_keys, tool_id
         # 7-P3 接入过滤层的工具（基线时在未接名单里，7-P3a 的 6 个 K 线形态也在内）只允许多出 filter_* 键，其余逐字节不变。
         if tool_id in getattr(baseline, 'FILTER_LAYER_UNWIRED_TOOLS', ()) and tool_id not in api.FILTER_LAYER_UNWIRED_TOOLS:
             added = {key for key in properties if key.startswith('filter_')}
