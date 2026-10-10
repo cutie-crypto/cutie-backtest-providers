@@ -244,10 +244,9 @@ def test_none_byte_unchanged(name):
 @pytest.mark.parametrize('tool,spec', list(p.TOOL_SPECS.items()), ids=list(p.TOOL_SPECS))
 def test_calendar_schema_matches_consumers(tool, spec):
     schema = spec['param_schema_properties']
-    excluded = spec.get('runner') in ('kernel_v3', p.TURTLE_RUNNER, p.ROTATION_RUNNER)
+    # TURTLE-TIME: 海龟 runner 已接时间层（含 time_calendar），不再排除。
+    excluded = spec.get('runner') in ('kernel_v3', p.ROTATION_RUNNER)
     assert ('time_calendar' in schema) is not excluded
     if not excluded:
         assert schema['time_calendar'] == {'type':'string', 'default':'none',
             'enum':['none','us_equity_regular','cme_btc_regular']}
-    elif spec.get('runner') == p.TURTLE_RUNNER:
-        assert not any(key.startswith('time_') for key in schema)
