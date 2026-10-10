@@ -449,3 +449,72 @@ def test_state_machine_shapes_enter_one_bar_after_the_confirming_bar(tool, param
     # signals the template repeats inside the window never add a second order
     assert report['submitted'] == len(on) == 1
     assert report['registered'] == report['submitted'] + sum(report['discarded'].values()) + report['pending_at_end']
+
+
+# --- the template signals again inside the window, then a second trade after the first exit ------------
+# Tail closes are offsets from Close[s]; each tail bar opens at the previous close, so an order sent on the
+# confirming bar k fills at Open[k + 1] == Close[k]. Offsets picked so that, by hand:
+#   macd: s + 1 drops 10 (MACD back under its signal), s + 2 rises 15 -> Close[s] + 5 > High[s] confirms s at
+#         k1 = s + 2 while crossing up again (registers s + 2 inside the window); -15, -15 cross down (exit),
+#         +15, +15 cross up at s + 8 (registers), s + 9 closes 2 above it -> k2 = s + 9.
+#   cci_rsi long: s + 1 stays oversold (registers), s + 2 closes above High[s] and High[s + 1] -> k1 = s + 2;
+#         RSI > 50 exits, the slide re-signals from s + 7, a later bar closes above that level -> k2 = s + 11.
+#   cci_rsi short: mirror; s + 1 still overbought (registers), k1 = s + 2; re-signals at s + 8, k2 = s + 11.
+REPEATS = [
+    ('macd', {}, [-10, 5, 5, 5, -10, -25, -10, 5, 7, 7, 7], 2, 8, 9),
+    ('cci_rsi', dict(direction='long'),
+     [.2, 4.2, 6.2, 4.2, 2.2, -1.8, -5.8, -13.8, -19.8, -13.8, -9.8, -9.8, -9.8, -9.8], 2, 7, 11),
+    ('cci_rsi', dict(direction='short'), [2, -4, -6, -6, -5, -7, 1, 9, 15, 9, 3, 3, 3, 3], 2, 8, 11),
+]
+
+
+def repeat_frame(tool, params, offsets):
+    data = compat.frame()
+    off, _ = run(tool, params, data)
+    s = int(off['EntryBar'].iloc[0]) - 1
+    head = data.iloc[:s + 1]
+    closes = [round(head['Close'].iloc[-1] + x, 2) for x in offsets]
+    opens = [head['Close'].iloc[-1]] + closes[:-1]
+    rows = pd.DataFrame(dict(Open=opens, High=[max(o, c) + .2 for o, c in zip(opens, closes)],
+                             Low=[min(o, c) - .2 for o, c in zip(opens, closes)], Close=closes,
+                             Volume=[100.0] * len(closes)))
+    index = pd.date_range(head.index[0], periods=s + 1 + len(rows), freq='h')
+    return pd.concat([head, rows]).set_axis(index), s
+
+
+def registering(monkeypatch):
+    bars = []
+    register = PatternConfirmQueue.register
+
+    def record(self, bar, direction, level):
+        bars.append(bar)
+        register(self, bar, direction, level)
+    monkeypatch.setattr(PatternConfirmQueue, 'register', record)
+    return bars
+
+
+@pytest.mark.parametrize('tool, params, offsets, k1, second_signal, k2', REPEATS,
+                         ids=[f"{t}-{q.get('direction', 'long')}" for t, q, *_ in REPEATS])
+def test_repeat_inside_the_window_gives_one_order_and_the_second_entry_is_hand_computed(
+        tool, params, offsets, k1, second_signal, k2, monkeypatch):
+    data, s = repeat_frame(tool, params, offsets)
+    short = params.get('direction') == 'short'
+    level = data['Low'].iloc[s] if short else data['High'].iloc[s]
+    assert (data['Close'].iloc[s + k1] < level) if short else (data['Close'].iloc[s + k1] > level)
+    # A: the frame up to the second signal -- the window repeat registers but never adds an order
+    bars = registering(monkeypatch)
+    first, strategy = run(tool, {**params, **LAYER}, data.iloc[:s + second_signal])
+    report = strategy._pattern_confirm_queue.report()
+    assert bars[0] == s and any(s < bar <= s + k1 for bar in bars), bars
+    assert report['registered'] >= 2 and report['submitted'] == 1 == len(first)
+    assert int(first['EntryBar'].iloc[0]) == s + k1 + 1
+    assert first['EntryPrice'].iloc[0] == data['Open'].iloc[s + k1 + 1] == data['Close'].iloc[s + k1]
+    # B: the whole frame -- after the first exit a second signal confirms at s + k2
+    bars.clear()
+    on, strategy = run(tool, {**params, **LAYER}, data)
+    report = strategy._pattern_confirm_queue.report()
+    assert s + second_signal in bars and report['submitted'] == len(on) == 2
+    assert list(on['EntryBar']) == [s + k1 + 1, s + k2 + 1]
+    assert int(on['ExitBar'].iloc[0]) < s + second_signal
+    assert list(on['EntryPrice']) == [data['Close'].iloc[s + k1], data['Close'].iloc[s + k2]]
+    assert list(on['Size'] < 0) == [short, short]
