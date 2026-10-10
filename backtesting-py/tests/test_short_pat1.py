@@ -549,7 +549,7 @@ def test_long_source_and_golden_files_byte_unchanged():
     root=Path(__file__).resolve().parents[2]
     for relative in ('backtesting-py/strategy_bottom_patterns.py','backtesting-py/tests/test_9t3_patterns.py',
                      'backtesting-py/tests/fixtures/9t3_bottom_off.json'):
-        expected=subprocess.check_output(['git','show','32ae030:'+relative],cwd=root)
+        expected=subprocess.check_output(['git','show','3fe906a:'+relative],cwd=root)
         if relative.endswith('strategy_bottom_patterns.py'):
             for allowed in (BOTTOM_7P3B2_GATE, BOTTOM_PLOW2B_SIGNAL_BAR, BOTTOM_PLIQ1_DECIMAL, BOTTOM_PLIQ1_EXIT,
                             BOTTOM_PATCONF2B1_GATE, BOTTOM_PATCONF2B1_REGISTER, BOTTOM_PATCONF2B1_OPEN,
@@ -601,7 +601,7 @@ def test_nonpositive_target_is_invalid_geometry(name):
 
 def test_long_builders_and_tool_spec_source_byte_unchanged():
     root=Path(__file__).resolve().parents[2]
-    old=subprocess.check_output(['git','show','32ae030:backtesting-py/cutie_backtesting_provider.py'],cwd=root,text=True)
+    old=subprocess.check_output(['git','show','3fe906a:backtesting-py/cutie_backtesting_provider.py'],cwd=root,text=True)
     current=(root/'backtesting-py/cutie_backtesting_provider.py').read_text()
     def fragments(source):
         tree=ast.parse(source)

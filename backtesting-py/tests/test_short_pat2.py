@@ -474,7 +474,7 @@ def test_bullish_response_bytes_match_original_engine(kind,warm,monkeypatch):
         client=TestClient(p.app)
         current=client.post('/cutie/backtest',json=body).json()
         assert current['result_status']=='success' and current['trades']
-        source=subprocess.check_output(['git','show','32ae030:backtesting-py/strategy_divergence.py'],text=True)
+        source=subprocess.check_output(['git','show','3fe906a:backtesting-py/strategy_divergence.py'],text=True)
         original=types.ModuleType('shortpat2_original_divergence')
         monkeypatch.setitem(sys.modules,original.__name__,original)
         exec(compile(source,engine.__file__,'exec'),original.__dict__)
@@ -487,7 +487,7 @@ def test_bullish_response_bytes_match_original_engine(kind,warm,monkeypatch):
 def test_bullish_builders_and_catalog_source_bytes_unchanged():
     import subprocess
     import ast
-    original=subprocess.check_output(['git','show','32ae030:backtesting-py/cutie_backtesting_provider.py'],text=True)
+    original=subprocess.check_output(['git','show','3fe906a:backtesting-py/cutie_backtesting_provider.py'],text=True)
     current=Path(p.__file__).read_text()
     def sections(source):
         result={}

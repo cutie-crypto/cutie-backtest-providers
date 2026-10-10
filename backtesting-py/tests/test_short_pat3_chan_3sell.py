@@ -369,7 +369,7 @@ def test_catalog_count_and_default_params():
     assert 'time_layer_enabled' in props
 
 
-CHAN_BASE = 'c72c4a1'
+CHAN_BASE = 'df7b17c'
 
 
 @pytest.mark.parametrize('market,params', [('spot',{}),('futures',{}),('futures',{'bi_mode':'old'}),
