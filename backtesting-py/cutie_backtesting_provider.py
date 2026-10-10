@@ -2799,7 +2799,7 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         if self._risk.get("position_sizing_enabled"):
             self._sizing_install()
         if (self._filter_config is not None and self._filter_config.pattern_confirm_enabled
-                and getattr(self, "_sizing_template_stop", None) is not None):
+                and getattr(self, "_pattern_confirm_signal_stop", False)):
             # Installed inside template guards, outside sizing: stop/target guards run first,
             # then the cap cancels before sizing or the broker can fill the entry.
             self._pattern_confirm_install_risk_cap()
@@ -2833,13 +2833,16 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
                         report = getattr(self, name, None)
                         if report is not None:
                             report["skipped_entries"].append(dict(record))
-                            if "skipped_entry_count" in report:
-                                report["skipped_entry_count"] += 1
+                            report["skipped_entry_count"] = len(report["skipped_entries"])
                             break
-                    for prefix in ("_f5", "_f6", "_fib"):
-                        if getattr(self, prefix + "_order", None) is order:
-                            getattr(self, prefix + "_skips").append(dict(record))
-                            setattr(self, prefix + "_order", None)
+                    if getattr(self, "_fib_order", None) is order:
+                        # Match fib's existing decision-bar index (k under confirmation),
+                        # including its indicator-history prefix in both absolute indices.
+                        self._fib_skips.append(dict(record, signal_index=self._fib_signal_index,
+                            execution_index=self._warmup_bars + len(self.data) - 1,
+                            entry_open=str(Decimal(str(opening))), adjusted_open=str(adjusted), frozen_stop=str(stop),
+                            frozen_target=str(self._fib_frozen.take_price)))
+                        self._fib_order = None
                     order.cancel()
             process_orders()
         self._broker._process_orders = guarded_orders
@@ -3078,11 +3081,10 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             return
         blocked = self._pattern_confirm_open(hit[1] == "long", queue.payload)
         if blocked is None:
-            # Close[s] is the signal's decision-price reference (also used by the
-            # close-based risk-state builders). High/Low[s] are confirmation levels only.
-            # Tagged stops stay at s; untagged template/user stops retain their k freeze.
+            # Only stops frozen at s use Close[s] as their original risk reference.
+            # A stop recomputed at k must never be compared to the historical Close[s].
             template_stop = getattr(self, "_sizing_template_stop", None)
-            if template_stop is not None:
+            if getattr(self, "_pattern_confirm_signal_stop", False) and template_stop is not None:
                 for order in self.orders:
                     if order.parent_trade is None:
                         stop = template_stop(order)
@@ -5734,9 +5736,12 @@ def _pattern_confirm_assumptions(strategy, tool_id):
     report.update(skipped_entry_count=len(strategy._pattern_confirm_skips),
                   skipped_entries=list(strategy._pattern_confirm_skips))
     report["frozen_stop_risk"] = dict(stop_anchor=anchor, risk_distance=distance,
-        distance_cap=PATTERN_CONFIRM_RISK_DISTANCE_CAP, signal_entry_reference="Close[s]",
+        distance_cap=PATTERN_CONFIRM_RISK_DISTANCE_CAP if strategy._pattern_confirm_signal_stop else None,
+        signal_entry_reference="Close[s]" if strategy._pattern_confirm_signal_stop else None,
         note=note + "position_size_notional / position_size_pct 不会按风险距离反向缩减数量；"
-             "存在冻结止损时，确认延迟或成交跳空使有效成交价至冻结止损的距离超过 |Close[s] - 冻结止损| 的 2 倍时跳过入场；等于 2 倍允许入场。")
+             "2 倍上限只适用于止损冻结在信号根 s 的分支：有效成交价至冻结止损的距离超过 "
+             "|Close[s] - 冻结止损| 的 2 倍时跳过入场；等于 2 倍允许入场。"
+             "确认根 k 才计算止损的分支不适用该上限，因为止损随确认重算，确认延迟不放大风险。")
     return report
 
 
@@ -9430,6 +9435,12 @@ async def run_backtest(
 
     filter_config = getattr(strategy_class, "_filter_config", None)
     if filter_config is not None:
+        # Reuse the existing intrinsic-stop classification and fib pricing-key branch.
+        # VWAP/red-streak/user fib stops are recomputed at k, so none receive the s-risk cap.
+        strategy_class._pattern_confirm_signal_stop = (
+            effective_tool_id in _SIZING_INTRINSIC_STOP_TOOLS
+            or (effective_tool_id == "local.backtesting_py.fibonacci_retracement"
+                and _sizing_template_initial_stop(effective_tool_id, params)))
         if bt_req.get("signal_execution") is not None:
             return _validation_failure("INVALID_PARAMS", "entry filters do not support signal_execution")
         try:

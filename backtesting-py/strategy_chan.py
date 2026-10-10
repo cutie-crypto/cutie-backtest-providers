@@ -213,6 +213,8 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long
             self._signals = tuple(signals)
             self.chan_report = dict(index_basis='warmup_plus_main_zero_based',
                 **recognizer.report, skipped_entries=[], entries=[], exits=[])
+            if self._filter_config is not None and self._filter_config.pattern_confirm_enabled:
+                self.chan_report['skipped_entry_count'] = 0
             self._targets = {}
             self._main_bars = len(self.data)
             process_orders = self._broker._process_orders
@@ -230,6 +232,9 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long
                                         else 'entry_open_at_or_below_frozen_stop'),
                                 signal_bar=order.tag.signal_bar, entry_bar=len(self.data)-1,
                                 entry_open=opening, frozen_stop=order.tag.stop))
+                            if self._pattern_confirm_queue is not None:
+                                self.chan_report['skipped_entries'][-1]['adjusted_open'] = fill
+                                self.chan_report['skipped_entry_count'] += 1
                             order.cancel()
                 process_orders()
                 for trade in self.trades:
