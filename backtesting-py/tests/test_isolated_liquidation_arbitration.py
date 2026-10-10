@@ -271,7 +271,11 @@ def baseline_provider():
 # New calendar / short-pattern tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
 @pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap', 'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell',
                                   'bearish_engulfing', 'shooting_star', 'evening_star',
-                                  'three_black_crows', 'bearish_doji_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
+                                  'three_black_crows', 'bearish_doji_reversal',
+                                  # P-EVENT0: event_window postdates e25886e (no baseline output to compare)
+                                  # and needs inline events; its L=1 off state is pinned byte-for-byte by
+                                  # tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
+                                  'event_window')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):

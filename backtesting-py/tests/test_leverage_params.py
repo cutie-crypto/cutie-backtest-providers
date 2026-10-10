@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as provider
-from test_risk_overlay_compatibility import enumerate_mixin_cases, frame
+from test_risk_overlay_compatibility import enumerate_mixin_cases, frame, required_params
 
 
 MIXINS = [name for name in enumerate_mixin_cases() if not name.endswith('_short')]
@@ -31,7 +31,7 @@ def test_schema_only_runtime_single_position_mixins(name):
     props = provider.TOOL_SPECS['local.backtesting_py.' + name]['param_schema_properties']
     assert props['leverage'] == dict(type='integer', default=1, minimum=1, maximum=20)
     for value in (1, 20):
-        cls = provider.TOOL_SPECS['local.backtesting_py.' + name]['build']({'leverage': value})['strategy']
+        cls = provider.TOOL_SPECS['local.backtesting_py.' + name]['build']({**required_params(name), 'leverage': value})['strategy']
         assert cls._risk.get('leverage', 1) == value
     assert provider._parse_single_leverage({}) == 1
     assert provider._parse_fixed_risk_params({'leverage': 1}) == {}
@@ -44,11 +44,11 @@ def test_invalid_leverage_rejected_before_fetch(monkeypatch, name, value):
         pytest.fail('invalid leverage reached market data')
     monkeypatch.setattr(provider, '_fetch_ohlcv', no_fetch)
     body = TestClient(provider.app).post('/cutie/backtest',
-        content=json.dumps(request({'leverage': value}, name=name)),
+        content=json.dumps(request({**required_params(name), 'leverage': value}, name=name)),
         headers={'Content-Type': 'application/json'}).json()
     assert body['error_type'] == 'INVALID_PARAMS', body
     with pytest.raises(ValueError, match='INVALID_PARAMS:leverage'):
-        provider.TOOL_SPECS['local.backtesting_py.' + name]['build']({'leverage': value})
+        provider.TOOL_SPECS['local.backtesting_py.' + name]['build']({**required_params(name), 'leverage': value})
 
 
 @pytest.mark.parametrize('name', LEDGERS)
