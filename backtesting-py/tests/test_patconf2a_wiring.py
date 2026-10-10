@@ -410,3 +410,42 @@ def test_tail_confirmation_counts_no_next_open_in_assumptions(time_layer, monkey
     assert body['trades'] == [] and (counts['registered'], counts['confirmed'], counts['submitted']) == (1, 1, 0)
     assert counts['discarded'] == dict(unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0,
                                        no_next_open=1, isolated_liquidation_bar=0, time_gate=0, filter_gate=0)
+
+
+# --- one hand frame per state-machine shape: state condition, state flag, crossover, both ---------------
+# Rows up to the first off-state signal bar s of the compat frame are kept; bar s + 1 closes 1 beyond the
+# level (High[s] long, Low[s] short) and so confirms at k = s + 1; the flat tail repeats that close.
+
+SHAPES = [('ema_trend_rsi', {}), ('ema_rsi_pullback', {}), ('macd', {}),
+          ('cci_rsi', dict(direction='long')), ('cci_rsi', dict(direction='short'))]
+
+
+def shape_frame(tool, params, tail=6):
+    data = compat.frame()
+    off, _ = run(tool, params, data)
+    short = params.get('direction') == 'short'
+    assert (off['Size'].iloc[0] < 0) == short
+    s = int(off['EntryBar'].iloc[0]) - 1
+    head = data.iloc[:s + 1]
+    close = (head['Low'].iloc[-1] - 1) if short else (head['High'].iloc[-1] + 1)
+    opens = [head['Close'].iloc[-1]] + [close] * (tail - 1)
+    rows = pd.DataFrame(dict(Open=opens, High=[max(o, close) + .2 for o in opens],
+                             Low=[min(o, close) - .2 for o in opens], Close=[close] * tail,
+                             Volume=[100.0] * tail))
+    index = pd.date_range(head.index[0], periods=s + 1 + tail, freq='h')
+    return pd.concat([head, rows]).set_axis(index), s, short
+
+
+@pytest.mark.parametrize('tool, params', SHAPES, ids=[f"{t}-{q.get('direction', 'long')}" for t, q in SHAPES])
+def test_state_machine_shapes_enter_one_bar_after_the_confirming_bar(tool, params):
+    data, s, short = shape_frame(tool, params)
+    off, _ = run(tool, params, data)
+    on, strategy = run(tool, {**params, **LAYER}, data)
+    assert int(off['EntryBar'].iloc[0]) == s + 1  # off: the signal bar s fills at s + 1
+    # on: s only registers, k = s + 1 confirms, the order fills at the open of k + 1
+    assert int(on['EntryBar'].iloc[0]) == s + 2 and (on['Size'].iloc[0] < 0) == short
+    assert on['EntryPrice'].iloc[0] == data['Open'].iloc[s + 2]
+    report = strategy._pattern_confirm_queue.report()
+    # signals the template repeats inside the window never add a second order
+    assert report['submitted'] == len(on) == 1
+    assert report['registered'] == report['submitted'] + sum(report['discarded'].values()) + report['pending_at_end']
