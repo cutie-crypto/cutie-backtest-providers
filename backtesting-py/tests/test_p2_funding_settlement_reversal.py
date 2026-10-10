@@ -340,3 +340,11 @@ def test_catalog_entry(monkeypatch):
                 'take_profit_pct'} & set(props)
     assert 'required' not in tool['param_schema']
     assert len(tools) == 65
+
+
+def test_window_without_settlement_point_fetches_nothing(monkeypatch, tmp_path):
+    calls = install(monkeypatch, tmp_path, {0: '0.00090000'}, frame(28))
+    body = post(n=28)  # 00:00..07:00, the first entry (07:30) lies past the window
+    assert body['result_status'] == 'success' and body['trades'] == [] and calls == []
+    a = body['assumptions'][KIND]
+    assert a['settlement_points'] == dict(count=0) and a['funding_series']['count'] == 0
