@@ -3006,15 +3006,18 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         """Run once per bar k before the template: submit the latest signal confirming at k.
 
         A confirmed signal is consumed whatever happens next: an open position or order at k, k being
-        the last bar (no next open to fill at), or a liquidation / time / filter gate closed at k,
-        discards it without retry. The order fills at the next open; signals the template registers
-        later on bar k never get a second order here.
+        the last bar (no next open to fill at), or a time / filter gate closed at k, discards it
+        without retry. The order fills at the next open; signals the template registers later on
+        bar k never get a second order here.
         """
         queue = self._pattern_confirm_queue
         bar = len(self.data) - 1
         hit = queue.advance(bar, self.data.Close[-1])
         if hit is None:
             return
+        # This runs before the template's next(): on an isolated liquidation bar the position is still
+        # open here (the liquidation is only booked later in next()), so the signal ends up in
+        # position_or_order_open and _risk_open's isolated_liquidation_bar gate is never reached.
         if self.position or self.orders:
             queue.discard("position_or_order_open")
             return
@@ -3026,7 +3029,9 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         if blocked is None:
             queue.submitted()
         else:
-            queue.discard(blocked)
+            # isolated_liquidation_bar is not a confirmation reason (unreachable, see above); were it
+            # ever returned, the liquidated position was open at k.
+            queue.discard("position_or_order_open" if blocked == "isolated_liquidation_bar" else blocked)
 
     def _risk_check_exit(self) -> bool:
         if not self.position or not self.trades:
