@@ -113,7 +113,9 @@ def test_disabled_response_and_start_unchanged(monkeypatch, name, warm):
 def test_schema_only_runtime_single_position_templates():
     actual = {tool.removeprefix('local.backtesting_py.') for tool, spec in provider.TOOL_SPECS.items()
               if 'time_layer_enabled' in spec['param_schema_properties']}
-    assert actual == {compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS) | {"red_streak_rsi"}
+    # TURTLE-TIME: 海龟组级 runner 也声明并消费时间层（行为用例在 test_turtle_time_layer.py）。
+    assert actual == ({compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS) | {"red_streak_rsi"}
+                      | set(compat.enumerate_turtle_cases()))
     assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 == set(MIXINS)
 
 
@@ -324,17 +326,22 @@ def test_http_unsupported_timeframe_before_fetch(client):
 
 @pytest.mark.parametrize('name', compat.enumerate_turtle_cases())
 @pytest.mark.parametrize('direction', ['long', 'short', 'both'])
-def test_turtle_group_time_exemption_preserves_disabled_golden(name, direction):
+def test_turtle_group_time_wired_preserves_disabled_golden(name, direction):
+    # TURTLE-TIME: 海龟接入时间层 9 键；省略或默认值时组级金样不变（完整响应逐字节见 test_turtle_time_layer.py）。
     from test_turtle_risk_3b import assert_disabled_golden
     assert_disabled_golden(name, direction)
     props = provider.TOOL_SPECS['local.backtesting_py.' + name]['param_schema_properties']
-    assert not any(key.startswith('time_') for key in props)
+    assert {key for key in props if key.startswith('time_')} == set(provider._TIME_PARAM_SCHEMA_PROPERTIES)
+    built = provider.TOOL_SPECS['local.backtesting_py.' + name]['build']({**DEFAULTS, 'direction': direction})
+    assert built['strategy']._time_config is None
 
 
 @pytest.mark.parametrize('name', compat.enumerate_turtle_cases())
-@pytest.mark.parametrize('key,value', list(DEFAULTS.items()) + [
-    ('time_max_holding_minutes', 1), ('time_flatten_at', '12:00'), ('time_flatten_weekdays', 1)])
-def test_turtle_time_keys_rejected_even_with_group_risk(client, name, key, value):
+@pytest.mark.parametrize('key,value', [
+    ('time_weekdays', 1), ('time_timezone', 'Asia/Tokyo'), ('time_max_holding_minutes', 1),
+    ('time_flatten_at', '12:00'), ('time_flatten_weekdays', 1), ('time_calendar', 'cme_btc_regular'),
+    ('time_stop_enabled', True)])
+def test_turtle_time_keys_require_enable_even_with_group_risk(client, name, key, value):
     body = capture.request_body(name, {'risk_layer_enabled': True, key: value})
     body['backtest']['market'] = 'futures'
     assert client.post('/cutie/backtest', json=body).json()['error_type'] == 'INVALID_PARAMS'
