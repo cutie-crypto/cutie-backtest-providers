@@ -206,8 +206,8 @@ def pattern_confirm_entries(signals: Any, high: Any, low: Any, close: Any, *, di
 
 
 PATTERN_CONFIRM_DISCARD_REASONS = (
-    'unconfirmed', 'superseded_by_later_signal', 'position_or_order_open',
-    'isolated_liquidation_bar', 'no_next_open', 'time_gate', 'filter_gate')
+    'unconfirmed', 'superseded_by_later_signal', 'position_or_order_open', 'no_next_open',
+    'time_gate', 'filter_gate')
 
 
 class PatternConfirmQueue:

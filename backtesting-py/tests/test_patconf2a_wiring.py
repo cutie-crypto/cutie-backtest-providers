@@ -30,6 +30,10 @@ WIRED = set("""adx_di_cross bias_reversion bollinger_breakout bollinger_reversal
 breakout cci_rsi ema_cross ema_pullback ema_rsi_pullback ema_trend_rsi ema_triple_alignment
 ichimoku_cloud_breakout keltner_breakout macd macd_above_zero parabolic_sar roc rsi_reversal
 stoch_oversold_cross supertrend volume_breakout""".split())
+# P-PATCONF-2b1: the 15 self-entering pattern templates (candle 11 + bottom / top 4), wired on top of the 22.
+WIRED_2B1 = set("""bearish_doji_reversal bearish_engulfing bullish_doji_reversal bullish_engulfing double_bottom
+double_top evening_star hammer_pin_bar head_shoulders inside_bar_breakout inverse_head_shoulders morning_star
+shooting_star three_black_crows three_white_soldiers""".split())
 LAYER = dict(filter_layer_enabled=True, filter_pattern_confirm_enabled=True)
 PREFIX = 'local.backtesting_py.'
 # volume_breakout never signals on the golden frame with its defaults (zero trades in both P-PATCONF-1
@@ -46,7 +50,8 @@ def build(tool, params):
 def test_wired_templates_are_exactly_the_whitelist():
     wired = {k.removeprefix(PREFIX) for k, v in p.TOOL_SPECS.items()
              if getattr(v.get('build'), '_supports_pattern_confirm', False)}
-    assert wired == WIRED and len(wired) == 22
+    assert len(WIRED) == 22 and len(WIRED_2B1) == 15 and not WIRED & WIRED_2B1
+    assert wired == WIRED | WIRED_2B1 and len(wired) == 37
 
 
 # --- wiring evidence: every whitelisted template registers on its golden frame -----------------------
@@ -119,8 +124,8 @@ def test_ema_cross_confirmed_entry_fills_at_the_open_after_the_confirming_bar():
     assert trades['EntryPrice'].iloc[0] == data['Open'].iloc[S + 2] == 103.1
     assert strategy._pattern_confirm_queue.report() == dict(
         registered=1, confirmed=1, submitted=1, pending_at_end=0, discarded=dict(
-            unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0,
-            isolated_liquidation_bar=0, time_gate=0, filter_gate=0))
+            unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0, no_next_open=0,
+            time_gate=0, filter_gate=0))
 
 
 @pytest.mark.parametrize('after, bars', [
@@ -170,8 +175,8 @@ def post_frame(monkeypatch, tmp_path, tool, params, data, prefix):
     return TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json()
 
 
-def http_frames():
-    full = ema_cross_frame([103] * 6, lead=[100] * 200)
+def http_frames(after=(103,) * 6):
+    full = ema_cross_frame(after, lead=[100] * 200)
     full.index = pd.date_range(pd.Timestamp('2026-01-01 11:00') - pd.Timedelta(hours=200 + S), periods=len(full),
                                freq='h')
     prefix, data = full.iloc[:200], full.iloc[200:]
@@ -289,10 +294,12 @@ def test_mixin_bar_by_bar_matches_pattern_confirm_entries(seed):
     opened = []
     cls = scripted(signals, direction, opened)
     cls._filter_config = FilterConfig.parse({**LAYER, 'filter_pattern_confirm_bars': bars})
-    Backtest(data, cls, cash=100_000).run()
+    stats = Backtest(data, cls, cash=100_000).run()
     entries, _ = pattern_confirm_entries(signals, data['High'], data['Low'], data['Close'],
                                          direction=direction, bars=bars)
-    assert [bar for bar, _ in opened] == list(np.flatnonzero(entries))
+    # a confirmation on the last bar has no next open: discarded before the entry path is reached
+    assert [bar for bar, _ in opened] == list(np.flatnonzero(entries[:-1]))
+    assert stats['_strategy']._pattern_confirm_queue.report()['discarded']['no_next_open'] == int(entries[-1])
     assert {is_long for _, is_long in opened} <= {direction == 'long'}
 
 
@@ -356,3 +363,231 @@ def test_queue_matches_engine_source_on_random_sequences(seed):
     report = queue.report()
     assert report['registered'] == sum(signals)
     assert report['registered'] == report['confirmed'] + report['discarded']['unconfirmed'] + report['pending_at_end']
+
+
+# --- review fixes: judging bar of the filter gate, tail confirmation --------------------------------
+
+def masked(params, allow):
+    """ema_cross with the filter mask overwritten at the given main-range bars (pattern-only mask is all True)."""
+    class Masked(build('ema_cross', params)):
+        def init(self):
+            super().init()
+            self._filter_mask = self._filter_mask.copy()
+            for bar, ok in allow.items():
+                self._filter_mask[self._warmup_bars + bar] = ok
+    return Masked
+
+
+@pytest.mark.parametrize('s_ok, k_ok, entry', [(True, False, None), (False, True, S + 2)])
+def test_filter_gate_is_judged_on_the_confirming_bar_not_the_signal_bar(s_ok, k_ok, entry):
+    data = ema_cross_frame([103] * 6)  # s = 11 confirms at k = 12
+    stats = Backtest(data, masked({**EMA, **LAYER}, {S: s_ok, S + 1: k_ok}), cash=1_000_000,
+                     finalize_trades=True).run()
+    report = stats['_strategy']._pattern_confirm_queue.report()
+    assert (report['registered'], report['confirmed']) == (1, 1)
+    if entry is None:
+        assert len(stats['_trades']) == 0 and report['discarded']['filter_gate'] == 1
+    else:
+        assert list(stats['_trades']['EntryBar']) == [entry] and report['submitted'] == 1
+        assert report['discarded']['filter_gate'] == 0
+
+
+def test_signal_on_the_last_but_one_bar_confirming_on_the_last_bar_is_no_next_open():
+    data = ema_cross_frame([103])  # s = 11 = n - 2, close[12] = 103 > High[11] confirms on the tail
+    assert len(data) == S + 2
+    trades, strategy = run('ema_cross', {**EMA, **LAYER}, data)
+    assert len(trades) == 0
+    assert strategy._pattern_confirm_queue.report() == dict(
+        registered=1, confirmed=1, submitted=0, pending_at_end=0, discarded=dict(
+            unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0, no_next_open=1,
+            time_gate=0, filter_gate=0))
+
+
+@pytest.mark.parametrize('time_layer', [False, True])
+def test_tail_confirmation_counts_no_next_open_in_assumptions(time_layer, monkeypatch, tmp_path):
+    prefix, data = http_frames(after=(103,))
+    params = {**EMA, **LAYER}
+    if time_layer:  # the confirming bar decides at 13:00, inside the session: only the tail refuses it
+        params.update(time_layer_enabled=True, time_session_start='11:30', time_session_end='13:30')
+    body = post_frame(monkeypatch, tmp_path, 'ema_cross', params, data, prefix)
+    assert body['result_status'] == 'success', body
+    counts = body['assumptions']['pattern_confirm']
+    assert body['trades'] == [] and (counts['registered'], counts['confirmed'], counts['submitted']) == (1, 1, 0)
+    assert counts['discarded'] == dict(unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0,
+                                       no_next_open=1, time_gate=0, filter_gate=0)
+
+
+# --- one hand frame per state-machine shape: state condition, state flag, crossover, both ---------------
+# Rows up to the first off-state signal bar s of the compat frame are kept; bar s + 1 closes 1 beyond the
+# level (High[s] long, Low[s] short) and so confirms at k = s + 1; the flat tail repeats that close.
+
+SHAPES = [('ema_trend_rsi', {}), ('ema_rsi_pullback', {}), ('macd', {}),
+          ('cci_rsi', dict(direction='long')), ('cci_rsi', dict(direction='short'))]
+
+
+def shape_frame(tool, params, tail=6):
+    data = compat.frame()
+    off, _ = run(tool, params, data)
+    short = params.get('direction') == 'short'
+    assert (off['Size'].iloc[0] < 0) == short
+    s = int(off['EntryBar'].iloc[0]) - 1
+    head = data.iloc[:s + 1]
+    close = (head['Low'].iloc[-1] - 1) if short else (head['High'].iloc[-1] + 1)
+    opens = [head['Close'].iloc[-1]] + [close] * (tail - 1)
+    rows = pd.DataFrame(dict(Open=opens, High=[max(o, close) + .2 for o in opens],
+                             Low=[min(o, close) - .2 for o in opens], Close=[close] * tail,
+                             Volume=[100.0] * tail))
+    index = pd.date_range(head.index[0], periods=s + 1 + tail, freq='h')
+    return pd.concat([head, rows]).set_axis(index), s, short
+
+
+@pytest.mark.parametrize('tool, params', SHAPES, ids=[f"{t}-{q.get('direction', 'long')}" for t, q in SHAPES])
+def test_state_machine_shapes_enter_one_bar_after_the_confirming_bar(tool, params):
+    data, s, short = shape_frame(tool, params)
+    off, _ = run(tool, params, data)
+    on, strategy = run(tool, {**params, **LAYER}, data)
+    assert int(off['EntryBar'].iloc[0]) == s + 1  # off: the signal bar s fills at s + 1
+    # on: s only registers, k = s + 1 confirms, the order fills at the open of k + 1
+    assert int(on['EntryBar'].iloc[0]) == s + 2 and (on['Size'].iloc[0] < 0) == short
+    assert on['EntryPrice'].iloc[0] == data['Open'].iloc[s + 2]
+    report = strategy._pattern_confirm_queue.report()
+    # signals the template repeats inside the window never add a second order
+    assert report['submitted'] == len(on) == 1
+    assert report['registered'] == report['submitted'] + sum(report['discarded'].values()) + report['pending_at_end']
+
+
+# --- the template signals again inside the window, then a second trade after the first exit ------------
+# Tail closes are offsets from Close[s]; each tail bar opens at the previous close, so an order sent on the
+# confirming bar k fills at Open[k + 1] == Close[k]. Offsets picked so that, by hand:
+#   macd: s + 1 drops 10 (MACD back under its signal), s + 2 rises 15 -> Close[s] + 5 > High[s] confirms s at
+#         k1 = s + 2 while crossing up again (registers s + 2 inside the window); -15, -15 cross down (exit),
+#         +15, +15 cross up at s + 8 (registers), s + 9 closes 2 above it -> k2 = s + 9.
+#   cci_rsi long: s + 1 stays oversold (registers), s + 2 closes above High[s] and High[s + 1] -> k1 = s + 2;
+#         RSI > 50 exits, the slide re-signals from s + 7, a later bar closes above that level -> k2 = s + 11.
+#   cci_rsi short: mirror; s + 1 still overbought (registers), k1 = s + 2; re-signals at s + 8, k2 = s + 11.
+REPEATS = [
+    ('macd', {}, [-10, 5, 5, 5, -10, -25, -10, 5, 7, 7, 7], 2, 8, 9),
+    ('cci_rsi', dict(direction='long'),
+     [.2, 4.2, 6.2, 4.2, 2.2, -1.8, -5.8, -13.8, -19.8, -13.8, -9.8, -9.8, -9.8, -9.8], 2, 7, 11),
+    ('cci_rsi', dict(direction='short'), [2, -4, -6, -6, -5, -7, 1, 9, 15, 9, 3, 3, 3, 3], 2, 8, 11),
+]
+
+
+def repeat_frame(tool, params, offsets):
+    data = compat.frame()
+    off, _ = run(tool, params, data)
+    s = int(off['EntryBar'].iloc[0]) - 1
+    head = data.iloc[:s + 1]
+    closes = [round(head['Close'].iloc[-1] + x, 2) for x in offsets]
+    opens = [head['Close'].iloc[-1]] + closes[:-1]
+    rows = pd.DataFrame(dict(Open=opens, High=[max(o, c) + .2 for o, c in zip(opens, closes)],
+                             Low=[min(o, c) - .2 for o, c in zip(opens, closes)], Close=closes,
+                             Volume=[100.0] * len(closes)))
+    index = pd.date_range(head.index[0], periods=s + 1 + len(rows), freq='h')
+    return pd.concat([head, rows]).set_axis(index), s
+
+
+def registering(monkeypatch):
+    bars = []
+    register = PatternConfirmQueue.register
+
+    def record(self, bar, direction, level):
+        bars.append(bar)
+        register(self, bar, direction, level)
+    monkeypatch.setattr(PatternConfirmQueue, 'register', record)
+    return bars
+
+
+@pytest.mark.parametrize('tool, params, offsets, k1, second_signal, k2', REPEATS,
+                         ids=[f"{t}-{q.get('direction', 'long')}" for t, q, *_ in REPEATS])
+def test_repeat_inside_the_window_gives_one_order_and_the_second_entry_is_hand_computed(
+        tool, params, offsets, k1, second_signal, k2, monkeypatch):
+    data, s = repeat_frame(tool, params, offsets)
+    short = params.get('direction') == 'short'
+    level = data['Low'].iloc[s] if short else data['High'].iloc[s]
+    assert (data['Close'].iloc[s + k1] < level) if short else (data['Close'].iloc[s + k1] > level)
+    # A: the frame up to the second signal -- the window repeat registers but never adds an order
+    bars = registering(monkeypatch)
+    first, strategy = run(tool, {**params, **LAYER}, data.iloc[:s + second_signal])
+    report = strategy._pattern_confirm_queue.report()
+    assert bars[0] == s and any(s < bar <= s + k1 for bar in bars), bars
+    assert report['registered'] >= 2 and report['submitted'] == 1 == len(first)
+    assert int(first['EntryBar'].iloc[0]) == s + k1 + 1
+    assert first['EntryPrice'].iloc[0] == data['Open'].iloc[s + k1 + 1] == data['Close'].iloc[s + k1]
+    # B: the whole frame -- after the first exit a second signal confirms at s + k2
+    bars.clear()
+    on, strategy = run(tool, {**params, **LAYER}, data)
+    report = strategy._pattern_confirm_queue.report()
+    assert s + second_signal in bars and report['submitted'] == len(on) == 2
+    assert list(on['EntryBar']) == [s + k1 + 1, s + k2 + 1]
+    assert int(on['ExitBar'].iloc[0]) < s + second_signal
+    assert list(on['EntryPrice']) == [data['Close'].iloc[s + k1], data['Close'].iloc[s + k2]]
+    assert list(on['Size'] < 0) == [short, short]
+
+
+# --- isolated liquidation bar on the confirmation path ------------------------------------------------
+# 10x isolated long: bars 0-4 flat 100; s = 4 (High 100.5) confirms at bar 5 (close 103), filled at bar 6
+# open 103.1; bar 7 lows 80 < 0.9 * 103.1 and liquidates the position. The confirmation step runs before
+# the template's next(), so on bar 7 the position is still open: a signal confirming there is discarded as
+# position_or_order_open and the isolated_liquidation_bar gate is never reached.
+LIQUIDATION_ROWS = [(100, 100.5, 99.5, 100)] * 5 + [
+    (100, 103.5, 99.5, 103), (103.1, 103.6, 102.6, 103.2), (103.2, 104.5, 80, 104),
+    (104, 105.5, 103.5, 105), (105, 105.5, 104.5, 105), (105, 105.5, 104.5, 105)]
+
+
+def leveraged(signals, confirm):
+    class Lev(p._FixedRiskMixin, Strategy):
+        _risk = dict(leverage=10, position_size_pct=0.1)
+
+        def init(self):
+            self._risk_init()
+
+        def next(self):
+            self._risk_check_exit()  # registers on the liquidation bar too, after the liquidation
+            if len(self.data) - 1 in signals:
+                self._risk_buy()
+
+    if not confirm:
+        return Lev
+    Lev._filter_config = FilterConfig.parse({**LAYER, 'filter_pattern_confirm_bars': 3})
+    return p._pattern_confirm_strategy(Lev)
+
+
+def run_leveraged(signals, confirm):
+    data = pd.DataFrame(LIQUIDATION_ROWS, columns=['Open', 'High', 'Low', 'Close'],
+                        index=pd.date_range('2026-01-01', periods=len(LIQUIDATION_ROWS), freq='h'))
+    data['Volume'] = 100.0
+    stats = Backtest(data, leveraged(signals, confirm), cash=100_000, margin=0.1, finalize_trades=True).run()
+    return stats['_trades'], stats['_strategy'], data
+
+
+def test_signal_confirming_on_the_liquidation_bar_counts_as_position_or_order_open():
+    # s2 = 5 (High 103.5) confirms on the liquidation bar 7 (close 104): no entry for it
+    trades, strategy, _ = run_leveraged({4, 5}, confirm=True)
+    assert strategy._isolated_blocked_bar == 7 and len(strategy._isolated_liquidations) == 1
+    assert list(trades['EntryBar']) == [6]
+    report = strategy._pattern_confirm_queue.report()
+    assert (report['registered'], report['confirmed'], report['submitted']) == (2, 2, 1)
+    assert report['discarded'] == dict(unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=1,
+                                       no_next_open=0, time_gate=0, filter_gate=0)
+
+
+def test_signal_on_the_liquidation_bar_confirming_on_a_normal_bar_enters():
+    # s2 = 7 (High 104.5, registered after the liquidation) confirms at bar 8 (close 105): fills at Open[9]
+    trades, strategy, data = run_leveraged({4, 7}, confirm=True)
+    assert strategy._isolated_blocked_bar == 7
+    assert list(trades['EntryBar']) == [6, 9] and trades['EntryPrice'].iloc[1] == data['Open'].iloc[9] == 105
+    report = strategy._pattern_confirm_queue.report()
+    assert (report['registered'], report['submitted'], report['discarded']['position_or_order_open']) == (2, 2, 0)
+    # switch off, same signals: the liquidation-bar gate of _risk_open still refuses the bar-7 entry
+    off, _, _ = run_leveraged({4, 7}, confirm=False)
+    assert list(off['EntryBar']) == [5]
+
+
+def test_isolated_liquidation_gate_result_on_the_confirmation_path_is_counted_not_raised(monkeypatch):
+    # unreachable in practice; if _risk_open ever returns it here, it lands in position_or_order_open
+    monkeypatch.setattr(p._FixedRiskMixin, '_risk_open', lambda self, is_long: 'isolated_liquidation_bar')
+    trades, strategy, _ = run_leveraged({4}, confirm=True)
+    report = strategy._pattern_confirm_queue.report()
+    assert len(trades) == 0 and report['submitted'] == 0 and report['discarded']['position_or_order_open'] == 1
+    assert 'isolated_liquidation_bar' not in report['discarded']
