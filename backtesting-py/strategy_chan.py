@@ -193,7 +193,29 @@ class ChanRecognizer:
             confirmed_at=end['confirmed_at'])
 
 
-def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long'):
+# CHANSLIM: raw_report.chan keeps only what the decision facts need. Strokes and the
+# third-buy / third-sell departure and pullback segments keep direction / high / low /
+# confirmed_at; centers keep their judging levels and stroke range, not copied strokes.
+# The five intermediate traces (merged_bars, merges, fractals, rejected_strokes,
+# replacements) only appear when chan_debug is on (local diagnosis, never user-facing).
+CHAN_SEGMENT_KEYS = ('direction', 'high', 'low', 'confirmed_at')
+CHAN_CENTER_KEYS = ('id', 'zg', 'zd', 'start_stroke', 'end_stroke', 'confirmed_at', 'used')
+
+
+def _chan_segment(stroke):
+    return {key: stroke[key] for key in CHAN_SEGMENT_KEYS}
+
+
+def slim_chan_report(report, facts_key):
+    """Project the recognizer's full working report onto the evidence kept in raw_report."""
+    return dict(
+        strokes=[_chan_segment(s) for s in report['strokes']],
+        centers=[{key: c[key] for key in CHAN_CENTER_KEYS} for c in report['centers']],
+        **{facts_key: [dict(fact, departure=_chan_segment(fact['departure']),
+                            pullback=_chan_segment(fact['pullback'])) for fact in report[facts_key]]})
+
+
+def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long', chan_debug=False):
     short = direction == 'short'
     class ChanStrategy(mixin, Strategy):
         _risk = risk
@@ -211,8 +233,10 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long
             for i, (h, l) in enumerate(zip(high, low)):
                 signals.append(recognizer.push(float(h), float(l), i))
             self._signals = tuple(signals)
+            facts = (recognizer.report if chan_debug
+                     else slim_chan_report(recognizer.report, recognizer.facts_key))
             self.chan_report = dict(index_basis='warmup_plus_main_zero_based',
-                **recognizer.report, skipped_entries=[], entries=[], exits=[])
+                **facts, skipped_entries=[], entries=[], exits=[])
             self._targets = {}
             self._main_bars = len(self.data)
             process_orders = self._broker._process_orders
