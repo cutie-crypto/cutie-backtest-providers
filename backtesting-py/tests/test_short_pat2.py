@@ -513,4 +513,9 @@ def test_bullish_builders_and_catalog_source_bytes_unchanged():
          "    cls._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))\n")):
         assert expected['_build_divergence'].count(old)==1
         expected['_build_divergence']=expected['_build_divergence'].replace(old,new)
+    # P-PATCONF-2b2: the two bullish builders opt into pattern confirmation (decorator argument only).
+    for name in ('_build_macd_bullish_divergence','_build_rsi_bullish_divergence'):
+        old,new='@_with_filter_config\n','@_with_filter_config(pattern_confirm=True)\n'
+        assert expected[name].count(old)==1
+        expected[name]=expected[name].replace(old,new)
     assert sections(current)==expected

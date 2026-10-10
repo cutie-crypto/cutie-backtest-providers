@@ -43,6 +43,10 @@ stoch_oversold_cross supertrend volume_breakout""".split())
 LONG = c.CANDLE + c.BOTTOM
 SHORT = sp.SHORT + ('double_top', 'head_shoulders')
 WIRED_2B1 = set(LONG + SHORT)
+# P-PATCONF-2b2: divergence 4, chan 2, fibonacci, red_streak_rsi, vwap_reversion.
+WIRED_2B2 = set("""
+macd_bullish_divergence rsi_bullish_divergence macd_bearish_divergence rsi_bearish_divergence
+chan_3buy chan_3sell fibonacci_retracement red_streak_rsi vwap_reversion""".split())
 
 
 def frame(name):
@@ -106,7 +110,8 @@ def test_whitelist_is_the_2a_22_plus_the_15_pattern_templates():
     wired = {k.removeprefix(PREFIX) for k, v in p.TOOL_SPECS.items()
              if getattr(v.get('build'), '_supports_pattern_confirm', False)}
     assert len(WIRED_2B1) == 15 and not WIRED_2B1 & WIRED_2A
-    assert wired == WIRED_2A | WIRED_2B1 and len(wired) == 37
+    assert len(WIRED_2B2) == 9 and not WIRED_2B2 & (WIRED_2A | WIRED_2B1)
+    assert wired == WIRED_2A | WIRED_2B1 | WIRED_2B2 and len(wired) == 46
 
 
 def test_catalog_publishes_both_keys_for_the_15_and_the_other_14_still_reject(monkeypatch):
@@ -118,8 +123,8 @@ def test_catalog_publishes_both_keys_for_the_15_and_the_other_14_still_reject(mo
     unwired = [k.removeprefix(PREFIX) for k, v in p.TOOL_SPECS.items()
                if getattr(v.get('build'), '_supports_entry_filters', False)
                and not v['build']._supports_pattern_confirm]
-    # 14 pre-EVENT0 unwired templates + event_window (P-EVENT0, also unwired)
-    assert len(unwired) == 15 and 'event_window' in unwired
+    # P-PATCONF-2b2: 9 more wired; the 5 range / calendar ones + event_window (P-EVENT0) stay out
+    assert len(unwired) == 6 and 'event_window' in unwired
     for name in unwired:
         assert not set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(tools[name]['param_schema']['properties']), name
         build = p.TOOL_SPECS[PREFIX + name]['build']

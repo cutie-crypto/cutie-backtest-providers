@@ -34,6 +34,10 @@ stoch_oversold_cross supertrend volume_breakout""".split())
 WIRED_2B1 = set("""bearish_doji_reversal bearish_engulfing bullish_doji_reversal bullish_engulfing double_bottom
 double_top evening_star hammer_pin_bar head_shoulders inside_bar_breakout inverse_head_shoulders morning_star
 shooting_star three_black_crows three_white_soldiers""".split())
+# P-PATCONF-2b2: divergence 4, chan 2, fibonacci, red_streak_rsi, vwap_reversion.
+WIRED_2B2 = set("""
+macd_bullish_divergence rsi_bullish_divergence macd_bearish_divergence rsi_bearish_divergence
+chan_3buy chan_3sell fibonacci_retracement red_streak_rsi vwap_reversion""".split())
 LAYER = dict(filter_layer_enabled=True, filter_pattern_confirm_enabled=True)
 PREFIX = 'local.backtesting_py.'
 # volume_breakout never signals on the golden frame with its defaults (zero trades in both P-PATCONF-1
@@ -51,7 +55,8 @@ def test_wired_templates_are_exactly_the_whitelist():
     wired = {k.removeprefix(PREFIX) for k, v in p.TOOL_SPECS.items()
              if getattr(v.get('build'), '_supports_pattern_confirm', False)}
     assert len(WIRED) == 22 and len(WIRED_2B1) == 15 and not WIRED & WIRED_2B1
-    assert wired == WIRED | WIRED_2B1 and len(wired) == 37
+    assert len(WIRED_2B2) == 9 and not (WIRED | WIRED_2B1) & WIRED_2B2
+    assert wired == WIRED | WIRED_2B1 | WIRED_2B2 and len(wired) == 46
 
 
 # --- wiring evidence: every whitelisted template registers on its golden frame -----------------------
@@ -125,7 +130,7 @@ def test_ema_cross_confirmed_entry_fills_at_the_open_after_the_confirming_bar():
     assert strategy._pattern_confirm_queue.report() == dict(
         registered=1, confirmed=1, submitted=1, pending_at_end=0, discarded=dict(
             unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0, no_next_open=0,
-            time_gate=0, filter_gate=0))
+            time_gate=0, filter_gate=0, template_gate=0))
 
 
 @pytest.mark.parametrize('after, bars', [
@@ -400,7 +405,7 @@ def test_signal_on_the_last_but_one_bar_confirming_on_the_last_bar_is_no_next_op
     assert strategy._pattern_confirm_queue.report() == dict(
         registered=1, confirmed=1, submitted=0, pending_at_end=0, discarded=dict(
             unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0, no_next_open=1,
-            time_gate=0, filter_gate=0))
+            time_gate=0, filter_gate=0, template_gate=0))
 
 
 @pytest.mark.parametrize('time_layer', [False, True])
@@ -414,7 +419,7 @@ def test_tail_confirmation_counts_no_next_open_in_assumptions(time_layer, monkey
     counts = body['assumptions']['pattern_confirm']
     assert body['trades'] == [] and (counts['registered'], counts['confirmed'], counts['submitted']) == (1, 1, 0)
     assert counts['discarded'] == dict(unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=0,
-                                       no_next_open=1, time_gate=0, filter_gate=0)
+                                       no_next_open=1, time_gate=0, filter_gate=0, template_gate=0)
 
 
 # --- one hand frame per state-machine shape: state condition, state flag, crossover, both ---------------
@@ -569,7 +574,7 @@ def test_signal_confirming_on_the_liquidation_bar_counts_as_position_or_order_op
     report = strategy._pattern_confirm_queue.report()
     assert (report['registered'], report['confirmed'], report['submitted']) == (2, 2, 1)
     assert report['discarded'] == dict(unconfirmed=0, superseded_by_later_signal=0, position_or_order_open=1,
-                                       no_next_open=0, time_gate=0, filter_gate=0)
+                                       no_next_open=0, time_gate=0, filter_gate=0, template_gate=0)
 
 
 def test_signal_on_the_liquidation_bar_confirming_on_a_normal_bar_enters():
