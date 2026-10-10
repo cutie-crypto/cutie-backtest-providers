@@ -64,7 +64,8 @@ BASELINE['single'].update(EMA_WARMUP_BASELINE['single'])
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
-          if name != "red_streak_rsi"}
+          if name != "red_streak_rsi" and "time_layer_enabled" in
+          provider.TOOL_SPECS["local.backtesting_py." + compat.tool_name(name)]["param_schema_properties"]}
 # SHORT-PAT-4 tools postdate the 11e8cfb baseline; their off state is pinned in test_short_pat4_candles.py.
 SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
                     'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5 +2

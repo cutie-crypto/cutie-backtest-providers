@@ -160,7 +160,8 @@ def test_four_templates_left_pending_list_and_pending_list_empty(monkeypatch):
         # SHORT-PAT-5：黑三鸦、看跌十字星同口径。
         'three_black_crows', 'bearish_doji_reversal',
         # 10-B2d：ORB、亚洲区间、日历定时、red_streak_rsi、美股开盘按模板冻结止损定仓（CME 走共享路径不在内）。
-        'opening_range_breakout', 'asia_range_breakout', 'calendar_schedule', 'red_streak_rsi', 'us_open_momentum')}
+        'opening_range_breakout', 'asia_range_breakout', 'calendar_schedule', 'red_streak_rsi', 'us_open_momentum',
+        'macro_release_breakout')}
     for tool in wired:
         assert POSITION_SIZE_KEYS <= set(p.TOOL_SPECS[tool]['param_schema_properties']), tool
     # 集成 E：10-B2a 移出 4 个后 19，SHORT-PAT-3 新增 chan_3sell 进待接名单，合并后 20；10-B2b 移出 6 个后 14；10-B2c 移出 8 个后 6

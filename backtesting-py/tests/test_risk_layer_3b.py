@@ -507,6 +507,8 @@ def test_new_schema_consumed_only_by_runtime_mixins(key):
             (runner in ('scale_in_out_ledger', p.TURTLE_RUNNER) and key == 'max_holding_bars'))
         if tool_id in ('local.backtesting_py.opening_range_breakout', 'local.backtesting_py.asia_range_breakout', 'local.backtesting_py.calendar_schedule'):
             included = key == 'max_holding_bars'
+        if tool_id.removeprefix('local.backtesting_py.') in p.MACRO_SCHEMAS:
+            included = False  # Q18 intrinsic stops and elapsed-minute holds only.
         assert (key in spec['param_schema_properties']) == included
 
 @pytest.mark.parametrize('side',['long','short'])
