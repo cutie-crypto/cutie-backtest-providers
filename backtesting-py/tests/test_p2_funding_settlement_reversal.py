@@ -304,6 +304,19 @@ def test_leverage_key_is_consumed(monkeypatch, tmp_path):
     assert body['result_status'] == 'success' and len(body['trades']) == 1
 
 
+@pytest.mark.parametrize('values', [None, dict(leverage=1)], ids=['default', 'leverage_one'])
+def test_leverage_one_off_state_skips_isolated_margin(monkeypatch, tmp_path, values):
+    # test_isolated_liquidation_arbitration 的冻结基线早于本模板、无从逐字节比对，这里显式钉住 L=1 关态：
+    # 不进逐仓强平仲裁、不装结算，assumptions / raw_report 不出现逐仓证据。
+    def forbidden(*a, **k):
+        pytest.fail('L=1 called liquidation arbitration or settlement installation')
+    monkeypatch.setattr(p, '_isolated_liquidation_candidate', forbidden)
+    monkeypatch.setattr(p._FixedRiskMixin, '_isolated_install_settlement', forbidden)
+    body, _ = run(monkeypatch, tmp_path, {0: '0.00090000'}, values)
+    assert len(body['trades']) == 1
+    assert 'isolated_margin' not in body['assumptions'] and 'isolated_risk' not in body['raw_report']
+
+
 # ------------------------------------------------------------------ evidence and catalog
 
 def test_assumptions_state_basis_range_and_deviation(monkeypatch, tmp_path):
