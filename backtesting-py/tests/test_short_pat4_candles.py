@@ -282,8 +282,8 @@ def test_isolated_scenarios_follow_t2_2b(monkeypatch, tmp_path, scenes, name, sc
 @pytest.mark.parametrize('name', SHORT)
 def test_signal_on_liquidation_bar_places_no_order(monkeypatch, tmp_path, scenes, name, sizing):
     # Short mirror of test_pliq1_pattern_liquidation's outcome pin: no entry on the liquidation bar.
-    # As on the long side this holds via next()'s position branch; the _isolated_blocked_bar guard is
-    # unreachable defence and dropping it keeps this test green, so it does NOT prove the guard itself.
+    # As on the long side this holds via next()'s position branch; the unreachable _isolated_blocked_bar
+    # guard that used to follow it was deleted (P-LOW4).
     import strategy_pattern_template as module
     data, k = q.scenario_frame(name, 'B1')
     signal_bar = q.SETUP[name]['fill'] - 1
