@@ -1,6 +1,6 @@
 """123 组合策略：生产实跑 golden 用例（真实数据端到端复现）。
 
-用 2026-09-26 生产实跑成功的组合回测（run_id <prod-run-id>，
+用 2026-09-26 一次生产实跑成功的组合回测（
 ``basket_ratio_sma_cross``，ETHUSDT 多 / BTCUSDT 空，4h，17 笔）的真实 K 线与真实
 结果，断言 provider ``/cutie/backtest`` 在本地能逐笔复现出相同的 17 笔交易与相同
 指标。数据与裁窗规则的来源见 ``tests/fixtures/basket_sma_cross_prod_golden_0926.json``
