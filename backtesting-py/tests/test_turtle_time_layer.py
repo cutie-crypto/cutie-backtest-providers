@@ -141,8 +141,33 @@ def test_enabled_layer_without_gates_matches_disabled_run():
     data = frame(add_rows())
     _, _, off = run(data, {'max_units': 2})
     _, _, on = run(data, {'max_units': 2, 'time_layer_enabled': True})
-    # Only the tail differs: the enabled layer never queues an entry on the last bar (no next open).
+    # No breakout or add on the last bar here, so an ungated enabled layer changes nothing.
     assert off[['EntryBar', 'ExitBar', 'EntryPrice', 'Size']].equals(on[['EntryBar', 'ExitBar', 'EntryPrice', 'Size']])
+
+
+def test_enabled_layer_never_enters_on_last_bar():
+    # The last bar (10) is a breakout with no next open. Layer off: the group is opened and its
+    # market order stays queued (unfillable). Layer on: the shared last-bar guard refuses the entry,
+    # so no group and no order exist.
+    data = frame([FLAT] * 10 + [[100, 104, 99, 103]])
+    off, _, off_trades = run(data, {'max_units': 1}, finalize=False)
+    assert off_trades.empty and off._group_sequence == 1 and len(off.orders) == 1
+    on, _, on_trades = run(data, {'max_units': 1, 'time_layer_enabled': True}, finalize=False)
+    assert on_trades.empty and on._group_sequence == 0 and len(on.orders) == 0
+
+
+def test_blocked_add_is_not_reissued_when_gate_reopens():
+    # Overnight session 13:00-12:00 blocks only the 12:00 decision (bar 11, the add signal);
+    # from bar 12 (decision 13:00) the gate is open again but price is back below the add step.
+    rows = ([FLAT] * 10 + [[100, 104, 99, 103], [103, 110, 103, 110]]
+            + [[104, 104.5, 103.5, 104]] * 4)
+    data = frame(rows)
+    _, _, allowed = run(data, {'max_units': 2, 'time_layer_enabled': True})
+    assert list(allowed.EntryBar) == [11, 12]
+    strategy, _, blocked = run(data, {'max_units': 2, 'time_layer_enabled': True,
+                                      'time_session_start': '13:00', 'time_session_end': '12:00'})
+    assert list(blocked.EntryBar) == [11]
+    assert strategy._group_sequence == 1 and strategy.units_skipped == 0
 
 
 # ---- whole-group holding expiry ----
@@ -219,11 +244,11 @@ def test_http_time_layer_assumptions_and_group_reason(monkeypatch, tmp_path, ris
     layer = result['assumptions']['time_layer']
     assert {k: v for k, v in layer.items() if k not in ('tzdata_version', 'holding')} == dict(
         timezone='UTC', session_start='', session_end='', weekdays=127,
-        decision_time='bar_close', gate='entry_only', fill='next_bar_open')
+        decision_time='bar_close', gate='entry_and_add', fill='next_bar_open')
     assert layer['holding']['bars'] == (50 if risk else 0)
     assert layer['holding']['flatten_at'] == '12:30'
     assert layer['holding']['flatten_delay_bars']['count'] == 1
-    assert result['assumptions']['turtle_time_layer']['gate'] == 'new_group_first_unit_and_every_add'
+    assert result['assumptions']['turtle_time_layer']['gate'] == 'entry_and_add'
     assert ('turtle_risk' in result['assumptions']) is risk
     assert result['raw_report']['turtle_groups'][0] == dict(
         group_id='turtle-1', trade_seqs=[1, 2], units=2, exit_reason='time_expiry')

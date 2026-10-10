@@ -307,6 +307,12 @@ def test_catalog_existing_entries_byte_identical():
             added = {key for key in properties if key.startswith('filter_')}
             assert added == set(FILTER_PARAM_SCHEMA_PROPERTIES), tool_id
             entry['param_schema']['properties'] = {k: v for k, v in properties.items() if k not in added}
+        # TURTLE-TIME：海龟 runner 接入时间层，只允许多出 time_* 9 键，其余逐字节不变。
+        if spec.get('runner') == api.TURTLE_RUNNER:
+            current = entry['param_schema']['properties']
+            added = {key for key in current if key.startswith('time_')}
+            assert added == set(api._TIME_PARAM_SCHEMA_PROPERTIES), tool_id
+            entry['param_schema']['properties'] = {k: v for k, v in current.items() if k not in added}
         new = json.dumps(entry, ensure_ascii=False, separators=(',', ':')).encode()
         assert old == new, tool_id
     # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。

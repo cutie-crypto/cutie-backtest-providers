@@ -9481,7 +9481,7 @@ async def run_backtest(
             reasons = None
             if strategy_class._time_config is not None:
                 turtle_assumptions["turtle_time_layer"] = {
-                    "gate": "new_group_first_unit_and_every_add",
+                    "gate": "entry_and_add",
                     "blocked_breakout": "dropped_not_queued",
                     "holding_count_from": "group_first_fill",
                     "expiry_exit": "whole_group_time_expiry",
@@ -9578,7 +9578,8 @@ async def run_backtest(
                 **built.get("template_assumptions", {}),
                 **(strategy_class._time_context.assumptions(
                     risk.get("max_holding_bars", 0)
-                    or getattr(strategy_class, "_turtle_risk", {}).get("max_holding_bars", 0))
+                    or getattr(strategy_class, "_turtle_risk", {}).get("max_holding_bars", 0),
+                    gate="entry_and_add" if tool_spec.get("runner") == TURTLE_RUNNER else "entry_only")
                    if strategy_class._time_context is not None else {}),
                 **({"vwap_reversion": {
                     "reset": "UTC_00:00", "price_source": params.get("time_vwap_price", "hlc3"),
