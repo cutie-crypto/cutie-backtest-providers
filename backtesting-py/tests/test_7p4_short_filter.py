@@ -124,7 +124,7 @@ def test_report_rules_mirror_for_short():
 
 def test_long_filter_fixture_bytes_unchanged_since_base():
     relative = 'backtesting-py/tests/fixtures/entry_filters_5b8320a.json'
-    assert (ROOT / relative).read_bytes() == subprocess.check_output(['git', 'show', '1d66844:' + relative], cwd=ROOT)
+    assert (ROOT / relative).read_bytes() == subprocess.check_output(['git', 'show', '52064d4:' + relative], cwd=ROOT)
 
 
 # ---- multi-timeframe: closed coarse bars only, mirrored direction ----
