@@ -125,10 +125,6 @@ def test_confirmed_signal_fills_at_k_plus_1_with_its_structure_frozen_at_s(name,
     s, frozen = signal_of(monkeypatch, tmp_path, name, data, NTH.get(name, 0))
     level = level_of(name, data, s)
     set_close(data, s + 1, level - 1 if name in SHORT else level + 1)
-    if name == 'vwap_reversion':
-        # Q17b: original Open=199 has risk 11.82 > 2 * 2.82. This test covers an
-        # allowed fill; keep it inside the cap without changing the frozen k stop.
-        data.loc[data.index[s + 2], 'Open'] = data.Close.iloc[s + 1]
     assert signal_of(monkeypatch, tmp_path, name, data, NTH.get(name, 0)) == (s, frozen)  # s is causal
     orders = record_orders(monkeypatch)
     runs = capture_strategy(monkeypatch)

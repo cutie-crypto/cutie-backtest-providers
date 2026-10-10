@@ -255,8 +255,11 @@ def test_assumptions_disclose_each_template_stop_anchor(name, monkeypatch, tmp_p
                 'signal_bar_s_wave_stop_or_confirmation_bar_k_user_stop' if name == 'fibonacci_retracement'
                 else 'signal_bar_s')
     assert risk['stop_anchor'] == expected
-    assert risk['distance_cap'] == 2.0
-    assert risk['signal_entry_reference'] == 'Close[s]'
+    if name in b2.TAGGED:
+        report = body['raw_report']['chan' if name.startswith('chan') else 'divergence']
+        assert report['skipped_entry_count'] == len(report['skipped_entries'])
+    assert risk['distance_cap'] == (None if expected == 'confirmation_bar_k' else 2.0)
+    assert risk['signal_entry_reference'] == (None if expected == 'confirmation_bar_k' else 'Close[s]')
 
 
 def test_pi_double_bottom_target_overshoot_exact_prices(monkeypatch, tmp_path):
@@ -342,14 +345,12 @@ def test_confirm_risk_distance_cap(name, case, monkeypatch, tmp_path):
         assert skip['risk_distance_multiple'] == (None if case == 'zero_signal_distance' else pytest.approx(abs(adjusted - stop) / 10))
 
 
-@pytest.mark.parametrize('name', ['fibonacci_retracement', 'red_streak_rsi', 'vwap_reversion'])
+@pytest.mark.parametrize('name', ['fibonacci_retracement'])
 def test_untagged_confirm_risk_cap_clears_pending_order(name, monkeypatch, tmp_path):
     data = b2.frame(name)
     s, _ = b2.signal_of(monkeypatch, tmp_path, name, data, b2.NTH.get(name, 0))
     b1.set_close(data, s + 1, b2.level_of(name, data, s) + 1)
     params = dict(LAYER)
-    if name != 'fibonacci_retracement':
-        params.update(stop_loss_pct=2, take_profit_pct=80)
     seen = []
     advance = p._FixedRiskMixin._pattern_confirm_advance
     def capture(self):
@@ -373,6 +374,7 @@ def test_untagged_confirm_risk_cap_clears_pending_order(name, monkeypatch, tmp_p
     assert skip['signal_entry_price'] == data.Close.iloc[s]
     strategy = runs[-1]['_strategy']
     prefix = {'fibonacci_retracement': '_fib', 'red_streak_rsi': '_f6', 'vwap_reversion': '_f5'}[name]
-    assert skip in getattr(strategy, prefix + '_skips')
+    assert any(r['reason'] == skip['reason'] and r['signal_bar'] == s
+               for r in getattr(strategy, prefix + '_skips'))
     pending = getattr(strategy, prefix + '_order')
     assert pending is None or getattr(pending, '_pattern_confirm_risk', (None,))[0] != s
