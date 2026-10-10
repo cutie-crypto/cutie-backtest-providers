@@ -158,10 +158,11 @@ class TimeContext:
                     weekday = (local.date() - timedelta(days=1)).weekday()
         return bool(self.config.weekdays & (1 << weekday))
 
-    def assumptions(self, holding_bars: int = 0) -> dict[str, Any]:
+    def assumptions(self, holding_bars: int = 0, gate: str = 'entry_only') -> dict[str, Any]:
+        # gate: what the entry gate blocks; turtle groups also gate adds ('entry_and_add').
         result = {'time_layer': dict(timezone=self.config.timezone_name, tzdata_version=tzdata_version(),
             session_start=self.config.session_start, session_end=self.config.session_end,
-            weekdays=self.config.weekdays, decision_time='bar_close', gate='entry_only', fill='next_bar_open')}
+            weekdays=self.config.weekdays, decision_time='bar_close', gate=gate, fill='next_bar_open')}
         if self.config.calendar_name != 'none':
             from strategy_time_calendar import REGULAR_CALENDAR_ASSUMPTION
             result['time_layer']['calendar'] = dict(name=self.config.calendar_name,

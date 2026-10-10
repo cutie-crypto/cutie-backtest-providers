@@ -309,3 +309,15 @@ def test_f12_filter_timeframe_skips_same_timeframe_warmup(monkeypatch, tmp_path)
     assert calls == []
     assert body['result_status'] == 'success', body
     assert body['raw_report']['entry_filters']['timeframe'] == '4h'
+
+
+def test_catalog_entry_properties_do_not_alias_tool_specs():
+    # P-LOW4: _catalog_tool used to return spec["param_schema_properties"] itself; a caller popping keys from the
+    # entry silently rewrote the global TOOL_SPECS (and polluted every later test in the process).
+    tool_id = next(k for k, v in p.TOOL_SPECS.items() if v.get("param_schema_properties"))
+    before = json.dumps(p.TOOL_SPECS[tool_id]["param_schema_properties"], sort_keys=True)
+    entry = p._catalog_tool(tool_id, p.TOOL_SPECS[tool_id], ["BTCUSDT"])
+    properties = entry["param_schema"]["properties"]
+    properties.pop(next(iter(properties)))
+    properties["injected"] = {}
+    assert json.dumps(p.TOOL_SPECS[tool_id]["param_schema_properties"], sort_keys=True) == before

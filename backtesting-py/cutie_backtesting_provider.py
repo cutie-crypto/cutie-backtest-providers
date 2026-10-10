@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import bisect
+from copy import deepcopy
 import hashlib
 import json
 import logging
@@ -3588,10 +3589,14 @@ _TURTLE_RISK_DESCRIPTION = (
 )
 
 
-class _TurtleGroupMixin:
-    """One frozen-N, frozen-quantity group; reconcile only actual broker fills."""
+class _TurtleGroupMixin(_TimeLayerMixin):
+    """One frozen-N, frozen-quantity group; reconcile only actual broker fills.
 
-    _time_context = None
+    The optional time layer gates both a new group's first unit and every add
+    (both raise exposure); blocked breakouts are not queued. Holding minutes and
+    flatten cutoffs count from the group's first fill and close the whole group.
+    """
+
     _turtle_risk: dict[str, Any] = {}
 
     _warmup_bars: int = 0
@@ -3670,13 +3675,17 @@ class _TurtleGroupMixin:
                     else self.data.High[-1] >= self._group_stop):
                 self._turtle_close("stop")
                 return
-            if self._turtle_risk.get("risk_layer_enabled"):
+            time_enabled = self._time_config is not None
+            if self._turtle_risk.get("risk_layer_enabled") or time_enabled:
                 first = self.trades[0]
                 due = expiry_due(
                     holding_bars=self._turtle_risk.get("max_holding_bars", 0),
                     entry_bar=self._group_entry_bar, bar=len(self.data) - 1,
-                    entry_utc=first.entry_time, bar_open=self.data.index[-1], context=None)
+                    entry_utc=first.entry_time, bar_open=self.data.index[-1],
+                    context=self._time_context if time_enabled else None)
                 if due.due:
+                    if due.flatten_delay_bars is not None:
+                        self._time_context.flatten_delays.append(due.flatten_delay_bars)
                     self._turtle_close("time_expiry")
                     return
                 if self._group_take is not None and (
@@ -3690,7 +3699,8 @@ class _TurtleGroupMixin:
                 self._turtle_close("channel")
                 return
             if (self._group_units < self._max_units
-                    and self._group_side * (price - self._last_fill) >= self._add_step * self._group_n):
+                    and self._group_side * (price - self._last_fill) >= self._add_step * self._group_n
+                    and self._time_allow_entry()):
                 # An absolute integer order is all-or-nothing in backtesting.py.
                 # Let the next-open broker check cash including commission/gaps.
                 order = self.buy if self._group_side == 1 else self.sell
@@ -3700,7 +3710,7 @@ class _TurtleGroupMixin:
             return
         long_signal = self._direction in ("long", "both") and price > self.entry_high[-1]
         short_signal = self._direction in ("short", "both") and price < self.entry_low[-1]
-        if long_signal or short_signal:
+        if (long_signal or short_signal) and self._time_allow_entry():
             n = float(self.atr[-1])
             if not math.isfinite(n) or n <= 0:
                 return
@@ -3718,6 +3728,7 @@ class _TurtleGroupMixin:
             self._pending_unit = order(size=q, tag=self._group_id)
 
 
+@_with_time_config
 def _build_turtle(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     risk = _parse_turtle_risk_params(params)
     properties = TOOL_SPECS["local.backtesting_py.turtle"]["param_schema_properties"]
@@ -7281,8 +7292,15 @@ TOOL_SPECS[ROTATION_TOOL_ID] = ROTATION_TOOL_SPEC
 # 组合策略v3契约 §6.1），v3 内核不消费这 4 个 legacy 键，声明了也是死键。
 # 132：定额分批（runner=scale_in_out_ledger）只合并时间键与共享持仓根数；不消费固定止损止盈/仓位，
 # 带这些参数的请求直接 INVALID_PARAMS（IMPL §3.1）。
-# 海龟单独声明组级风控三键，自管定量与退出；不声明杠杆及 time_* 键。
+# 海龟单独声明组级风控三键，自管定量与退出；只合并时间层 9 键（入场与加仓都过门、整组到期平仓），
+# 不声明杠杆、FILTER、定量键。
 for _tool_spec in TOOL_SPECS.values():
+    if _tool_spec.get("runner") == TURTLE_RUNNER:
+        _tool_spec["param_schema_properties"] = {
+            **_tool_spec["param_schema_properties"],
+            **_TIME_PARAM_SCHEMA_PROPERTIES,
+        }
+        continue
     if _tool_spec.get("runner") == SCALE_IN_OUT_RUNNER:
         _tool_spec["param_schema_properties"] = {
             **_tool_spec["param_schema_properties"],
@@ -7290,7 +7308,7 @@ for _tool_spec in TOOL_SPECS.values():
             "max_holding_bars": _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"],
         }
         continue
-    if _tool_spec.get("runner") in ("kernel_v3", TURTLE_RUNNER, ROTATION_RUNNER):
+    if _tool_spec.get("runner") in ("kernel_v3", ROTATION_RUNNER):
         continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
@@ -7471,7 +7489,8 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
         "param_schema": {
             "type": "object",
             "additionalProperties": False,
-            "properties": spec["param_schema_properties"],
+            # Copy: callers (and the rotation catalog) may mutate the entry; it must not alias the global TOOL_SPECS.
+            "properties": deepcopy(spec["param_schema_properties"]),
         },
         "output_schema": {
             "metrics": [
@@ -9279,7 +9298,8 @@ async def run_backtest(
     # feed EMA/MACD/Supertrend a discontinuous series (silent misjudgment). A main-range gap within
     # CENTRAL_GAP_TOLERANCE_RATIO (same formula as the central-source gap check) re-warms the filter
     # mask after the gap; beyond it the run fails. Filter off / filter_timeframe: filter_warmup is 0,
-    # nothing here is judged. An empty prefix passes (the mask then starts on the main range only)
+    # nothing here is judged. Both segments judge a spacing != step as a gap (sub-period / non-integer
+    # multiples included) and count it as max(1, spacing // step - 1) missing bars. An empty prefix passes (the mask then starts on the main range only)
     # and falls to the bar-count check below.
     entry_filter_main_gaps = None
     if filter_warmup:
@@ -9293,7 +9313,7 @@ async def run_backtest(
         if len(warmup_df):
             index = list(warmup_df.index) + [df.index[0]]
             stamps = [pd.Timestamp(t).value for t in index]
-            gaps = [(k, max(0, (b - a) // step_ns - 1)) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
+            gaps = [(k, max(1, (b - a) // step_ns - 1)) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
                     if b - a != step_ns]
             if gaps:
                 segment = "warmup_boundary" if gaps[0][0] == len(stamps) - 1 else "warmup"
@@ -9302,7 +9322,7 @@ async def run_backtest(
                                          details=_gap_details(segment, index, gaps))
         stamps = [pd.Timestamp(t).value for t in df.index]
         gaps = [(k, max(1, (b - a) // step_ns - 1)) for k, (a, b) in enumerate(zip(stamps, stamps[1:]), 1)
-                if b - a > step_ns]
+                if b - a != step_ns]
         if gaps:
             missing_bars = sum(n for _, n in gaps)
             if len(df) < (len(df) + missing_bars) * CENTRAL_GAP_TOLERANCE_RATIO:
@@ -9515,11 +9535,19 @@ async def run_backtest(
             }
             turtle_risk = strategy_class._turtle_risk
             reasons = None
-            if turtle_risk.get("risk_layer_enabled"):
+            if strategy_class._time_config is not None:
+                turtle_assumptions["turtle_time_layer"] = {
+                    "gate": "entry_and_add",
+                    "blocked_breakout": "dropped_not_queued",
+                    "holding_count_from": "group_first_fill",
+                    "expiry_exit": "whole_group_time_expiry",
+                }
+            if turtle_risk.get("risk_layer_enabled") or strategy_class._time_config is not None:
                 instance = stats["_strategy"]
                 reasons = dict(instance._group_exit_reasons)
                 if instance._group_id is not None:
                     reasons[instance._group_id] = "end_of_data"
+            if turtle_risk.get("risk_layer_enabled"):
                 turtle_assumptions["turtle_risk"] = {
                     "holding_bars_count_from": "group_first_fill_bar_is_1",
                     "max_holding_bars": turtle_risk.get("max_holding_bars", 0),
@@ -9606,7 +9634,10 @@ async def run_backtest(
                 **built.get("divergence_assumptions", {}),
                 **built.get("chan_assumptions", {}),
                 **built.get("template_assumptions", {}),
-                **(strategy_class._time_context.assumptions(risk.get("max_holding_bars", 0))
+                **(strategy_class._time_context.assumptions(
+                    risk.get("max_holding_bars", 0)
+                    or getattr(strategy_class, "_turtle_risk", {}).get("max_holding_bars", 0),
+                    gate="entry_and_add" if tool_spec.get("runner") == TURTLE_RUNNER else "entry_only")
                    if strategy_class._time_context is not None else {}),
                 **({"vwap_reversion": {
                     "reset": "UTC_00:00", "price_source": params.get("time_vwap_price", "hlc3"),

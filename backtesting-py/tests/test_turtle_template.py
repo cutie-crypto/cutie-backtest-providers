@@ -207,7 +207,8 @@ def test_schema_runner_and_risk_definition():
     assert spec['runner']==provider.TURTLE_RUNNER and spec['exclusive_orders'] is False
     assert set(props) & set(provider._FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == set(provider._TURTLE_RISK_KEYS)
     assert not set(props) & set(provider._LEVERAGE_PARAM_SCHEMA_PROPERTIES)
-    assert not any(k.startswith('time_') for k in props)
+    # TURTLE-TIME: 只多时间层 9 键（杠杆、FILTER、定量键仍不声明）。
+    assert {k for k in props if k.startswith('time_')} == set(provider._TIME_PARAM_SCHEMA_PROPERTIES)
     assert props['direction']==dict(type='string', default='long', enum=['long','short','both'])
     assert props['unit_risk_pct']['description']==provider._TURTLE_RISK_DESCRIPTION
     assert provider._build_turtle({})['executed_name']=='Turtle (20/10/20)'
