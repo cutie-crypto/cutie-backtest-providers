@@ -138,14 +138,25 @@ def make_bottom_strategy(mixin, *, kind, risk, initial_capital, config):
                 self._risk_check_exit()
                 return
             # Judgment bar = the breakout close; a filtered signal is discarded (signals fire once), not delayed.
-            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():
+            queue = self._pattern_confirm_queue
+            # P-PATCONF-2b1: with confirmation on, the signal bar s only registers; the entry gates
+            # are judged at the confirming bar k (_pattern_confirm_open_tagged).
+            if queue is None and (self.orders or len(self.data) >= self._main_bars
+                                  or not self._time_allow_entry() or not self._filter_allow_entry()):
                 return
             signal = self._signals[self._warmup_bars + len(self.data) - 1]
             if signal is None:
                 return
             tag = BottomEntry(len(self.data)-1, signal.stop, signal.target)
+            if queue is not None:
+                # Stop and target stay frozen at s and travel with the signal.
+                queue.register(len(self.data) - 1, "long", self.data.High[-1], tag)
+                return
             size = self._risk_entry_size()
             order = self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
             if self._risk.get("position_sizing_enabled"):
                 order._sizing_signal_bar = len(self.data) - 1
+
+        def _pattern_confirm_open(self, is_long, payload):
+            return self._pattern_confirm_open_tagged(is_long, payload)
     return BottomStrategy

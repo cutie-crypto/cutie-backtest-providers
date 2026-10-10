@@ -2633,7 +2633,9 @@ def _with_filter_config(build=None, *, default_direction="long", pattern_confirm
         if config.enabled and direction not in ("long", "short"):
             raise ValueError("INVALID_PARAMS:entry filters support long or short; both is not supported")
         # P-PATCONF-1: only templates whose entries all go through _risk_buy/_risk_sell defer their
-        # signals (P-PATCONF-2a); any other template fails closed instead of silently ignoring it.
+        # signals (P-PATCONF-2a), plus the self-entering candle / bottom / top pattern templates that
+        # register a frozen order tag (P-PATCONF-2b1); any other template fails closed instead of
+        # silently ignoring it.
         if config.pattern_confirm_enabled and not pattern_confirm:
             raise ValueError("INVALID_PARAMS:filter_pattern_confirm_enabled is not supported by this template")
         built = build(params, **kwargs)
@@ -3014,11 +3016,41 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         if self.position or self.orders:
             queue.discard("position_or_order_open")
             return
-        blocked = self._risk_open(hit[1] == "long")
+        blocked = self._pattern_confirm_open(hit[1] == "long", queue.payload)
         if blocked is None:
             queue.submitted()
         else:
             queue.discard(blocked)
+
+    def _pattern_confirm_open(self, is_long: bool, payload) -> Optional[str]:
+        """Entry for a confirmed signal; templates with their own entry path override it (2b1)."""
+        return self._risk_open(is_long)
+
+    def _pattern_confirm_open_tagged(self, is_long: bool, tag) -> Optional[str]:
+        """P-PATCONF-2b1: confirmed entry of the self-entering pattern templates (candle / bottom / top).
+
+        ``tag`` is the order tag the template froze at the signal bar s (its stop, and target where it
+        has one); the gates are the template's own entry gates judged at the confirming bar k, plus the
+        liquidation-bar guard of _risk_open. The last main bar has no next open: discarded, not queued.
+        """
+        bar = len(self.data) - 1
+        if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == bar:
+            return "isolated_liquidation_bar"
+        if len(self.data) >= self._main_bars:
+            return "no_next_open"
+        if not self._time_allow_entry():
+            return "time_gate"
+        if not self._filter_allow_entry():
+            return "filter_gate"
+        size = self._risk_entry_size()
+        if is_long:
+            order = self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
+        else:
+            order = self.sell(tag=tag) if size is None else self.sell(size=size, tag=tag)
+        if self._risk.get("position_sizing_enabled"):
+            # The order is placed at k: no fill before k + 1 (10-B2 no_next_open guard).
+            order._sizing_signal_bar = bar
+        return None
 
     def _risk_check_exit(self) -> bool:
         if not self.position or not self.trades:
@@ -4947,37 +4979,37 @@ def _build_long_candle_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_bullish_engulfing(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="engulfing", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_hammer_pin_bar(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="pin_bar", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_morning_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="star", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_three_white_soldiers(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="soldiers", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_bullish_doji_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="doji", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_inside_bar_breakout(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_long_candle_pattern(params, kind="inside_bar", initial_capital=initial_capital)
 
@@ -5030,31 +5062,31 @@ def _build_short_candle_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_bearish_engulfing(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_short_candle_pattern(params, kind="engulfing", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_shooting_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_short_candle_pattern(params, kind="pin_bar", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_evening_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_short_candle_pattern(params, kind="star", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_three_black_crows(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_short_candle_pattern(params, kind="soldiers", initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_bearish_doji_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_short_candle_pattern(params, kind="doji", initial_capital=initial_capital)
 
@@ -5106,13 +5138,13 @@ def _build_bottom_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_double_bottom(params, *, initial_capital=10000.0):
     return _build_bottom_pattern(params, kind='double_bottom', initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config
+@_with_filter_config(pattern_confirm=True)
 def _build_inverse_head_shoulders(params, *, initial_capital=10000.0):
     return _build_bottom_pattern(params, kind='inverse_head_shoulders', initial_capital=initial_capital)
 
@@ -5163,13 +5195,13 @@ def _build_top_pattern(params, *, kind, initial_capital):
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_double_top(params, *, initial_capital=10000.0):
     return _build_top_pattern(params, kind='double_top', initial_capital=initial_capital)
 
 
 @_with_time_config
-@_with_filter_config(default_direction="short")
+@_with_filter_config(default_direction="short", pattern_confirm=True)
 def _build_head_shoulders(params, *, initial_capital=10000.0):
     return _build_top_pattern(params, kind='head_shoulders', initial_capital=initial_capital)
 

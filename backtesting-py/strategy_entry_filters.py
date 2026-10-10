@@ -207,7 +207,7 @@ def pattern_confirm_entries(signals: Any, high: Any, low: Any, close: Any, *, di
 
 PATTERN_CONFIRM_DISCARD_REASONS = (
     'unconfirmed', 'superseded_by_later_signal', 'position_or_order_open',
-    'isolated_liquidation_bar', 'time_gate', 'filter_gate')
+    'isolated_liquidation_bar', 'no_next_open', 'time_gate', 'filter_gate')
 
 
 class PatternConfirmQueue:
@@ -217,43 +217,49 @@ class PatternConfirmQueue:
     order, before any signal of bar k is registered. It returns (s, direction) of the latest signal
     confirming at k, or None. Every confirming signal is consumed; the ones beaten by a later s are
     discarded here, the caller settles the winner via submitted() or discard(reason).
+    register() may carry an opaque payload (P-PATCONF-2b1: the order tag frozen at s); after advance()
+    ``payload`` holds the winner's, None when nothing confirmed. Confirmation never reads it.
     """
 
     def __init__(self, bars: int) -> None:
         if type(bars) is not int or not 1 <= bars <= 5:
             raise ValueError('pattern confirmation bars must be an integer within 1-5')
         self.bars = bars
-        self._pending: list[tuple[int, str, float]] = []
+        self._pending: list[tuple[int, str, float, Any]] = []
+        self.payload: Any = None
         self.registered = 0
         self.confirmed = 0
         self.submitted_count = 0
         self.discarded = dict.fromkeys(PATTERN_CONFIRM_DISCARD_REASONS, 0)
 
-    def register(self, bar: int, direction: str, level: float) -> None:
+    def register(self, bar: int, direction: str, level: float, payload: Any = None) -> None:
         _is_short(direction)
-        self._pending.append((bar, direction, float(level)))
+        self._pending.append((bar, direction, float(level), payload))
         self.registered += 1
 
     def advance(self, bar: int, close: float) -> tuple[int, str] | None:
         close = float(close)
         pending, hits = [], []
-        for s, direction, level in self._pending:
+        self.payload = None
+        for entry in self._pending:
+            s, direction, level, _ = entry
             if s >= bar:
-                pending.append((s, direction, level))
+                pending.append(entry)
                 continue
             if math.isfinite(close) and math.isfinite(level) and (
                     close < level if direction == 'short' else close > level):
-                hits.append((s, direction))
+                hits.append(entry)
             elif bar >= s + self.bars:
                 self.discarded['unconfirmed'] += 1
             else:
-                pending.append((s, direction, level))
+                pending.append(entry)
         self._pending = pending
         if not hits:
             return None
         self.confirmed += len(hits)
         self.discarded['superseded_by_later_signal'] += len(hits) - 1
-        return max(hits)
+        s, direction, _, self.payload = max(hits, key=lambda hit: hit[:2])
+        return s, direction
 
     def submitted(self) -> None:
         self.submitted_count += 1
