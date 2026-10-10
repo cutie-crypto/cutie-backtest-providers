@@ -1518,6 +1518,15 @@ def _fetch_artifact_klines(
     return rows
 
 
+class CentralMetricTransportError(RuntimeError):
+    """Central ``/metrics`` was not reachable or answered with an error (P5).
+
+    Only raised when a caller opts in with ``raise_on_transport_error=True``; by default the
+    fetch keeps returning an empty list so the P1 fear & greed and generic feature streams
+    behave exactly as before.
+    """
+
+
 def _fetch_artifact_metric_chunk(
     *,
     symbol: str,
@@ -1526,14 +1535,21 @@ def _fetch_artifact_metric_chunk(
     exchange: str,
     start_at: int,
     end_at: int,
+    raise_on_transport_error: bool = False,
 ) -> list[dict[str, Any]]:
     """One inclusive ``/metrics`` request; every label is sent verbatim (P1).
 
     The caller owns label normalisation (quote-suffix stripping, exchange
     casing): the artifact path passes its historical values, the fear & greed
     template passes ``MARKET`` / ``alternative_me`` unchanged.
+
+    With ``raise_on_transport_error`` an unconfigured endpoint, a transport / parse error or
+    ``err_code != 100`` raises CentralMetricTransportError instead of returning ``[]``, so a
+    caller can tell "could not fetch" from a genuinely empty series (HTTP 200, err_code 100).
     """
     if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_TOKEN:
+        if raise_on_transport_error:
+            raise CentralMetricTransportError("central market data is not configured")
         return []
     params = {
         "symbol": symbol,
@@ -1564,9 +1580,17 @@ def _fetch_artifact_metric_chunk(
         TimeoutError,
         OSError,
         ValueError,
-    ):
+    ) as exc:
+        if raise_on_transport_error:
+            raise CentralMetricTransportError(
+                f"central /metrics request failed: {type(exc).__name__}"
+            ) from exc
         return []
     if body.get("err_code") != 100:
+        if raise_on_transport_error:
+            raise CentralMetricTransportError(
+                f"central /metrics returned err_code={body.get('err_code')}"
+            )
         return []
     return list((body.get("data") or {}).get("items") or [])
 
@@ -1639,6 +1663,7 @@ def _fetch_metric_series(
     start_at: int,
     end_at: int,
     path: str = "$.data_streams.feature",
+    raise_on_transport_error: bool = False,
 ) -> list[dict[str, Any]]:
     """Generic external metric series over the half-open ``[start_at, end_at)``.
 
@@ -1649,6 +1674,8 @@ def _fetch_metric_series(
     """
     raw_rows: list[dict[str, Any]] = []
     chunk_seconds = 90 * 24 * 60 * 60
+    # Forwarded only when opted in, so the default call is identical to the pre-P5 one.
+    chunk_options = {"raise_on_transport_error": True} if raise_on_transport_error else {}
     cursor = start_at
     while cursor < end_at:
         chunk_end = min(end_at, cursor + chunk_seconds)
@@ -1662,6 +1689,7 @@ def _fetch_metric_series(
                 exchange=exchange,
                 start_at=cursor,
                 end_at=chunk_end - 1,
+                **chunk_options,
             )
         )
         cursor = chunk_end
@@ -10572,6 +10600,7 @@ def _bind_funding_reversal(run_id, config, funding_symbol, start_at, end_at):
             start_at=fetch_start,
             end_at=fetch_end,
             path=f"$.funding_series.{FUNDING_CENTRAL_METRIC}",
+            raise_on_transport_error=True,
         )
     except StrategyContractError as exc:
         if exc.code != ERR_COVERAGE_INCOMPLETE:

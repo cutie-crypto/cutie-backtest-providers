@@ -76,7 +76,7 @@ def install(monkeypatch, tmp_path, rates, data=None, *, drop=(), honor_range=Tru
             ohlcv_calls.append(a)
         return frame_data.copy()
 
-    def fetch_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+    def fetch_chunk(*, symbol, metric, interval, exchange, start_at, end_at, raise_on_transport_error=False):
         calls.append(dict(symbol=symbol, metric=metric, interval=interval, exchange=exchange,
                           start_at=start_at, end_at=end_at))
         if fail:

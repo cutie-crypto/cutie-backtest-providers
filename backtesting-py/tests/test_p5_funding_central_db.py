@@ -70,7 +70,7 @@ class Central:
     def __init__(self, table, honor_range=True):
         self.table, self.honor_range, self.calls = dict(table), honor_range, []
 
-    def __call__(self, *, symbol, metric, interval, exchange, start_at, end_at):
+    def __call__(self, *, symbol, metric, interval, exchange, start_at, end_at, raise_on_transport_error=False):
         self.calls.append(dict(symbol=symbol, metric=metric, interval=interval, exchange=exchange,
                                start_at=start_at, end_at=end_at))
         if (symbol, exchange, metric, interval) != LABELS:
@@ -244,3 +244,109 @@ def test_threshold_boundaries_in_pct_end_to_end(monkeypatch, tmp_path):
     # the ordinary synthetic rows (|v| <= 0.01 pct) never trade: exactly the four boundary hits enter
     assert body['raw_report'][KIND]['counts']['entered'] == 4
     assert len(body['trades']) == 4
+
+
+# ------------------------------------------------------------------ transport failure vs. empty series (real HTTP layer)
+
+import io
+import urllib.error
+
+CENTRAL_URL = 'https://central.test/v1/internal/market-data'
+
+
+class FakeOpener:
+    """Stands in for ``_CENTRAL_HTTP_OPENER`` so the real ``_fetch_artifact_metric_chunk`` runs."""
+
+    def __init__(self, outcome):
+        self.outcome, self.urls = outcome, []
+
+    def open(self, request, timeout=None):
+        self.urls.append(request.full_url)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return io.BytesIO(json.dumps(self.outcome).encode())
+
+
+def install_opener(monkeypatch, outcome, *, configured=True):
+    monkeypatch.setattr(p, 'CENTRAL_MARKET_DATA_URL', CENTRAL_URL if configured else '')
+    monkeypatch.setattr(p, 'CENTRAL_MARKET_DATA_TOKEN', 't' if configured else '')
+    opener = FakeOpener(outcome)
+    monkeypatch.setattr(p, '_CENTRAL_HTTP_OPENER', opener)
+    return opener
+
+
+def bind_real_http(monkeypatch, outcome, *, configured=True):
+    opener = install_opener(monkeypatch, outcome, configured=configured)
+    config = FundingReversalConfig.parse({})
+    failure = p._bind_funding_reversal('p5', config, 'BTCUSDT', START, END)
+    return failure, opener
+
+
+HTTP_ERROR = urllib.error.HTTPError(CENTRAL_URL, 502, 'bad gateway', None, None)
+
+
+@pytest.mark.parametrize('outcome,configured', [
+    (HTTP_ERROR, True),
+    (urllib.error.URLError('connection refused'), True),
+    (TimeoutError('timed out'), True),
+    ({'err_code': 500, 'data': {'items': []}}, True),
+    ({'err_code': 100, 'data': {'items': []}}, False),
+], ids=['http_error', 'url_error', 'timeout', 'err_code_not_100', 'not_configured'])
+def test_transport_failure_is_unavailable_not_a_data_gap(monkeypatch, outcome, configured):
+    failure, opener = bind_real_http(monkeypatch, outcome, configured=configured)
+    body = json.loads(failure.body)
+    assert body['error_type'] == 'TIME_DATA_GAP'
+    assert body['limitations']['reason'] == 'funding_history_unavailable'
+    assert body['limitations']['symbol'] == 'BTCUSDT'
+    assert 'missing_row_utc' not in body['limitations']
+    assert bool(opener.urls) is configured  # the real HTTP layer was reached unless unconfigured
+
+
+def test_http_200_with_empty_items_is_still_a_data_gap(monkeypatch):
+    failure, opener = bind_real_http(monkeypatch, {'err_code': 100, 'data': {'items': []}})
+    assert opener.urls
+    assert failure_limitations(failure)['reason'] == 'funding_data_gap'
+
+
+def test_default_fetch_keeps_returning_an_empty_list_on_transport_errors(monkeypatch):
+    """P1 / generic feature streams rely on the historical swallow-to-empty behaviour."""
+    kwargs = dict(symbol='BTC', metric='funding_rate', interval='1h', exchange='Binance', start_at=START, end_at=END)
+    for outcome, configured in ((HTTP_ERROR, True), ({'err_code': 500}, True), ({}, False)):
+        install_opener(monkeypatch, outcome, configured=configured)
+        assert p._fetch_artifact_metric_chunk(**kwargs) == []
+        with pytest.raises(p.CentralMetricTransportError):
+            p._fetch_artifact_metric_chunk(**kwargs, raise_on_transport_error=True)
+
+
+# (result_status, error_type, limitations.reason, error_message) of the fear & greed path under the same HTTPError,
+# recorded before the opt-in flag existed (base commit 69f34a4).
+P1_EXPECTED = (
+    'failed', 'TIME_DATA_GAP', 'fear_greed_data_gap',
+    'TIME_DATA_GAP:fear_greed_index series is incomplete for the backtest window 2024-01-01..2024-01-06 '
+    '(declared feature stream is empty or contains duplicate timestamps); '
+    'this template does not run on a partial series',
+)
+
+
+def test_p1_fear_greed_with_http_error_is_unchanged(monkeypatch, tmp_path):
+    day = 86400
+    start = 1704067200  # 2024-01-01
+    times = [start - day + i * day for i in range(7)]
+    frame = pd.DataFrame(dict(Open=[100] * 7, Close=[100] * 7, High=[101] * 7, Low=[99] * 7, Volume=[10] * 7),
+                         index=pd.to_datetime(times, unit='s'))
+    monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path / 'reports')
+
+    def fetch_ohlcv(exchange, market, symbol, timeframe, start_at, end_at):
+        return frame.loc[(frame.index >= pd.to_datetime(start_at, unit='s'))
+                         & (frame.index < pd.to_datetime(end_at, unit='s'))].copy()
+
+    monkeypatch.setattr(p, '_fetch_ohlcv', fetch_ohlcv)
+    install_opener(monkeypatch, HTTP_ERROR)
+    payload = dict(run_id='fg_http', provider_tool_id='local.backtesting_py.fear_greed_scale_in',
+                   provider_params={'exchange': 'binance', 'buy_notional': 100}, symbol='BTCUSDT', market='spot',
+                   timeframe='1d', start_at=start, end_at=start + 6 * day, initial_capital='10000',
+                   fee_bps='0', slippage_bps='0')
+    body = TestClient(p.app).post('/cutie/backtest', json={'backtest': payload}).json()
+    got = (body['result_status'], body['error_type'], body['limitations'].get('reason'), body['error_message'])
+    print('P1_BASELINE', repr(got))
+    assert got == P1_EXPECTED
