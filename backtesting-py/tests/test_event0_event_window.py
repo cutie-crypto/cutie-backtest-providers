@@ -333,6 +333,7 @@ def test_catalog_entry():
     assert not set(PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES) & set(props)
     assert TOOL not in p.POSITION_SIZING_UNWIRED_TOOLS | p.POSITION_SIZING_TEMPLATE_STOP_TOOLS
     assert spec.get('markets', ['spot', 'futures']) == ['spot', 'futures']
+    assert 'ahead' not in spec['description']
     built = spec['build'](GOLDEN_PARAMS)
     assert issubclass(built['strategy'], p._FixedRiskMixin)
 
@@ -370,11 +371,76 @@ def test_partial_take_profit_then_window_end_lists_both_exits(monkeypatch, tmp_p
         'window_end', 107.0, '2026-01-01T07:00:00+00:00')
 
 
-@pytest.mark.parametrize('params', [GOLDEN_PARAMS, PARTIAL, {**GOLDEN_PARAMS, 'direction': 'short'},
-                                    {**PARTIAL, 'events': EVENTS, 'tp2_r': 2}],
-                         ids=['golden', 'partial', 'short', 'partial_three_events'])
-def test_exits_count_equals_result_rows(monkeypatch, tmp_path, params):
-    body = post(monkeypatch, tmp_path, params)
+def liquidation_frame():
+    data = frame()
+    data.iloc[5] = [98, 99, 97, 97.5, 1]   # gaps below the 20x long liquidation price 104 * (1 - 1/20) = 98.8
+    return data
+
+
+def blowout_frame():
+    data = frame()
+    data.iloc[5] = [250, 260, 240, 255, 1]  # an unlevered short from 104 loses more than the whole account
+    return data
+
+
+LIQUIDATION = {**one('2026-01-01T05:00:00Z', bars_before=1, bars_after=3), 'leverage': 20, 'stop_loss_pct': 50}
+BLOWOUT = {**one('2026-01-01T05:00:00Z', bars_before=1, bars_after=3), 'direction': 'short'}
+
+
+def test_isolated_liquidation_exit_uses_settled_fill(monkeypatch, tmp_path):
+    body = post(monkeypatch, tmp_path, LIQUIDATION, data=liquidation_frame())
+    assert body['result_status'] == 'success', body.get('error_message')
+    # Entry bar 4 open 104; bar 5 opens at 98 below the liquidation price 98.8, so result.v2 settles the
+    # gap at that open (closed_at bar 5). The broker itself closed at bar 5's close 97.5 when the
+    # account went insolvent -- that raw price must not leak into exits.
+    assert legs(body) == [(4, '104', 5, '98', 'long')]
+    (detail,) = body['raw_report']['isolated_risk']['liquidations']
+    assert (detail['seq'], detail['fill_price']) == (1, '98')
+    record = events_of(body)[0]
+    assert record['exits'] == [dict(time='2026-01-01T05:00:00+00:00', price=98.0, reason='liquidation')]
+    assert (record['exit_reason'], record['exit_price'], record['exit_utc']) == (
+        'liquidation', 98.0, '2026-01-01T05:00:00+00:00')
+
+
+def test_unlevered_short_blowout_is_insolvency(monkeypatch, tmp_path):
+    body = post(monkeypatch, tmp_path, BLOWOUT, data=blowout_frame())
+    assert body['result_status'] == 'success', body.get('error_message')
+    # Short at bar 4 open 104; bar 5 opens at 250, equity <= 0, the broker closes at bar 5's close 255
+    # and ends the run before next() sees bar 5.
+    assert legs(body) == [(4, '104', 5, '255', 'short')]
+    assert 'isolated_risk' not in body['raw_report']
+    record = events_of(body)[0]
+    assert record['exits'] == [dict(time='2026-01-01T05:00:00+00:00', price=255.0, reason='insolvency')]
+    assert record['exit_reason'] == 'insolvency'
+
+
+def test_settle_exits_fails_closed_on_unattributable_rows():
+    from strategy_event_window import settle_event_window_exits
+
+    def entered():
+        return dict(status='entered', ts_utc='2026-01-01T05:00:00+00:00', entry_utc='2026-01-01T04:00:00+00:00',
+                    exits=[dict(time='x', price=0.0, reason='window_end')])
+    row = dict(seq=1, opened_at=T0 + 4 * H, closed_at=T0 + 7 * H, exit_price='107')
+    events = [entered()]
+    settle_event_window_exits(events, [row])
+    assert events[0]['exits'] == [dict(time='2026-01-01T07:00:00+00:00', price=107.0, reason='window_end')]
+    with pytest.raises(ValueError, match='matches 0 entered events'):
+        settle_event_window_exits([entered()], [row, {**row, 'seq': 2, 'opened_at': T0 + 9 * H}])
+    with pytest.raises(ValueError, match='matches 2 entered events'):
+        settle_event_window_exits([entered(), entered()], [row])
+    with pytest.raises(ValueError, match='1 recorded exits but 2 result.v2 rows'):
+        settle_event_window_exits([entered()], [row, {**row, 'seq': 2}])
+    with pytest.raises(ValueError, match='1 recorded exits but 0 result.v2 rows'):
+        settle_event_window_exits([entered()], [])
+
+
+@pytest.mark.parametrize('params,data', [(GOLDEN_PARAMS, frame), (PARTIAL, frame),
+                                         ({**GOLDEN_PARAMS, 'direction': 'short'}, frame),
+                                         ({**PARTIAL, 'events': EVENTS, 'tp2_r': 2}, frame),
+                                         (LIQUIDATION, liquidation_frame), (BLOWOUT, blowout_frame)],
+                         ids=['golden', 'partial', 'short', 'partial_three_events', 'liquidation', 'insolvency'])
+def test_exits_count_equals_result_rows(monkeypatch, tmp_path, params, data):
+    body = post(monkeypatch, tmp_path, params, data=data())
     entered = [r for r in events_of(body) if r['status'] == 'entered']
     assert entered and sum(len(r['exits']) for r in entered) == len(body['trades'])
     assert [(e['time'], e['price']) for r in entered for e in r['exits']] == [
