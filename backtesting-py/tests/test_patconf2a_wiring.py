@@ -30,6 +30,10 @@ WIRED = set("""adx_di_cross bias_reversion bollinger_breakout bollinger_reversal
 breakout cci_rsi ema_cross ema_pullback ema_rsi_pullback ema_trend_rsi ema_triple_alignment
 ichimoku_cloud_breakout keltner_breakout macd macd_above_zero parabolic_sar roc rsi_reversal
 stoch_oversold_cross supertrend volume_breakout""".split())
+# P-PATCONF-2b1: the 15 self-entering pattern templates (candle 11 + bottom / top 4), wired on top of the 22.
+WIRED_2B1 = set("""bearish_doji_reversal bearish_engulfing bullish_doji_reversal bullish_engulfing double_bottom
+double_top evening_star hammer_pin_bar head_shoulders inside_bar_breakout inverse_head_shoulders morning_star
+shooting_star three_black_crows three_white_soldiers""".split())
 LAYER = dict(filter_layer_enabled=True, filter_pattern_confirm_enabled=True)
 PREFIX = 'local.backtesting_py.'
 # volume_breakout never signals on the golden frame with its defaults (zero trades in both P-PATCONF-1
@@ -46,7 +50,8 @@ def build(tool, params):
 def test_wired_templates_are_exactly_the_whitelist():
     wired = {k.removeprefix(PREFIX) for k, v in p.TOOL_SPECS.items()
              if getattr(v.get('build'), '_supports_pattern_confirm', False)}
-    assert wired == WIRED and len(wired) == 22
+    assert len(WIRED) == 22 and len(WIRED_2B1) == 15 and not WIRED & WIRED_2B1
+    assert wired == WIRED | WIRED_2B1 and len(wired) == 37
 
 
 # --- wiring evidence: every whitelisted template registers on its golden frame -----------------------

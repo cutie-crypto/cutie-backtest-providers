@@ -284,7 +284,10 @@ def test_registered_http_runner_and_optional_metric(monkeypatch):
 PATCONF2A_WIRED = set("""adx_di_cross bias_reversion bollinger_breakout bollinger_reversal bollinger_squeeze_breakout
 breakout cci_rsi ema_cross ema_pullback ema_rsi_pullback ema_trend_rsi ema_triple_alignment
 ichimoku_cloud_breakout keltner_breakout macd macd_above_zero parabolic_sar roc rsi_reversal
-stoch_oversold_cross supertrend volume_breakout""".split())
+stoch_oversold_cross supertrend volume_breakout""".split()) | set("""
+bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal
+inside_bar_breakout bearish_engulfing shooting_star evening_star three_black_crows bearish_doji_reversal
+double_bottom inverse_head_shoulders double_top head_shoulders""".split())  # P-PATCONF-2b1
 
 
 def test_catalog_existing_entries_byte_identical():
@@ -311,7 +314,7 @@ def test_catalog_existing_entries_byte_identical():
             assert set(api.POSITION_SIZE_KEYS) <= set(properties), tool_id
             for key in api.POSITION_SIZE_KEYS:
                 properties.pop(key)
-        # P-PATCONF-2a：白名单 22 个模板多出形态确认两键是唯一允许的差异，剔除后逐字节比对；其余模板不得出现这两键。
+        # P-PATCONF-2a / 2b1：白名单 22 + 15 个模板多出形态确认两键是唯一允许的差异，剔除后逐字节比对；其余模板不得出现这两键。
         pattern_keys = {key for key in properties if key.startswith('filter_pattern_confirm_')}
         if tool_id.removeprefix('local.backtesting_py.') in PATCONF2A_WIRED:
             # 不 pop：properties 是 TOOL_SPECS 的活引用，pop 会删掉已发布 schema 污染后续用例；改为重建字典。

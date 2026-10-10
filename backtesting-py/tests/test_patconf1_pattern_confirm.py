@@ -37,11 +37,15 @@ GOLDEN = json.loads((Path(__file__).parent / 'fixtures/patconf1_5ddd8eb.json').r
 EVENT0 = {'event_window'}
 CASES = {key: case for key, case in base.cases().items() if case[0] not in EVENT0}
 LAYER = dict(filter_layer_enabled=True, filter_pattern_confirm_enabled=True)
-# P-PATCONF-2a whitelist: templates whose entries all go through _risk_buy / _risk_sell.
+# P-PATCONF-2a whitelist: templates whose entries all go through _risk_buy / _risk_sell,
+# plus the 15 self-entering candle / bottom / top pattern templates of P-PATCONF-2b1.
 WIRED = set("""adx_di_cross bias_reversion bollinger_breakout bollinger_reversal bollinger_squeeze_breakout
 breakout cci_rsi ema_cross ema_pullback ema_rsi_pullback ema_trend_rsi ema_triple_alignment
 ichimoku_cloud_breakout keltner_breakout macd macd_above_zero parabolic_sar roc rsi_reversal
-stoch_oversold_cross supertrend volume_breakout""".split())
+stoch_oversold_cross supertrend volume_breakout""".split()) | set("""
+bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal
+inside_bar_breakout bearish_engulfing shooting_star evening_star three_black_crows bearish_doji_reversal
+double_bottom inverse_head_shoulders double_top head_shoulders""".split())
 
 
 def unwired_tools():
@@ -76,7 +80,8 @@ def test_pattern_confirm_schema_is_two_keys_apart_from_published_filter_keys():
 
 
 def test_no_catalog_schema_publishes_the_keys_outside_the_whitelist(monkeypatch):
-    # P-PATCONF-2a: only the 22 _risk_buy/_risk_sell templates are wired; the other 29 stay unpublished.
+    # P-PATCONF-2a / 2b1: only the 22 _risk_buy/_risk_sell templates and the 15 self-entering pattern
+    # templates are wired; the other 14 stay unpublished.
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     tools = TestClient(p.app).get('/catalog').json()['tools']
     assert len(tools) == 60  # main 59 + P-EVENT0 event_window
@@ -127,10 +132,10 @@ def test_report_names_the_confirmation_rule():
                                                         'filter_ema_enabled': True}).report()['predicates']
 
 
-def test_whitelist_splits_the_51_filter_templates_22_and_29():
-    assert WIRED <= set(base.filter_tools()) and len(WIRED) == 22
-    # 29 pre-EVENT0 unwired templates + event_window (P-EVENT0, also unwired)
-    assert len(unwired_tools()) == 29 + len(EVENT0) and EVENT0 <= set(unwired_tools())
+def test_whitelist_splits_the_filter_templates_37_and_14_plus_event_window():
+    assert WIRED <= set(base.filter_tools()) and len(WIRED) == 22 + 15
+    # 14 pre-EVENT0 unwired templates + event_window (P-EVENT0, also unwired)
+    assert len(unwired_tools()) == 14 + len(EVENT0) and EVENT0 <= set(unwired_tools())
 
 
 @pytest.mark.parametrize('tool', unwired_tools())
