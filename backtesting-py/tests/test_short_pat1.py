@@ -350,6 +350,37 @@ def test_registered_isolated_arbitration(monkeypatch,tmp_path,name,risk_enabled,
         assert body['trades'][0]['closed_at']==int(data.index[57].timestamp())
 
 
+@pytest.mark.parametrize('name',NAMES)
+def test_signal_on_liquidation_bar_places_no_order(monkeypatch,tmp_path,name):
+    # P-LOW4: the old _isolated_blocked_bar guard in next() was unreachable (the liquidation close is queued from
+    # next()'s position branch, which returns first; the next bar has a larger len(self.data)) and was deleted.
+    # This pins the outcome, not the mechanism: a signal repeated on the liquidation bar (56) opens no order.
+    # Two layers hold it today -- the position branch's return and a non-empty self.orders (the queued close);
+    # removing either one alone does not turn this test red.
+    import backtesting as bb
+    import strategy_top_patterns as module
+    make, sells, sell = module.make_top_strategy, [], bb.Strategy.sell
+
+    def with_extra_signal(*args, **kwargs):
+        class ExtraSignal(make(*args, **kwargs)):
+            def init(self):
+                super().init()
+                self._signals[self._warmup_bars + 56] = self._signals[self._warmup_bars + 53]
+        return ExtraSignal
+
+    def spy_sell(self, *args, **kwargs):
+        sells.append(len(self.data) - 1)
+        return sell(self, *args, **kwargs)
+    monkeypatch.setattr(module, 'make_top_strategy', with_extra_signal)
+    monkeypatch.setattr(bb.Strategy, 'sell', spy_sell)
+    data = frame(name)
+    data.iloc[56, :4] = [120, 121, 50, 120]  # gap liquidation on bar 56, as scenario 'gap' above
+    body = http(monkeypatch, tmp_path, name, data, dict(leverage=5, position_size_pct=20), fee=10, slip=5)
+    assert body['raw_report']['isolated_risk']['liquidation_count'] == 1
+    assert len(body['trades']) == 1 and body['trades'][0]['closed_at'] == int(data.index[56].timestamp())
+    assert sells == [53]
+
+
 def recompute_money(body,data,*,fee,slip):
     equity=D(10000)
     bars={int(t.timestamp()):bar for t,bar in data.iterrows()}
@@ -469,8 +500,6 @@ BOTTOM_PLIQ1_EXIT = (
     b'        def next(self):\n'
     b'            if self.position:\n'
     b'                self._risk_check_exit()\n'
-    b'                return\n'
-    b"            if self._risk.get('leverage', 1) > 1 and self._isolated_blocked_bar == len(self.data)-1:\n"
     b'                return\n')
 
 

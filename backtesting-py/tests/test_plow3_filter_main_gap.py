@@ -214,3 +214,55 @@ def test_warmup_boundary_segment(monkeypatch, tmp_path):
     assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 1, 'missing_bars': 1,
                                    'first_gap_after': iso(full.index[-2]),
                                    'first_gap_segment': 'warmup_boundary'}, body
+
+
+# --- P-LOW4: sub-period / non-integer spacing is a gap in both segments, counted >= 1 -------------------------
+
+def _shift(index, positions):
+    """Move every bar in `positions` half a step later: 1.5 step before it, 0.5 step after it."""
+    stamps = list(index)
+    for k in positions:
+        stamps[k] = stamps[k] + pd.Timedelta(minutes=30)
+    return pd.DatetimeIndex(stamps)
+
+
+def test_main_subperiod_spacing_counts_both_sides_and_fails(monkeypatch, tmp_path):
+    warm, data = cap.series()
+    shifted = data.copy()
+    shifted.index = _shift(data.index, range(100, 200, 2))  # 50 bars: 50 x 1.5 step + 50 x 0.5 step
+    body = run(monkeypatch, tmp_path, 'ema_cross', shifted, warm)
+    assert (body['error_type'], body['error_message']) == (
+        'INSUFFICIENT_DATA', 'Entry filter indicator history has gaps'), body
+    assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 100, 'missing_bars': 100,
+                                   'first_gap_after': iso(data.index[99]), 'first_gap_segment': 'main'}
+
+
+def test_main_single_subperiod_spacing_is_two_gaps_within_tolerance(monkeypatch, tmp_path):
+    warm, data = cap.series()
+    shifted = data.copy()
+    shifted.index = _shift(data.index, [100])  # 99 -> 100 is 1.5 step, 100 -> 101 is 0.5 step
+    body = run(monkeypatch, tmp_path, 'ema_cross', shifted, warm)
+    assert body['result_status'] == 'success', body
+    gaps = body['assumptions']['entry_filter_main_gaps']
+    assert gaps['missing_bars'] == 2 and len(gaps['segments']) == 2
+    assert [s['missing_bars'] for s in gaps['segments']] == [1, 1]
+
+
+def test_warmup_subperiod_spacing_reports_at_least_one_missing_bar(monkeypatch, tmp_path):
+    full, data = cap.series()
+    shifted = full.copy()
+    shifted.index = _shift(full.index, [len(full) - 3])  # inner: -4 -> -3 is 1.5 step, -3 -> -2 is 0.5 step
+    body = run(monkeypatch, tmp_path, 'ema_cross', data, shifted)
+    assert (body['error_type'], body['error_message']) == (
+        'INSUFFICIENT_DATA', 'Entry filter indicator history has gaps'), body
+    assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 2, 'missing_bars': 2,
+                                   'first_gap_after': iso(full.index[-4]), 'first_gap_segment': 'warmup'}, body
+
+
+def test_warmup_boundary_subperiod_spacing_reports_missing_bars(monkeypatch, tmp_path):
+    full, data = cap.series()
+    shifted = full.copy()
+    shifted.index = _shift(full.index, [len(full) - 1])  # last prefix bar sits 0.5 step before the main range
+    body = run(monkeypatch, tmp_path, 'ema_cross', data, shifted)
+    assert body['limitations']['reason'] == 'filter_history_insufficient', body
+    assert body['limitations']['missing_bars'] >= 1 and body['limitations']['gap_count'] == 2, body
