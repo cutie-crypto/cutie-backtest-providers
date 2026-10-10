@@ -287,7 +287,9 @@ ichimoku_cloud_breakout keltner_breakout macd macd_above_zero parabolic_sar roc 
 stoch_oversold_cross supertrend volume_breakout""".split()) | set("""
 bullish_engulfing hammer_pin_bar morning_star three_white_soldiers bullish_doji_reversal
 inside_bar_breakout bearish_engulfing shooting_star evening_star three_black_crows bearish_doji_reversal
-double_bottom inverse_head_shoulders double_top head_shoulders""".split())  # P-PATCONF-2b1
+double_bottom inverse_head_shoulders double_top head_shoulders""".split()) | set("""
+macd_bullish_divergence rsi_bullish_divergence macd_bearish_divergence rsi_bearish_divergence
+chan_3buy chan_3sell fibonacci_retracement red_streak_rsi vwap_reversion""".split())  # P-PATCONF-2b1 / 2b2
 
 
 def test_catalog_existing_entries_byte_identical():
@@ -314,7 +316,7 @@ def test_catalog_existing_entries_byte_identical():
             assert set(api.POSITION_SIZE_KEYS) <= set(properties), tool_id
             for key in api.POSITION_SIZE_KEYS:
                 properties.pop(key)
-        # P-PATCONF-2a / 2b1：白名单 22 + 15 个模板多出形态确认两键是唯一允许的差异，剔除后逐字节比对；其余模板不得出现这两键。
+        # P-PATCONF-2a / 2b1 / 2b2：白名单 22 + 15 + 9 个模板多出形态确认两键是唯一允许的差异，剔除后逐字节比对；其余模板不得出现这两键。
         pattern_keys = {key for key in properties if key.startswith('filter_pattern_confirm_')}
         if tool_id.removeprefix('local.backtesting_py.') in PATCONF2A_WIRED:
             # 不 pop：properties 是 TOOL_SPECS 的活引用，pop 会删掉已发布 schema 污染后续用例；改为重建字典。
