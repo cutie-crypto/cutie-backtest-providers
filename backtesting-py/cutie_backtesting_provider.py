@@ -7651,7 +7651,10 @@ def _turtle_group_n_stop(group_id: str, n_stop: Optional[dict[str, tuple[float, 
     """开组 N 与整组最后一次成交后的止损价；与 trades 价格同口径（float 转 Decimal 规范串）。"""
     if n_stop is None:
         return {}
-    n, stop = n_stop[group_id]  # 缺组 KeyError：fail closed，不静默省略
+    # n / stop 只是展示用元数据：缺组时只让这一组不出两键，不抛错，以免作废整份已算完的回测。
+    if group_id not in n_stop:
+        return {}
+    n, stop = n_stop[group_id]
     return {"n": canonical_decimal_str(Decimal(str(float(n)))),
             "stop": canonical_decimal_str(Decimal(str(float(stop))))}
 

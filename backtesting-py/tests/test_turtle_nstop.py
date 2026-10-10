@@ -119,5 +119,8 @@ def test_builder_maps_n_stop_by_group_id_and_omits_when_absent():
         ('turtle-1', '1.5', '90.25'), ('turtle-2', '2.5', '80'), ('turtle-3', '0.125', '70')]
     plain = p._build_turtle_groups(trades, v2, {g: 'channel' for g in n_stop}, None)
     assert all(set(g) == {'group_id', 'trade_seqs', 'units', 'exit_reason'} for g in plain)  # 无实例状态才省略
-    with pytest.raises(KeyError):
-        p._build_turtle_groups(trades, v2, None, {'turtle-1': (1.0, 2.0)})
+    # 缺组：该组无 n / stop 两键，其它组照常输出，函数正常返回不抛错。
+    partial = p._build_turtle_groups(trades, v2, None, {'turtle-1': (1.0, 2.0), 'turtle-3': (0.5, 3.0)})
+    assert [(g['group_id'], g.get('n'), g.get('stop')) for g in partial] == [
+        ('turtle-1', '1', '2'), ('turtle-2', None, None), ('turtle-3', '0.5', '3')]
+    assert set(partial[1]) == {'group_id', 'trade_seqs', 'units'}
