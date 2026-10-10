@@ -127,7 +127,11 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
             if self.position:
                 self._risk_check_exit()
                 return
-            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():
+            queue = self._pattern_confirm_queue
+            # P-PATCONF-2b1: with confirmation on, the signal bar s only registers; the entry gates
+            # are judged at the confirming bar k (_pattern_confirm_open_tagged).
+            if queue is None and (self.orders or len(self.data) >= self._main_bars
+                                  or not self._time_allow_entry() or not self._filter_allow_entry()):
                 return
             index = self._warmup_bars + len(self.data) - 1
             if position_filter:
@@ -138,10 +142,17 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
             anchor = (min(self._geometry.low[index - 1:index + 1]) if kind == "engulfing"
                       else self._anchors[index])
             tag = PatternEntry(signal_bar=len(self.data) - 1, stop=anchor * 0.999)
+            if queue is not None:
+                # The stop is frozen here at s and travels with the signal.
+                queue.register(len(self.data) - 1, "long", self.data.High[-1], tag)
+                return
             size = self._risk_entry_size()
             order = self.buy(tag=tag) if size is None else self.buy(size=size, tag=tag)
             if self._risk.get("position_sizing_enabled"):
                 order._sizing_signal_bar = len(self.data) - 1
+
+        def _pattern_confirm_open(self, is_long, payload):
+            return self._pattern_confirm_open_tagged(is_long, payload)
 
     return LongPatternStrategy
 
@@ -242,15 +253,25 @@ def make_short_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk,
             if self.position:
                 self._risk_check_exit()
                 return
-            if self.orders or len(self.data) >= self._main_bars or not self._time_allow_entry() or not self._filter_allow_entry():
+            queue = self._pattern_confirm_queue
+            # P-PATCONF-2b1: with confirmation on, the signal bar s only registers; the entry gates
+            # are judged at the confirming bar k (_pattern_confirm_open_tagged).
+            if queue is None and (self.orders or len(self.data) >= self._main_bars
+                                  or not self._time_allow_entry() or not self._filter_allow_entry()):
                 return
             index = self._warmup_bars + len(self.data) - 1
             if position_filter and index < 20 or not self._signals[index]:
                 return
             tag = PatternEntry(signal_bar=len(self.data) - 1, stop=self._anchors[index] * 1.001)
+            if queue is not None:
+                queue.register(len(self.data) - 1, "short", self.data.Low[-1], tag)
+                return
             size = self._risk_entry_size()
             order = self.sell(tag=tag) if size is None else self.sell(size=size, tag=tag)
             if self._risk.get("position_sizing_enabled"):
                 order._sizing_signal_bar = len(self.data) - 1
+
+        def _pattern_confirm_open(self, is_long, payload):
+            return self._pattern_confirm_open_tagged(is_long, payload)
 
     return ShortPatternStrategy
