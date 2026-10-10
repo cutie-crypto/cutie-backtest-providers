@@ -123,7 +123,8 @@ def test_catalog_publishes_both_keys_for_the_15_and_the_other_14_still_reject(mo
     unwired = [k.removeprefix(PREFIX) for k, v in p.TOOL_SPECS.items()
                if getattr(v.get('build'), '_supports_entry_filters', False)
                and not v['build']._supports_pattern_confirm]
-    assert len(unwired) == 5  # P-PATCONF-2b2: 9 more wired, the 5 range / calendar ones stay out
+    # P-PATCONF-2b2: 9 more wired; the 5 range / calendar ones + event_window (P-EVENT0) stay out
+    assert len(unwired) == 6 and 'event_window' in unwired
     for name in unwired:
         assert not set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(tools[name]['param_schema']['properties']), name
         build = p.TOOL_SPECS[PREFIX + name]['build']

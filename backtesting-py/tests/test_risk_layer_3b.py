@@ -299,7 +299,7 @@ def test_unrepresentable_dynamic_levels_fail_closed(extra):
         initial_risk_state(risk=p._parse_fixed_risk_params(dict(risk_layer_enabled=True,**extra)),
                            entry_price=100,direction='long')
 
-from test_risk_overlay_compatibility import enumerate_mixin_cases, frame, PARAMS, tool_name
+from test_risk_overlay_compatibility import enumerate_mixin_cases, frame, PARAMS, tool_name, required_params
 from fastapi.testclient import TestClient
 
 FEATURES = {
@@ -399,6 +399,8 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         params['flatten_at'] = '23:00'  # 1h test grid
     if name == 'calendar_schedule':
         params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
+    if name == 'event_window':
+        params.update(required_params(name))  # P-EVENT0: three 96-bar windows inside frame()
     if name == 'chan_3buy':
         build=p.TOOL_SPECS['local.backtesting_py.chan_3buy']['build']
         if feature != 'holding':
