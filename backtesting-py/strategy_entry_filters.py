@@ -81,7 +81,8 @@ class FilterConfig:
                 raise ValueError(f'INVALID_PARAMS:non-default {name} parameters require filter_{name}_enabled=true')
         if values['filter_layer_enabled'] and not any(values[f'filter_{name}_enabled'] for name in groups):
             raise ValueError('INVALID_PARAMS:enabled filter layer requires at least one filter')
-        if values['filter_timeframe'] and not any(values[f'filter_{name}_enabled'] for name in ('ema', 'macd', 'supertrend')):
+        indicator_filters = ('ema', 'macd', 'supertrend')
+        if values['filter_timeframe'] and not any(values[f'filter_{name}_enabled'] for name in indicator_filters):
             raise ValueError('INVALID_PARAMS:filter_timeframe requires an ema, macd or supertrend filter')
         if values['filter_macd_fast'] >= values['filter_macd_slow']:
             raise ValueError('INVALID_PARAMS:filter_macd_fast must be less than filter_macd_slow')
