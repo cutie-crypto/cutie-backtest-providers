@@ -1,8 +1,9 @@
-"""SHORT-PAT-4: bearish_engulfing / shooting_star / evening_star, futures short mirrors of the long candle
-templates (bullish_engulfing / hammer_pin_bar / morning_star).
+"""SHORT-PAT-4: bearish_engulfing / shooting_star / evening_star; SHORT-PAT-5: three_black_crows /
+bearish_doji_reversal. Futures short mirrors of the long candle templates (bullish_engulfing /
+hammer_pin_bar / morning_star / three_white_soldiers / bullish_doji_reversal).
 
 Fixtures are the 10-B2c long candle frames reflected around 200 (P -> 200 - P, High <-> Low), so every
-geometric relation flips: one short signal at bar 25, entry at bar 26 open 94 (long 106; star 90 vs 110).
+geometric relation flips: one short signal at bar 25, entry at bar 26 open 94 (long 106; star, crows and doji 90 vs 110).
 Frozen stop = mirrored anchor High 103 * 1.001 = 103.103 (long 97 * 0.999 = 96.903);
 target = entry - (stop - entry) * reward_r.
 
@@ -25,12 +26,16 @@ import cutie_backtesting_provider as p
 import _10b2c_cases as c
 import _pliq1_cases as q
 
-MIRROR = {'bearish_engulfing': 'bullish_engulfing', 'shooting_star': 'hammer_pin_bar', 'evening_star': 'morning_star'}
+MIRROR = {'bearish_engulfing': 'bullish_engulfing', 'shooting_star': 'hammer_pin_bar', 'evening_star': 'morning_star',
+          # SHORT-PAT-5
+          'three_black_crows': 'three_white_soldiers', 'bearish_doji_reversal': 'bullish_doji_reversal'}
 SHORT = tuple(MIRROR)
 STOP = '103.103'
-ENTRY = {'bearish_engulfing': '94', 'shooting_star': '94', 'evening_star': '90'}
+ENTRY = {'bearish_engulfing': '94', 'shooting_star': '94', 'evening_star': '90',
+         'three_black_crows': '90', 'bearish_doji_reversal': '90'}
 # Unexited trades settle at the last close (mirror of the long fixtures' 100 / 110).
-FINAL = {'bearish_engulfing': '100', 'shooting_star': '100', 'evening_star': '90'}
+FINAL = {'bearish_engulfing': '100', 'shooting_star': '100', 'evening_star': '90',
+         'three_black_crows': '90', 'bearish_doji_reversal': '90'}
 
 
 def reflect(data):
@@ -47,7 +52,7 @@ def frame(name):
 
 def compatibility_frame(name):
     """Mirror of the long template's compatibility frame, for other suites' per-template loops."""
-    if MIRROR[name] == 'morning_star':
+    if MIRROR[name] in ('morning_star', 'three_white_soldiers', 'bullish_doji_reversal'):
         from test_9t2_patterns import compatibility_frame as long_frame
     else:
         from test_9t1_engulf_pin import compatibility_frame as long_frame
@@ -76,7 +81,7 @@ def test_catalog_lists_three_futures_short_tools_within_one_mib(monkeypatch):
     from fastapi.testclient import TestClient
     response = TestClient(p.app).get('/catalog')
     tools = {t['tool_id']: t for t in response.json()['tools']}
-    assert len(tools) == 57 and len(response.content) <= 1 << 20
+    assert len(tools) == 59 and len(response.content) <= 1 << 20
     for name in SHORT:
         tool = tools['local.backtesting_py.' + name]
         props = tool['param_schema']['properties']
@@ -311,3 +316,54 @@ def test_leverage_one_never_arbitrates(monkeypatch, tmp_path, name):
     body, data = post(monkeypatch, tmp_path, name, dict(leverage=1))
     assert trades(body, data) == [(26, 'short', ENTRY[name], 69, FINAL[name])]
     assert 'T2-2b' not in json.dumps(body['assumptions'])
+
+
+# SHORT-PAT-5 shape and position rules, mirrored from test_9t2_patterns (edits applied to the long frame,
+# then reflected, so the long tests' hand numbers carry over).
+def _mirrored_9t2(long_name, edit=None):
+    from test_9t2_patterns import frame as long_frame
+    data = long_frame(long_name)
+    if edit:
+        edit(data)
+    return reflect(data)
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_crows_rise_filter_switch(monkeypatch, tmp_path, enabled):
+    def edit(data):
+        data.iloc[3, :4] = [96, 98, 95, 97]  # mirrored: first crow open 102 <= close 20 bars ago 103
+    body, data = post(monkeypatch, tmp_path, 'three_black_crows', dict(position_filter=enabled),
+                      _mirrored_9t2('three_white_soldiers', edit))
+    assert [t[:3] for t in trades(body, data)] == ([] if enabled else [(26, 'short', '90')])
+
+
+@pytest.mark.parametrize('close,valid', [(104, False), (104.001, True), (103.999, False)])
+def test_doji_only_next_strict_close_below_low_confirms(monkeypatch, tmp_path, close, valid):
+    def edit(data):
+        data.iloc[25, :4] = [101, 109, 99, close]  # mirrored close vs doji low 96: 96 / 95.999 / 96.001
+    body, data = post(monkeypatch, tmp_path, 'bearish_doji_reversal', {}, _mirrored_9t2('bullish_doji_reversal', edit))
+    assert [t[:3] for t in trades(body, data)] == ([(26, 'short', '90')] if valid else [])
+
+
+def test_doji_failed_next_confirmation_never_confirms_later(monkeypatch, tmp_path):
+    def edit(data):
+        data.iloc[25, :4] = [101, 104, 99, 103]
+    body, data = post(monkeypatch, tmp_path, 'bearish_doji_reversal', {}, _mirrored_9t2('bullish_doji_reversal', edit))
+    assert trades(body, data) == []
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_doji_rsi_above_70_at_candidate(monkeypatch, tmp_path, enabled):
+    def edit(data):
+        for i in range(24):
+            data.iloc[i, :4] = [70+i, 72+i, 69+i, 71+i]  # long RSI 100 => mirrored RSI 0, never > 70
+    body, data = post(monkeypatch, tmp_path, 'bearish_doji_reversal', dict(position_filter=enabled),
+                      _mirrored_9t2('bullish_doji_reversal', edit))
+    assert [t[:3] for t in trades(body, data)] == ([] if enabled else [(26, 'short', '90')])
+
+
+@pytest.mark.parametrize('name,anchor', [('three_black_crows', 'first crow high'), ('bearish_doji_reversal', 'doji high')])
+def test_crows_and_doji_assumption_names_their_stop(monkeypatch, tmp_path, name, anchor):
+    body, _ = post(monkeypatch, tmp_path, name)
+    assert anchor in body['assumptions']['pattern_execution']
+    assert body['raw_report']['candle_pattern']['direction'] == 'short'

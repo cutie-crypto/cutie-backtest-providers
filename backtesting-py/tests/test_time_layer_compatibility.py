@@ -66,7 +66,8 @@ F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
           if name != "red_streak_rsi"}
 # SHORT-PAT-4 tools postdate the 11e8cfb baseline; their off state is pinned in test_short_pat4_candles.py.
-SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star'}
+SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
+                    'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5 +2
 LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4}
 
 

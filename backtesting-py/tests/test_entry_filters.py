@@ -27,7 +27,8 @@ F1F2_FILTER_NAMES = {'opening_range_breakout', 'asia_range_breakout', 'calendar_
 # 1d66844 HTTP 全响应金样钉住，开态由同文件手算用例覆盖。
 SHORT_7P4_NAMES = {'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell'}
 # SHORT-PAT-4：三个做空 K 线模板在 5b8320a 之后才有；关态与过滤门由 test_short_pat4_candles.py 覆盖。
-SHORT_PAT4_NAMES = {'bearish_engulfing', 'shooting_star', 'evening_star'}
+SHORT_PAT4_NAMES = {'bearish_engulfing', 'shooting_star', 'evening_star',
+                    'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5 +2
 CASES = {key: case for key, case in capture.cases().items()
          if case[0] not in F1F2_FILTER_NAMES | SHORT_7P4_NAMES | SHORT_PAT4_NAMES}
 BASELINE = json.loads((Path(__file__).parent / 'fixtures/entry_filters_5b8320a.json').read_text())

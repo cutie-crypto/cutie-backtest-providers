@@ -4912,11 +4912,14 @@ def _build_inside_bar_breakout(params: dict[str, Any], *, initial_capital: float
     return _build_long_candle_pattern(params, kind="inside_bar", initial_capital=initial_capital)
 
 
-_SHORT_CANDLE_TOOL_NAMES = {"engulfing": "bearish_engulfing", "pin_bar": "shooting_star", "star": "evening_star"}
+_SHORT_CANDLE_TOOL_NAMES = {"engulfing": "bearish_engulfing", "pin_bar": "shooting_star", "star": "evening_star",
+                            # SHORT-PAT-5
+                            "soldiers": "three_black_crows", "doji": "bearish_doji_reversal"}
 
 
 def _build_short_candle_pattern(params, *, kind, initial_capital):
-    """SHORT-PAT-4: futures short mirror of _build_long_candle_pattern (engulfing / pin bar / star)."""
+    """Futures short mirror of _build_long_candle_pattern: engulfing / pin bar / star (SHORT-PAT-4),
+    three black crows / bearish doji (SHORT-PAT-5)."""
     tool_id = "local.backtesting_py." + _SHORT_CANDLE_TOOL_NAMES[kind]
     error = _validate_params_against_schema(params, TOOL_SPECS[tool_id]["param_schema_properties"])
     if error:
@@ -4931,9 +4934,14 @@ def _build_short_candle_pattern(params, *, kind, initial_capital):
     position_filter = params.get("position_filter", True)
     reward_r = params.get("reward_r", 2)
     min_bars = 23 if kind == "star" else (21 if position_filter else 2)
+    if kind == "soldiers":
+        min_bars = 23 if position_filter else 4
+    elif kind == "doji":
+        min_bars = 22
     from strategy_pattern_template import make_short_pattern_strategy
     strategy = make_short_pattern_strategy(_FixedRiskMixin, kind=kind, position_filter=position_filter,
-                                           reward_r=reward_r, risk=risk, initial_capital=initial_capital)
+                                           reward_r=reward_r, risk=risk, initial_capital=initial_capital,
+                                           rsi_series=_rsi_series)
     # Risk distance = |actual fill - anchor High * 1.001| frozen in PatternEntry.stop.
     strategy._sizing_template_stop = lambda self, order: Decimal(str(order.tag.stop))
     return {"strategy": strategy, "min_bars": min_bars,
@@ -4946,7 +4954,9 @@ def _build_short_candle_pattern(params, *, kind, initial_capital):
                    if risk.get("leverage", 1) > 1 else "")
                 + {"engulfing": " Stop uses the higher High of the two candles.",
                    "pin_bar": " Stop uses the upper-shadow tip.",
-                   "star": " Stop uses the second candle high; middle body is at most 30% of first body."}[kind]}}
+                   "star": " Stop uses the second candle high; middle body is at most 30% of first body.",
+                   "soldiers": " Stop uses the first crow high.",
+                   "doji": " Only the immediately following close below the doji low confirms; the stop uses the doji high."}[kind]}}
 
 
 @_with_time_config
@@ -4965,6 +4975,18 @@ def _build_shooting_star(params: dict[str, Any], *, initial_capital: float = 100
 @_with_filter_config(default_direction="short")
 def _build_evening_star(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
     return _build_short_candle_pattern(params, kind="star", initial_capital=initial_capital)
+
+
+@_with_time_config
+@_with_filter_config(default_direction="short")
+def _build_three_black_crows(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_short_candle_pattern(params, kind="soldiers", initial_capital=initial_capital)
+
+
+@_with_time_config
+@_with_filter_config(default_direction="short")
+def _build_bearish_doji_reversal(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    return _build_short_candle_pattern(params, kind="doji", initial_capital=initial_capital)
 
 
 def _build_bottom_pattern(params, *, kind, initial_capital):
@@ -5485,6 +5507,8 @@ _SIZING_INTRINSIC_STOP_TOOLS = frozenset("local.backtesting_py." + name for name
     "inside_bar_breakout", "double_bottom", "inverse_head_shoulders",
     # SHORT-PAT-4: the three futures short candle patterns.
     "bearish_engulfing", "shooting_star", "evening_star",
+    # SHORT-PAT-5: three black crows / bearish doji reversal.
+    "three_black_crows", "bearish_doji_reversal",
     # 10-B2d: ORB / Asia size against the opposite range side frozen before the signal.
     "opening_range_breakout", "asia_range_breakout"))
 POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
@@ -6436,6 +6460,30 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "build": _build_morning_star,
         "param_schema_properties": {
             "direction": {"type": "string", "default": "long", "enum": ["long"]},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.three_black_crows": {
+        "name": "Local Backtesting.py Three Black Crows",
+        "description": "Futures short-only three black crows; optional preceding-20-bar rise filter; stop above first high by 0.1%, next-open entry and configurable R target. Risk stop/target keys are incompatible.",
+        "strategy_family": "trend_following", "is_default": False, "markets": ["futures"],
+        "build": _build_three_black_crows,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "short", "enum": ["short"]},
+            "position_filter": {"type": "boolean", "default": True},
+            "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
+    "local.backtesting_py.bearish_doji_reversal": {
+        "name": "Local Backtesting.py Bearish Doji Reversal",
+        "description": "Futures short-only doji reversal; optional RSI(14)>70 at doji close; only the next close below doji low confirms. Stop above doji high by 0.1%, next-open entry and configurable R target. Risk stop/target keys are incompatible.",
+        "strategy_family": "mean_reversion", "is_default": False, "markets": ["futures"],
+        "build": _build_bearish_doji_reversal,
+        "param_schema_properties": {
+            "direction": {"type": "string", "default": "short", "enum": ["short"]},
+            "position_filter": {"type": "boolean", "default": True},
             "reward_r": {"type": "number", "default": 2, "minimum": 0.1, "maximum": 20},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
