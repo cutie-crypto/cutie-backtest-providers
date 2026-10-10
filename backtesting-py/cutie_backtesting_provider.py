@@ -45,7 +45,7 @@ from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
                                       parse_position_sizing, PositionSizingMixin)
 from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
 from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
-from strategy_event_window import EventWindowConfig, make_event_window_strategy, event_window_assumptions, SCHEMA as EVENT_WINDOW_SCHEMA
+from strategy_event_window import EventWindowConfig, make_event_window_strategy, event_window_assumptions, settle_event_window_exits, SCHEMA as EVENT_WINDOW_SCHEMA
 from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -6332,7 +6332,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     },
     "local.backtesting_py.event_window": {
         "name": "Local Backtesting.py Event Window",
-        "description": "Inline UTC event list; enter at the open bars_before bars ahead of each event bar, exit at the close of the bars_after-th held bar (next-open fill) or an earlier risk exit.",
+        "description": "Inline UTC event list; enter at the open bars_before bars before each event bar, exit at the close of the bars_after-th held bar (next-open fill) or an earlier risk exit.",
         "strategy_family": "calendar", "is_default": False, "build": _build_event_window,
         "param_schema_properties": dict(EVENT_WINDOW_SCHEMA),
     },
@@ -9395,7 +9395,7 @@ async def run_backtest(
         )
         stats = bt.run()
         if event_window_config is not None:
-            stats["_strategy"].event_window_finish("engine_finalize_trades_settlement")
+            stats["_strategy"].event_window_finish()
         if calendar_config is not None:
             for event in stats["_strategy"].calendar_events:
                 if event["status"] == "filled" and "exit_reason" not in event:
@@ -9732,6 +9732,10 @@ async def run_backtest(
                 },
             },
         })
+        if event_window_config is not None:
+            # After result.v2 and isolated_risk are final: exits carry the settled rows, not broker fills.
+            settle_event_window_exits(response_body["assumptions"]["event_window"]["events"],
+                                      response_body["trades"], response_body["raw_report"].get("isolated_risk"))
         return _bounded_template_response(run_id, response_body)
 
     except Exception as e:

@@ -2,7 +2,7 @@
 
 Frame: 1h candles from 2026-01-01 00:00 UTC, bar i has Open 100+i, High 101+i, Low 99+i, Close 100.5+i,
 so every expected price below is read straight off the bar index (hand arithmetic, never generated).
-Event bar = open <= ts < next open; entry = open of the bar bars_before ahead of it (queued at the
+Event bar = open <= ts < next open; entry = open of the bar bars_before before it (queued at the
 previous close); window exit = queued at the close of the bars_after-th held bar (entry bar = 1),
 filled at the next open; a risk exit that comes first wins.
 """
