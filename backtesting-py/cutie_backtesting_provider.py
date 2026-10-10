@@ -5655,6 +5655,28 @@ POSITION_SIZING_TEMPLATE_STOP_TOOLS = _SIZING_INTRINSIC_STOP_TOOLS | frozenset(
                                                  "calendar_schedule", "red_streak_rsi", "us_open_momentum"))
 
 
+def _pattern_confirm_assumptions(strategy, tool_id):
+    report = strategy._pattern_confirm_queue.report()
+    if tool_id in _SIZING_INTRINSIC_STOP_TOOLS:
+        anchor = "signal_bar_s"
+        distance = "abs(actual_fill_price_at_k_plus_1_minus_frozen_stop_at_s)"
+        note = "止损冻结在信号根 s，k 收盘确认后在 k+1 开盘成交。"
+    elif tool_id == "local.backtesting_py.fibonacci_retracement":
+        anchor = "signal_bar_s_wave_stop_or_confirmation_bar_k_user_stop"
+        distance = "abs(actual_fill_price_at_k_plus_1_minus_frozen_stop)"
+        note = "形态止损冻结于 s；显式用户止损按确认根 k 计算；k+1 开盘成交。"
+    elif tool_id in {"local.backtesting_py.red_streak_rsi", "local.backtesting_py.vwap_reversion"}:
+        anchor = "confirmation_bar_k"
+        distance = "abs(actual_fill_price_at_k_plus_1_minus_frozen_stop_at_k)"
+        note = "止损及止盈按确认根 k 收盘冻结，k+1 开盘成交。"
+    else:
+        return report
+    report["frozen_stop_risk"] = dict(stop_anchor=anchor, risk_distance=distance, distance_cap=None,
+        note=note + "position_size_notional / position_size_pct 不会按风险距离反向缩减数量；"
+             "确认延迟或成交跳空可能扩大每单位风险距离及单笔风险，本版本不设距离上限。")
+    return report
+
+
 def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
     effective = dict(params)
     if not any(key in params for key in _TEMPLATE_PRICING_KEYS):
@@ -5792,6 +5814,15 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                         self._f5_skips.append(dict(reason="frozen_stop_wrong_side_of_entry_open",
                             signal_at=self._f5_signal_at, execution_at=int(self.data.index[-1].timestamp()),
                             frozen_stop=str(stop), entry_open=str(self.data.Open[-1])))
+                        order.cancel()
+                        self._f5_order = None
+                    elif (self._pattern_confirm_queue is not None and
+                          self._f5_frozen.take_price is not None and
+                          Decimal(str(self._broker._adjusted_price(order.size, self.data.Open[-1])))
+                          >= self._f5_frozen.take_price):
+                        self._f5_skips.append(dict(reason="entry_open_at_or_above_frozen_target",
+                            signal_at=self._f5_signal_at, execution_at=int(self.data.index[-1].timestamp()),
+                            frozen_target=str(self._f5_frozen.take_price), entry_open=str(self.data.Open[-1])))
                         order.cancel()
                         self._f5_order = None
                 process_orders()
@@ -5970,6 +6001,15 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                         self._f6_skips.append(dict(reason="frozen_stop_wrong_side_of_entry_open",
                             signal_at=self._f6_signal_at, execution_at=int(self.data.index[-1].timestamp()),
                             frozen_stop=str(stop), entry_open=str(self.data.Open[-1])))
+                        order.cancel()
+                        self._f6_order = None
+                    elif (self._pattern_confirm_queue is not None and
+                          self._f6_frozen.take_price is not None and
+                          Decimal(str(self._broker._adjusted_price(order.size, self.data.Open[-1])))
+                          >= self._f6_frozen.take_price):
+                        self._f6_skips.append(dict(reason="entry_open_at_or_above_frozen_target",
+                            signal_at=self._f6_signal_at, execution_at=int(self.data.index[-1].timestamp()),
+                            frozen_target=str(self._f6_frozen.take_price), entry_open=str(self.data.Open[-1])))
                         order.cancel()
                         self._f6_order = None
                 process_orders()
@@ -6313,11 +6353,14 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                 order = self._fib_order
                 if order is not None and order in self.orders:
                     opening = Decimal(str(self.data.Open[-1]))
+                    # Preserve legacy raw-open behavior off; confirmation uses the effective fill.
+                    target_fill = (Decimal(str(self._broker._adjusted_price(order.size, self.data.Open[-1])))
+                                   if self._pattern_confirm_queue is not None else opening)
                     state = self._fib_frozen
                     reason = ("frozen_stop_wrong_side_of_entry_open"
                               if state.initial_stop is not None and opening <= state.initial_stop else
                               "entry_open_at_or_above_frozen_target"
-                              if state.take_price is not None and opening >= state.take_price else None)
+                              if state.take_price is not None and target_fill >= state.take_price else None)
                     if reason:
                         self._fib_skips.append(dict(reason=reason, signal_index=self._fib_signal_index,
                             execution_index=self._warmup_bars + len(self.data) - 1,
@@ -9822,7 +9865,7 @@ async def run_backtest(
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **ema_warmup_assumptions,
                 **({"entry_filter_main_gaps": entry_filter_main_gaps} if entry_filter_main_gaps else {}),
-                **({"pattern_confirm": stats["_strategy"]._pattern_confirm_queue.report()}
+                **({"pattern_confirm": _pattern_confirm_assumptions(stats["_strategy"], effective_tool_id)}
                    if filter_config is not None and filter_config.pattern_confirm_enabled else {}),
                 **({"vwap_main_gaps": vwap_main_gaps} if vwap_main_gaps else {}),
                 **risk_assumptions(risk),
