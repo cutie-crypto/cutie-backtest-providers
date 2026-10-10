@@ -58,6 +58,7 @@ def unwired_tools():
 
 @pytest.mark.parametrize('case', sorted(CASES))
 def test_omitted_keys_byte_identical_to_5ddd8eb(case, monkeypatch, tmp_path):
+    monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     assert base.snapshot(monkeypatch, tmp_path, *CASES[case]) == GOLDEN['cases'][case]
 
 

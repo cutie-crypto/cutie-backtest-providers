@@ -293,7 +293,7 @@ def test_backtest_spot_path_unaffected_by_futures_changes(client, monkeypatch, t
 
     if with_risk == "oversized":
         import strategy_risk_report
-        monkeypatch.setattr(strategy_risk_report, "build_risk_report", lambda *a, **kw: {"payload": "x" * 262144})
+        monkeypatch.setattr(strategy_risk_report, "build_risk_report", lambda *a, **kw: {"payload": "x" * 1048576})
 
     step_ms = 3600 * 1000
     start_ms = 1_700_000_000_000

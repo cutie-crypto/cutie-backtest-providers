@@ -336,6 +336,12 @@ def test_catalog_existing_entries_byte_identical():
             added = {key for key in current if key.startswith('time_')}
             assert added == set(api._TIME_PARAM_SCHEMA_PROPERTIES), tool_id
             entry['param_schema']['properties'] = {k: v for k, v in current.items() if k not in added}
+        # CALEXCH：calendar_schedule 补上与 opening_range_breakout 同形同默认的 exchange 键，是唯一允许的差异。
+        if tool_id == 'local.backtesting_py.calendar_schedule':
+            current = entry['param_schema']['properties']
+            orb = api.TOOL_SPECS['local.backtesting_py.opening_range_breakout']['param_schema_properties']
+            assert current.get('exchange') == orb['exchange'], tool_id
+            entry['param_schema']['properties'] = {k: v for k, v in current.items() if k != 'exchange'}
         new = json.dumps(entry, ensure_ascii=False, separators=(',', ':')).encode()
         assert old == new, tool_id
     # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。
