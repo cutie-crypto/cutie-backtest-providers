@@ -414,31 +414,64 @@ def test_unlevered_short_blowout_is_insolvency(monkeypatch, tmp_path):
     assert record['exit_reason'] == 'insolvency'
 
 
-def test_settle_exits_fails_closed_on_unattributable_rows():
+def entry_blowout_frame():
+    data = frame()
+    data.iloc[4] = [104, 260, 100, 250, 1]  # the entry bar itself: a short from 104 is wiped out by its close 250
+    return data
+
+
+ENTRY_BLOWOUT = {**one('2026-01-01T05:00:00Z', bars_before=1, bars_after=3), 'direction': 'short'}
+
+
+def test_insolvent_on_the_entry_bar_is_entered_with_one_insolvency_exit(monkeypatch, tmp_path):
+    body = post(monkeypatch, tmp_path, ENTRY_BLOWOUT, data=entry_blowout_frame())
+    assert body['result_status'] == 'success', body.get('error_message')
+    # The short fills at bar 4 open 104 and the broker's equity check on that same bar closes it at
+    # bar 4's close 250 and breaks the run: next() never runs on bar 4.
+    assert legs(body) == [(4, '104', 4, '250', 'short')]
+    record = events_of(body)[0]
+    assert (record['status'], record['entry_utc'], record['entry_price']) == (
+        'entered', '2026-01-01T04:00:00+00:00', 104.0)
+    assert record['exits'] == [dict(time='2026-01-01T04:00:00+00:00', price=250.0, reason='insolvency')]
+    assert (record['exit_reason'], record['exit_price'], record['exit_utc']) == (
+        'insolvency', 250.0, '2026-01-01T04:00:00+00:00')
+
+
+def test_settle_derives_outcomes_and_fails_closed_on_unattributable_rows():
     from strategy_event_window import settle_event_window_exits
 
-    def entered():
-        return dict(status='entered', ts_utc='2026-01-01T05:00:00+00:00', entry_utc='2026-01-01T04:00:00+00:00',
-                    exits=[dict(time='x', price=0.0, reason='window_end')])
-    row = dict(seq=1, opened_at=T0 + 4 * H, closed_at=T0 + 7 * H, exit_price='107')
-    events = [entered()]
-    settle_event_window_exits(events, [row])
-    assert events[0]['exits'] == [dict(time='2026-01-01T07:00:00+00:00', price=107.0, reason='window_end')]
-    with pytest.raises(ValueError, match='matches 0 entered events'):
-        settle_event_window_exits([entered()], [row, {**row, 'seq': 2, 'opened_at': T0 + 9 * H}])
-    with pytest.raises(ValueError, match='matches 2 entered events'):
-        settle_event_window_exits([entered(), entered()], [row])
-    with pytest.raises(ValueError, match='1 recorded exits but 2 result.v2 rows'):
-        settle_event_window_exits([entered()], [row, {**row, 'seq': 2}])
-    with pytest.raises(ValueError, match='1 recorded exits but 0 result.v2 rows'):
-        settle_event_window_exits([entered()], [])
+    def submitted():
+        return dict(status='submitted', ts_utc='2026-01-01T05:00:00+00:00', entry_bar_utc='2026-01-01T04:00:00+00:00')
+    opens = [T0 + i * H for i in range(12)]
+    row = dict(seq=1, opened_at=T0 + 4 * H, closed_at=T0 + 7 * H, entry_price='104', exit_price='107')
+
+    def settle(events, rows, isolated_risk=None, decisions=None, stop_bar=None):
+        settle_event_window_exits(events, rows, isolated_risk, decisions or {}, opens, stop_bar)
+        return events[0]
+    record = settle([submitted()], [row], decisions={6: 'window_end'})
+    assert (record['status'], record['entry_utc'], record['entry_price']) == (
+        'entered', '2026-01-01T04:00:00+00:00', 104.0)
+    assert record['exits'] == [dict(time='2026-01-01T07:00:00+00:00', price=107.0, reason='window_end')]
+    # No row opened on the entry bar: the order was dropped at the fill.
+    assert settle([submitted()], []) == dict(submitted(), status='rejected_at_fill')
+    # Reason priority: liquidation > the decision one bar earlier > the break bar > finalize.
+    assert settle([submitted()], [row], {'liquidations': [dict(seq=1)]}, {6: 'stop_loss'}, 7)['exit_reason'] == 'liquidation'
+    assert settle([submitted()], [row], None, {6: 'stop_loss'}, 7)['exit_reason'] == 'stop_loss'
+    assert settle([submitted()], [row], None, {7: 'stop_loss'}, 7)['exit_reason'] == 'insolvency'
+    assert settle([submitted()], [row], None, {5: 'stop_loss'})['exit_reason'] == 'engine_finalize_trades_settlement'
+    with pytest.raises(ValueError, match='matches 0 submitted events'):
+        settle([submitted()], [row, {**row, 'seq': 2, 'opened_at': T0 + 9 * H}])
+    with pytest.raises(ValueError, match='matches 2 submitted events'):
+        settle([submitted(), submitted()], [row])
 
 
 @pytest.mark.parametrize('params,data', [(GOLDEN_PARAMS, frame), (PARTIAL, frame),
                                          ({**GOLDEN_PARAMS, 'direction': 'short'}, frame),
                                          ({**PARTIAL, 'events': EVENTS, 'tp2_r': 2}, frame),
-                                         (LIQUIDATION, liquidation_frame), (BLOWOUT, blowout_frame)],
-                         ids=['golden', 'partial', 'short', 'partial_three_events', 'liquidation', 'insolvency'])
+                                         (LIQUIDATION, liquidation_frame), (BLOWOUT, blowout_frame),
+                                         (ENTRY_BLOWOUT, entry_blowout_frame)],
+                         ids=['golden', 'partial', 'short', 'partial_three_events', 'liquidation', 'insolvency',
+                              'insolvency_on_entry_bar'])
 def test_exits_count_equals_result_rows(monkeypatch, tmp_path, params, data):
     body = post(monkeypatch, tmp_path, params, data=data())
     entered = [r for r in events_of(body) if r['status'] == 'entered']
