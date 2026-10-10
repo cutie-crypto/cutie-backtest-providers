@@ -1521,10 +1521,16 @@ def _fetch_artifact_metric_chunk(
     start_at: int,
     end_at: int,
 ) -> list[dict[str, Any]]:
+    """One inclusive ``/metrics`` request; every label is sent verbatim (P1).
+
+    The caller owns label normalisation (quote-suffix stripping, exchange
+    casing): the artifact path passes its historical values, the fear & greed
+    template passes ``MARKET`` / ``alternative_me`` unchanged.
+    """
     if not CENTRAL_MARKET_DATA_URL or not CENTRAL_MARKET_DATA_TOKEN:
         return []
     params = {
-        "symbol": re.sub(r"(?:USDT|USDC|BUSD)$", "", symbol.upper()),
+        "symbol": symbol,
         "metric": metric,
         "interval": interval,
         "exchange": exchange,
@@ -1606,6 +1612,35 @@ def _fetch_artifact_features(
         if requirement["exchange"] == "all"
         else requirement["exchange"].title()
     )
+    # Artifact labels stay byte-identical to the pre-P1 request: base asset
+    # without quote suffix, exchange title-cased (AGGREGATED for "all").
+    return _fetch_metric_series(
+        symbol=re.sub(r"(?:USDT|USDC|BUSD)$", "", symbol.upper()),
+        exchange=exchange,
+        metric=metric,
+        interval=requirement["interval"],
+        start_at=start_at,
+        end_at=end_at,
+    )
+
+
+def _fetch_metric_series(
+    *,
+    symbol: str,
+    exchange: str,
+    metric: str,
+    interval: str,
+    start_at: int,
+    end_at: int,
+    path: str = "$.data_streams.feature",
+) -> list[dict[str, Any]]:
+    """Generic external metric series over the half-open ``[start_at, end_at)``.
+
+    symbol / exchange / metric / interval are passed to the central ``/metrics``
+    API exactly as given (no casing, no suffix stripping). Fails closed with
+    ERR_COVERAGE_INCOMPLETE on a malformed row, an empty stream, a duplicate
+    timestamp or a gap; each row carries ``available_at = ts + interval``.
+    """
     raw_rows: list[dict[str, Any]] = []
     chunk_seconds = 90 * 24 * 60 * 60
     cursor = start_at
@@ -1617,7 +1652,7 @@ def _fetch_artifact_features(
             _fetch_artifact_metric_chunk(
                 symbol=symbol,
                 metric=metric,
-                interval=requirement["interval"],
+                interval=interval,
                 exchange=exchange,
                 start_at=cursor,
                 end_at=chunk_end - 1,
@@ -1632,7 +1667,7 @@ def _fetch_artifact_features(
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise StrategyContractError(
                 ERR_COVERAGE_INCOMPLETE,
-                "$.data_streams.feature",
+                path,
                 "central feature row is malformed",
             ) from exc
         if start_at <= timestamp < end_at:
@@ -1641,12 +1676,12 @@ def _fetch_artifact_features(
     if not rows or len({item["ts"] for item in rows}) != len(rows):
         raise StrategyContractError(
             ERR_COVERAGE_INCOMPLETE,
-            "$.data_streams.feature",
+            path,
             "declared feature stream is empty or contains duplicate timestamps",
         )
-    _assert_contiguous(rows, "ts", requirement["interval"], "$.data_streams.feature")
+    _assert_contiguous(rows, "ts", interval, path)
     revision = canonical_json_sha256(rows)
-    step = _timeframe_milliseconds(requirement["interval"]) // 1000
+    step = _timeframe_milliseconds(interval) // 1000
     return [
         {
             "ts": item["ts"],
