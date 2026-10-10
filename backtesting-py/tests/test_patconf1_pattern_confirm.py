@@ -32,7 +32,10 @@ from strategy_entry_filters import (FILTER_PARAM_SCHEMA_PROPERTIES, PATTERN_CONF
 PATTERN_CONFIRM_SCHEMA_KEYS = tuple(PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES)
 
 GOLDEN = json.loads((Path(__file__).parent / 'fixtures/patconf1_5ddd8eb.json').read_text())
-CASES = base.cases()
+# P-EVENT0: event_window postdates 5ddd8eb (not in the immutable golden); its keys-omitted body is pinned
+# byte-for-byte by tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
+EVENT0 = {'event_window'}
+CASES = {key: case for key, case in base.cases().items() if case[0] not in EVENT0}
 LAYER = dict(filter_layer_enabled=True, filter_pattern_confirm_enabled=True)
 
 
@@ -46,8 +49,9 @@ def test_omitted_keys_byte_identical_to_5ddd8eb(case, monkeypatch, tmp_path):
 def test_golden_covers_every_filter_template():
     assert GOLDEN['baseline_sha'] == '5ddd8eb' and set(GOLDEN['cases']) == set(CASES)
     tools = base.filter_tools()
-    assert len(tools) == 51
-    assert {k.split('/', 1)[1] for k in CASES if k.startswith('off/')} == set(tools)
+    assert len(tools) == 52 and EVENT0 <= set(tools)
+    assert {k.split('/', 1)[1] for k in CASES if k.startswith('off/')} == set(tools) - EVENT0
+    assert (Path(__file__).parent / 'fixtures/event0_window_golden.json').is_file()
     traded = {k.split('/', 1)[1] for k, v in GOLDEN['cases'].items() if json.loads(v)['trades']}
     assert set(tools) - traded == {'volume_breakout'}
 
@@ -65,7 +69,7 @@ def test_pattern_confirm_schema_is_two_keys_apart_from_published_filter_keys():
 def test_no_catalog_schema_publishes_the_keys_while_unwired(monkeypatch):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     tools = TestClient(p.app).get('/catalog').json()['tools']
-    assert len(tools) == 59
+    assert len(tools) == 60  # P-EVENT0 +1
     for tool in tools:
         assert not set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(tool['param_schema']['properties']), tool['tool_id']
     for spec in p.TOOL_SPECS.values():
