@@ -155,6 +155,9 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
                             continue
                     else:
                         first = Decimal(str(self.data.Open[indices[0]]))
+                        if first <= 0:
+                            self._skip(record, 'invalid_pre_event_price')
+                            continue
                         last = Decimal(str(self.data.Close[indices[-1]]))
                         record['move_pct'] = str((last - first) / first * 100)
                 self._by_event.setdefault(activation, []).append(record)
