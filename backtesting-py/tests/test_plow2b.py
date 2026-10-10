@@ -20,7 +20,8 @@ SHORT = {'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'hea
          'bearish_engulfing', 'shooting_star', 'evening_star',  # SHORT-PAT-4
          'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5
 # Templates whose stop needs a user stop_loss_pct to exist at all.
-EXTRA = {'red_streak_rsi': dict(stop_loss_pct=2)}
+EXTRA = {'red_streak_rsi': dict(stop_loss_pct=2),
+         'event_window': dict(events=[dict(ts_utc='2026-01-03T05:00:00Z', label='plow2b')])}  # P-EVENT0
 # Closes walk to the stop: legacy close-only stop decisions (risk layer off), and RSI divergences whose
 # RSI exit would fire first on flat closes.
 # vwap_reversion walks closes too: a close back at VWAP would exit first.
