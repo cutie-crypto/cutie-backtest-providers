@@ -5008,6 +5008,172 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
     }
 
 
+# P1：恐惧贪婪指数（alternative.me）日频存档，中心表 market_metrics_history 的标签原样传给 /metrics
+# （不做 USDT 去尾、不做 .title()）。最早存档日 2018-02-01；更早的窗口在取数前拒绝。
+FEAR_GREED_TOOL_ID = "local.backtesting_py.fear_greed_scale_in"
+FEAR_GREED_EARLIEST_TS = 1517443200  # 2018-02-01 00:00:00 UTC
+FEAR_GREED_SERIES: dict[str, Any] = {
+    "symbol": "MARKET",
+    "exchange": "alternative_me",
+    "metric": "fear_greed_index",
+    "interval": "1d",
+    "earliest_ts": FEAR_GREED_EARLIEST_TS,
+    "assumption_key": "fear_greed_series",
+    "gap_reason": "fear_greed_data_gap",
+    "history_reason": "fear_greed_history_unavailable",
+}
+
+
+def _utc_date(ts: int) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
+
+
+def _external_series_need(bars, interval: str) -> tuple[int, int]:
+    """Day-series timestamps the decisions on ``bars`` consume: [first, last].
+
+    A decision at a bar close may read the newest row whose ``available_at``
+    (= ts + interval) is <= that close, i.e. ts = floor(close) - interval.
+    """
+    step = _timeframe_milliseconds(interval) // 1000
+    return (
+        (bars[0].close_time // step) * step - step,
+        (bars[-1].close_time // step) * step - step,
+    )
+
+
+@_with_ledger_time_config
+def _build_fear_greed_scale_in(params: dict[str, Any], *, initial_capital: float = 10000.0) -> dict[str, Any]:
+    """P1 恐贪分批：恐贪值 <= buy_threshold 买一份 buy_notional（最多 max_lots 份），
+    >= sell_threshold 全部卖出；信号在 K 线收盘判、下一根开盘成交。
+
+    防偷看：D 日（ts=D 00:00 UTC）的值 available_at = D+1 00:00 UTC，只有收盘时刻
+    >= available_at 的那次判定才能读到它，最早成交在 D+1 开盘。序列由 runner 按
+    ``external_series`` 取数并 fail-closed 校验缺口后注入 signal_factory。
+    """
+    values: dict[str, Decimal] = {}
+    for key, default in (("buy_threshold", 20), ("sell_threshold", 80), ("buy_notional", None)):
+        raw = params.get(key, default)
+        if raw is None or isinstance(raw, bool):
+            raise ValueError(f"INVALID_PARAMS:{key} is required")
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"INVALID_PARAMS:{key} must be a number")
+        if not value.is_finite() or value <= 0:
+            raise ValueError(f"INVALID_PARAMS:{key} must be > 0")
+        values[key] = value
+    buy_threshold, sell_threshold, buy_notional = (
+        values[k] for k in ("buy_threshold", "sell_threshold", "buy_notional"))
+    # 买卖条件不得同时成立（与 rsi_scale_in_out D11 同口径），先于区间校验给出直白拒因。
+    if not sell_threshold > buy_threshold:
+        raise ValueError("INVALID_PARAMS:require sell_threshold > buy_threshold")
+    for key, minimum, maximum in (("buy_threshold", 1, 49), ("sell_threshold", 51, 99)):
+        if not Decimal(minimum) <= values[key] <= Decimal(maximum):
+            raise ValueError(f"INVALID_PARAMS:{key} must be in [{minimum}, {maximum}]")
+    try:
+        raw_lots = params.get("max_lots", 5)
+        lots_value = Decimal(str(raw_lots))
+        if isinstance(raw_lots, bool) or not lots_value.is_finite() or lots_value != lots_value.to_integral_value():
+            raise ValueError
+        max_lots = int(lots_value)
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError("INVALID_PARAMS:max_lots must be an integer")
+    if not 1 <= max_lots <= 20:
+        raise ValueError("INVALID_PARAMS:max_lots must be in [1, 20]")
+
+    series_config = FEAR_GREED_SERIES
+    step = _timeframe_milliseconds(series_config["interval"]) // 1000
+    # Reporting mirror only. Trading state belongs to each signal/on_fill closure.
+    stats: dict[str, Any] = {"buy_signals": 0, "sell_signals": 0, "lot_cap_skips": 0, "series": None}
+
+    def signal_factory(bars, *, series, time_context=None):
+        rows = sorted(series, key=lambda row: row["ts"])
+        usable: list[Optional[Decimal]] = []
+        cursor = -1
+        for bar in bars:
+            # 防偷看：只取 available_at <= 本根收盘时刻的最新一行。
+            while cursor + 1 < len(rows) and rows[cursor + 1]["available_at"] <= bar.close_time:
+                cursor += 1
+            usable.append(Decimal(rows[cursor]["value"]) if cursor >= 0 else None)
+        held_lots = 0
+        stats.update(buy_signals=0, sell_signals=0, lot_cap_skips=0, series={
+            "symbol": series_config["symbol"],
+            "exchange": series_config["exchange"],
+            "metric": series_config["metric"],
+            "interval": series_config["interval"],
+            "first_ts": rows[0]["ts"],
+            "last_ts": rows[-1]["ts"],
+            "first_date": _utc_date(rows[0]["ts"]),
+            "last_date": _utc_date(rows[-1]["ts"]),
+            "count": len(rows),
+            "revision": rows[0]["revision"],
+            "earliest_available_date": _utc_date(series_config["earliest_ts"]),
+            "available_at_rule": f"available_at = ts + {step}s; a bar-close decision reads the newest "
+                                 "row with available_at <= bar close, so day D first trades at the D+1 open",
+            "gap_policy": "fail_closed",
+        })
+
+        def signal(index):
+            value = usable[index]
+            if value is None:
+                return "hold"
+            if held_lots and value >= sell_threshold:
+                stats["sell_signals"] += 1
+                return "sell_all"
+            if value <= buy_threshold:
+                if held_lots >= max_lots:
+                    stats["lot_cap_skips"] += 1
+                    return "hold"
+                stats["buy_signals"] += 1
+                return ("buy", buy_notional)
+            return "hold"
+
+        def on_fill(index, action, filled, price, *, reason=None):
+            nonlocal held_lots
+            if not filled:
+                return
+            if action == "buy":
+                held_lots += 1
+            elif action == "sell_all":
+                held_lots = 0
+
+        return signal, on_fill
+
+    def extra_assumptions(ledger):
+        return {
+            "position_mode": "fear_greed_scale_in",
+            "buy_threshold": canonical_decimal_str(buy_threshold),
+            "sell_threshold": canonical_decimal_str(sell_threshold),
+            "buy_notional": canonical_decimal_str(buy_notional),
+            "max_lots": max_lots,
+            "sell_mode": "sell_all",
+            "buy_signals": stats["buy_signals"],
+            "sell_signals": stats["sell_signals"],
+            "lot_cap_skips": stats["lot_cap_skips"],
+            "total_invested": canonical_decimal_str(ledger.total_invested),
+            "max_unrealized_loss": canonical_decimal_str(ledger.max_unrealized_loss),
+            series_config["assumption_key"]: stats["series"],
+        }
+
+    return {
+        "strategy": None,
+        "executed_name": (
+            f"Fear & Greed Scale In ({buy_threshold}/{sell_threshold}, {buy_notional} x{max_lots})"
+        ),
+        "min_bars": 1,
+        "scale_in_out": {
+            "buy_notional": buy_notional,
+            "sell_notional": buy_notional,
+            "lot_order": "fifo",
+            "external_series": series_config,
+            "signal_factory": signal_factory,
+            "extra_assumptions": extra_assumptions,
+        },
+    }
+
+
 # 123 B2：三个组合模板 tool 共用的公共参数 schema（SPEC_组合策略v3契约 §6.1）。
 # _validate_params_against_schema 只理解 integer/number/string + min/max/enum，
 # 对 array/object 不做深校验（deferred to strategy_spec_v3_builder._build 与
@@ -7501,6 +7667,34 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
+    # P1：恐贪分批。外部序列走中心 /metrics（MARKET / alternative_me / fear_greed_index / 1d），
+    # 不用内联事件通道（建单入参上限 8 KB）。只做现货、只支持 1d。
+    FEAR_GREED_TOOL_ID: {
+        "name": "Local Spot Fear & Greed Scale In",
+        "description": (
+            "Spot long-only fixed-notional scale in on the alternative.me Crypto Fear & "
+            "Greed Index (daily, from 2018-02-01): a bar-close index at or below "
+            "buy_threshold buys buy_notional USD at the next bar open, up to max_lots "
+            "lots; an index at or above sell_threshold sells all lots at the next bar "
+            "open. Day D's index becomes available at D+1 00:00 UTC, so it trades no "
+            "earlier than the D+1 open; any missing day in the window fails the run. "
+            "1d candles only — maps to KOL '极度恐惧分批买、贪婪清仓'"
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "runner": SCALE_IN_OUT_RUNNER,
+        "markets": ["spot"],
+        "timeframes": ["1d"],
+        "external_series": FEAR_GREED_SERIES,
+        "build": _build_fear_greed_scale_in,
+        "param_schema_properties": {
+            "buy_threshold": {"type": "number", "default": 20, "minimum": 1, "maximum": 49},
+            "sell_threshold": {"type": "number", "default": 80, "minimum": 51, "maximum": 99},
+            "buy_notional": {"type": "number", "minimum": 0},
+            "max_lots": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20},
+            "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+        },
+    },
     "local.backtesting_py.parabolic_sar": {
         "name": "Local Backtesting.py Parabolic SAR Flip",
         "description": (
@@ -7695,6 +7889,7 @@ POSITION_SIZING_UNWIRED_TOOLS = frozenset({
     "local.backtesting_py.basket_ratio_sma_cross", "local.backtesting_py.basket_ratio_roc",
     "local.backtesting_py.basket_ratio_zscore",
     ROTATION_TOOL_ID,  # 10-E 轮动：v4 组合账本自管仓位，不消费定仓键（集成 D 登记）
+    FEAR_GREED_TOOL_ID,  # P1 恐贪分批：每份金额由 buy_notional 定
 })
 assert POSITION_SIZING_UNWIRED_TOOLS == {
     tool for tool, spec in TOOL_SPECS.items()
@@ -7711,6 +7906,7 @@ RUNNER_SIZING_ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "local.backtesting_py.basket_ratio_roc": frozenset(),
     "local.backtesting_py.basket_ratio_zscore": frozenset(),
     "local.backtesting_py.portfolio_rotation": frozenset(),
+    "local.backtesting_py.fear_greed_scale_in": frozenset(),
 }  # 字面量逐个登记：新增不接定仓的 runner 忘了登记，下面的 import 期检查报红
 
 
@@ -7738,6 +7934,7 @@ _RUNNER_SIZING_HINTS = {
     "local.backtesting_py.basket_ratio_roc": "margin per leg is set by margin_per_leg",
     "local.backtesting_py.basket_ratio_zscore": "margin per leg is set by margin_per_leg",
     ROTATION_TOOL_ID: "it rebalances to equal 1/K weights of net value and has no single-position sizing",
+    FEAR_GREED_TOOL_ID: "per-lot amount is set by buy_notional and the lot count by max_lots",
 }
 assert set(_RUNNER_SIZING_HINTS) == set(POSITION_SIZING_UNWIRED_TOOLS), "every unwired runner needs a sizing hint"
 
@@ -8530,6 +8727,20 @@ def _write_scale_in_out_report(run_id: str, executed_name: str, trades_v2: list[
     return report_filename
 
 
+def _external_series_history_failure(run_id: str, series_config: dict[str, Any], need_first: int) -> JSONResponse:
+    earliest = _utc_date(series_config["earliest_ts"])
+    return _business_failure(
+        run_id,
+        "INSUFFICIENT_DATA",
+        (
+            f"{series_config['metric']} history starts at {earliest} (UTC); the backtest window needs "
+            f"{_utc_date(need_first)}. Choose start_at on or after {earliest}"
+        ),
+        reason=series_config["history_reason"],
+        details={"earliest_available_date": earliest, "series_metric": series_config["metric"]},
+    )
+
+
 def _run_scale_in_out_backtest(
     *,
     body: dict[str, Any],
@@ -8580,10 +8791,53 @@ def _run_scale_in_out_backtest(
             LedgerBar(open_time=open_time, close_time=close_time, open=Decimal(str(float(open_))), close=close)
             for (open_time, close_time, close), open_ in zip(_result_v2_bar_closes(df, timeframe), df["Open"])
         ]
+        series_kwargs: dict[str, Any] = {}
+        series_config = config.get("external_series")
+        if series_config is not None:
+            # P1：外部日频序列（恐贪）。决策要读的每一天都必须在存档里，缺一天整单失败。
+            need_first, need_last = _external_series_need(bars, series_config["interval"])
+            if need_first < series_config["earliest_ts"]:
+                return _external_series_history_failure(run_id, series_config, need_first)
+            try:
+                series_rows = _fetch_metric_series(
+                    symbol=series_config["symbol"],
+                    exchange=series_config["exchange"],
+                    metric=series_config["metric"],
+                    interval=series_config["interval"],
+                    start_at=need_first,
+                    end_at=need_last + _timeframe_milliseconds(series_config["interval"]) // 1000,
+                    path=f"$.external_series.{series_config['metric']}",
+                )
+                if series_rows[0]["ts"] != need_first or series_rows[-1]["ts"] != need_last:
+                    raise StrategyContractError(
+                        ERR_COVERAGE_INCOMPLETE,
+                        f"$.external_series.{series_config['metric']}",
+                        "declared stream does not cover the backtest window",
+                        required=need_first if series_rows[0]["ts"] != need_first else need_last,
+                        actual=series_rows[0]["ts"] if series_rows[0]["ts"] != need_first else series_rows[-1]["ts"],
+                    )
+            except StrategyContractError as e:
+                return _business_failure(
+                    run_id,
+                    "TIME_DATA_GAP",
+                    (
+                        f"TIME_DATA_GAP:{series_config['metric']} series is incomplete for the backtest window "
+                        f"{_utc_date(need_first)}..{_utc_date(need_last)} ({e.message}); this template does "
+                        "not run on a partial series"
+                    ),
+                    reason=series_config["gap_reason"],
+                    details={
+                        "series_metric": series_config["metric"],
+                        "required_first_date": _utc_date(need_first),
+                        "required_last_date": _utc_date(need_last),
+                    },
+                )
+            series_kwargs["series"] = series_rows
         if "signal_factory" in config:
             # R3 分批账本模板（网格 / DCA）：信号与成交回调由模板自带，策略状态只在其闭包里。
             signal, on_fill = config["signal_factory"](
-                bars, **(dict(time_context=time_context) if time_context is not None else {}))
+                bars, **series_kwargs,
+                **(dict(time_context=time_context) if time_context is not None else {}))
         else:
             closes = np.concatenate([
                 warmup_df["Close"].to_numpy(dtype="float64"),
@@ -9437,6 +9691,17 @@ async def run_backtest(
         rejection = _scale_in_out_rejection(params, bt_req, market)
         if rejection:
             return _validation_failure("INVALID_PARAMS", rejection)
+        if "timeframes" in tool_spec and timeframe not in tool_spec["timeframes"]:
+            return _validation_failure(
+                "TIMEFRAME_UNSUPPORTED",
+                f"Unsupported timeframe for this template: {timeframe}. Supported: {tool_spec['timeframes']}",
+            )
+        series_config = tool_spec.get("external_series")
+        if series_config is not None:
+            series_step = _timeframe_milliseconds(series_config["interval"]) // 1000
+            if (start_at // series_step) * series_step < series_config["earliest_ts"]:
+                return _external_series_history_failure(
+                    run_id, series_config, (start_at // series_step) * series_step)
     schema_err = _validate_params_against_schema(params, tool_spec["param_schema_properties"])
     if schema_err:  # F2: enforce catalog schema at runtime (unknown key / type / bounds)
         return _validation_failure("INVALID_PARAMS", schema_err)
