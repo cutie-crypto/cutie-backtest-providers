@@ -7873,6 +7873,14 @@ for _event_window_key in ("atr_stop_multiplier", "risk_atr_period"):
     del _event_window_properties[_event_window_key]
 del _event_window_properties, _event_window_key
 
+# P1 fear_greed_scale_in publishes only its own keys: the shared time layer and max_holding_bars are
+# not wired/verified for the daily external-series template, so requests carrying them are rejected
+# as unknown keys by the schema check before fetch.
+_fear_greed_properties = TOOL_SPECS[FEAR_GREED_TOOL_ID]["param_schema_properties"]
+for _fear_greed_key in (*_TIME_PARAM_SCHEMA_PROPERTIES, "max_holding_bars"):
+    del _fear_greed_properties[_fear_greed_key]
+del _fear_greed_properties, _fear_greed_key
+
 # Q18 has intrinsic exits and strictly zero warmup: advertise only consumed shared
 # sizing/leverage keys, not optional indicators, filters or alternate stop/clock rules.
 for _macro_kind, _macro_schema in MACRO_SCHEMAS.items():

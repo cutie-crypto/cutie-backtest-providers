@@ -199,6 +199,7 @@ def test_builder_rejects_sell_not_above_buy():
     {"buy_threshold": 0}, {"buy_threshold": 50}, {"sell_threshold": 50}, {"sell_threshold": 100},
     {"buy_threshold": 49, "sell_threshold": 49},
     {"max_lots": 0}, {"max_lots": 21}, {"max_lots": 1.5}, {"unknown_key": 1},
+    {"time_layer_enabled": True}, {"max_holding_bars": 3},
 ])
 def test_invalid_params_over_http(client, monkeypatch, bad):
     _install(monkeypatch, days=5, fg={})
@@ -253,7 +254,7 @@ def test_catalog_entry():
     assert spec["runner"] == provider.SCALE_IN_OUT_RUNNER
     assert entry["markets"] == ["spot"] and entry["timeframes"] == ["1d"]
     props = entry["param_schema"]["properties"]
-    assert {k: props[k] for k in ("buy_threshold", "sell_threshold", "buy_notional", "max_lots", "exchange")} == {
+    assert props == {
         "buy_threshold": {"type": "number", "default": 20, "minimum": 1, "maximum": 49},
         "sell_threshold": {"type": "number", "default": 80, "minimum": 51, "maximum": 99},
         "buy_notional": {"type": "number", "minimum": 0},
