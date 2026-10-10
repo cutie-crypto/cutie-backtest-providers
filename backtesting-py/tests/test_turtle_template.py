@@ -242,7 +242,8 @@ def test_registered_route_exclusivity_tags_and_assumptions(monkeypatch, tmp_path
         seqs=[seq for group in groups for seq in group['trade_seqs']]
         assert sorted(seqs)==[t['seq'] for t in result['trades']]
         assert len(seqs)==len(set(seqs))
-        assert all(set(group)=={'group_id','trade_seqs','units'} for group in groups)
+        assert all(set(group)=={'group_id','trade_seqs','units','n','stop'} for group in groups)
+        groups=strip_n_stop(groups)
         assert all(group['units']==len(group['trade_seqs']) for group in groups)
         group_by_seq={seq:group['group_id'] for group in groups for seq in group['trade_seqs']}
         assert result['assumptions']['unit_risk_pct_definition']==provider._TURTLE_RISK_DESCRIPTION
@@ -425,6 +426,11 @@ def directional_fixture(direction):
     return json.loads((FIXTURE.parent / f'turtle_{direction}_golden.json').read_text())
 
 
+def strip_n_stop(groups):
+    """TURTLE-NSTOP 新增 n / stop 两键；旧口径断言在测试侧剔除后逐字节比，金样不重抓。"""
+    return [{k: v for k, v in g.items() if k not in ('n', 'stop')} for g in groups]
+
+
 def expected_groups(expected):
     return [dict(group_id=g['group_id'],
                  trade_seqs=[i+1 for i,t in enumerate(expected['trades']) if t['group_id']==g['group_id']],
@@ -499,7 +505,7 @@ def test_futures_direction_registered_route(monkeypatch,tmp_path,direction):
     engine_cash=max(fx['closes'])*100000
     expected=directional_hand({**fx,'cash':engine_cash})
     scale=Decimal(100000)/Decimal(str(engine_cash))
-    assert result['raw_report']['turtle_groups']==expected_groups(expected)
+    assert strip_n_stop(result['raw_report']['turtle_groups'])==expected_groups(expected)
     group_by_seq={seq:g['group_id'] for g in expected_groups(expected) for seq in g['trade_seqs']}
     assert result['assumptions']['units_skipped']==expected['units_skipped']==1
     assert len(result['trades'])==len(expected['trades'])
