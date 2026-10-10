@@ -7255,7 +7255,7 @@ TOOL_SPECS["local.backtesting_py.red_streak_rsi"]["param_schema_properties"]["ma
 for _filter_tool_spec in TOOL_SPECS.values():
     if getattr(_filter_tool_spec.get("build"), "_supports_entry_filters", False):
         _filter_tool_spec["param_schema_properties"].update(FILTER_PARAM_SCHEMA_PROPERTIES)
-        if _filter_tool_spec["build"]._supports_pattern_confirm:
+        if getattr(_filter_tool_spec["build"], "_supports_pattern_confirm", False):
             _filter_tool_spec["param_schema_properties"].update(PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES)
 del _filter_tool_spec
 
