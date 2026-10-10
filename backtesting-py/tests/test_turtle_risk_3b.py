@@ -202,6 +202,11 @@ def test_expiry_trigger_and_fill_bars_block_reentry(direction):
     assert stats['_strategy'].snapshots[12]==dict(units=0,closing=False,first=11,take=None,orders=0)
 
 
+def strip_n_stop(groups):
+    """TURTLE-NSTOP 新增的 n / stop 两键在测试侧剔除后再逐字节比旧口径，金样不重抓。"""
+    return [{k: v for k, v in g.items() if k not in ('n', 'stop')} for g in groups]
+
+
 def http_result(monkeypatch,tmp_path,data,params):
     monkeypatch.setattr(p,'AUTH_TOKEN','')
     monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a:data.copy())
@@ -233,8 +238,9 @@ def test_registered_report_reason_complete_dict_and_signed_keysets(monkeypatch,t
     data = data.iloc[:end]
     result=http_result(monkeypatch,tmp_path,data,params)
     assert len(result['raw_report']['turtle_groups']) == 1
-    assert result['raw_report']['turtle_groups'][0]==dict(
+    assert strip_n_stop(result['raw_report']['turtle_groups'])[0]==dict(
         group_id='turtle-1',trade_seqs=[1],units=1,exit_reason=reason)
+    assert all(set(g)>={'n','stop'} for g in result['raw_report']['turtle_groups'])
     assert all(set(t)==TRADE_KEYS for t in result['trades'])
     assert set(result['metrics'])=={'total_return','max_drawdown','trade_count'}
     risk=result['assumptions']['turtle_risk']
@@ -252,7 +258,7 @@ def test_enabled_no_rules_preserves_off_response_except_optin_metadata(monkeypat
         assert off[key]==on[key]
     assert 'turtle_risk' not in off['assumptions']
     assert [g['exit_reason'] for g in on['raw_report']['turtle_groups']]==['stop','channel','channel']
-    groups=copy.deepcopy(on['raw_report']['turtle_groups'])
+    groups=copy.deepcopy(strip_n_stop(on['raw_report']['turtle_groups']))
     for group in groups:
         group.pop('exit_reason')
     assert groups==off['raw_report']['turtle_groups']
@@ -270,7 +276,7 @@ def test_last_bar_submission_is_end_of_data_settlement(monkeypatch,tmp_path,reas
     else:
         data.loc[data.index[-1],['Close','Low']] = [96,95]
     result = http_result(monkeypatch,tmp_path,data,params)
-    assert result['raw_report']['turtle_groups'] == [dict(
+    assert strip_n_stop(result['raw_report']['turtle_groups']) == [dict(
         group_id='turtle-1',trade_seqs=[1],units=1,exit_reason='end_of_data')]
 
 
