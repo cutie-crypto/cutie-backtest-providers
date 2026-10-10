@@ -112,6 +112,8 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
             self.divergence_report = dict(kind=kind, compare=config.get('compare', 'rsi'),
                 index_basis='warmup_plus_main_zero_based', setups=setups,
                 skipped_entries=[], entries=[], exits=[])
+            if self._filter_config is not None and self._filter_config.pattern_confirm_enabled:
+                self.divergence_report['skipped_entry_count'] = 0
             self._targets = {}
             self._main_bars = len(self.data)
             process_orders = self._broker._process_orders
@@ -128,6 +130,9 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
                                 reason=('entry_open_at_or_above_frozen_stop' if short else 'entry_open_at_or_below_frozen_stop'),
                                 signal_bar=order.tag.signal_bar, entry_bar=len(self.data)-1,
                                 entry_open=opening, frozen_stop=order.tag.stop))
+                            if self._pattern_confirm_queue is not None:
+                                self.divergence_report['skipped_entries'][-1]['adjusted_open'] = fill
+                                self.divergence_report['skipped_entry_count'] += 1
                             order.cancel()
                 process_orders()
                 for trade in self.trades:
