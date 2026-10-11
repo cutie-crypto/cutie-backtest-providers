@@ -2940,6 +2940,51 @@ def _exit_kind_strategy(strategy):
     return ExitKinds
 
 
+def _final_close_strategy(strategy):
+    """PIN7-E: period-end settlement at the last bar's Close, and no exit decision on that bar.
+
+    backtesting.py's ``finalize_trades`` queues ``trade.close()`` for every leftover trade, then re-runs
+    ``broker.next`` on the last bar's own OHLC, so a market close fills at Open[-1]. That re-run is the
+    only broker pass that starts after the last ``next()`` has finished, so it is told apart from the
+    regular last-bar pass (which runs before ``next()``) and from broker-phase liquidations (which run
+    in the regular pass). Closes filled in the re-run are re-priced to Close[-1]; fee and slippage are
+    computed afterwards from the exit price, so they follow it. ``_total_bars`` feeds
+    ``_FixedRiskMixin._at_final_bar``.
+    """
+
+    class FinalClose(strategy):
+        def init(self):
+            self.__dict__["_total_bars"] = len(self.data)  # init() sees the full-length data view.
+            super().init()
+            broker = self._broker
+            state = self.__dict__
+            close_trade, broker_next = broker._close_trade, broker.next
+
+            def settle_close(trade, price, time_index):
+                if state.get("_final_rerun"):
+                    price = float(self.data.Close[-1])
+                close_trade(trade, price, time_index)
+
+            def final_next():
+                state["_final_rerun"] = bool(state.get("_final_next_done"))
+                try:
+                    broker_next()
+                finally:
+                    state["_final_rerun"] = False
+
+            broker._close_trade, broker.next = settle_close, final_next
+
+        def next(self):
+            super().next()
+            if len(self.data) >= self.__dict__["_total_bars"]:
+                self.__dict__["_final_next_done"] = True
+
+    FinalClose.__module__ = strategy.__module__
+    FinalClose.__name__ = strategy.__name__
+    FinalClose.__qualname__ = strategy.__qualname__
+    return FinalClose
+
+
 def _sorted_exit_kinds(rows: list[tuple[int, int, Any]]) -> list[Any]:
     """Kinds in result.v2 seq order: (closed_at, opened_at) stable sort, exactly as the trade builders."""
     return [kind for _, _, kind in sorted(rows, key=lambda row: (row[0], row[1]))]
@@ -3145,6 +3190,12 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             process_orders()
         self._broker._process_orders = guarded_orders
 
+    def _at_final_bar(self) -> bool:
+        """PIN7-E: the last bar of the run makes no exit decision; the position goes to the period-end
+        settlement (finalize_trades), which fills at that bar's Close."""
+        total = self.__dict__.get("_total_bars")
+        return total is not None and len(self.data) >= total
+
     def _risk_prepare_entry(self) -> None:
         if not self._risk.get("atr_stop_multiplier"):
             return
@@ -3277,6 +3328,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
                     if self._risk_state.stop_state is not None else self._risk_state.initial_stop)
             if self._risk_isolated_exit(stop):
                 return True
+        if self._at_final_bar():
+            return False
         bar = len(self.data) - 1
         fact = self._holding_expiry()
         reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
@@ -3452,6 +3505,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
                 return True
             self._risk_exit_reason = None
         if sl_pct is None and tp_pct is None and not time_enabled:
+            return False
+        if self._at_final_bar():
             return False
         entry_price = self.trades[-1].entry_price
         close = self.data.Close[-1]
@@ -6497,6 +6552,8 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                 return True
             if any(order.parent_trade is trade for order in self.orders):
                 return True
+            if self._at_final_bar():
+                return False
             fact = self._holding_expiry()
             reason = decide_exit(self._risk_state, high=self.data.Close[-1], low=self.data.Close[-1], holding_due=fact.due)
             if reason is None:
@@ -6667,6 +6724,8 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                 return True
             if any(order.parent_trade is trade for order in self.orders):
                 return True
+            if self._at_final_bar():
+                return False
             fact = self._holding_expiry()
             # Disabled risk extension retains close-only triggers; intrinsic
             # expiry still uses the shared fill-bar-is-1 mechanism.
@@ -7076,6 +7135,8 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
             elif any(order.parent_trade is trade for order in self.orders):
                 return True
             else:
+                if self._at_final_bar():
+                    return False
                 fact = self._holding_expiry()
                 reason = decide_exit(self._risk_state,
                     high=self.data.High[-1] if intrinsic else self.data.Close[-1],
@@ -10642,6 +10703,10 @@ async def run_backtest(
 
         # P6: records each closed trade's exit kind (raw_report.trade_exit_kinds).
         StrategyClass = _exit_kind_strategy(strategy_class)
+        if tool_spec.get("runner") != TURTLE_RUNNER:
+            # PIN7-E: period-end settlement at the last Close, no exit decision on the last bar.
+            # The turtle group shares this Backtest but keeps its previous settlement (out of scope).
+            StrategyClass = _final_close_strategy(StrategyClass)
         # backtesting.py trades WHOLE units; a small cash on a high-priced asset
         # (e.g. BTC ~$80k with $10k cash) floors position size to 0 units -> no trades.
         # Run with a large internal cash so sizing is effectively continuous, then scale
@@ -10671,8 +10736,9 @@ async def run_backtest(
             cash=internal_cash,
             commission=commission,
             exclusive_orders=tool_spec.get("exclusive_orders", True),
-            # Settle trades still open at the end (close at last bar) so metrics /
-            # trade_count reflect them instead of silently dropping unrealized PnL.
+            # Settle trades still open at the end so metrics / trade_count reflect them instead of
+            # silently dropping unrealized PnL. backtesting.py fills finalize_trades closes at the last
+            # bar's Open; ExitKinds.stamped_close (PIN7-E) re-prices them to the last bar's Close.
             finalize_trades=True,
             **_leverage_backtest_kwargs(leverage),
         )

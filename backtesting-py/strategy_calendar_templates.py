@@ -222,6 +222,8 @@ def build_cme_gap(p, params, initial_capital):
                 if self._risk_check_exit():
                     pass
                 else:
+                    if self._at_final_bar():
+                        return
                     state = RiskState(Decimal(str(self.trades[-1].entry_price)), None, self._target, None,
                         'long' if self.position.is_long else 'short')
                     if decide_exit(state, high=self.data.High[-1], low=self.data.Low[-1]) is None:
