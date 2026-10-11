@@ -247,6 +247,7 @@ def test_catalog_and_builders_cover_actual_mixins():
         if spec.get('runner') in (p.TURTLE_RUNNER,p.SCALE_IN_OUT_RUNNER,'kernel_v3',p.ROTATION_RUNNER)}
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('risk_case', ['pct','notional'])
 def test_omitted_new_keys_match_immutable_bytes(risk_case):
     expected = fixture_cases()[f'ema_cross/{risk_case}/0']

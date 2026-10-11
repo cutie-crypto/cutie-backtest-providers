@@ -269,6 +269,7 @@ def baseline_provider():
 
 
 # New calendar / short-pattern tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap', 'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell',
                                   'bearish_engulfing', 'shooting_star', 'evening_star',
                                   'three_black_crows', 'bearish_doji_reversal',

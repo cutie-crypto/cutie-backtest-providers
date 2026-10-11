@@ -2554,6 +2554,11 @@ def _parse_fixed_risk_params(params: dict[str, Any], *, template_initial_stop: b
     if error:
         raise ValueError(f"INVALID_PARAMS:{error}")
     enabled = params.get("risk_layer_enabled", False)
+    # Q42-C：调用方没传 risk_layer_enabled 且带了 stop_loss_pct/take_profit_pct 时，默认走统一风控层
+    # （盘中 High/Low 触价）。显式 false 保留旧层收盘判；两键都没有则行为逐字节不变。
+    # 下面的新参数门（ATR/动态键/max_holding_bars）仍只认显式 enabled，不被这条默认值放开。
+    effective_enabled = enabled or ("risk_layer_enabled" not in params and (
+        params.get("stop_loss_pct") is not None or params.get("take_profit_pct") is not None))
     multiplier = params.get("atr_stop_multiplier", 0)
     period = params.get("risk_atr_period", 0)
     profit_r = params.get("take_profit_r", 0)
@@ -2598,8 +2603,9 @@ def _parse_fixed_risk_params(params: dict[str, Any], *, template_initial_stop: b
     out: dict[str, Any] = {}
     if leverage > 1:
         out["leverage"] = leverage
-    if enabled:
+    if effective_enabled:
         out["risk_layer_enabled"] = True
+    if enabled:
         if multiplier:
             out.update(atr_stop_multiplier=multiplier, risk_atr_period=int(period))
         if profit_r:

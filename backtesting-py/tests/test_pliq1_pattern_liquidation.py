@@ -118,6 +118,7 @@ def test_control_group_bytes_match_fac1d60(monkeypatch, tmp_path, key):
     assert q.control_snapshot(monkeypatch, tmp_path, *q.control_cases()[key]) == GOLDEN['cases']['control/' + key]
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('key', sorted(q.lev1_cases()))
 def test_without_leverage_bytes_match_fac1d60(monkeypatch, tmp_path, key):
     assert q.lev1_snapshot(monkeypatch, tmp_path, *q.lev1_cases()[key]) == GOLDEN['cases']['lev1/' + key]

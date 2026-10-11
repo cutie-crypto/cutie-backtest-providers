@@ -196,6 +196,7 @@ def test_http_off_state_does_not_fetch_coarse(monkeypatch,tmp_path,warm):
     assert 'entry_filters' not in result['raw_report']
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('case',single.CASES)
 @pytest.mark.parametrize('warm',[False,True])
 def test_explicit_default_timeframe_preserves_frozen_off_bytes(case,warm,monkeypatch):
