@@ -504,3 +504,89 @@ def test_pegged_asset_exclusion_is_accepted_and_published():
     for tool in (TOOL_ID, 'local.backtesting_py.btc_dominance_rotation'):
         props = api._catalog_tool(tool, api.TOOL_SPECS[tool], ['BTCUSDT'])['param_schema']['properties']
         assert 'pegged_asset' in props['coin_pool']['properties']['excluded']['items']['properties']['reason']['enum']
+
+
+# CCXT-451 C：取价异常按单币路径口径分开上报，不再全压成 INSUFFICIENT_DATA / required_stream_missing。
+def _failing_fetch(cfg, bad, exc):
+    data = streams(cfg)
+
+    def fetch(symbol, start, end):
+        if symbol == bad:
+            raise exc
+        return data[symbol]
+    return fetch
+
+
+@pytest.mark.parametrize('exc', [
+    api.MarketDataFetchError('NO_DATA', 'No OHLCV data is available in the requested range',
+                             central_failure_reason='no_data', central_attempted=True),
+    ValueError('NO_DATA'),
+])
+def test_rotation_fetch_no_data_maps_no_data(exc):
+    cfg = parse_rotation(request()['provider_params'], request())
+    with pytest.raises(RotationError) as error:
+        fetch_rotation(cfg, _failing_fetch(cfg, 'ETHUSDT', exc))
+    assert (error.value.code, error.value.reason) == ('NO_DATA', 'stream_no_data')
+    assert 'ETHUSDT' in str(error.value)
+    assert error.value.provenance == getattr(exc, 'provenance', None)
+
+
+@pytest.mark.parametrize('exc,code,reason', [
+    (api.MarketDataFetchError('DATA_FETCH_FAILED', 'Market data could not be fetched; please retry later',
+                              central_failure_reason='central_timeout', central_attempted=True),
+     'DATA_FETCH_FAILED', 'stream_fetch_failed'),
+    (RuntimeError('RATE_LIMITED'), 'RATE_LIMITED', 'rate_limited'),
+])
+def test_rotation_fetch_failed_maps_data_fetch_failed(exc, code, reason):
+    cfg = parse_rotation(request()['provider_params'], request())
+    with pytest.raises(RotationError) as error:
+        fetch_rotation(cfg, _failing_fetch(cfg, 'ETHUSDT', exc))
+    assert (error.value.code, error.value.reason) == (code, reason)
+    assert 'ETHUSDT' in str(error.value)
+
+
+def test_rotation_gap_reason_distinct_from_fetch_failure():
+    cfg = parse_rotation(request()['provider_params'], request())
+    data = streams(cfg)
+    rows, *meta = data['ETHUSDT']
+    data['ETHUSDT'] = (rows[:5] + rows[6:], *meta)
+    with pytest.raises(RotationError) as error:
+        fetch_rotation(cfg, lambda s, a, b: data[s])
+    assert (error.value.code, error.value.reason) == ('INSUFFICIENT_DATA', 'stream_gap')
+    assert error.value.reason not in ('stream_no_data', 'stream_fetch_failed', 'required_stream_missing')
+    assert error.value.stream == tuple(meta)
+
+
+# PROV-PROVENANCE：失败回包带已取流的真实 provenance，不再落写死占位（attempted=false / source=null）。
+@pytest.mark.parametrize('mode', ['fetch_failed', 'gap'])
+def test_rotation_failure_report_carries_real_provenance(monkeypatch, mode):
+    monkeypatch.setattr(api, '_verify_bearer', lambda _: None)
+    req = request()
+    cfg = parse_rotation(req['provider_params'], req)
+    data = streams(cfg)
+
+    def raw(exchange, market, symbol, timeframe, start, end):
+        rows = data[symbol][0]
+        if symbol == 'ETHUSDT':
+            if mode == 'fetch_failed':
+                raise api.MarketDataFetchError('DATA_FETCH_FAILED', 'Market data could not be fetched; please retry later',
+                                               central_failure_reason='central_timeout', central_attempted=True)
+            rows = rows[:5] + rows[6:]
+        return ([[r['ts']*1000, r['open'], r['close'], r['open'], r['close'], '1'] for r in rows],
+                'cutie_central_market_data', True, False)
+    monkeypatch.setattr(api, '_fetch_ohlcv_raw', raw)
+    response = http(req)
+    provenance = response['raw_report']['market_data_provenance']
+    assert response['result_status'] == 'failed'
+    if mode == 'fetch_failed':
+        assert (response['error_type'], response['limitations']['reason']) == ('DATA_FETCH_FAILED', 'stream_fetch_failed')
+        assert provenance['central_failure_reason'] == 'central_timeout'
+        assert provenance['central_market_data_attempted'] is True
+        assert provenance['central_market_data_used'] is False
+    else:
+        assert (response['error_type'], response['limitations']['reason']) == ('INSUFFICIENT_DATA', 'stream_gap')
+        assert provenance['source'] == 'cutie_central_market_data'
+        assert provenance['central_failure_reason'] == 'used'
+        assert provenance['central_market_data_attempted'] is True
+        assert provenance['central_market_data_used'] is True
+        assert response['central_market_data_used'] is True

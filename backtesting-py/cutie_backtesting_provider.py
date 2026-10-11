@@ -216,7 +216,8 @@ PROVIDER_REVISION = (
 )
 CENTRAL_SUPPORTED_EXCHANGE = "binance"
 CENTRAL_SUPPORTED_MARKETS = frozenset({"spot", "futures"})
-# 数据缺口容差：中心 API 返回条数 < 预期条数 * 该比例即视为缺口，回退 ccxt（不是硬失败）。
+# 数据缺口容差：中心 API 返回条数 < 预期条数 * 该比例即视为缺口（data_gap）；
+# binance 配了中心时直接报 DATA_FETCH_FAILED，不回退 ccxt（CCXT-451）。
 CENTRAL_GAP_TOLERANCE_RATIO = 0.9
 
 # ``central_market_data_used`` only says whether central data won; failures also
@@ -718,6 +719,18 @@ def _process_fingerprint() -> str:
 CENTRAL_MAX_CHUNK_MS = 90 * 24 * 60 * 60 * 1000
 
 
+def _central_is_sole_source(exchange_id: str, central_failure_reason: Optional[str]) -> bool:
+    """CCXT-451：binance 配了中心 API 就只认中心，缺数据不回退 ccxt。
+
+    未配置中心 API（本地 / 独立部署）时 binance 仍走 ccxt；okx 等非 binance
+    交易所不在中心覆盖内，照旧走 ccxt。
+    """
+    return (
+        exchange_id == CENTRAL_SUPPORTED_EXCHANGE
+        and central_failure_reason != CENTRAL_REASON_NOT_CONFIGURED
+    )
+
+
 def _fetch_from_central_with_reason(
     exchange_id: str, market: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
 ) -> tuple[Optional[list], str, bool]:
@@ -1025,6 +1038,23 @@ def _fetch_ohlcv_raw(
             source=actual_data_source,
             central_market_data_used=central_market_data_used,
         )
+    elif cached is None and _central_is_sole_source(exchange_id, central_failure_reason):
+        # CCXT-451：配了中心 API 的 binance 只认中心一个源。ccxt 回退走 api.binance.com /
+        # fapi.binance.com，舰队出口全是 451；出口不在美国的机器还会静默混入
+        # binance.com 行情。中心 no_data 直接报 NO_DATA，其余失败直接报 DATA_FETCH_FAILED。
+        if central_failure_reason == CENTRAL_REASON_NO_DATA:
+            raise MarketDataFetchError(
+                "NO_DATA",
+                "No OHLCV data is available in the requested range",
+                central_failure_reason=central_failure_reason,
+                central_attempted=central_market_data_attempted,
+            )
+        raise MarketDataFetchError(
+            "DATA_FETCH_FAILED",
+            "Market data could not be fetched; please retry later",
+            central_failure_reason=central_failure_reason,
+            central_attempted=central_market_data_attempted,
+        )
     elif cached is None:
         actual_data_source = DATA_SOURCE
         central_market_data_used = False
@@ -1064,15 +1094,6 @@ def _fetch_ohlcv_raw(
             except ccxt.RateLimitExceeded:
                 raise RuntimeError("RATE_LIMITED")
             except ccxt.NetworkError as e:
-                # A central empty-range response is stronger evidence than a
-                # later ccxt network/geo failure for the same 2010-style window.
-                if central_failure_reason == CENTRAL_REASON_NO_DATA:
-                    raise MarketDataFetchError(
-                        "NO_DATA",
-                        "No OHLCV data is available in the requested range",
-                        central_failure_reason=central_failure_reason,
-                        central_attempted=central_market_data_attempted,
-                    ) from e
                 raise MarketDataFetchError(
                     "DATA_FETCH_FAILED",
                     "Market data could not be fetched; please retry later",

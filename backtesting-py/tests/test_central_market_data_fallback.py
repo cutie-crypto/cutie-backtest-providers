@@ -2,9 +2,9 @@
 
 覆盖：
 1. 未配置中心 API：直接走 ccxt（向后兼容，不发中心请求）
-2. 中心 API 超时/网络错误：回退 ccxt
-3. 中心 API 5xx：回退 ccxt
-4. 中心 API 返回数据缺口：回退 ccxt
+2. 中心 API 超时/网络错误：binance 直接 DATA_FETCH_FAILED，不回退 ccxt（CCXT-451）
+3. 中心 API 5xx：同上
+4. 中心 API 返回数据缺口：同上；中心空区间直接 NO_DATA
 5. 中心 API 命中：跳过 ccxt，直接用中心数据（spot + futures，62-1 F1）
 6. exchange/market 不在中心缓存覆盖范围（非 binance spot/futures）：跳过中心请求，直接 ccxt
 7. 缓存 LRU 上限：超过 MAX_CACHE_FILES 时删最旧文件
@@ -281,12 +281,13 @@ def test_explicit_central_auth_failure_survives_ccxt_network_error(monkeypatch):
 
 
 def test_empty_ccxt_result_is_direct_no_data_evidence(monkeypatch):
+    """未配置中心 API（本地 / 独立部署）的 binance 仍走 ccxt；ccxt 空结果直接判 NO_DATA。"""
     import ccxt
 
     monkeypatch.setattr(
         provider,
         "_fetch_from_central_with_reason",
-        lambda *_a, **_kw: (None, provider.CENTRAL_REASON_AUTH_FAILED, True),
+        lambda *_a, **_kw: (None, provider.CENTRAL_REASON_NOT_CONFIGURED, False),
     )
 
     class FakeExchange:
@@ -303,8 +304,8 @@ def test_empty_ccxt_result_is_direct_no_data_evidence(monkeypatch):
             "binance", "spot", "BTCUSDT", "4h", 1700000000, 1700086400
         )
     assert caught.value.error_type == "NO_DATA"
-    assert caught.value.provenance["central_failure_reason"] == "central_auth_failed"
-    assert caught.value.provenance["central_market_data_attempted"] is True
+    assert caught.value.provenance["central_failure_reason"] == "central_not_configured"
+    assert caught.value.provenance["central_market_data_attempted"] is False
 
 
 @pytest.mark.parametrize(
@@ -479,21 +480,9 @@ def test_central_available_false_returns_none(central_configured, monkeypatch):
     assert result is None
 
 
-def test_fetch_ohlcv_falls_back_to_ccxt_when_central_fails(central_configured, monkeypatch):
-    """端到端：central 超时 → _fetch_ohlcv 仍能通过 ccxt 拿到数据（故障注入验证）。"""
-
-    def fake_urlopen(*_a, **_kw):
-        raise TimeoutError("timed out")
-
-    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
-
+def _fake_ccxt_module(exchange_id, exchange_factory):
     fake_ccxt = MagicMock()
-    fake_exchange_instance = MagicMock()
-    fake_exchange_instance.fetch_ohlcv.return_value = [
-        [0, 1.0, 2.0, 0.5, 1.5, 100.0],
-        [3600_000, 1.5, 2.5, 1.0, 2.0, 200.0],
-    ]
-    fake_ccxt.binance = MagicMock(return_value=fake_exchange_instance)
+    setattr(fake_ccxt, exchange_id, exchange_factory)
 
     class _FakeBadSymbol(Exception):
         pass
@@ -507,15 +496,66 @@ def test_fetch_ohlcv_falls_back_to_ccxt_when_central_fails(central_configured, m
     fake_ccxt.BadSymbol = _FakeBadSymbol
     fake_ccxt.RateLimitExceeded = _FakeRateLimitExceeded
     fake_ccxt.NetworkError = _FakeNetworkError
+    return fake_ccxt
 
-    monkeypatch.setitem(sys.modules, "ccxt", fake_ccxt)
 
-    df = provider._fetch_ohlcv("binance", "spot", "BTCUSDT", "1h", 0, 7200)
+@pytest.mark.parametrize("market", ["spot", "futures"])
+@pytest.mark.parametrize(
+    ("central_body", "expected_type", "expected_reason"),
+    [
+        (TimeoutError("timed out"), "DATA_FETCH_FAILED", "central_timeout"),
+        ({"err_code": 100, "data": {"available": True, "count": 0, "items": []}}, "NO_DATA", "no_data"),
+        ({"err_code": 100, "data": {"available": False}}, "DATA_FETCH_FAILED", "outside_coverage"),
+    ],
+)
+def test_binance_central_miss_never_constructs_ccxt(
+    central_configured, monkeypatch, market, central_body, expected_type, expected_reason
+):
+    """CCXT-451：配了中心的 binance（spot / futures）中心缺数据不再回退 ccxt.binance
+    （api.binance.com / fapi.binance.com 舰队全 451，出口不在美国还会静默混 binance.com 源）。"""
+
+    def fake_urlopen(*_a, **_kw):
+        if isinstance(central_body, Exception):
+            raise central_body
+        return _FakeResponse(central_body)
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+    constructed = []
+
+    def _record_and_fail(*_a, **_kw):
+        constructed.append(_a)
+        raise AssertionError("ccxt.binance must not be constructed after a central miss")
+
+    monkeypatch.setitem(sys.modules, "ccxt", _fake_ccxt_module("binance", _record_and_fail))
+
+    with pytest.raises(provider.MarketDataFetchError) as caught:
+        provider._fetch_ohlcv("binance", market, "BTCUSDT", "1h", 0, 7200)
+    assert constructed == []
+    assert caught.value.error_type == expected_type
+    assert caught.value.provenance["central_failure_reason"] == expected_reason
+    assert caught.value.provenance["central_market_data_attempted"] is True
+
+
+def test_okx_still_uses_ccxt_fallback(central_configured, monkeypatch):
+    """okx 等非 binance 交易所不在中心覆盖内，照旧走 ccxt（不随 CCXT-451 一起删）。"""
+
+    def fake_urlopen(*_a, **_kw):
+        raise AssertionError("central must not be requested for okx")
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+    fake_exchange_instance = MagicMock()
+    fake_exchange_instance.fetch_ohlcv.return_value = [
+        [0, 1.0, 2.0, 0.5, 1.5, 100.0],
+        [3600_000, 1.5, 2.5, 1.0, 2.0, 200.0],
+    ]
+    okx_factory = MagicMock(return_value=fake_exchange_instance)
+    monkeypatch.setitem(sys.modules, "ccxt", _fake_ccxt_module("okx", okx_factory))
+
+    df = provider._fetch_ohlcv("okx", "spot", "BTCUSDT", "1h", 0, 7200)
+    assert okx_factory.call_count == 1
     assert len(df) == 2
-    assert df["Close"].iloc[0] == 1.5
     assert df.attrs["cutie_data_source"] == provider.DATA_SOURCE
     assert df.attrs["cutie_central_market_data_used"] is False
-    assert df.attrs["cutie_market_data_cache_hit"] is False
 
 
 def test_fetch_ohlcv_uses_central_and_skips_ccxt(central_configured, monkeypatch):

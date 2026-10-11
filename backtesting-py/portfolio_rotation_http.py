@@ -55,6 +55,29 @@ def rotation_catalog(entry):
     return entry
 
 
+def _streams_provenance(api, metas):
+    """PROV-PROVENANCE：失败回包按已取流的真实来源填扁平 provenance（服务端按顶层 central_failure_reason 读）。"""
+    if not metas:
+        return None
+    sources = {m[0] for m in metas}
+    central = all(m[1] is True for m in metas)
+    return {
+        'provider_revision': api.PROVIDER_REVISION,
+        'source': sources.pop() if len(sources) == 1 else None,
+        'central_market_data_used': central,
+        'central_market_data_attempted': central,
+        'central_failure_reason': api.CENTRAL_REASON_USED if central else None,
+        'auth_mode': api._central_market_data_auth_mode(),
+        'cache_hit': all(m[2] is True for m in metas),
+    }
+
+
+def _rotation_failure(api, run_id, e):
+    provenance = e.provenance if isinstance(e.provenance, dict) else (
+        _streams_provenance(api, [e.stream]) if e.stream is not None else None)
+    return api._business_failure(run_id, e.code, str(e), reason=e.reason, market_data_provenance=provenance)
+
+
 def rotation_response(body, request, run_id, api, *, tool_spec=None, parser=None, runner=None,
                       validate_series=None):
     started = time.monotonic()
@@ -85,8 +108,13 @@ def rotation_response(body, request, run_id, api, *, tool_spec=None, parser=None
         if validate_series is not None:
             validate_series(request.get('metric_series'), config.start, config.end - 86400)
         streams = fetch_rotation(config, fetcher, deadline=deadline)
-        output, decisions, assumptions = runner(config, streams, request,
-                                                      metric_series=request.get('metric_series'), deadline=deadline)
+        try:
+            output, decisions, assumptions = runner(config, streams, request,
+                                                          metric_series=request.get('metric_series'), deadline=deadline)
+        except RotationError as e:
+            if e.provenance is None and e.stream is None:
+                e.provenance = _streams_provenance(api, [v[1:] for v in streams.values()])
+            raise
         return streams, output, decisions, assumptions
 
     future = _EXECUTOR.submit(execute)
@@ -96,7 +124,7 @@ def rotation_response(body, request, run_id, api, *, tool_spec=None, parser=None
         future.cancel()
         return api._business_failure(run_id, 'EXECUTION_TIMEOUT', '120 second execution deadline exceeded', reason='execution_deadline')
     except RotationError as e:
-        return api._business_failure(run_id, e.code, str(e), reason=e.reason)
+        return _rotation_failure(api, run_id, e)
     except (ValueError, ArithmeticError) as e:
         return api._business_failure(run_id, 'ENGINE_ERROR', str(e), reason='portfolio_reconciliation_or_input')
     result = output.result
