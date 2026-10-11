@@ -56,8 +56,8 @@ def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
                 supported = False  # P-EVENT0: no risk_warmup prefix, ATR keys withheld
             if tool_id.removeprefix('local.backtesting_py.') in p.MACRO_SCHEMAS:
                 supported = tool_id.endswith('macro_release_breakout') and key == 'take_profit_r'
-            if tool_id in (p.FUNDING_REVERSAL_TOOL_ID, p.LIQUIDATION_REVERSAL_TOOL_ID):
-                supported = False  # P2/S4: Q18-style intrinsic stop, none of the new risk keys
+            if tool_id in (p.FUNDING_REVERSAL_TOOL_ID, p.TOP_LSR_TOOL_ID, p.LIQUIDATION_REVERSAL_TOOL_ID):
+                supported = False  # P2/S3/S4: Q18-style intrinsic stop, none of the new risk keys
             assert (key in spec['param_schema_properties']) == supported
 
 
