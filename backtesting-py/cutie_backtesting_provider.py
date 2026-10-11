@@ -10533,10 +10533,19 @@ async def run_backtest(
     # _htf_max_gap_bars) are tolerated without filling; gap failures carry _gap_details-shaped details.
     entry_filter_htf_gaps = None
     if filter_config is not None and filter_config.timeframe:
+        def _htf_fetch(since, until):
+            try:
+                return _fetch_ohlcv(exchange_id, market, symbol, filter_config.timeframe, since, until)
+            except MarketDataFetchError as exc:
+                if exc.error_type != "NO_DATA":
+                    raise
+                # No candle in the window is a whole-window gap: build reports it with details.
+                return pd.DataFrame(columns=list(_WARMUP_COLUMNS), dtype=float,
+                                    index=pd.DatetimeIndex([], name="timestamp"))
+
         try:
             strategy_class._filter_context = HigherTimeframeContext.build(
-                filter_config, timeframe, df.index,
-                lambda since, until: _fetch_ohlcv(exchange_id, market, symbol, filter_config.timeframe, since, until),
+                filter_config, timeframe, df.index, _htf_fetch,
                 _supertrend_arrays, _timeframe_grid_offset_ms(filter_config.timeframe),
                 direction=strategy_class._filter_direction, gap_tolerance_ratio=CENTRAL_GAP_TOLERANCE_RATIO)
         except FilterHistoryError as e:

@@ -157,3 +157,65 @@ def test_single_run_beyond_max_gap_bars_fails_with_details(run, ok):
         build(present, opens)
     assert caught.value.details == {'gap_count': 1, 'missing_bars': run, 'first_gap_segment': 'higher_timeframe',
                                     'first_gap_after': full.index[99].tz_localize('UTC').isoformat()}
+
+
+# Codex P2: the real fetch chain raises MarketDataFetchError('NO_DATA') instead of returning an empty frame.
+def real_chain_run(monkeypatch, tmp_path, ccxt_behavior):
+    import ccxt
+    calls = []
+
+    class FakeExchange:
+        def __init__(self, options):
+            pass
+
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None, params=None):
+            calls.append(timeframe)
+            return ccxt_behavior()
+
+    for name in ('okx', 'binance'):
+        monkeypatch.setattr(ccxt, name, FakeExchange)
+    monkeypatch.setattr(p, 'CACHE_DIR', tmp_path)
+    monkeypatch.setattr(p, '_fetch_from_central_with_reason',
+                        lambda *args: (None, p.CENTRAL_REASON_NOT_CONFIGURED, False))
+    real_fetch = p._fetch_ohlcv
+    data = single.frame([100]*10 + [90, 110, 120, 80, 70, 130, 90, 100]*64)
+    data.index = pd.date_range('2026-01-02 16:00', periods=len(data), freq='15min')
+    monkeypatch.setattr(p, 'AUTH_TOKEN', '')
+    monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *args: single.frame([100]*10))
+    monkeypatch.setattr(Backtest, 'plot', lambda *args, **kwargs: None)
+    monkeypatch.setattr(p, '_fetch_ohlcv', lambda e, m, s, tf, since, until: (
+        real_fetch(e, m, s, tf, since, until) if tf == '4h' else data.copy()))
+    values = {**single.params('ema'), 'ema_fast': 2, 'ema_slow': 3, 'filter_timeframe': '4h', 'position_size_pct': 10}
+    if 'direction' in p.TOOL_SPECS['local.backtesting_py.ema_cross']['param_schema_properties']:
+        values['direction'] = 'long'
+    body = single.capture.capture.request_body('ema_cross', values)
+    start = int(data.index[0].timestamp())
+    body['backtest'].update(timeframe='15m', start_at=start, end_at=start + len(data)*900)
+    result = TestClient(p.app).post('/cutie/backtest', json=body).json()
+    assert calls and set(calls) == {'4h'}  # the real _fetch_ohlcv_raw reached the exchange
+    return result
+
+
+def test_real_chain_no_data_fails_with_whole_window_details(monkeypatch, tmp_path):
+    result = real_chain_run(monkeypatch, tmp_path, lambda: [])
+    assert_gap_failure(result, missing_bars=34, gap_count=1, first_gap_after=None)
+
+
+def _network_error():
+    import ccxt
+    raise ccxt.NetworkError('down')
+
+
+def _rate_limited():
+    import ccxt
+    raise ccxt.RateLimitExceeded('slow down')
+
+
+@pytest.mark.parametrize('behavior', [_network_error, _rate_limited])
+def test_real_chain_fetch_failure_has_no_details(behavior, monkeypatch, tmp_path):
+    result = real_chain_run(monkeypatch, tmp_path, behavior)
+    assert result['error_type'] == 'INSUFFICIENT_DATA', result
+    assert result['error_message'] == 'Higher-timeframe history fetch unavailable'
+    assert result['limitations']['reason'] == 'filter_history_insufficient'
+    assert set(result['limitations']) & {'gap_count', 'missing_bars', 'first_gap_after', 'first_gap_segment'} == set()
