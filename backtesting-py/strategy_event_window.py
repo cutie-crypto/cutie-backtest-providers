@@ -151,6 +151,8 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
                 elif bar >= trade.entry_bar + config.bars_after - 1 and not any(
                         order.parent_trade is trade for order in self.orders):
                     self._decisions[bar] = 'window_end'
+                    # P6: the event window's bars_after ran out -- a time exit, not a signal.
+                    self.__dict__['_exit_kind_pending'] = 'time_exit'
                     self.position.close()
             for record in self._by_decision.get(bar, ()):
                 if self.position or self.orders:
