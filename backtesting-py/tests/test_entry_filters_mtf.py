@@ -172,7 +172,8 @@ def test_http_gate_uses_coarse_mask_at_primary_decision(kind,warm,monkeypatch,tm
     assert 'entry_filters' not in result['metrics'] and 'entry_filters' not in result['data_manifest']
 
 
-@pytest.mark.parametrize('gap',['missing','short','empty','error'])
+# PIN7-F: one interior missing candle ('missing') is now tolerated; see test_pin7f_htf_gap_tolerance.py.
+@pytest.mark.parametrize('gap',['short','empty','error'])
 def test_http_insufficient_history(gap,monkeypatch,tmp_path):
     result,calls=http_run(monkeypatch,tmp_path,gap=gap)
     assert result['error_type']=='INSUFFICIENT_DATA',result

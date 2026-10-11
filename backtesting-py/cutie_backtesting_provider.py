@@ -10529,15 +10529,20 @@ async def run_backtest(
         except TimeDataGapError as e:
             return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
 
+    # PIN7-F: higher-timeframe candles missing within CENTRAL_GAP_TOLERANCE_RATIO (no run beyond
+    # _htf_max_gap_bars) are tolerated without filling; gap failures carry _gap_details-shaped details.
+    entry_filter_htf_gaps = None
     if filter_config is not None and filter_config.timeframe:
         try:
             strategy_class._filter_context = HigherTimeframeContext.build(
                 filter_config, timeframe, df.index,
                 lambda since, until: _fetch_ohlcv(exchange_id, market, symbol, filter_config.timeframe, since, until),
                 _supertrend_arrays, _timeframe_grid_offset_ms(filter_config.timeframe),
-                direction=strategy_class._filter_direction)
+                direction=strategy_class._filter_direction, gap_tolerance_ratio=CENTRAL_GAP_TOLERANCE_RATIO)
         except FilterHistoryError as e:
-            return _business_failure(run_id, "INSUFFICIENT_DATA", str(e), reason="filter_history_insufficient")
+            return _business_failure(run_id, "INSUFFICIENT_DATA", str(e), reason="filter_history_insufficient",
+                                     **({"details": e.details} if e.details is not None else {}))
+        entry_filter_htf_gaps = strategy_class._filter_context.gaps
 
     # start_at 之前按模板目标取指标预热；min_bars 仍只约束最少可算/主区间长度。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
@@ -10881,6 +10886,7 @@ async def run_backtest(
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **ema_warmup_assumptions,
                 **({"entry_filter_main_gaps": entry_filter_main_gaps} if entry_filter_main_gaps else {}),
+                **({"entry_filter_htf_gaps": entry_filter_htf_gaps} if entry_filter_htf_gaps else {}),
                 **({"pattern_confirm": _pattern_confirm_assumptions(stats["_strategy"], effective_tool_id)}
                    if filter_config is not None and filter_config.pattern_confirm_enabled else {}),
                 **({"vwap_main_gaps": vwap_main_gaps} if vwap_main_gaps else {}),

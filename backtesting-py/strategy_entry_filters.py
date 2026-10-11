@@ -8,7 +8,7 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import pandas as pd
 
-from strategy_time_layer import fixed_timeframe_milliseconds
+from strategy_time_layer import fixed_timeframe_milliseconds, utc_datetime
 
 FILTER_PARAM_SCHEMA_PROPERTIES = {
     'filter_timeframe': {'type': 'string', 'default': '',
@@ -278,23 +278,56 @@ class PatternConfirmQueue:
 
 
 class FilterHistoryError(ValueError):
-    """The requested closed higher-timeframe history cannot be proven complete."""
+    """The requested closed higher-timeframe history cannot be proven complete.
+
+    ``details`` (PIN7-F) is set only for gap failures (no candle present, coverage below the tolerance
+    ratio, one run of missing candles beyond _htf_max_gap_bars); it carries the provider's
+    ``_gap_details`` keys. Every other failure keeps it None.
+    """
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.details = details
+
+
+_HTF_MISSING_MESSAGE = 'Higher-timeframe history has missing or misaligned candles'
+
+
+def _htf_max_gap_bars(step_ms: int) -> int:
+    """Longest tolerated run of consecutive missing higher-timeframe candles (PIN7-F).
+
+    Seven days' worth of candles, clamped to [7, 24]: 1h / 4h -> 24, 12h -> 14, 1d and longer -> 7.
+    Beyond it the filter would keep judging entries on a candle closed too long ago.
+    """
+    return min(24, max(7, 7 * 86400000 // step_ms))
+
+
+def _htf_iso(ms: int) -> str:
+    return utc_datetime(pd.Timestamp(int(ms), unit='ms', tz='UTC').to_pydatetime()).isoformat()
 
 
 @dataclass(frozen=True)
 class HigherTimeframeContext:
     mask: np.ndarray
     report: dict[str, Any]
+    # PIN7-F: missing-candle summary (provider assumptions.entry_filter_htf_gaps); None when gap-free.
+    gaps: dict[str, Any] | None = None
 
     @classmethod
     def build(cls, config: FilterConfig, primary: str, opens: pd.DatetimeIndex,
               fetch: Callable[[int, int], pd.DataFrame], supertrend: Callable,
-              grid_offset_ms: int = 0, direction: str = 'long') -> HigherTimeframeContext:
-        """One strict fetch; align indicator values by close <= primary decision.
+              grid_offset_ms: int = 0, direction: str = 'long',
+              gap_tolerance_ratio: float = 1.0) -> HigherTimeframeContext:
+        """One fetch; align indicator values by close <= primary decision.
 
         History includes required_bars already closed at the first decision.
         Weekly grids use the provider's Monday UTC anchor. Never fill gaps or
         substitute primary candles. Source tails outside the span are ignored.
+        PIN7-F: present candles must sit on the grid, unique and increasing. Missing
+        candles are tolerated while present/expected >= gap_tolerance_ratio (the provider
+        passes CENTRAL_GAP_TOLERANCE_RATIO; the 1.0 default stays strict) and no run
+        exceeds _htf_max_gap_bars; indicators run over present candles only, and a
+        decision whose latest closed candle is missing uses the previous closed one.
         """
         primary_step = config.validate_timeframe(primary)
         step = fixed_timeframe_milliseconds(config.timeframe)
@@ -312,12 +345,39 @@ class HigherTimeframeContext:
         index = pd.to_datetime(data.index, utc=True)
         data = data.loc[(index >= expected[0]) & (index <= expected[-1])].copy()
         actual = pd.to_datetime(data.index, utc=True)
-        if not actual.equals(expected):
-            raise FilterHistoryError('Higher-timeframe history has missing or misaligned candles')
+        if not len(actual):
+            # No present candle to anchor a gap after: first_gap_after is None.
+            raise FilterHistoryError(_HTF_MISSING_MESSAGE, details=dict(
+                gap_count=1, missing_bars=len(expected), first_gap_after=None,
+                first_gap_segment='higher_timeframe'))
+        stamps_ns = actual.as_unit('ns').asi8
+        if (np.any((stamps_ns - first * 1000000) % (step * 1000000) != 0)
+                or len(np.unique(stamps_ns)) != len(stamps_ns) or np.any(np.diff(stamps_ns) < 0)):
+            raise FilterHistoryError(_HTF_MISSING_MESSAGE)
+        stamps = stamps_ns // 1000000
+        # Run k sits between present candle k-1 and k (k=0: leading, k=len: trailing).
+        runs = np.diff(np.concatenate(([-1], (stamps - first) // step, [len(expected)]))) - 1
+        gap_runs = [(k, int(n)) for k, n in enumerate(runs) if n > 0]
+        gaps = None
+        if gap_runs:
+            missing_bars = sum(n for _, n in gap_runs)
+            k0 = gap_runs[0][0]
+            details = dict(gap_count=len(gap_runs), missing_bars=missing_bars,
+                           first_gap_after=_htf_iso(stamps[k0 - 1]) if k0 else None,
+                           first_gap_segment='higher_timeframe')
+            max_gap_bars = _htf_max_gap_bars(step)
+            if len(actual) / len(expected) < gap_tolerance_ratio or max(n for _, n in gap_runs) > max_gap_bars:
+                raise FilterHistoryError(_HTF_MISSING_MESSAGE, details=details)
+            gaps = dict(tolerance_ratio=gap_tolerance_ratio, missing_bars=missing_bars,
+                        segments=[dict(after=_htf_iso(stamps[k - 1]) if k else None,
+                                       before=_htf_iso(stamps[k]) if k < len(stamps) else None,
+                                       missing_bars=n) for k, n in gap_runs],
+                        max_gap_bars=max_gap_bars, timeframe=config.timeframe)
         if not np.isfinite(data[['Open', 'High', 'Low', 'Close', 'Volume']].to_numpy(dtype='float64')).all():
             raise FilterHistoryError('Higher-timeframe history has non-finite candles')
         coarse = entry_mask(config, data, supertrend, direction=direction)
-        closes = expected.as_unit('ns').asi8 // 1000000 + step
+        # Present candles only: a missing latest candle falls back to the previous closed one.
+        closes = stamps + step
         # Exact close boundary is available; the current unfinished candle is not.
         positions = np.searchsorted(closes, decisions, side='right') - 1
         if np.any(positions < config.required_bars - 1):
@@ -329,4 +389,4 @@ class HigherTimeframeContext:
             history_end_at=(last + step) // 1000,
             data_source=data.attrs.get('cutie_data_source'),
             central_market_data_used=data.attrs.get('cutie_central_market_data_used'),
-            market_data_cache_hit=data.attrs.get('cutie_market_data_cache_hit', False)))
+            market_data_cache_hit=data.attrs.get('cutie_market_data_cache_hit', False)), gaps)
