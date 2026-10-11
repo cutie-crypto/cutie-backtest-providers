@@ -150,7 +150,8 @@ class LiquidationReversalConfig:
 
     @property
     def lookback(self):
-        return self.values["lookback_days"] if self.values["threshold_mode"] == "percentile" else 0
+        # schema 的 integer 只要求整值，30.0 也会过；bind 里的 range() 与日期运算要真 int
+        return int(self.values["lookback_days"]) if self.values["threshold_mode"] == "percentile" else 0
 
     def bind_timeframe(self, timeframe):
         seconds = TIMEFRAME_SECONDS.get(timeframe)
