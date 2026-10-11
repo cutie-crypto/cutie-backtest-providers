@@ -108,6 +108,29 @@ def test_the_bar_before_the_last_still_exits_normally(monkeypatch, tmp_path, dir
     assert Decimal(body['trades'][0]['exit_price']) == Decimal(str(data.Open.iloc[LAST]))
 
 
+def test_last_bar_isolated_liquidation_not_vetoed_by_skipped_stop(monkeypatch, tmp_path):
+    # Codex P1: entry 110, 10x isolated, 20% position (margin 2000 of 10000), 5% stop at 104.5; the last
+    # bar drops 110 -> 90 through the 99 liquidation price without a gap. The last bar skips the stop, so
+    # the stop cannot claim it is crossed first and veto liquidation: liquidation arbitrates as usual.
+    data = frame('long', 90.0)
+    body = run(monkeypatch, tmp_path, 'long', True, data, stop_loss_pct=5, take_profit_r=1, leverage=10,
+               position_size_pct=20)
+    assert body['result_status'] == 'success', body.get('error_message')
+    (trade,) = body['trades']
+    assert Decimal(trade['entry_price']) == Decimal('110')
+    report = body['raw_report']['isolated_risk']
+    assert report['liquidation_count'] == 1, report
+    margin = Decimal('2000')
+    assert Decimal(report['liquidated_margin_total']) <= margin, report
+    assert -Decimal(trade['pnl']) <= margin, trade
+    assert Decimal(body['metrics']['total_return']) >= -margin / Decimal(body['initial_capital']), body['metrics']
+    # On the last bar the stop counts as absent: the run equals the same run with no stop configured.
+    bare = run(monkeypatch, tmp_path, 'long', True, data, leverage=10, position_size_pct=20)
+    assert body['trades'] == bare['trades']
+    assert report == bare['raw_report']['isolated_risk']
+    assert p6.kinds_of(body) == p6.kinds_of(bare)
+
+
 def count_position_closes(monkeypatch):
     """Template-queued exits go through Position.close; finalize_trades uses Trade.close, so it is not counted."""
     from backtesting.backtesting import Position
@@ -157,7 +180,6 @@ def test_last_bar_names_no_stop_exit(monkeypatch, tmp_path, direction, layer, ri
 NON_ENGINE_RUNNERS = {p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, 'kernel_v3', p.ROTATION_RUNNER}
 ENGINE_TOOLS = sorted(tool.removeprefix(PREFIX) for tool, spec in p.TOOL_SPECS.items()
                       if spec.get('runner') not in NON_ENGINE_RUNNERS)
-SEEN_END_OF_DATA = set()
 
 
 def test_engine_tool_enumeration_is_runtime_derived():
@@ -178,9 +200,9 @@ def record_runs(monkeypatch):
     return frames
 
 
-@pytest.mark.parametrize('name', ENGINE_TOOLS)
-def test_finalize_exit_price_is_last_close_for_all_v2_engine_tools(monkeypatch, tmp_path, name):
-    frames = record_runs(monkeypatch)
+def final_settlements(monkeypatch, tmp_path, frames, name):
+    """Run ``name``'s synthetic p6 case; return its end_of_data trades after checking they fill at Close[-1]."""
+    del frames[:]
     p6.CURRENT[0] = name
     body = p6.SPECIAL.get(name, p6.generic())(monkeypatch, tmp_path)
     assert body['result_status'] == 'success', body.get('error_message')
@@ -189,14 +211,26 @@ def test_finalize_exit_price_is_last_close_for_all_v2_engine_tools(monkeypatch, 
     finals = [trade for trade, kind in zip(body['trades'], p6.kinds_of(body)) if kind == 'end_of_data']
     # Every period-end settlement is priced at the last Close; tools whose synthetic run ends flat have none.
     assert all(Decimal(trade['exit_price']) == close for trade in finals), (name, close, finals)
-    if finals:
-        SEEN_END_OF_DATA.add(name)
+    return finals
 
 
-def test_synthetic_runs_cover_end_of_data_for_several_engine_tools():
+@pytest.mark.parametrize('name', ENGINE_TOOLS)
+def test_finalize_exit_price_is_last_close_for_all_v2_engine_tools(monkeypatch, tmp_path, name):
+    final_settlements(monkeypatch, tmp_path, record_runs(monkeypatch), name)
+
+
+def test_synthetic_runs_cover_end_of_data_for_several_engine_tools(monkeypatch, tmp_path):
     # Guards the loop above against passing vacuously once every tool ended its synthetic run flat.
-    # (Runs after the parametrized cases: pytest keeps file order.)
-    assert len(SEEN_END_OF_DATA) >= 3, SEEN_END_OF_DATA
+    # Self-contained: it runs the cases it needs instead of relying on the parametrized ones running first.
+    frames, seen = record_runs(monkeypatch), []
+    for name in ENGINE_TOOLS:
+        reports = tmp_path / name
+        reports.mkdir()
+        if final_settlements(monkeypatch, reports, frames, name):
+            seen.append(name)
+            if len(seen) >= 3:
+                break
+    assert len(seen) >= 3, seen
 
 
 # ---------------------------------------------------------------- liquidation is not a period-end close

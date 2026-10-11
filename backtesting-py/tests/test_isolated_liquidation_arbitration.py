@@ -259,6 +259,43 @@ def test_http_raw_stop_percentage_and_dynamic_count(monkeypatch,tmp_path):
     assert body['assumptions']['isolated_margin']==margin_assumptions(True,0)
 
 
+# PIN7-E: report fields derived from the period-end trade's pnl; nothing else may move with its exit price.
+PERIOD_END_DERIVED=frozenset(('.result_hash','.metrics.total_return','.metrics.max_drawdown',
+    '.raw_report.provider_summary','.raw_report.legacy_metrics.total_return_pct',
+    '.raw_report.legacy_metrics.max_drawdown_pct','.raw_report.legacy_metrics.win_rate_pct'))
+
+
+def _leaves(value,path='',out=None):
+    out={} if out is None else out
+    if isinstance(value,dict):
+        for key,item in value.items():
+            _leaves(item,f'{path}.{key}',out)
+    elif isinstance(value,list):
+        for index,item in enumerate(value):
+            _leaves(item,f'{path}[{index}]',out)
+    else:
+        out[path]=value
+    return out
+
+
+def assert_only_period_end_settlement_moved(result,legacy,data):
+    """The re-priced run keeps every trade, kind-free field and equity point except the period-end trade's
+    exit price / pnl (now Close[-1], was Open[-1]), the final equity point and the pnl-derived summaries."""
+    new,old=_leaves(result),_leaves(legacy)
+    moved={key for key in new.keys()|old.keys() if new.get(key,KeyError)!=old.get(key,KeyError)}
+    if not moved:
+        return
+    last,point=len(result['trades'])-1,len(result['equity_curve'])-1
+    allowed=PERIOD_END_DERIVED|{f'.trades[{last}].exit_price',f'.trades[{last}].pnl',f'.equity_curve[{point}].equity'}
+    assert moved<=allowed,sorted(moved-allowed)
+    final,before=result['trades'][last],legacy['trades'][last]
+    assert D(before['exit_price'])==D(str(data.Open.iloc[-1])),before
+    assert D(final['exit_price'])==D(str(data.Close.iloc[-1])),final
+    # The final equity point moves by exactly the pnl change (up to 28-digit Decimal rounding).
+    shift=D(str(result['equity_curve'][point]['equity']))-D(str(legacy['equity_curve'][point]['equity']))
+    assert abs(shift-(D(final['pnl'])-D(before['pnl'])))<D('1e-15'),(shift,final['pnl'],before['pnl'])
+
+
 @pytest.fixture(scope='module')
 def baseline_provider():
     # Read immutable source from the assigned starting SHA, never regenerate a fixture.
@@ -316,13 +353,15 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         out=TestClient(module.app).post('/cutie/backtest',json=req).json()
         assert out['result_status']=='success',out
         return without_exit_kinds(out)
-    result=invoke(p)
-    if name == 'ema_cross':
-        # Validate the added S4b disclosure separately, then keep the exact
-        # historical comparator for every pre-existing field and result.v2.
-        assert result['assumptions'].pop('ema_warmup') == 'EMA 预热取 10×最长周期（目标 600 根，实得 0 根）'
-        assert result['raw_report'].pop('ema_warmup') == dict(requested_bars=600,
-            target_bars=600, actual_bars=0, truncated=False, tenfold_reached=False)
+    def comparable(out):
+        if name == 'ema_cross':
+            # Validate the added S4b disclosure separately, then keep the exact
+            # historical comparator for every pre-existing field and result.v2.
+            assert out['assumptions'].pop('ema_warmup') == 'EMA 预热取 10×最长周期（目标 600 根，实得 0 根）'
+            assert out['raw_report'].pop('ema_warmup') == dict(requested_bars=600,
+                target_bars=600, actual_bars=0, truncated=False, tenfold_reached=False)
+        return out
+    result=comparable(invoke(p))
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')
     if name in ('vwap_reversion', 'fibonacci_retracement') or golden:
         # F5, 9T5 and the Wave-B tools did not exist at e25886e: compare their independent immutable goldens
@@ -340,10 +379,17 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         for key in ('assumptions','raw_report'):
             assert digest(json.dumps(result[key],sort_keys=True,separators=(',',':')))==expected[key]
     else:
+        # PIN7-E: the frozen baseline settles the period-end trade at Open[-1]. Every other byte is still
+        # pinned to it through this provider's run without the period-end re-pricing; the re-priced run
+        # may then differ from that run only in the period-end settlement and what derives from it.
+        with monkeypatch.context() as patch:
+            patch.setattr(p,'_final_close_strategy',lambda strategy:strategy)
+            legacy=comparable(invoke(p))
         baseline=invoke(baseline_provider)
-        assert canonical_json({k:result[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
+        assert canonical_json({k:legacy[k] for k in v2})==canonical_json({k:baseline[k] for k in v2})
         for key in ('assumptions','raw_report'):
-            assert json.dumps(result[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))
+            assert json.dumps(legacy[key],sort_keys=True,separators=(',',':'))==json.dumps(baseline[key],sort_keys=True,separators=(',',':'))
+        assert_only_period_end_settlement_moved(result,legacy,data)
     assert 'isolated_margin' not in result['assumptions'] and 'isolated_risk' not in result['raw_report']
 
 

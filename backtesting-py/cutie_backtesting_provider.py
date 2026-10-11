@@ -3324,8 +3324,10 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
                 if stop is not None and (stop <= price if trade.is_long else stop >= price):
                     self._isolated_stop_beyond_trades += 1
         if self._risk.get("leverage", 1) > 1:
-            stop = (self._risk_state.stop_state.effective_stop
-                    if self._risk_state.stop_state is not None else self._risk_state.initial_stop)
+            # PIN7-E: the last bar skips the stop below, so it cannot veto liquidation there.
+            stop = None if self._at_final_bar() else (
+                self._risk_state.stop_state.effective_stop
+                if self._risk_state.stop_state is not None else self._risk_state.initial_stop)
             if self._risk_isolated_exit(stop):
                 return True
         if self._at_final_bar():
@@ -7129,8 +7131,9 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
             # The frozen intrinsic stop is judged intrabar and joins T2-2b arbitration. An explicit
             # user stop is judged on the close only (decide_exit below), so any intrabar liquidation
             # precedes it: arbitrate without the stop (mixin legacy rule, as F5/F6; P-LIQ1 1010).
+            # PIN7-E: the last bar skips the intrinsic stop too, so it cannot veto liquidation there.
             elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(
-                    self._risk_state.initial_stop if intrinsic else None):
+                    self._risk_state.initial_stop if intrinsic and not self._at_final_bar() else None):
                 exited = True
             elif any(order.parent_trade is trade for order in self.orders):
                 return True
