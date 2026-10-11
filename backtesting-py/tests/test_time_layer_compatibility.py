@@ -72,7 +72,8 @@ SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
 # P-EVENT0: event_window postdates every baseline above; its off state is pinned by
 # tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
 EVENT0 = {'event_window'}
-LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0}
+UNLOCK39 = {'token_unlock_event'}  # C39 +1; own clock/off-state checks below
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | UNLOCK39}
 
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')
@@ -120,10 +121,10 @@ def test_schema_only_runtime_single_position_templates():
     # TURTLE-TIME: 海龟组级 runner 也声明并消费时间层（行为用例在 test_turtle_time_layer.py）。
     assert actual == ({compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS) | {"red_streak_rsi"}
                       | set(compat.enumerate_turtle_cases()))
-    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 == set(MIXINS)
+    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | UNLOCK39 == set(MIXINS)
 
 
-@pytest.mark.parametrize('name', MIXINS)
+@pytest.mark.parametrize('name', set(MIXINS) - UNLOCK39)
 @pytest.mark.parametrize('risk_enabled', [False, True])
 def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled):
     if name in SHORT_PAT1_BASELINE['single']:
@@ -399,3 +400,19 @@ def test_f6_disabled_time_bytes_unchanged(warm):
     for key in (*capture.V2_KEYS, "assumptions", "raw_report"):
         assert capture.digest(omitted[key]) == capture.digest(disabled[key])
     assert "time_layer" not in disabled["assumptions"]
+
+
+def test_c39_disabled_time_bytes_and_midnight_entry_gate(monkeypatch, tmp_path):
+    from test_token_unlock_event_39 import post
+    absent = post(monkeypatch, tmp_path)
+    explicit = post(monkeypatch, tmp_path, {**DEFAULTS, 'leverage': 1})
+    expected = json.loads((Path(__file__).parent / 'fixtures/token_unlock_39_time_off.json').read_text())
+    assert len(absent['trades']) == 2
+    for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
+        assert capture.digest(absent[key]) == capture.digest(explicit[key]) == expected[key], key
+    assert 'time_layer' not in explicit['assumptions']
+    for risk_enabled in (False, True):
+        gated = post(monkeypatch, tmp_path, dict(time_layer_enabled=True,
+                     time_timezone='UTC', time_weekdays=2, risk_layer_enabled=risk_enabled, stop_loss_pct=3))
+        assert [r['side'] for r in gated['trades']] == ['long']
+        assert gated['trades'][0]['closed_at'] == 1767916800  # Friday exit allowed outside Tuesday gate.

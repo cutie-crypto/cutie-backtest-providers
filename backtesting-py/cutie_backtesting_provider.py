@@ -48,6 +48,7 @@ from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
                                       parse_position_sizing, PositionSizingMixin)
 from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
 from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
+import strategy_token_unlock as token_unlock
 from strategy_event_window import EventWindowConfig, make_event_window_strategy, event_window_assumptions, settle_event_window_exits, SCHEMA as EVENT_WINDOW_SCHEMA
 from strategy_macro_events import MacroConfig, make_macro_strategy, macro_assumptions, macro_report, SCHEMAS as MACRO_SCHEMAS
 from strategy_funding_reversal import (
@@ -6281,6 +6282,20 @@ def _build_event_window(params, *, initial_capital=10000.0):
                 executed_name="Event Window", min_bars=2, event_window_config=config)
 
 
+@_with_time_config
+def _build_token_unlock_event(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS[token_unlock.TOOL_ID]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = token_unlock.UnlockConfig.parse(params)
+    risk = _parse_fixed_risk_params(params)
+    return dict(strategy=token_unlock.make_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Token Unlock Event", min_bars=2, token_unlock_config=config,
+                template_assumptions={"token_unlock_event": {**token_unlock.ASSUMPTIONS,
+                    "pre_days": config.pre_days, "post_days": config.post_days,
+                    "min_pct_of_supply": str(config.minimum)}})
+
+
 def _build_macro_event(params, *, kind, initial_capital=10000.0):
     error = _validate_params_against_schema(params, TOOL_SPECS[f"local.backtesting_py.{kind}"]["param_schema_properties"])
     if error:
@@ -7294,6 +7309,13 @@ def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
 
 
 TOOL_SPECS: dict[str, dict[str, Any]] = {
+    token_unlock.TOOL_ID: {
+        "name": "Local Backtesting.py Token Unlock Event",
+        "description": "Inline public unlock schedules: short pre_days before UTC unlock, reverse to long on unlock, close post_days later; fixed 1x USDT perpetual only.",
+        "strategy_family": "calendar", "is_default": False,
+        "markets": ["futures"], "timeframes": ["1h", "4h", "1d"],
+        "build": _build_token_unlock_event, "param_schema_properties": deepcopy(token_unlock.SCHEMA),
+    },
     **{f"local.backtesting_py.{kind}": {
         "name": f"Local Backtesting.py {kind.replace('_', ' ').title()}",
         "description": "Inline UTC macro events; one trade per event; intrinsic stop and timed next-open exits; zero warmup."
@@ -8397,6 +8419,14 @@ _event_window_properties = TOOL_SPECS["local.backtesting_py.event_window"]["para
 for _event_window_key in ("atr_stop_multiplier", "risk_atr_period"):
     del _event_window_properties[_event_window_key]
 del _event_window_properties, _event_window_key
+
+# C39: fixed-percent stops only; retain shared sizing and clocks, no alternate exits.
+TOOL_SPECS[token_unlock.TOOL_ID]["param_schema_properties"] = {
+    **deepcopy(token_unlock.SCHEMA), **POSITION_SIZE_SCHEMA, **_TIME_PARAM_SCHEMA_PROPERTIES,
+    **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]
+       for key in ("position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars")},
+    "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+}
 
 # P1 fear_greed_scale_in publishes only its own keys: the shared time layer and max_holding_bars are
 # not wired/verified for the daily external-series template, so requests carrying them are rejected
@@ -10331,6 +10361,10 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     if tool_spec.get("markets") == ["futures"] and market != "futures":
         return _validation_failure("INVALID_PARAMS", "this template requires futures market")
+    if effective_tool_id == token_unlock.TOOL_ID and timeframe not in tool_spec["timeframes"]:
+        return _validation_failure("TIMEFRAME_UNSUPPORTED", "token_unlock_event requires 1h/4h/1d")
+    if effective_tool_id == token_unlock.TOOL_ID and not re.fullmatch(r"[A-Z0-9]+/?USDT(?::USDT)?", str(symbol).upper()):
+        return _validation_failure("INVALID_PARAMS", "token_unlock_event requires a USDT perpetual symbol")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     funding_symbol = None
@@ -10466,6 +10500,7 @@ async def run_backtest(
         strategy_class._calendar_timeframe = timeframe
 
     event_window_config = built.get("event_window_config")
+    token_unlock_config = built.get("token_unlock_config")
 
     # --- Fetch OHLCV ---
     source_market = tool_spec.get("ohlcv_market", market)
@@ -10687,7 +10722,7 @@ async def run_backtest(
     # its required_bars prefix; off-state (and filter_timeframe) stays empty.
     warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
                   if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
-                 if range_config is not None or calendar_config is not None or event_window_config is not None or macro_config is not None or top_lsr_config is not None else
+                 if range_config is not None or calendar_config is not None or event_window_config is not None or token_unlock_config is not None or macro_config is not None or top_lsr_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
@@ -11179,6 +11214,9 @@ async def run_backtest(
                     getattr(stats, "_trades", None), stats["_strategy"].closed_trades)),
             },
         })
+        if token_unlock_config is not None:
+            response_body["raw_report"]["token_unlock_event"] = token_unlock.settle_report(
+                stats["_strategy"], response_body["trades"], response_body["raw_report"].get("isolated_risk"))
         if event_window_config is not None:
             # After result.v2 and isolated_risk are final: every submitted event's outcome (entered /
             # rejected_at_fill, exits) is derived from the settled rows, never from live broker fills.

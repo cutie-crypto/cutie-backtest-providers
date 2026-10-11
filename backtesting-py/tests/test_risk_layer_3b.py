@@ -399,7 +399,7 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         params['flatten_at'] = '23:00'  # 1h test grid
     if name == 'calendar_schedule':
         params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
-    if name == 'event_window':
+    if name in ('event_window', 'token_unlock_event'):
         params.update(required_params(name))  # P-EVENT0: three 96-bar windows inside frame()
     if name == 'chan_3buy':
         build=p.TOOL_SPECS['local.backtesting_py.chan_3buy']['build']
@@ -511,6 +511,8 @@ def test_new_schema_consumed_only_by_runtime_mixins(key):
             included = False  # Q18 intrinsic stops and elapsed-minute holds only.
         if tool_id in (p.FEAR_GREED_TOOL_ID, p.FUNDING_REVERSAL_TOOL_ID, p.TOP_LSR_TOOL_ID, p.LIQUIDATION_REVERSAL_TOOL_ID):
             included = False  # P1/P2/S3/S4 publish no time layer / max_holding_bars.
+        if tool_id == 'local.backtesting_py.token_unlock_event':  # C39 +1: shared holding clock, no dynamic stops/TP
+            included = key == 'max_holding_bars'
         assert (key in spec['param_schema_properties']) == included
 
 @pytest.mark.parametrize('side',['long','short'])

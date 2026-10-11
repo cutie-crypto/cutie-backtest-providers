@@ -69,6 +69,9 @@ REQUIRED_PARAMS = {'event_window': dict(bars_after=96, events=[
     dict(ts_utc='2026-01-12T06:00:00Z', label='enum-3')])}
 
 REQUIRED_PARAMS.update({
+    'token_unlock_event': dict(events=[dict(ts_utc='2026-01-06T00:00:00Z', label='token_unlock',
+        pct_of_supply='1', known_at_utc='2026-01-01T00:00:00Z')]),  # C39 +1
+
     'macro_release_breakout': dict(events=[dict(ts_utc='2026-01-07T16:00:00Z', label='enum')], direction='long'),
     'macro_surprise_direction': dict(events=[dict(ts_utc='2026-01-07T16:00:00Z', label='enum', expected=1, actual=0)],
                                      direction_map=dict(below='long', above='none')),

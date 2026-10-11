@@ -247,6 +247,10 @@ def test_fixed_risk_keys_are_merged_into_every_tool_schema():
             supported = {"position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
             assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
             continue
+        if tool_id == "local.backtesting_py.token_unlock_event":  # C39 +1
+            assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == {
+                "stop_loss_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
+            continue
         if tool_id == "local.backtesting_py.calendar_schedule":
             supported = {"stop_loss_pct", "take_profit_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
             assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported

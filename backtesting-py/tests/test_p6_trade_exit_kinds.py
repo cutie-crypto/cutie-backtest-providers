@@ -94,7 +94,14 @@ GENERIC_LEDGER = {
     'dca': dict(amount=100, profit_target_pct=5),
     'rsi_scale_in_out': dict(buy_notional=200, sell_notional=200),
 }
+def unlock_run(mp, tmp):
+    from test_token_unlock_event_39 import post
+    return post(mp, tmp)
+
+
 SPECIAL = {
+    'token_unlock_event': unlock_run,  # C39 +1: required inline events / exact UTC windows.
+
     **{name: via(c2d) for name in c2d.NAMES},
     **{name: via(c2c) for name in ('morning_star', 'three_white_soldiers', 'bullish_doji_reversal')},
     'double_top': via(c2b),

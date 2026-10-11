@@ -159,7 +159,7 @@ def test_futures_only_set_is_the_registered_contract():
     # SHORT-PAT-4 adds the three bearish candle patterns => eight; SHORT-PAT-5 crows / bearish doji => ten.
     assert FUTURES_ONLY == ['bearish_doji_reversal', 'bearish_engulfing', 'chan_3sell', 'double_top', 'evening_star', 'fomc_reversal',
                             'funding_settlement_reversal', 'head_shoulders', 'macd_bearish_divergence', 'rsi_bearish_divergence', 'shooting_star',
-                            'three_black_crows']
+                            'three_black_crows', 'token_unlock_event']  # C39 +1
 
 
 @pytest.mark.parametrize('name', FUTURES_ONLY)

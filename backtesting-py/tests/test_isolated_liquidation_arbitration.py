@@ -315,7 +315,7 @@ def baseline_provider():
                                   # P-EVENT0: event_window postdates e25886e (no baseline output to compare)
                                   # and needs inline events; its L=1 off state is pinned byte-for-byte by
                                   # tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
-                                  'event_window',
+                                  'event_window', 'token_unlock_event',  # C39 +1: own immutable L=1 time baseline
                                   # Q18 postdates the frozen baseline; explicit L=1 bytes live in its route suite.
                                   'macro_release_breakout', 'macro_surprise_direction', 'fomc_reversal',
                                   # P2 postdates the frozen baseline; L=1 off state is pinned in test_p2_funding_settlement_reversal.py.
