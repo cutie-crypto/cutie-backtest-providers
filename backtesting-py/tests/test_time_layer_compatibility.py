@@ -69,6 +69,11 @@ OI_CASES = {'oi_breakout'}
 
 ETF38_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_etf38_off.json').read_text())
 ETF38 = {'etf_flow_follow'}
+
+EXNF52_BASELINE = json.loads((Path(__file__).parent / 'fixtures/exchange_netflow_52_time_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(EXNF52_BASELINE['single'])
+BASELINE['single'].update(EXNF52_BASELINE['single'])
+EXNF52 = {'exchange_netflow'}
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -81,7 +86,7 @@ SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
 # tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
 EVENT0 = {'event_window'}
 UNLOCK39 = {'token_unlock_event'}  # C39 +1; own clock/off-state checks below
-LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | OI_CASES | ETF38 | UNLOCK39}
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | OI_CASES | ETF38 | UNLOCK39 | EXNF52}
 
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')
@@ -231,12 +236,23 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         params = dict(time_layer_enabled=True, time_timezone='America/New_York',
                       time_session_start='09:30', time_session_end='10:30')
         tf = '15m'
+    if name in EXNF52:
+        from test_exchange_netflow_52 import frame, T0, DAY
+        # Entry at Monday day7; inflow exit at Tuesday day8 is outside the Monday gate.
+        data = frame(n=11)
+        params = dict(outflow_days=1, inflow_exit_days=1, time_layer_enabled=True, time_weekdays=1)
+        tf = '1d'
     built = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)
     if name in OI_CASES:
         start = int(data.index[0].timestamp())
         rows = [dict(ts=start + k * 3600, available_at=start + (k + 1) * 3600,
                      value='105' if k == 5 else '100', revision='frozen') for k in range(-2, 10)]
         built['oi_config'].bind(rows, symbol='BTC', bar_seconds=3600, interval='1h')
+    if name in EXNF52:
+        config = built['exchange_netflow_config']
+        required = config.required_timestamps([int(t.timestamp()) for t in data.index])
+        config.bind([dict(ts=t, value=1 if t == T0 + 7 * DAY else -1) for t in required],
+                    symbol='BTC', required=required)
     cls = built['strategy']
     if name in ETF38:
         config = built['etf_flow_config']
@@ -488,3 +504,22 @@ def test_c39_disabled_time_bytes_and_midnight_entry_gate(monkeypatch, tmp_path):
                      time_timezone='UTC', time_weekdays=2, risk_layer_enabled=risk_enabled, stop_loss_pct=3))
         assert [r['side'] for r in gated['trades']] == ['long']
         assert gated['trades'][0]['closed_at'] == 1767916800  # Friday exit allowed outside Tuesday gate.
+
+@pytest.mark.parametrize('explicit_leverage', [False, True])
+def test_c52_disabled_time_frozen_bytes(monkeypatch, tmp_path, explicit_leverage):
+    from test_exchange_netflow_52 import run
+    params = {'leverage': 1} if explicit_leverage else {}
+    absent, _ = run(monkeypatch, tmp_path, params=params)
+    def forbidden(*a, **kw):
+        pytest.fail('disabled C52 time layer must not construct TimeContext')
+    monkeypatch.setattr(TimeContext, 'build', forbidden)
+    disabled, _ = run(monkeypatch, tmp_path, params={**params, **DEFAULTS})
+    assert absent['result_status'] == disabled['result_status'] == 'success'
+    assert absent['trades']
+    expected = EXNF52_BASELINE['single']['exchange_netflow']
+    assert provider.TOOL_SPECS['local.backtesting_py.exchange_netflow']['build'](params)['min_bars'] == expected['min_bars']
+    for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
+        assert capture.digest(absent[key]) == capture.digest(disabled[key]) == expected[key + '_sha256'], key
+    assert 'time_layer' not in disabled['assumptions']
+    assert 'time_layer' not in disabled['raw_report']
+    assert EXNF52 <= set(MIXINS)

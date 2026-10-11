@@ -84,7 +84,7 @@ def test_catalog_declares_futures_market(client):
             assert tool["markets"] == ["spot"]
             continue
         if tool["tool_id"] in ("local.backtesting_py.top_long_short_reversal",  # S3：大户多空比反向只做多现货
-                               "local.backtesting_py.liquidation_reversal", "local.backtesting_py.oi_breakout", "local.backtesting_py.etf_flow_follow"):  # S4：只做现货
+                               "local.backtesting_py.liquidation_reversal", "local.backtesting_py.oi_breakout", "local.backtesting_py.etf_flow_follow", "local.backtesting_py.exchange_netflow"):  # S4：只做现货
             assert tool["markets"] == ["spot"]
             continue
         # 做空形态一 / 二（集成 D 合并）、三（缠论三卖）只做合约：spot 不得出现在 catalog
