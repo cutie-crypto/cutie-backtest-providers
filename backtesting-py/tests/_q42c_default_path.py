@@ -40,15 +40,21 @@ def goldens() -> dict[str, list]:
     return json.loads(GOLDEN_FILE.read_text()) if GOLDEN_FILE.exists() else {}
 
 
-def strip_trade_exit_kinds(value):
-    """Hook for branches whose responses carry extra, additive exit-kind keys (identity on the Q42-C head)."""
-    return value
+def strip_trade_exit_kinds(body):
+    """Branches that add ``raw_report.trade_exit_kinds`` (P6) ship ``_exit_kinds_strip``; the goldens were
+    recorded without that key, so drop it before summarising. Identity where the helper does not exist."""
+    try:
+        from _exit_kinds_strip import without_exit_kinds
+    except ImportError:
+        return body
+    return without_exit_kinds(body)
 
 
 def summarize(body: dict) -> dict:
-    stable = {key: strip_trade_exit_kinds(body[key]) for key in V2_KEYS if key in body}
+    body = strip_trade_exit_kinds(body)
+    stable = {key: body[key] for key in V2_KEYS if key in body}
     canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    meta = json.dumps({key: strip_trade_exit_kinds(body.get(key)) for key in DISCLOSURE_KEYS},
+    meta = json.dumps({key: body.get(key) for key in DISCLOSURE_KEYS},
                       sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     trades = body.get("trades") or []
     return {
