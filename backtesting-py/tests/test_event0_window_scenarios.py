@@ -19,6 +19,7 @@ import pytest
 
 from test_event0_event_window import (BLOWOUT, blowout_frame, check_event_records, events_of, falling, frame,
                                       legs, one, post)
+from _exit_kinds_strip import without_exit_kinds
 
 GOLDEN = Path(__file__).parent / 'fixtures' / 'event0_window_scenarios_golden.json'
 GOLDEN_SHA256 = '7382c2ee13b6410e847608b6f02134a5c680482a205c46ffe3302885dbe765c7'
@@ -52,7 +53,7 @@ def run(monkeypatch, tmp_path, name):
 def capture(monkeypatch, tmp_path):
     out = {}
     for name in sorted(SCENARIOS):
-        body = dict(run(monkeypatch, tmp_path, name))
+        body = without_exit_kinds(dict(run(monkeypatch, tmp_path, name)))
         body.pop('report_path', None)
         out[name] = body
     return json.dumps(out, sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n'

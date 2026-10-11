@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import capture_entry_filters_5b8320a as filters
 import capture_time_layer_11e8cfb as clock
+from _exit_kinds_strip import without_exit_kinds
 
 
 def main():
@@ -50,6 +51,7 @@ def capture_isolated():
             req=leverage.request({},market=market,name='fibonacci_retracement')
             req['backtest'].update(start_at=int(data.index[0].timestamp()),end_at=int(data.index[-1].timestamp())+3600)
             body=TestClient(clock.provider.app).post('/cutie/backtest',json=req).json()
+            body=without_exit_kinds(body)
             assert body['result_status']=='success',body
             digest=lambda value:hashlib.sha256(value.encode()).hexdigest()
             cases[market]=dict(v2=digest(canonical_json({k:body[k] for k in clock.V2_KEYS})),

@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as provider
 from backtesting import Backtest
 from fastapi.testclient import TestClient
+from _exit_kinds_strip import without_exit_kinds
 
 BASELINE_SHA = 'c72c4a1'
 STEP = {'1h': 3600, '15m': 900}
@@ -125,6 +126,7 @@ def snapshot(tool, params, frame_name, warm, market, timeframe):
             slippage_bps='0')
         body = TestClient(provider.app).post('/cutie/backtest', json={'backtest': request}).json()
     assert body.get('result_status') == 'success', body
+    body = without_exit_kinds(body)
     body.pop('report_path', None)
     return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 

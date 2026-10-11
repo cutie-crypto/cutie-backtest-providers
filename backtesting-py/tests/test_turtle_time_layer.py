@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 import cutie_backtesting_provider as p
 from strategy_time_layer import TimeContext, _TIME_PARAM_SCHEMA_PROPERTIES
+from _exit_kinds_strip import without_exit_kinds_text
 
 _spec = importlib.util.spec_from_file_location(
     'turtle_time_capture', Path(__file__).parent / 'fixtures/capture_turtle_time_off_4d29dfa.py')
@@ -67,7 +68,7 @@ def test_baseline_fixture_is_pinned_to_4d29dfa():
 @pytest.mark.parametrize('case', sorted(capture.CASES))
 def test_omitted_time_keys_response_byte_identical(case):
     # TURTLE-NSTOP 给 turtle_groups 每组追加 n / stop；金样不重抓，测试侧剔除这两键后逐字节比。
-    stripped, removed = re.subn(r',"n":"[^"]*","stop":"[^"]*"', '', capture.response(case))
+    stripped, removed = re.subn(r',"n":"[^"]*","stop":"[^"]*"', '', without_exit_kinds_text(capture.response(case)))
     assert stripped == BASELINE['responses'][case]
     assert removed == stripped.count('"group_id"') > 0  # 普通海龟也出：每组都被剔除一次
 

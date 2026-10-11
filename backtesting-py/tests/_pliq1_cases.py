@@ -19,6 +19,7 @@ import cutie_backtesting_provider as p
 import _10b2b_cases as b
 import _10b2c_cases as c
 import _10b2d_cases as d
+from _exit_kinds_strip import without_exit_kinds
 
 LONG = c.CANDLE + c.BOTTOM + ('red_streak_rsi',)
 CONTROL = ('double_top', 'head_shoulders')
@@ -129,7 +130,7 @@ def control_cases():
 
 def snapshot(body):
     assert body.get('result_status') == 'success', body
-    body = dict(body)
+    body = without_exit_kinds(body)
     body.pop('report_path', None)
     return c.canonical(body)
 

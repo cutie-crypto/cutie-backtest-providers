@@ -20,6 +20,7 @@ from canonical_json import canonical_json
 from strategy_top_patterns import top_signals
 from test_9t1_engulf_pin import run
 from test_time_layer import DEFAULTS
+from _exit_kinds_strip import without_exit_kinds
 
 NAMES = ('double_top', 'head_shoulders')
 V2_KEYS = ('schema_version', 'trades', 'equity_curve', 'metrics', 'data_manifest')
@@ -420,6 +421,7 @@ def off_response(name,params,warm):
 
 
 def fingerprint(body):
+    body=without_exit_kinds(body)
     digest=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
     return dict(trade_count=len(body['trades']),warmup_bars=body['assumptions']['indicator_warmup_bars'],
         assumptions_sha256=digest(body['assumptions']),raw_report_sha256=digest(body['raw_report']),

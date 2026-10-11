@@ -14,6 +14,7 @@ import cutie_backtesting_provider as p
 from strategy_divergence import divergence_signals, macd_values
 from strategy_time_layer import TimeConfig, TimeContext
 from test_time_layer import DEFAULTS as TIME_OFF
+from _exit_kinds_strip import without_exit_kinds
 
 NAMES = ('macd_bearish_divergence', 'rsi_bearish_divergence')
 
@@ -431,6 +432,7 @@ def test_branch_head_isolated_off_golden(name,warm,explicit):
     params={'leverage':1,**TIME_OFF} if explicit else {}
     body=http_response(name,params,warm=warm)
     assert body['trades']
+    body = without_exit_kinds(body)
     assert 'isolated_risk' not in body['raw_report']
     assert 'isolated_margin' not in body['assumptions']
     v2={key:body[key] for key in ('schema_version','metrics','trades','equity_curve','data_manifest')}

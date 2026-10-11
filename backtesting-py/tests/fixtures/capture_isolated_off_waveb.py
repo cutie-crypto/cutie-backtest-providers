@@ -28,6 +28,7 @@ def part(root, out, names):
     sys.path.insert(0, str(root / 'tests'))
     import tempfile
     import cutie_backtesting_provider as p
+    from _exit_kinds_strip import without_exit_kinds
     import test_risk_overlay_compatibility as compat
     from backtesting import Backtest
     from canonical_json import canonical_json
@@ -52,6 +53,7 @@ def part(root, out, names):
                 req['backtest'].update(start_at=int(data.index[0].timestamp()),
                                        end_at=int(data.index[-1].timestamp()) + step)
                 resp = TestClient(p.app).post('/cutie/backtest', json=req).json()
+                resp = without_exit_kinds(resp)
             assert resp['result_status'] == 'success', (name, label, resp)
             assert 'isolated_margin' not in resp['assumptions'] and 'isolated_risk' not in resp['raw_report']
             cases[name][label] = dict(

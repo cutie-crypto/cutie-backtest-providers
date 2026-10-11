@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as p  # noqa: E402
 from strategy_entry_filters import PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES  # noqa: E402
+from _exit_kinds_strip import without_exit_kinds
 
 TOOL = 'local.backtesting_py.event_window'
 GOLDEN = Path(__file__).parent / 'fixtures' / 'event0_window_golden.json'
@@ -88,7 +89,7 @@ def legs(body):
 
 
 def canonical(body):
-    body = dict(body)
+    body = without_exit_kinds(dict(body))
     body.pop('report_path', None)
     return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n'
 

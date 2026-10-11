@@ -125,6 +125,7 @@ from scale_in_out_ledger import (
     LedgerInvariantError,
     result_v2_equity_curve as _scale_in_out_curve_v2,
     result_v2_trades as _scale_in_out_trades_v2,
+    result_v2_trade_exit_kinds as _scale_in_out_trade_exit_kinds,
     round_cash,
     run_scale_in_out,
     threshold_signal,
@@ -2778,6 +2779,201 @@ def _pattern_confirm_strategy(strategy):
     return PatternConfirmed
 
 
+# P6: raw_report.trade_exit_kinds -- why each result.v2 trade was closed. result.v2 trades stay the
+# frozen 10 keys (server / connector check the exact key set); the reason lives beside them, by seq.
+# Size guard: a serialized trade_exit_kinds above this many bytes is left out (logged), like an unresolved one.
+TRADE_EXIT_KINDS_MAX_BYTES = 131072
+TRADE_EXIT_KINDS = frozenset({"stop_loss", "take_profit", "trailing_stop", "time_exit", "signal_exit",
+                              "liquidation", "end_of_data"})
+# Template exit reasons (``_risk_exit_reason`` values) -> exit kind. A reason missing here is left
+# unresolved on purpose (``unmapped:<reason>``) so the run omits trade_exit_kinds and the P6 tests go
+# red instead of a silent default.
+_EXIT_REASON_KINDS = {
+    "stop_loss": "stop_loss", "take_profit": "take_profit", "take_profit_levels": "take_profit",
+    "time_expiry": "time_exit", "liquidation": "liquidation",
+    # Calendar templates: the window stop is a stop; the CME gap fill is the template's target.
+    "window_stop": "stop_loss", "gap_filled": "take_profit",
+    # Template indicator exits (VWAP touch, divergence MACD / RSI exits, Chan pivot-zone break).
+    "vwap_reversion": "signal_exit", "macd_cross_up": "signal_exit", "macd_cross_down": "signal_exit",
+    "rsi_exit": "signal_exit", "close_above_zd": "signal_exit", "close_below_zg": "signal_exit",
+}
+
+
+def _mark_exit_kind(strategy, kind: str) -> None:
+    """Name the kind of the close the caller is about to submit (only read under _exit_kind_strategy)."""
+    strategy.__dict__["_exit_kind_pending"] = kind
+
+
+def _stop_exit_kind(strategy, state) -> str:
+    """stop_loss, or trailing_stop when the trailing level is the stop that fired.
+
+    The managed stop is the tightest of three sources (strategy_dynamic_stop.advance_stop): the
+    initial stop, the trailing level (extreme * (1 -/+ trailing_pct)) and, once breakeven is
+    ACTIVE, the entry price. trailing_stop only when trailing is configured, its level is at least
+    as tight as the initial stop (a tie means the initial stop is the trailing offset itself) and,
+    when breakeven is active, strictly tighter than the entry price. A stop lifted only by an
+    active breakeven (or left at the fixed initial stop) is stop_loss.
+    """
+    managed = getattr(state, "stop_state", None)
+    trailing = strategy._risk.get("trailing_stop_pct")
+    if managed is None or not trailing:
+        return "stop_loss"
+    long = managed.direction == "long"
+    trail = managed.extreme * (Decimal(1) + (-1 if long else 1) * Decimal(str(trailing)) / 100)
+
+    def tighter(a: Decimal, b: Decimal) -> bool:
+        return a > b if long else a < b
+
+    if tighter(managed.initial_stop, trail):
+        return "stop_loss"
+    if managed.breakeven_active and not tighter(trail, managed.entry_price):
+        return "stop_loss"
+    return "trailing_stop"
+
+
+class _ExitKindOrders(list):
+    """broker.orders that stamps the exit kind on a trade when a plain close order is queued for it.
+
+    Trade.close() / Position.close() (exclusive_orders reversals included) insert an Order with
+    parent_trade and no stop / limit. Contingent SL/TP orders carry a stop or limit and are skipped.
+    The latest close queued for a trade wins: backtesting.py inserts closes at the head of the queue,
+    so the latest one is also the one the broker fills first.
+    """
+
+    def __init__(self, strategy, orders):
+        super().__init__(orders)
+        self._strategy = strategy
+
+    def _stamp(self, order) -> None:
+        trade = order.parent_trade
+        if trade is None or order.stop is not None or order.limit is not None:
+            return
+        state = self._strategy.__dict__
+        phase = state.get("_exit_kind_phase")
+        kind = state.get("_exit_kind_pending")
+        if kind is None:
+            # Outside next() / broker.next() only finalize_trades closes trades: the window ended.
+            kind = {"next": "signal_exit", "broker": "unresolved:broker_close"}.get(phase, "end_of_data")
+        trade._exit_kind = kind
+
+    def insert(self, index, order):
+        self._stamp(order)
+        super().insert(index, order)
+
+    def append(self, order):
+        self._stamp(order)
+        super().append(order)
+
+
+def _exit_kind_strategy(strategy):
+    """P6: per-run subclass that records each closed trade's exit kind on the Trade object.
+
+    Template code is untouched: a close queued inside next() without a named reason is the
+    template's signal exit; ``_risk_exit_reason`` assignments and ``_mark_exit_kind`` name the rest.
+    """
+
+    class ExitKinds(strategy):
+        @property
+        def _risk_exit_reason(self):
+            try:
+                return self.__dict__["_exit_reason_value"]
+            except KeyError:
+                raise AttributeError("_risk_exit_reason") from None
+
+        @_risk_exit_reason.setter
+        def _risk_exit_reason(self, value):
+            self.__dict__["_exit_reason_value"] = value
+            self.__dict__["_exit_kind_pending"] = (
+                None if value is None else _EXIT_REASON_KINDS.get(value, f"unmapped:{value}"))
+
+        def init(self):
+            super().init()
+            broker = self._broker
+            broker.orders = _ExitKindOrders(self, broker.orders)
+            state = self.__dict__
+            close_trade, reduce_trade = broker._close_trade, broker._reduce_trade
+            process_orders, broker_next = broker._process_orders, broker.next
+
+            def stamped_close(trade, price, time_index):
+                if state.get("_exit_kind_phase") == "broker" and not state.get("_exit_kind_processing"):
+                    # _Broker.next closes every trade directly once equity <= 0 (account blown).
+                    trade._exit_kind = "liquidation"
+                close_trade(trade, price, time_index)
+
+            def reduce_and_reset(trade, price, size, time_index):
+                reduce_trade(trade, price, size, time_index)
+                if trade in broker.trades:
+                    trade._exit_kind = None  # The closed copy keeps the kind; the remainder starts over.
+
+            def tracked_process_orders():
+                outer = state.get("_exit_kind_processing", False)
+                state["_exit_kind_processing"] = True
+                try:
+                    process_orders()
+                finally:
+                    state["_exit_kind_processing"] = outer
+
+            def tracked_next():
+                state["_exit_kind_phase"], state["_exit_kind_pending"] = "broker", None
+                try:
+                    broker_next()
+                finally:
+                    state["_exit_kind_phase"], state["_exit_kind_pending"] = None, None
+
+            broker._close_trade, broker._reduce_trade = stamped_close, reduce_and_reset
+            broker._process_orders, broker.next = tracked_process_orders, tracked_next
+
+        def next(self):
+            state = self.__dict__
+            state["_exit_kind_phase"], state["_exit_kind_pending"] = "next", None
+            try:
+                super().next()
+            finally:
+                state["_exit_kind_phase"], state["_exit_kind_pending"] = None, None
+
+    ExitKinds.__module__ = strategy.__module__  # Keep template identity for module-based introspection.
+    ExitKinds.__name__ = strategy.__name__
+    ExitKinds.__qualname__ = strategy.__qualname__
+    return ExitKinds
+
+
+def _sorted_exit_kinds(rows: list[tuple[int, int, Any]]) -> list[Any]:
+    """Kinds in result.v2 seq order: (closed_at, opened_at) stable sort, exactly as the trade builders."""
+    return [kind for _, _, kind in sorted(rows, key=lambda row: (row[0], row[1]))]
+
+
+def _engine_trade_exit_kinds(stats_trades: Any, closed_trades: Any) -> list[Any]:
+    """Kinds aligned with _build_result_v2_trades(stats_trades): same rows, same skip, same sort."""
+    if stats_trades is None or len(stats_trades) == 0:
+        return []
+    rows = []
+    for (_, trade), closed in zip(stats_trades.iterrows(), closed_trades):
+        entry_time, exit_time = trade.get("EntryTime"), trade.get("ExitTime")
+        if not hasattr(entry_time, "value") or not hasattr(exit_time, "value"):
+            continue
+        rows.append((int(exit_time.value // 10**9), int(entry_time.value // 10**9),
+                     getattr(closed, "_exit_kind", None)))
+    return _sorted_exit_kinds(rows)
+
+
+def _trade_exit_kinds_report(trades: list[dict[str, Any]], kinds: list[Any]) -> dict[str, Any]:
+    """{"trade_exit_kinds": [...]} when every trade resolved to an allowed kind, else {} (logged).
+
+    No fallback value: an exit nobody named leaves the field out, which the P6 tests catch.
+    """
+    if len(kinds) != len(trades) or any(kind not in TRADE_EXIT_KINDS for kind in kinds):
+        logger.error("trade_exit_kinds unresolved: trades=%d kinds=%s", len(trades),
+                     sorted({str(kind) for kind in kinds if kind not in TRADE_EXIT_KINDS}))
+        return {}
+    rows = [{"seq": trade["seq"], "exit_kind": kind} for trade, kind in zip(trades, kinds)]
+    size = len(json.dumps(rows, separators=(",", ":")).encode())
+    if size > TRADE_EXIT_KINDS_MAX_BYTES:
+        logger.error("trade_exit_kinds too large: %d bytes > %d (trades=%d), field omitted",
+                     size, TRADE_EXIT_KINDS_MAX_BYTES, len(trades))
+        return {}
+    return {"trade_exit_kinds": rows}
+
+
 class _FilterLayerMixin:
     _filter_config = None
     _filter_context = None
@@ -3085,6 +3281,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             self._risk_exit_reason = reason
             if reason == "time_expiry":
                 self._record_holding_expiry(fact)
+            elif reason == "stop_loss":
+                _mark_exit_kind(self, _stop_exit_kind(self, self._risk_state))
             self.position.close()
             return True
         self._risk_state, units = level_exit(
@@ -3260,6 +3458,7 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             if (is_long and close <= stop_price) or (not is_long and close >= stop_price):
                 if time_enabled:
                     self._risk_exit_reason = "stop_loss"
+                _mark_exit_kind(self, "stop_loss")
                 self.position.close()
                 return True
         if time_enabled:
@@ -3271,6 +3470,7 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         if tp_pct is not None:
             take_price = entry_price * (1 + tp_pct) if is_long else entry_price * (1 - tp_pct)
             if (is_long and close >= take_price) or (not is_long and close <= take_price):
+                _mark_exit_kind(self, "take_profit")
                 self.position.close()
                 return True
         return False
@@ -3544,7 +3744,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 if below == "stop_loss" and not reset_pending:
                     reset_pending = True
                     if holdings > 0:
-                        return "sell_all"
+                        return ("sell_all", "stop_loss")  # P6: the full sell is the grid's stop.
                 return "hold"
             if reset_pending and 0 <= lv <= n:
                 ref_level = lv
@@ -3878,6 +4078,8 @@ class _TurtleGroupMixin(_TimeLayerMixin):
         return False
 
     def _turtle_close(self, reason: str) -> None:
+        _mark_exit_kind(self, {"stop": "stop_loss", "time_expiry": "time_exit", "take_profit": "take_profit",
+                               "channel": "signal_exit"}.get(reason, f"unmapped:{reason}"))
         self.position.close()
         self._group_exit_reasons[self._group_id] = reason
         self._closing_group = True
@@ -5005,7 +5207,7 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
             close = bars[index].close
             with localcontext(exact):
                 if round_qty and close * round_qty >= round_notional * profit_factor:
-                    return "sell_all"
+                    return ("sell_all", "take_profit")  # P6: the round's profit target.
                 if round_qty and dip_adds_this_round < max_adds and close <= last_buy_price * dip_factor:
                     dip_adds_this_round += 1  # A skipped buy still consumes this attempt.
                     pending_amount, pending_dip = dip_amount, True
@@ -9225,6 +9427,8 @@ def _run_scale_in_out_backtest(
                     "auth_mode": _central_market_data_auth_mode(),
                     "cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
                 },
+                **_trade_exit_kinds_report(result_v2["trades"], _scale_in_out_trade_exit_kinds(
+                    ledger.trades, ledger.trade_exit_kinds)),
             },
         })
         return _bounded_template_response(run_id, response_body)
@@ -10413,7 +10617,8 @@ async def run_backtest(
         # Commission: fee_bps / 10000 (basis points to ratio)
         commission = float(fee_bps / Decimal("10000"))
 
-        StrategyClass = strategy_class
+        # P6: records each closed trade's exit kind (raw_report.trade_exit_kinds).
+        StrategyClass = _exit_kind_strategy(strategy_class)
         # backtesting.py trades WHOLE units; a small cash on a high-priced asset
         # (e.g. BTC ~$80k with $10k cash) floors position size to 0 units -> no trades.
         # Run with a large internal cash so sizing is effectively continuous, then scale
@@ -10796,6 +11001,8 @@ async def run_backtest(
                     "auth_mode": _central_market_data_auth_mode(),
                     "cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
                 },
+                **_trade_exit_kinds_report(result_v2["trades"], _engine_trade_exit_kinds(
+                    getattr(stats, "_trades", None), stats["_strategy"].closed_trades)),
             },
         })
         if event_window_config is not None:
