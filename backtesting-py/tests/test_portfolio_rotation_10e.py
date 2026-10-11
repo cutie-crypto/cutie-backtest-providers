@@ -342,6 +342,9 @@ def test_catalog_existing_entries_byte_identical():
             orb = api.TOOL_SPECS['local.backtesting_py.opening_range_breakout']['param_schema_properties']
             assert current.get('exchange') == orb['exchange'], tool_id
             entry['param_schema']['properties'] = {k: v for k, v in current.items() if k != 'exchange'}
+        # Q46：执行超时由 120000 改为共享常量（对齐 connector 硬上限 300000），是唯一允许的差异；换回基线值后仍须逐字节相同。
+        assert entry['execution']['timeout_ms'] == api.EXECUTION_TIMEOUT_MS == 300000, tool_id
+        entry['execution']['timeout_ms'] = baseline.EXECUTION_TIMEOUT_MS
         new = json.dumps(entry, ensure_ascii=False, separators=(',', ':')).encode()
         assert old == new, tool_id
     # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。
@@ -358,6 +361,8 @@ def test_catalog_existing_entries_byte_identical():
         'local.backtesting_py.fomc_reversal',  # Q18
         'local.backtesting_py.fear_greed_scale_in',  # P1
         'local.backtesting_py.funding_settlement_reversal',  # P2
+        'local.backtesting_py.top_long_short_reversal',  # S3
+        'local.backtesting_py.liquidation_reversal',  # S4
     }
     entry = api._catalog_tool(TOOL_ID, api.TOOL_SPECS[TOOL_ID], symbols)
     assert entry['markets'] == ['spot']
