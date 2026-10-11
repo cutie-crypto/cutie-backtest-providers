@@ -2781,6 +2781,8 @@ def _pattern_confirm_strategy(strategy):
 
 # P6: raw_report.trade_exit_kinds -- why each result.v2 trade was closed. result.v2 trades stay the
 # frozen 10 keys (server / connector check the exact key set); the reason lives beside them, by seq.
+# Size guard: a serialized trade_exit_kinds above this many bytes is left out (logged), like an unresolved one.
+TRADE_EXIT_KINDS_MAX_BYTES = 131072
 TRADE_EXIT_KINDS = frozenset({"stop_loss", "take_profit", "trailing_stop", "time_exit", "signal_exit",
                               "liquidation", "end_of_data"})
 # Template exit reasons (``_risk_exit_reason`` values) -> exit kind. A reason missing here is left
@@ -2956,7 +2958,13 @@ def _trade_exit_kinds_report(trades: list[dict[str, Any]], kinds: list[Any]) -> 
         logger.error("trade_exit_kinds unresolved: trades=%d kinds=%s", len(trades),
                      sorted({str(kind) for kind in kinds if kind not in TRADE_EXIT_KINDS}))
         return {}
-    return {"trade_exit_kinds": [{"seq": trade["seq"], "exit_kind": kind} for trade, kind in zip(trades, kinds)]}
+    rows = [{"seq": trade["seq"], "exit_kind": kind} for trade, kind in zip(trades, kinds)]
+    size = len(json.dumps(rows, separators=(",", ":")).encode())
+    if size > TRADE_EXIT_KINDS_MAX_BYTES:
+        logger.error("trade_exit_kinds too large: %d bytes > %d (trades=%d), field omitted",
+                     size, TRADE_EXIT_KINDS_MAX_BYTES, len(trades))
+        return {}
+    return {"trade_exit_kinds": rows}
 
 
 class _FilterLayerMixin:

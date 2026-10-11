@@ -328,6 +328,19 @@ def test_unnamed_or_unmapped_exit_omits_the_field():
         {'seq': 1, 'exit_kind': 'signal_exit'}, {'seq': 2, 'exit_kind': 'end_of_data'}]}
 
 
+def test_oversized_field_is_omitted_and_logged(monkeypatch, caplog):
+    trades = [{'seq': i} for i in range(1, 6)]
+    kinds = ['signal_exit'] * 5
+    assert 'trade_exit_kinds' in p._trade_exit_kinds_report(trades, kinds)
+    size = len(json.dumps(p._trade_exit_kinds_report(trades, kinds)['trade_exit_kinds'], separators=(',', ':')))
+    monkeypatch.setattr(p, 'TRADE_EXIT_KINDS_MAX_BYTES', size)
+    assert 'trade_exit_kinds' in p._trade_exit_kinds_report(trades, kinds)  # exactly at the limit still goes out
+    monkeypatch.setattr(p, 'TRADE_EXIT_KINDS_MAX_BYTES', size - 1)
+    with caplog.at_level('ERROR', logger='cutie_backtesting_provider'):
+        assert p._trade_exit_kinds_report(trades, kinds) == {}
+    assert 'trade_exit_kinds too large' in caplog.text
+
+
 # ---------------------------------------------------------------- self-recorded reasons stay intact
 
 def canonical(value):
