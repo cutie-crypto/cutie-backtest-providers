@@ -275,3 +275,25 @@ def test_engine_rejects_bad_arguments():
             pattern_confirm_entries([1], [1.0], [1.0], [1.0], direction='long', bars=bars)
     with pytest.raises(ValueError, match='equal length'):
         pattern_confirm_entries([1, 0], [1.0], [1.0], [1.0, 2.0], direction='long', bars=2)
+
+
+@pytest.mark.parametrize('direction,level,beyond', [('long', 10., 10.5), ('short', 6., 5.5)])
+def test_synthetic_close_equal_to_signal_extreme_is_not_breakout(direction, level, beyond):
+    import pandas as pd
+    data = pd.DataFrame({'Open': [8.]*4, 'High': [10., 11., 11., 12.],
+                         'Low': [6., 5., 5., 4.], 'Close': [8., level, level, beyond],
+                         'Volume': [1.]*4})
+    cols = arrays(data)
+    entries, source = run(cols, 0, direction, bars=2)
+    assert not entries.any() and (source == -1).all()
+    entries, source = run(cols, 0, direction, bars=3)
+    assert list(np.flatnonzero(entries)) == [3]
+    assert list(source) == [-1, -1, -1, 0]
+    from strategy_entry_filters import PatternConfirmQueue
+    for bars in (2, 3):
+        queue = PatternConfirmQueue(bars)
+        queue.register(0, direction, cols['Low' if direction == 'short' else 'High'][0])
+        assert queue.advance(1, data.Close[1]) is None
+        assert queue.advance(2, data.Close[2]) is None
+        assert queue.advance(3, data.Close[3]) == ((0, direction) if bars == 3 else None)
+        assert queue.discarded['unconfirmed'] == (1 if bars == 2 else 0)
