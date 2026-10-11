@@ -10738,7 +10738,7 @@ async def run_backtest(
             exclusive_orders=tool_spec.get("exclusive_orders", True),
             # Settle trades still open at the end so metrics / trade_count reflect them instead of
             # silently dropping unrealized PnL. backtesting.py fills finalize_trades closes at the last
-            # bar's Open; ExitKinds.stamped_close (PIN7-E) re-prices them to the last bar's Close.
+            # bar's Open; _final_close_strategy (PIN7-E) re-prices them to the last bar's Close.
             finalize_trades=True,
             **_leverage_backtest_kwargs(leverage),
         )
