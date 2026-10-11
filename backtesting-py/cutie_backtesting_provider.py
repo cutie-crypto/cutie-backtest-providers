@@ -2469,7 +2469,9 @@ def _rsi_series(values: Any, period: int):
     return rsi.fillna(50.0).to_numpy()
 
 
-# 共用风险参数：旧四键保留；3a 扩展必须显式启用，默认走原收盘覆盖层。
+# 共用风险参数：旧四键保留；3a 扩展必须显式启用。Q42-C 起：未传 risk_layer_enabled 且带 stop_loss_pct/take_profit_pct
+# 默认走统一风控层（盘中触价）；显式 false 才走原收盘覆盖层。下面 risk_layer_enabled 的 schema default 仍写 False：
+# JSON schema 表达不了这个条件默认值，且目录字节不变（不动目录金样，也不让回显 default 的客户端被动变口径）。
 # 3b 动态止损、持仓期限与三档止盈使用扁平键。
 _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "stop_loss_pct": {"type": "number", "minimum": 0, "maximum": 100},
