@@ -1156,12 +1156,15 @@ def _fetch_template_warmup(
     if bars <= 0 or main_df.empty:
         return empty
     step_sec = max(1, _timeframe_milliseconds(timeframe) // 1000)
-    aligned_start = (int(start_sec) // step_sec) * step_sec
+    # WARM-1P-P：start 不在周期边界时，跨 start 的那根（开盘早于 start、收盘晚于 start）既进不了
+    # 主区间（中心行情只给开盘 >= since 的已收盘 K 线），也进不了止于 start 的预热段。
+    # 这里向上取整，取数止于取整后的起点，让它作为预热最后一根进来；start 已对齐时 ceil 等于原值。
+    aligned_start = -((-int(start_sec)) // step_sec) * step_sec
     since = max(0, aligned_start - (bars + _TEMPLATE_WARMUP_FETCH_EXTRA_BARS) * step_sec)
     try:
         warm = _fetch_ohlcv(
             exchange_id, market, symbol, timeframe,
-            since, int(start_sec),
+            since, aligned_start,
         )
         warm = warm.loc[warm.index < main_df.index[0], list(_WARMUP_COLUMNS)].astype("float64")
         warm = warm[np.isfinite(warm.to_numpy()).all(axis=1)]
