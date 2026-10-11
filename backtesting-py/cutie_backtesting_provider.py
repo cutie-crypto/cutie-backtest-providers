@@ -2952,7 +2952,8 @@ def _final_close_strategy(strategy):
     only broker pass that starts after the last ``next()`` has finished, so it is told apart from the
     regular last-bar pass (which runs before ``next()``) and from broker-phase liquidations (which run
     in the regular pass). Closes filled in the re-run are re-priced to Close[-1]; fee and slippage are
-    computed afterwards from the exit price, so they follow it. ``_total_bars`` feeds
+    computed afterwards from the exit price, so they follow it. What the re-run may fill is an explicit rule
+    (``admit_final_orders``); a trade liquidated on the last bar keeps its liquidation fill. ``_total_bars`` feeds
     ``_FixedRiskMixin._at_final_bar``.
     """
 
@@ -2966,19 +2967,62 @@ def _final_close_strategy(strategy):
 
             def settle_close(trade, price, time_index):
                 if state.get("_final_rerun"):
-                    price = float(self.data.Close[-1])
+                    rules = state["_final_fills"]
+                    if id(trade) not in rules:
+                        # A fill the re-run rules below did not admit (a partial copy, a second fill of a
+                        # trade, a broker close): fail closed, the run degrades to ENGINE_ERROR.
+                        raise RuntimeError(f"PIN7E_FINAL_RERUN: unexpected fill of trade {trade!r}")
+                    price = rules.pop(id(trade))
                 close_trade(trade, price, time_index)
+
+            def liquidation_fill(trade):
+                # result.v2's fill for a liquidation on this bar (_isolated_liquidation_fills): the
+                # liquidation price, or the bar's Open when it gapped through it.
+                is_long = trade.size > 0
+                liquidation = _isolated_liquidation_price(
+                    Decimal(str(trade.entry_price)), self._risk["leverage"], is_long)
+                opening = Decimal(str(self.data.Open[-1]))
+                return float(opening if (opening <= liquidation if is_long else opening >= liquidation)
+                             else liquidation)
+
+            def admit_final_orders():
+                """The re-run fills exactly three kinds of order; anything else raises.
+
+                (c) no parent_trade: an entry queued by the last next(), with no next bar to fill on -> cancelled.
+                (a) finalize_trades' Trade.close(): queued after the last next() (absent from _final_queued)
+                    and inserted at the head, so it is each trade's first order -> fills at Close[-1].
+                    Orders the last next() queued behind it (template closes, moved SL / TP) never fill.
+                (b) a trade the last next() liquidated (_isolated_liquidations record for this bar, the
+                    same record result.v2 settles from) -> its finalize close fills at the liquidation fill.
+                """
+                queued = state.get("_final_queued", frozenset())
+                bar_open = int(pd.Timestamp(self.data.index[-1]).value // 10**9)
+                liquidated = {record["opened_at"] for record in getattr(self, "_isolated_liquidations", ())
+                              if record["liquidation_bar_open_time"] == bar_open}
+                rules, first = {}, set()
+                for order in list(broker.orders):
+                    trade = order.parent_trade
+                    if trade is None:
+                        order.cancel()  # (c)
+                        continue
+                    if id(trade) in first:
+                        continue
+                    first.add(id(trade))
+                    if (id(order) in queued or order.stop is not None or order.limit is not None
+                            or trade not in broker.trades or order.size != -trade.size):
+                        raise RuntimeError(f"PIN7E_FINAL_RERUN: unexpected first order {order!r}")
+                    opened_at = int(pd.Timestamp(trade.entry_time).value // 10**9)
+                    rules[id(trade)] = (liquidation_fill(trade) if opened_at in liquidated  # (b)
+                                        else float(self.data.Close[-1]))  # (a)
+                if any(id(trade) not in rules for trade in broker.trades):
+                    raise RuntimeError("PIN7E_FINAL_RERUN: a trade has no period-end close")
+                state["_final_fills"] = rules
 
             def final_next():
                 state["_final_rerun"] = bool(state.get("_final_next_done"))
                 try:
                     if state["_final_rerun"]:
-                        # Stand-alone orders (no parent_trade) still queued here were placed by the last
-                        # next(): new entries with no next bar to fill on. The re-run would fill them on
-                        # the last bar and leave them unsettled, so they are dropped. Closes from
-                        # Trade.close() and contingent SL / TP orders carry parent_trade and stay.
-                        for order in [order for order in broker.orders if order.parent_trade is None]:
-                            order.cancel()
+                        admit_final_orders()
                     broker_next()
                 finally:
                     state["_final_rerun"] = False
@@ -2989,6 +3033,8 @@ def _final_close_strategy(strategy):
             super().next()
             if len(self.data) >= self.__dict__["_total_bars"]:
                 self.__dict__["_final_next_done"] = True
+                # Orders queued once the last next() is done: finalize_trades' closes come after.
+                self.__dict__["_final_queued"] = frozenset(id(order) for order in self._broker.orders)
 
     FinalClose.__module__ = strategy.__module__
     FinalClose.__name__ = strategy.__name__

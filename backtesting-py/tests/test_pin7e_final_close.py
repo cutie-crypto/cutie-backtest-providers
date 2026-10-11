@@ -468,11 +468,133 @@ def test_last_bar_signal_entry_not_filled(monkeypatch, tmp_path, name):
     assert len(body['trades']) == sum(t['opened_at'] < opened for t in full['trades']), body['trades']
 
 
-@pytest.mark.parametrize('name', p6.V2_TOOLS)
+def win_rate_matches_trades(body):
+    """Legacy (engine) win rate vs the share of itemised trades with pnl > 0."""
+    trades = body['trades']
+    itemised = round(sum(Decimal(t['pnl']) > 0 for t in trades) / len(trades) * 100, 2) if trades else 0.0
+    return body['raw_report']['legacy_metrics']['win_rate_pct'] == itemised, (
+        body['raw_report']['legacy_metrics']['win_rate_pct'], itemised)
+
+
+def last_bar_liquidation_frame():
+    """breakout long entered at 110; the last bar dips to 95 through the 10x liquidation price 99 (no gap:
+    it opens at 110) and closes at 125, well above the entry."""
+    data = frame('long', 125.0)
+    data.iloc[-1, data.columns.get_loc('Low')] = 95.0
+    return data
+
+
+def last_bar_liquidation(monkeypatch, tmp_path):
+    return run(monkeypatch, tmp_path, 'long', True, last_bar_liquidation_frame(), stop_loss_pct=5,
+               take_profit_r=1, leverage=10, position_size_pct=20)
+
+
+SUMMARY_CASES = {**{name: None for name in p6.V2_TOOLS}, 'breakout/last_bar_liquidation': last_bar_liquidation}
+
+
+@pytest.mark.parametrize('name', SUMMARY_CASES)
 def test_summary_return_equals_trade_pnl_across_templates(monkeypatch, tmp_path, name):
-    """Filled-but-unsettled detector: the summary return equals the itemised pnl on every template's run."""
+    """Filled-but-unsettled / re-priced-settlement detector: the engine summary (return, win rate) equals
+    the itemised trades on every template's run, plus a leveraged last-bar liquidation."""
     p6.CURRENT[0] = name
-    body = p6.SPECIAL.get(name, p6.generic())(monkeypatch, tmp_path)
+    body = (SUMMARY_CASES[name] or p6.SPECIAL.get(name, p6.generic()))(monkeypatch, tmp_path)
     assert body['result_status'] == 'success', body.get('error_message')
     ok, detail = summary_matches_trades(body)
     assert ok, (name, detail)
+    ok, detail = win_rate_matches_trades(body)
+    assert ok, (name, detail)
+
+
+def record_engine_trades(monkeypatch):
+    """Record each Backtest.run's engine-side closed trades (stats._trades)."""
+    runs, run_backtest = [], Backtest.run
+
+    def recording(self, **kwargs):
+        stats = run_backtest(self, **kwargs)
+        runs.append(stats._trades.copy())
+        return stats
+
+    monkeypatch.setattr(Backtest, 'run', recording)
+    return runs
+
+
+def test_last_bar_liquidation_not_repriced_to_close(monkeypatch, tmp_path):
+    # Codex PIN7-E round 2: the liquidation close queued on the last bar is filled in finalize_trades'
+    # re-run, which re-priced it to Close[-1] (125): result.v2 kept the 99 liquidation loss, but the
+    # engine booked a win (legacy win_rate_pct 100).
+    runs = record_engine_trades(monkeypatch)
+    body = last_bar_liquidation(monkeypatch, tmp_path)
+    assert body['result_status'] == 'success', body.get('error_message')
+    (trade,) = body['trades']
+    assert p6.kinds_of(body) == ['liquidation']
+    assert body['raw_report']['isolated_risk']['liquidation_count'] == 1
+    assert Decimal(trade['exit_price']) == Decimal('99') and Decimal(trade['pnl']) < 0, trade
+    (engine,) = runs[-1].itertuples()
+    assert Decimal(str(engine.ExitPrice)) == Decimal(trade['exit_price']), engine
+    assert engine.PnL < 0 and Decimal(str(engine.ReturnPct)).quantize(Decimal('1e-9')) == (
+        Decimal(trade['pnl']) / (Decimal(trade['entry_price']) * Decimal(trade['qty']))).quantize(Decimal('1e-9'))
+    assert body['raw_report']['legacy_metrics']['win_rate_pct'] == 0.0
+    # The same last bar without reaching liquidation is still a period-end close at Close[-1].
+    plain = frame('long', 125.0)
+    body = run(monkeypatch, tmp_path, 'long', True, plain, stop_loss_pct=5, take_profit_r=1, leverage=10,
+               position_size_pct=20)
+    (trade,) = body['trades']
+    assert p6.kinds_of(body) == ['end_of_data']
+    assert Decimal(trade['exit_price']) == Decimal('125') == Decimal(str(runs[-1].ExitPrice.iloc[0]))
+    assert body['raw_report']['legacy_metrics']['win_rate_pct'] == 100.0
+
+
+# ---------------------------------------------------------------- what the period-end re-run may fill
+
+def test_final_rerun_class_a_finalize_close_fills_at_close(monkeypatch, tmp_path):
+    # (a) finalize_trades' Trade.close() of a trade nothing else closed fills at Close[-1], end_of_data.
+    runs = record_engine_trades(monkeypatch)
+    data = frame('long', 105.0)
+    trade = only_trade(run(monkeypatch, tmp_path, 'long', True, data, stop_loss_pct=5, take_profit_r=1,
+                           leverage=10, position_size_pct=20))
+    assert Decimal(trade['exit_price']) == Decimal('105') == Decimal(str(runs[-1].ExitPrice.iloc[0]))
+    assert Decimal(str(data.Open.iloc[-1])) != Decimal('105')
+
+
+def _toy_frame():
+    index = pd.date_range('2024-01-01', periods=6, freq='1h', tz='UTC')
+    close = np.array([100.0, 100.0, 101.0, 102.0, 103.0, 110.0])
+    open_ = np.r_[close[0], close[:-1]]
+    return pd.DataFrame(dict(Open=open_, High=np.maximum(open_, close) + 0.1, Low=np.minimum(open_, close) - 0.1,
+                             Close=close, Volume=np.full(6, 1.0)), index=index)
+
+
+def test_final_rerun_fourth_kind_of_order_raises(monkeypatch):
+    # A close the last next() queued that would fill before finalize_trades' own close is none of (a) / (b) /
+    # (c): simulate a library whose Trade.close appends instead of inserting at the head.
+    from backtesting import Strategy
+    import backtesting.backtesting as engine
+
+    class LastBarClose(Strategy):
+        def init(self):
+            self.__dict__['_n'] = len(self.data)
+
+        def next(self):
+            if len(self.data) == 2:
+                self.buy(size=1)
+            elif len(self.data) == self.__dict__['_n'] and self.trades:
+                self.trades[-1].close()  # a template signal close on the last bar
+
+    def appending_close(trade, portion=1.):
+        order = engine.Order(trade._Trade__broker, -trade.size, parent_trade=trade)
+        trade._Trade__broker.orders.append(order)
+
+    monkeypatch.setattr(engine.Trade, 'close', appending_close)
+    bt = Backtest(_toy_frame(), p._final_close_strategy(LastBarClose), cash=10000, finalize_trades=True)
+    with pytest.raises(RuntimeError, match='PIN7E_FINAL_RERUN: unexpected first order'):
+        bt.run()
+
+
+def test_final_rerun_unclosed_trade_degrades_to_engine_error(monkeypatch, tmp_path):
+    # A trade left without finalize_trades' close is not admitted either; on the provider path the raise
+    # degrades the run like any engine failure.
+    import backtesting.backtesting as engine
+    monkeypatch.setattr(engine.Trade, 'close', lambda trade, portion=1.: None)
+    body = run(monkeypatch, tmp_path, 'long', True, frame('long', 105.0), stop_loss_pct=5, take_profit_r=1)
+    assert body['result_status'] != 'success', body
+    assert 'PIN7E_FINAL_RERUN: a trade has no period-end close' in body['error_message'], body
