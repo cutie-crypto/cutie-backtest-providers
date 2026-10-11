@@ -32,6 +32,9 @@ import test_p2_funding_settlement_reversal as funding
 import test_q18_macro_events as macro
 import test_s3_top_long_short_reversal as lsr
 import test_s4_liquidation_reversal as liq
+import test_oi_breakout_49 as oi49
+
+import test_etf_flow_follow_38 as etf38
 import test_short_pat4_candles as short_candles
 
 PREFIX = 'local.backtesting_py.'
@@ -104,8 +107,10 @@ SPECIAL = {
     **{name: (lambda mp, tmp, name=name: macro.post(mp, tmp, name)) for name in macro.KINDS},
     'event_window': lambda mp, tmp: ew.post(mp, tmp, ew.GOLDEN_PARAMS),
     'funding_settlement_reversal': lambda mp, tmp: funding.run(mp, tmp, {0: '0.00060000'})[0],
+    'oi_breakout': lambda mp, tmp: oi49.run(mp, tmp),
     'top_long_short_reversal': lambda mp, tmp: lsr.run_daily(mp, tmp, {1: '0.65', 3: '1.10', 4: '0.50', 5: '1.80'}),
     'liquidation_reversal': lambda mp, tmp: liq.run(mp, tmp, dict(liq.SPIKE), rows=liq.ROWS)[0],
+    'etf_flow_follow': lambda mp, tmp: etf38.run(mp, tmp, values={'2026-03-06': 400000000})[0],
     'fear_greed_scale_in': fear_greed_run,
     # The scale-in/out templates refuse to run without at least one warmup candle.
     **{name: generic(params, warmup=100) for name, params in GENERIC_LEDGER.items()},
@@ -132,7 +137,8 @@ def assert_aligned(body):
 def test_catalog_partition_is_explicit():
     excluded = sorted(tool for tool, spec in p.TOOL_SPECS.items() if spec.get('runner') in NON_V2_RUNNERS)
     assert excluded == sorted(PREFIX + name for name in (
-        'basket_ratio_sma_cross', 'basket_ratio_roc', 'basket_ratio_zscore', 'portfolio_rotation'))
+        'basket_ratio_sma_cross', 'basket_ratio_roc', 'basket_ratio_zscore', 'portfolio_rotation',
+        'btc_dominance_rotation'))
     assert set(SPECIAL) <= set(V2_TOOLS)
 
 

@@ -81,7 +81,7 @@ def test_catalog_lists_three_futures_short_tools_within_one_mib(monkeypatch):
     from fastapi.testclient import TestClient
     response = TestClient(p.app).get('/catalog')
     tools = {t['tool_id']: t for t in response.json()['tools']}
-    assert len(tools) == 67 and len(response.content) <= 1 << 20  # P-EVENT0 +1, Q18 +3, P1 fear_greed +1, P2 funding +1, S3 +1, S4 liquidation +1
+    assert len(tools) == 70 and len(response.content) <= 1 << 20  # pin8: baseline 67 + OI49 + ETF38 + C48
     for name in SHORT:
         tool = tools['local.backtesting_py.' + name]
         props = tool['param_schema']['properties']

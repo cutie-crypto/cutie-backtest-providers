@@ -72,7 +72,7 @@ def parse_rotation(params, request):
     excluded = pool['excluded']
     if not isinstance(excluded, list) or len(excluded) > pool['size'] or any(
         not isinstance(e, dict) or set(e) != {'symbol', 'rank', 'reason'} or not isinstance(e['symbol'], str)
-        or type(e['rank']) is not int or e['rank'] <= 0 or e['reason'] not in {'stable_coin', 'not_tradeable', 'no_spot_rules', 'btc_benchmark'} for e in excluded
+        or type(e['rank']) is not int or e['rank'] <= 0 or e['reason'] not in {'stable_coin', 'pegged_asset', 'not_tradeable', 'no_spot_rules', 'btc_benchmark'} for e in excluded
     ) or len({e['symbol'] for e in excluded}) != len(excluded) or set(symbols) & {e['symbol'] for e in excluded}:
         raise RotationError('INVALID_PARAMS', 'invalid_pool', 'coin_pool exclusions invalid')
     if pool['hash'] != canonical_json_sha256({k: v for k, v in pool.items() if k != 'hash'}):

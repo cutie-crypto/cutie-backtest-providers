@@ -323,7 +323,7 @@ def baseline_provider():
                                   # S3 postdates the frozen baseline; its route suite is test_s3_top_long_short_reversal.py.
                                   'top_long_short_reversal',
                                   # S4 is spot-only (futures is rejected); its route suite is test_s4_liquidation_reversal.py.
-                                  'liquidation_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
+                                  'liquidation_reversal', 'oi_breakout', 'etf_flow_follow')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):

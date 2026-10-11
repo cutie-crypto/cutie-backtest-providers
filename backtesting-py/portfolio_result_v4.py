@@ -1,6 +1,7 @@
 """独立 v4 组装；BTC 基准价格、price manifests、冻结 BTC.D 由调用方注入。"""
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from decimal import Decimal
 from fractions import Fraction
@@ -9,6 +10,7 @@ from typing import Mapping, Sequence
 from canonical_json import canonical_json_sha256
 from portfolio_ledger import decimal_text, decimal_value, reconcile_snapshots, timestamp
 
+BTC_DOMINANCE_3D_MAX_GAP_DAYS = 7
 SCHEMA = "cutie.backtest_result.v4"
 PRICE_KEYS = {"source", "symbol", "market", "timeframe", "start_at", "end_at", "kline_count", "checksum_algo", "checksum"}
 
@@ -27,7 +29,43 @@ def _ratio(a, b=1) -> str:
     return decimal_text(Decimal(("-" if ratio < 0 and q else "") + digits[:-8] + "." + digits[-8:]))
 
 
+def _coinglass_reference(series, start, end):
+    """Mirror server's coinglass closed keys, canonical points and sparse spacing."""
+    if not isinstance(series, dict) or set(series) != {"metric", "source", "unit", "points", "hash"} or (
+        series["metric"], series["source"], series["unit"]
+    ) != ("btc_dominance", "coinglass", "percent"):
+        raise ValueError("invalid frozen BTC.D identity")
+    points = series["points"]
+    if not isinstance(points, list) or not 21 <= len(points) <= 4500:
+        raise ValueError("invalid BTC.D coverage")
+    for i, point in enumerate(points):
+        if not isinstance(point, dict) or set(point) != {"ts", "available_at", "value"}:
+            raise ValueError("invalid BTC.D point keys")
+        timestamp(point["ts"])
+        timestamp(point["available_at"])
+        raw = point["value"]
+        if not isinstance(raw, str) or len(raw) > 128 or not re.fullmatch(r"-?(0|[1-9]\d*)(\.\d+)?", raw):
+            raise ValueError("invalid BTC.D value")
+        value = decimal_value(Decimal(raw), "BTC.D")
+        if decimal_text(value) != raw or value > 100:
+            raise ValueError("invalid BTC.D value")
+        if point["ts"] % 86400 or point["available_at"] < point["ts"] or (
+            i and not 0 < point["ts"] - points[i-1]["ts"] <= BTC_DOMINANCE_3D_MAX_GAP_DAYS * 86400
+        ):
+            raise ValueError("invalid BTC.D point timeline")
+    # Sparse 3d tail may precede the final snapshot by up to the shared maximum gap; never follow it.
+    if points[0]["ts"] > start - 20 * 86400 or not end - BTC_DOMINANCE_3D_MAX_GAP_DAYS * 86400 <= points[-1]["ts"] <= end:
+        raise ValueError("BTC.D needs 20 warmup days plus interval")
+    expected = canonical_json_sha256({k: v for k, v in series.items() if k != "hash"})
+    if series["hash"] != expected:
+        raise ValueError("BTC.D frozen hash mismatch")
+    return {"metric": series["metric"], "source": series["source"], "unit": series["unit"], "hash": expected,
+            "start_at": points[0]["ts"], "end_at": points[-1]["ts"], "point_count": len(points)}
+
+
 def _metric_reference(series, start, end):
+    if isinstance(series, dict) and series.get("source") == "coinglass":
+        return _coinglass_reference(series, start, end)
     if series is None:
         return None
     if set(series) != {"metric", "source", "unit", "points", "hash"} or (

@@ -391,7 +391,7 @@ INVALID_CASES = [
     # §2.2 market
     ("market_v2_symbols", _set(("market", "symbols"), ["ETHUSDT"]), "$.strategy_spec.market", ERR_SPEC_INVALID),
     ("market_type_spot", _set(("market", "market_type"), "spot"), "$.strategy_spec.market.market_type", ERR_SPEC_INVALID),
-    ("timeframe_15m", _set(("market", "timeframe"), "15m"), "$.strategy_spec.market.timeframe", ERR_SPEC_INVALID),
+    ("timeframe_5m", _set(("market", "timeframe"), "5m"), "$.strategy_spec.market.timeframe", ERR_SPEC_INVALID),
     ("exchange_key", _set(("market", "exchange"), "Binance!"), "$.strategy_spec.market.exchange", ERR_SPEC_INVALID),
     ("legs_three", _add_leg, "$.strategy_spec.market.legs", ERR_SPEC_INVALID),
     ("legs_one", lambda s: s["market"]["legs"].pop(), "$.strategy_spec.market.legs", ERR_SPEC_INVALID),

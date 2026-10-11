@@ -27,10 +27,11 @@ def run_portfolio(*, initial_cash: Decimal, specs: Mapping[str, SpotSpec], bars:
                   target_weights: Mapping[int, Mapping[str, Decimal]], fee_bps: Decimal,
                   slippage_bps: Decimal = Decimal(0), btc_benchmark: Sequence[dict],
                   price_manifests: Sequence[dict], metric_series: Mapping | None = None,
-                  coin_pool: Mapping | None = None) -> PortfolioRun:
+                  coin_pool: Mapping | None = None, decision_fn=None) -> PortfolioRun:
     """首点为交易前本金；第 i 日收盘决策只在第 i+1 根原始开盘成交。
 
     每日 NAV 用该日 close，以 UTC 日标签报送。BTC 基准注入 {ts,close_price}。
+    decision_fn(i, quantities) 可在每日收盘返回下一开盘的权重，或 None 保持。
     若传 C2 币池，只读 symbols 原顺序，不自行选池/重排；末点决策无下一开盘则记原因。
     """
     if not bars:
@@ -40,6 +41,7 @@ def run_portfolio(*, initial_cash: Decimal, specs: Mapping[str, SpotSpec], bars:
         if len(set(symbols)) != len(symbols) or set(symbols) != set(specs):
             raise ValueError("frozen pool must exactly cover trusted specs")
         specs = {s: specs[s] for s in symbols}
+    target_weights = dict(target_weights)
     times = []
     for i, bar in enumerate(bars):
         timestamp(bar.ts)
@@ -57,6 +59,11 @@ def run_portfolio(*, initial_cash: Decimal, specs: Mapping[str, SpotSpec], bars:
         mark = ledger.mark(bar.close_prices)
         snapshots.append(mark.snapshot(bar.ts))
         curve.append({"ts": bar.ts, "equity": decimal_text(mark.equity)})
+        if decision_fn is not None:
+            # The callback sees actual filled quantities, after today's close mark.
+            weights = decision_fn(i, dict(mark.positions))
+            if weights is not None:
+                target_weights[bar.ts] = weights
     if bars[-1].ts in target_weights:
         ledger.rejections.append({"decision_ts": bars[-1].ts, "reason": "no_next_open"})
     result = assemble_result_v4(initial_cash=initial_cash, snapshots=snapshots, equity_curve=curve,

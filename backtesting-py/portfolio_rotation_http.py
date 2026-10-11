@@ -28,7 +28,7 @@ TOOL_SPEC = {
                 'excluded': {'type': 'array', 'maxItems': 30, 'items': {
                     'type': 'object', 'additionalProperties': False, 'required': ['symbol', 'rank', 'reason'],
                     'properties': {'symbol': {'type': 'string'}, 'rank': {'type': 'integer', 'minimum': 1},
-                                   'reason': {'type': 'string', 'enum': ['stable_coin', 'not_tradeable', 'no_spot_rules', 'btc_benchmark']}}}},
+                                   'reason': {'type': 'string', 'enum': ['stable_coin', 'pegged_asset', 'not_tradeable', 'no_spot_rules', 'btc_benchmark']}}}},
                 'version': {'type': 'string', 'enum': ['coin_pool.v1']},
                 'hash': {'type': 'string', 'minLength': 64, 'maxLength': 64},
             },
@@ -55,17 +55,21 @@ def rotation_catalog(entry):
     return entry
 
 
-def rotation_response(body, request, run_id, api):
+def rotation_response(body, request, run_id, api, *, tool_spec=None, parser=None, runner=None,
+                      validate_series=None):
     started = time.monotonic()
+    tool_spec = TOOL_SPEC if tool_spec is None else tool_spec
+    parser = parse_rotation if parser is None else parser
+    runner = run_rotation if runner is None else runner
     params = request.get('provider_params')
     params = {} if params is None else params
     if not isinstance(params, dict):
         return api._validation_failure('INVALID_PARAMS', 'provider_params must be an object')
-    error = api._validate_params_against_schema(params, TOOL_SPEC['param_schema_properties'])
+    error = api._validate_params_against_schema(params, tool_spec['param_schema_properties'])
     if error:
         return api._validation_failure('INVALID_PARAMS', error)
     try:
-        config = parse_rotation(params, request)
+        config = parser(params, request)
     except (RotationError, ValueError, TypeError, ArithmeticError) as e:
         return api._validation_failure('INVALID_PARAMS', str(e)) if not isinstance(e, RotationError) or e.code == 'INVALID_PARAMS' else api._business_failure(run_id, e.code, str(e), reason=e.reason)
 
@@ -78,8 +82,10 @@ def rotation_response(body, request, run_id, api):
     deadline = started + EXECUTION_SECONDS
 
     def execute():
+        if validate_series is not None:
+            validate_series(body.get('metric_series'), config.start, config.end - 86400)
         streams = fetch_rotation(config, fetcher, deadline=deadline)
-        output, decisions, assumptions = run_rotation(config, streams, request,
+        output, decisions, assumptions = runner(config, streams, request,
                                                       metric_series=body.get('metric_series'), deadline=deadline)
         return streams, output, decisions, assumptions
 

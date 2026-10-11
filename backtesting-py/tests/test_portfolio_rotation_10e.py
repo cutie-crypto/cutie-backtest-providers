@@ -350,6 +350,7 @@ def test_catalog_existing_entries_byte_identical():
     # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。
     assert set(api.TOOL_SPECS) - set(baseline.TOOL_SPECS) == {
         TOOL_ID,
+        'local.backtesting_py.btc_dominance_rotation',  # C48
         'local.backtesting_py.macd_bearish_divergence', 'local.backtesting_py.rsi_bearish_divergence',
         'local.backtesting_py.double_top', 'local.backtesting_py.head_shoulders',
         'local.backtesting_py.chan_3sell',  # SHORT-PAT-3
@@ -363,6 +364,9 @@ def test_catalog_existing_entries_byte_identical():
         'local.backtesting_py.funding_settlement_reversal',  # P2
         'local.backtesting_py.top_long_short_reversal',  # S3
         'local.backtesting_py.liquidation_reversal',  # S4
+        'local.backtesting_py.oi_breakout',  # OI49 +1
+
+        'local.backtesting_py.etf_flow_follow',  # C38
     }
     entry = api._catalog_tool(TOOL_ID, api.TOOL_SPECS[TOOL_ID], symbols)
     assert entry['markets'] == ['spot']
@@ -485,3 +489,15 @@ def test_shared_slots_across_two_simultaneous_runs():
         runs = [pool.submit(fetch_rotation, cfg, fake) for _ in range(2)]
         assert all(set(f.result()) == set(SYMBOLS) | {'BTCUSDT'} for f in runs)
     assert peak == 4
+
+
+def test_pegged_asset_exclusion_is_accepted_and_published():
+    req = request()
+    pool = req['provider_params']['coin_pool']
+    pool['excluded'] = [{'symbol': symbol, 'rank': i+1, 'reason': 'pegged_asset'}
+                        for i, symbol in enumerate(('USDSUSDT', 'USD1USDT', 'XAUTUSDT'))]
+    pool['hash'] = canonical_json_sha256({k: v for k, v in pool.items() if k != 'hash'})
+    assert parse_rotation(req['provider_params'], req).symbols == SYMBOLS
+    for tool in (TOOL_ID, 'local.backtesting_py.btc_dominance_rotation'):
+        props = api._catalog_tool(tool, api.TOOL_SPECS[tool], ['BTCUSDT'])['param_schema']['properties']
+        assert 'pegged_asset' in props['coin_pool']['properties']['excluded']['items']['properties']['reason']['enum']
