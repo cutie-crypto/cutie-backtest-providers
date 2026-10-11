@@ -489,3 +489,15 @@ def test_shared_slots_across_two_simultaneous_runs():
         runs = [pool.submit(fetch_rotation, cfg, fake) for _ in range(2)]
         assert all(set(f.result()) == set(SYMBOLS) | {'BTCUSDT'} for f in runs)
     assert peak == 4
+
+
+def test_pegged_asset_exclusion_is_accepted_and_published():
+    req = request()
+    pool = req['provider_params']['coin_pool']
+    pool['excluded'] = [{'symbol': symbol, 'rank': i+1, 'reason': 'pegged_asset'}
+                        for i, symbol in enumerate(('USDSUSDT', 'USD1USDT', 'XAUTUSDT'))]
+    pool['hash'] = canonical_json_sha256({k: v for k, v in pool.items() if k != 'hash'})
+    assert parse_rotation(req['provider_params'], req).symbols == SYMBOLS
+    for tool in (TOOL_ID, 'local.backtesting_py.btc_dominance_rotation'):
+        props = api._catalog_tool(tool, api.TOOL_SPECS[tool], ['BTCUSDT'])['param_schema']['properties']
+        assert 'pegged_asset' in props['coin_pool']['properties']['excluded']['items']['properties']['reason']['enum']

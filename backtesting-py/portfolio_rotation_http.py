@@ -28,7 +28,7 @@ TOOL_SPEC = {
                 'excluded': {'type': 'array', 'maxItems': 30, 'items': {
                     'type': 'object', 'additionalProperties': False, 'required': ['symbol', 'rank', 'reason'],
                     'properties': {'symbol': {'type': 'string'}, 'rank': {'type': 'integer', 'minimum': 1},
-                                   'reason': {'type': 'string', 'enum': ['stable_coin', 'not_tradeable', 'no_spot_rules', 'btc_benchmark']}}}},
+                                   'reason': {'type': 'string', 'enum': ['stable_coin', 'pegged_asset', 'not_tradeable', 'no_spot_rules', 'btc_benchmark']}}}},
                 'version': {'type': 'string', 'enum': ['coin_pool.v1']},
                 'hash': {'type': 'string', 'minLength': 64, 'maxLength': 64},
             },
