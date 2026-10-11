@@ -141,20 +141,72 @@ def test_available_time_boundary_rejects_future_row(monkeypatch, tmp_path):
     assert not any(d['action'] == 'entry' for d in body['raw_report']['etf_flow_follow']['decisions'])
 
 
-def test_series_gap_malformed_and_transport_fail_whole_run(monkeypatch, tmp_path):
+def test_series_gap_and_malformed_fail_whole_run(monkeypatch, tmp_path):
     data = frame('2026-03-09', '2026-03-11')
     rows = rows_for(data, {'2026-03-06': 400000000})
-    for dropped in ('2026-03-06', '2026-03-09', '2026-03-10'):
+    for dropped in ('2026-03-06', '2026-03-09'):
         install(monkeypatch, tmp_path, data, [r for r in rows if r['ts'] != ts(dropped)])
         body = post(data)
         assert (body['result_status'], body['error_type'], body['limitations']['reason']) == ('failed', 'TIME_DATA_GAP', 'etf_flow_data_gap')
         assert body.get('trades', []) == []
+        assert body['limitations']['required_first_date'] == '2026-03-06'
+        assert body['limitations']['required_last_date'] == '2026-03-09'
     for broken in ([], rows + [rows[0]], [{**rows[0], 'value': 'NaN'}, *rows[1:]],
                    [{**rows[0], 'ts': rows[0]['ts'] + 1}, *rows[1:]]):
         install(monkeypatch, tmp_path, data, broken)
         assert post(data)['limitations']['reason'] == 'etf_flow_data_gap'
-    install(monkeypatch, tmp_path, data, rows, fail=True)
-    assert post(data)['limitations']['reason'] == 'etf_flow_data_gap'
+
+
+def test_history_unavailable_has_server_dates_and_no_raw_exception(monkeypatch, tmp_path):
+    data = frame('2026-03-09', '2026-03-11')
+    install(monkeypatch, tmp_path, data, rows_for(data), fail=True)
+    body = post(data)
+    assert (body['result_status'], body['error_type'], body['limitations']['reason']) == (
+        'failed', 'TIME_DATA_GAP', 'etf_flow_history_unavailable')
+    assert body['limitations']['required_first_date'] == '2026-03-06'
+    assert body['limitations']['required_last_date'] == '2026-03-09'
+    assert 'central metrics unavailable' not in str(body['limitations'])
+    assert 'central metrics unavailable' not in body['error_message']
+
+
+def test_intraday_end_requires_previous_flow_only(monkeypatch, tmp_path):
+    data = frame('2026-03-09', '2026-03-09 15:00')
+    # Mirror stops at Friday P; Monday T's row does not exist and must never be required.
+    calls = install(monkeypatch, tmp_path, data, [{'ts': ts('2026-03-06'), 'value': '400000000'}])
+    body = post(data)
+    assert body['result_status'] == 'success', body
+    assert len(body['trades']) == 1 and body['trades'][0]['opened_at'] == ts('2026-03-09 13:30')
+    assert body['raw_report']['etf_flow_follow']['series']['required_dates'] == ['2026-03-06']
+    assert (calls[0]['start_at'], calls[0]['end_at']) == (ts('2026-03-06'), ts('2026-03-07') - 1)
+    # The worker-2 ruling includes a session opening exactly at end_at in the dependency set.
+    config = etf.EtfFlowConfig.parse({})
+    assert config.plan(ts('2026-03-09'), ts('2026-03-09 13:30') - 1) == ()
+    assert config.plan(ts('2026-03-09'), ts('2026-03-09 13:30')) == (ts('2026-03-06'),)
+
+
+def test_non_nyse_extra_rows_are_ignored_not_used(monkeypatch, tmp_path):
+    data = frame('2026-03-09', '2026-03-11')
+    # Extra weekend points (one malformed value) must not override the prior NYSE day's zero flow.
+    rows = [{'ts': ts('2026-03-06'), 'value': '0'}, {'ts': ts('2026-03-09'), 'value': '0'},
+            {'ts': ts('2026-03-07'), 'value': '10000000000'}, {'ts': ts('2026-03-08'), 'value': 'NaN'}]
+    install(monkeypatch, tmp_path, data, rows)
+    body = post(data)
+    assert body['result_status'] == 'success', body
+    assert body['trades'] == []
+    series = body['raw_report']['etf_flow_follow']['series']
+    assert series['required_dates'] == ['2026-03-06', '2026-03-09']
+    assert series['count'] == 2 and series['ignored_rows_count'] == 2
+
+
+def test_session_open_at_matches_plan_in_summer_and_winter():
+    for day, expected in ((date(2026, 3, 6), ts('2026-03-06 14:30')),
+                          (date(2026, 3, 9), ts('2026-03-09 13:30'))):
+        config = etf.EtfFlowConfig.parse({})
+        config.plan(etf.day_ts(day), etf.day_ts(day) + 86400)
+        event = etf.session(day)
+        assert event['open_at'] == expected
+        assert list(config.sessions) == [expected]
+        assert config.sessions[expected]['open_at'] == expected
 
 
 def test_calendar_coverage_fails_before_fetch(monkeypatch, tmp_path):

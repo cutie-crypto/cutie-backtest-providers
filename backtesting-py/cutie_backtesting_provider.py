@@ -1691,6 +1691,7 @@ def _fetch_metric_series(
     path: str = "$.data_streams.feature",
     raise_on_transport_error: bool = False,
     required_timestamps: Optional[tuple[int, ...]] = None,
+    series_stats: Optional[dict[str, int]] = None,
 ) -> list[dict[str, Any]]:
     """Generic external metric series over the half-open ``[start_at, end_at)``.
 
@@ -1721,9 +1722,15 @@ def _fetch_metric_series(
         )
         cursor = chunk_end
     rows: list[dict[str, Any]] = []
+    required_set = set(required_timestamps) if required_timestamps is not None else None
+    ignored_rows_count = 0
     for raw in raw_rows:
         try:
             timestamp = int(raw["ts"])
+            if required_set is not None and timestamp not in required_set:
+                # ETF decisions consume only P(T): discard other dates before validating their values.
+                ignored_rows_count += 1
+                continue
             value = canonical_decimal_str(str(raw["value"]))
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise StrategyContractError(
@@ -1743,10 +1750,12 @@ def _fetch_metric_series(
     if required_timestamps is None:
         _assert_contiguous(rows, "ts", interval, path)
     elif tuple(item["ts"] for item in rows) != required_timestamps:
-        # C38's NYSE calendar supplies the exact required dates: weekends/holidays are not gaps.
+        # C38 keeps only required predecessor dates: missing rows fail, extra dates were discarded.
         # Default callers retain the existing fixed-interval continuity check above.
         raise StrategyContractError(ERR_COVERAGE_INCOMPLETE, path,
                                     "feature stream does not match the required trading dates")
+    if series_stats is not None:
+        series_stats["ignored_rows_count"] = ignored_rows_count
     revision = canonical_json_sha256(rows)
     step = _timeframe_milliseconds(interval) // 1000
     return [
@@ -6356,7 +6365,8 @@ def _build_top_lsr(params, *, initial_capital=10000.0):
 # C38: previous NYSE trading day's aggregate ETF flow, BTC/ETH spot only.
 ETF_FLOW_TOOL_ID = "local.backtesting_py.etf_flow_follow"
 ETF_FLOW_SERIES = {"exchange": etf_flow.CENTRAL_EXCHANGE, "metric": etf_flow.CENTRAL_METRIC,
-                   "interval": etf_flow.CENTRAL_INTERVAL, "gap_reason": etf_flow.GAP_REASON}
+                   "interval": etf_flow.CENTRAL_INTERVAL, "gap_reason": etf_flow.GAP_REASON,
+                   "history_reason": etf_flow.HISTORY_REASON}
 
 
 @_with_time_config
@@ -8235,7 +8245,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "flow_threshold_usd. It exits at the 16:00 open (13:00 on half days, us_session_close), or "
             "when low touches stop_loss_pct frozen at the actual fill, at the next open. One trade per "
             "day, no overnight holding, no short mirror. Missing NYSE trading-day rows fail the whole "
-            "run (etf_flow_data_gap); weekends/holidays are excluded. Calendar covers 2024-2026 only "
+            "run (etf_flow_data_gap); only P(T) for session opens <= end_at is required, never T itself. "
+            "Extra dates are ignored; unreadable history fails with etf_flow_history_unavailable. Calendar covers 2024-2026 only "
             "(etf_calendar_unavailable beyond it). BTC history starts 2024-01-11, ETH 2024-07-23, "
             "subject to the central database's earliest row. Maps to KOL '现货 ETF 资金流跟随'"
         ),
@@ -11352,20 +11363,26 @@ def _bind_etf_flow(run_id, config, symbol, df):
     if not required:
         config.bind([], symbol=symbol)
         return None
+    gap_details = {"symbol": symbol, "series_metric": etf_flow.CENTRAL_METRIC,
+                   "required_first_date": _utc_date(required[0]),
+                   "required_last_date": _utc_date(required[-1])}
+    series_stats = {}
     try:
         rows = _fetch_metric_series(symbol=symbol, exchange=ETF_FLOW_SERIES["exchange"],
                                     metric=ETF_FLOW_SERIES["metric"], interval=ETF_FLOW_SERIES["interval"],
                                     start_at=required[0], end_at=required[-1] + etf_flow.DAY,
                                     path="$.external_series.etf_flow", raise_on_transport_error=True,
-                                    required_timestamps=required)
+                                    required_timestamps=required, series_stats=series_stats)
+    except StrategyContractError as exc:
+        if exc.code != ERR_COVERAGE_INCOMPLETE:
+            raise
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:ETF flow series is incomplete",
+                                 reason=etf_flow.GAP_REASON, details=gap_details)
     except Exception as exc:
-        # The contract defines one ETF-series failure reason, including unavailable transport/history.
-        return _business_failure(run_id, "TIME_DATA_GAP", f"TIME_DATA_GAP:ETF flow series incomplete ({exc})",
-                                 reason=etf_flow.GAP_REASON,
-                                 details={"symbol": symbol, "series_metric": etf_flow.CENTRAL_METRIC,
-                                          "required_first_date": _utc_date(required[0]),
-                                          "required_last_date": _utc_date(required[-1])})
-    config.bind(rows, symbol=symbol)
+        logger.warning("ETF flow series fetch failed symbol=%s: %s", symbol, exc)
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:central ETF flow history is unavailable",
+                                 reason=etf_flow.HISTORY_REASON, details=gap_details)
+    config.bind(rows, symbol=symbol, ignored_rows_count=series_stats["ignored_rows_count"])
     return None
 
 

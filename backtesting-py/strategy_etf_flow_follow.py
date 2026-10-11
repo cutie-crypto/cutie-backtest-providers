@@ -17,6 +17,7 @@ CENTRAL_EXCHANGE = 'AGGREGATED'
 CENTRAL_METRIC = 'etf_flow'
 CENTRAL_INTERVAL = '1d'
 GAP_REASON = 'etf_flow_data_gap'
+HISTORY_REASON = 'etf_flow_history_unavailable'
 CALENDAR_REASON = 'etf_calendar_unavailable'
 EXIT_REASON = 'us_session_close'
 DAY = 86400
@@ -67,11 +68,15 @@ def day_ts(day):
     return int(datetime.combine(day, time(), timezone.utc).timestamp())
 
 
+def session_open_at(day):
+    return int(datetime.combine(day, time(9, 30), ZONE).timestamp())
+
+
 def session(day):
     if not is_trading_day(day):
         return None
     return dict(day=day.isoformat(),
-                open_at=int(datetime.combine(day, time(9, 30), ZONE).timestamp()),
+                open_at=session_open_at(day),
                 close_at=int(datetime.combine(day, time(13 if day in HALF_DAYS else 16), ZONE).timestamp()),
                 flow_ts=day_ts(previous_trading_day(day)))
 
@@ -105,9 +110,10 @@ class EtfFlowConfig:
         day = first
         while day <= last:
             if is_trading_day(day):
-                required.add(day_ts(day))  # Every NYSE day in the window must have a row, even if not read.
-                opening = int(datetime.combine(day, time(9, 30), ZONE).timestamp())
-                if start_at <= opening < end_at:
+                opening = session_open_at(day)
+                # Only the predecessor P(T) of each in-window session T is consumed. Include a session
+                # opening exactly at end_at per worker-2's ruling; its own flow is never required.
+                if start_at <= opening <= end_at:
                     event = session(day)
                     required.add(event['flow_ts'])
                     sessions[opening] = event
@@ -116,15 +122,15 @@ class EtfFlowConfig:
         self.sessions = sessions
         return self.required_ts
 
-    def bind(self, rows, *, symbol):
+    def bind(self, rows, *, symbol, ignored_rows_count=0):
         self.rows = {row['ts']: row for row in rows}
         self.series_report = dict(symbol=symbol, exchange=CENTRAL_EXCHANGE, metric=CENTRAL_METRIC,
-                                  interval=CENTRAL_INTERVAL, unit='usd', count=len(rows),
+                                  interval=CENTRAL_INTERVAL, unit='usd', count=len(rows), ignored_rows_count=ignored_rows_count,
                                   revision=rows[0]['revision'] if rows else None,
                                   required_dates=[datetime.fromtimestamp(ts, timezone.utc).date().isoformat()
                                                   for ts in self.required_ts],
                                   available_at_rule='flow_date D is readable from D+1 00:00 UTC; fetched_at is ignored',
-                                  gap_policy='fail_closed_on_missing_NYSE_trading_day')
+                                  gap_policy='fail_closed_on_missing_previous_NYSE_trading_day')
 
     def readable_flow(self, event, decision_at):
         row = self.rows.get(event['flow_ts'])
