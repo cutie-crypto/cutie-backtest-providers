@@ -61,6 +61,8 @@ BASELINE['single'].update(SHORTPAT3_BASELINE['single'])
 EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
 assert set(EMA_WARMUP_BASELINE['single']) == {'ema_cross'}
 BASELINE['single'].update(EMA_WARMUP_BASELINE['single'])
+ETF38_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_etf38_off.json').read_text())
+ETF38 = {'etf_flow_follow'}
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -72,7 +74,7 @@ SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
 # P-EVENT0: event_window postdates every baseline above; its off state is pinned by
 # tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
 EVENT0 = {'event_window'}
-LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0}
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | ETF38}
 
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')
@@ -120,7 +122,7 @@ def test_schema_only_runtime_single_position_templates():
     # TURTLE-TIME: 海龟组级 runner 也声明并消费时间层（行为用例在 test_turtle_time_layer.py）。
     assert actual == ({compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS) | {"red_streak_rsi"}
                       | set(compat.enumerate_turtle_cases()))
-    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 == set(MIXINS)
+    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | ETF38 == set(MIXINS)
 
 
 @pytest.mark.parametrize('name', MIXINS)
@@ -210,7 +212,19 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         # Entries at 07:00 (inside 06:00-10:00) exit 12 bars later at 19:00 (outside); the 03:00 one is gated.
         params['events'] = [dict(ts_utc=f'2026-01-0{day}T{hour}:00:00Z', label=f'gate-{day}')
                             for day, hour in ((2, '07'), (3, '07'), (4, '03'), (5, '07'))]
-    cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
+    if name in ETF38:
+        from test_etf_flow_follow_38 import frame, rows_for
+        data = frame('2026-03-09', '2026-03-11')
+        params = dict(time_layer_enabled=True, time_timezone='America/New_York',
+                      time_session_start='09:30', time_session_end='10:30')
+        tf = '15m'
+    built = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)
+    cls = built['strategy']
+    if name in ETF38:
+        config = built['etf_flow_config']
+        config.plan(int(data.index[0].timestamp()), int(data.index[-1].timestamp()) + 900)
+        config.bind([dict(row, available_at=row['ts'] + 86400, revision='fixture')
+                     for row in rows_for(data, {'2026-03-06': 400000000, '2026-03-09': 400000000})], symbol='BTC')
     ctx = TimeContext.build(cls._time_config, tf, data.index)
     cls._time_context = ctx
     trades = Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades']
@@ -399,3 +413,19 @@ def test_f6_disabled_time_bytes_unchanged(warm):
     for key in (*capture.V2_KEYS, "assumptions", "raw_report"):
         assert capture.digest(omitted[key]) == capture.digest(disabled[key])
     assert "time_layer" not in disabled["assumptions"]
+
+
+def test_etf38_disabled_matches_frozen_baseline(monkeypatch, tmp_path):
+    from test_etf_flow_follow_38 import run
+    absent, _ = run(monkeypatch, tmp_path, values={'2026-03-06': 400000000})
+    def forbidden(*args, **kwargs):
+        raise AssertionError('disabled ETF time layer must not construct TimeContext')
+    monkeypatch.setattr(provider.TimeContext, 'build', forbidden)
+    disabled, _ = run(monkeypatch, tmp_path, values={'2026-03-06': 400000000}, params=DEFAULTS)
+    explicit_one, _ = run(monkeypatch, tmp_path, values={'2026-03-06': 400000000}, params={'leverage': 1})
+    assert absent['trades'] and disabled['trades']
+    assert provider.TOOL_SPECS['local.backtesting_py.etf_flow_follow']['build'](DEFAULTS)['strategy']._time_config is None
+    for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
+        assert capture.digest(absent[key]) == capture.digest(disabled[key]) == capture.digest(explicit_one[key]) == ETF38_BASELINE[key], key
+    assert 'time_layer' not in disabled['assumptions']
+    assert 'time_layer' not in disabled['raw_report']
