@@ -36,6 +36,8 @@ def number(default, minimum, maximum=1000000):
 SCHEMAS = {
     KINDS[0]: dict(events=deepcopy(EVENT_SCHEMA['events']), pre_window_minutes=integer(30),
                    max_hold_minutes=integer(240), take_profit_r=number(2, 0.01, 100),
+                   # Same scale as event_window.bars_after: a breakout must close within N candles after the event candle.
+                   breakout_window_bars=dict(type='integer', default=12, minimum=1, maximum=96),
                    direction=dict(type='string', default='both', enum=['long', 'short', 'both'])),
     KINDS[1]: dict(events=deepcopy(EVENT_SCHEMA['events']), surprise_threshold=number(0.1, 0),
                    direction_map=dict(type='object', additionalProperties=False, required=['below', 'above'],
@@ -118,6 +120,7 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
             self.macro_events = []
             self._by_event, self._by_entry = {}, {}
             self._watching = []
+            self._expiry = {}
             self._decisions, self._next_bar = {}, -1
             self._entry_record = None
             for event in config.events:
@@ -167,6 +170,9 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
                             continue
                         last = Decimal(str(self.data.Close[indices[-1]]))
                         record['move_pct'] = str((last - first) / first * 100)
+                if config.kind == KINDS[0]:
+                    # Candles after the event candle are counted; the N-th one is the last valid breakout close.
+                    self._expiry[id(record)] = event_bar + config.values['breakout_window_bars']
                 self._by_event.setdefault(activation, []).append(record)
             # Guard all sizing modes against a next-open gap through the frozen H1 stop.
             original = self._broker._process_orders
@@ -290,6 +296,9 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
             for record in self._watching:
                 if 'status' in record:
                     continue
+                if bar > self._expiry[id(record)]:
+                    self._skip(record, 'breakout_window_expired')
+                    continue
                 if self.position or self.orders:
                     self._skip(record, 'previous_event_still_open', 'skipped_in_position')
                     continue
@@ -303,7 +312,9 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
                 elif direction in ('short', 'both') and close < record['range_low']:
                     self._submit(record, 'short', bar)
                 elif bar == len(self._opens)-1:
-                    self._skip(record, 'no_breakout_before_data_end')
+                    # Data ending on or after the N-th candle's close without a breakout means the window ran out.
+                    self._skip(record, 'breakout_window_expired' if bar >= self._expiry[id(record)]
+                               else 'no_breakout_before_data_end')
     return MacroEventStrategy
 
 
@@ -321,7 +332,9 @@ def macro_assumptions(config):
                 out_of_range='skip_before_first_data_open_or_at_or_after_last_open_plus_period; skip_data_gaps',
                 incomplete_window='skip_missing_pre_history_or_entry_before_first_decision_or_hold_past_data_end',
                 settlement='engine_insolvency_or_finalization_may_end_early; actual_exits_from_result_v2',
-                **({'take_profit': 'actual_fill_plus_minus_take_profit_r_times_abs_actual_fill_minus_stop'}
+                **({'take_profit': 'actual_fill_plus_minus_take_profit_r_times_abs_actual_fill_minus_stop',
+                    'breakout_window': 'no_breakout_close_within_breakout_window_bars_candles_after_event_candle_'
+                                       'expires_event_as_breakout_window_expired; independent_of_max_hold_minutes'}
                    if config.kind == KINDS[0] else
                    {'null_values': 'skip_missing_expected_or_actual_before_overlap_check; reported_in_raw_report',
                     'threshold': 'abs(actual_minus_expected)_gte_threshold; zero_difference_has_no_direction'}
