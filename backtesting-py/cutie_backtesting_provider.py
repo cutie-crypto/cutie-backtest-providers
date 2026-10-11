@@ -56,6 +56,18 @@ from strategy_funding_reversal import (
     CENTRAL_METRIC as FUNDING_CENTRAL_METRIC,
     FundingReversalConfig, FundingSeriesError, SCHEMA as FUNDING_REVERSAL_SCHEMA,
 )
+import strategy_top_long_short_reversal as top_lsr
+from strategy_top_long_short_reversal import TopLongShortReversalConfig, make_strategy as make_top_lsr_strategy
+from strategy_liquidation_reversal import (
+    CENTRAL_EXCHANGE as LIQUIDATION_CENTRAL_EXCHANGE,
+    CENTRAL_INTERVAL as LIQUIDATION_CENTRAL_INTERVAL,
+    CENTRAL_METRIC as LIQUIDATION_CENTRAL_METRIC,
+    EARLIEST_TS as LIQUIDATION_EARLIEST_TS,
+    GAP_REASON as LIQUIDATION_GAP_REASON,
+    HISTORY_REASON as LIQUIDATION_HISTORY_REASON,
+    LiquidationReversalConfig, LiquiditySeriesError, SCHEMA as LIQUIDATION_REVERSAL_SCHEMA,
+    make_liquidation_strategy, utc_date as liquidation_utc_date,
+)
 from strategy_time_series import SeriesBar, TimeHistoryError
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -138,7 +150,10 @@ DEFAULT_SUPPORTED_SYMBOLS = (
     "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,"
     "ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT"
 )
-EXECUTION_TIMEOUT_MS = 120000
+# 目录声明的单次回测执行超时。对齐 connector 硬上限 300000ms（connector 取
+# min(目录 timeout_ms, 300000)），同时仍低于服务端派单任务的 600s。
+# 原 120000：亚洲盘 15m 208 天回测约需 160s 以上，会被提前判超时（Q46）。
+EXECUTION_TIMEOUT_MS = 300000
 
 # 执行侧真正接受的周期（_validate_run_request 用这一份，别再各写各的）。
 EXECUTION_SUPPORTED_TIMEFRAMES = {
@@ -2454,7 +2469,9 @@ def _rsi_series(values: Any, period: int):
     return rsi.fillna(50.0).to_numpy()
 
 
-# 共用风险参数：旧四键保留；3a 扩展必须显式启用，默认走原收盘覆盖层。
+# 共用风险参数：旧四键保留；3a 扩展必须显式启用。Q42-C 起：未传 risk_layer_enabled 且带 stop_loss_pct/take_profit_pct
+# 默认走统一风控层（盘中触价）；显式 false 才走原收盘覆盖层。下面 risk_layer_enabled 的 schema default 仍写 False：
+# JSON schema 表达不了这个条件默认值，且目录字节不变（不动目录金样，也不让回显 default 的客户端被动变口径）。
 # 3b 动态止损、持仓期限与三档止盈使用扁平键。
 _FIXED_RISK_PARAM_SCHEMA_PROPERTIES: dict[str, Any] = {
     "stop_loss_pct": {"type": "number", "minimum": 0, "maximum": 100},
@@ -2539,6 +2556,11 @@ def _parse_fixed_risk_params(params: dict[str, Any], *, template_initial_stop: b
     if error:
         raise ValueError(f"INVALID_PARAMS:{error}")
     enabled = params.get("risk_layer_enabled", False)
+    # Q42-C：调用方没传 risk_layer_enabled 且带了 stop_loss_pct/take_profit_pct 时，默认走统一风控层
+    # （盘中 High/Low 触价）。显式 false 保留旧层收盘判；两键都没有则行为逐字节不变。
+    # 下面的新参数门（ATR/动态键/max_holding_bars）仍只认显式 enabled，不被这条默认值放开。
+    effective_enabled = enabled or ("risk_layer_enabled" not in params and (
+        params.get("stop_loss_pct") is not None or params.get("take_profit_pct") is not None))
     multiplier = params.get("atr_stop_multiplier", 0)
     period = params.get("risk_atr_period", 0)
     profit_r = params.get("take_profit_r", 0)
@@ -2583,8 +2605,9 @@ def _parse_fixed_risk_params(params: dict[str, Any], *, template_initial_stop: b
     out: dict[str, Any] = {}
     if leverage > 1:
         out["leverage"] = leverage
-    if enabled:
+    if effective_enabled:
         out["risk_layer_enabled"] = True
+    if enabled:
         if multiplier:
             out.update(atr_stop_multiplier=multiplier, risk_atr_period=int(period))
         if profit_r:
@@ -5967,6 +5990,55 @@ def _build_funding_reversal(params, *, initial_capital=10000.0):
                 template_assumptions={config.kind: config.assumptions})
 
 
+# S3: Binance top-trader long/short ratio reversal (spot, long only, daily series). Single position on the
+# fixed-risk mixin like the funding template; the series is bound in run_backtest after the OHLCV fetch.
+TOP_LSR_TOOL_ID = "local.backtesting_py.top_long_short_reversal"
+TOP_LSR_EARLIEST_TS = top_lsr.TOP_LSR_EARLIEST_TS
+TOP_LSR_SERIES: dict[str, Any] = {
+    "exchange": top_lsr.CENTRAL_EXCHANGE,
+    "metric": top_lsr.CENTRAL_METRIC,
+    "interval": top_lsr.CENTRAL_INTERVAL,
+    "earliest_ts": TOP_LSR_EARLIEST_TS,
+    "assumption_key": top_lsr.ASSUMPTION_KEY,
+    "gap_reason": top_lsr.GAP_REASON,
+    "history_reason": top_lsr.HISTORY_REASON,
+}
+
+
+def _build_top_lsr(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS[TOP_LSR_TOOL_ID]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = TopLongShortReversalConfig.parse(params)
+    # Intrinsic percent stop (frozen at the actual fill), always on, default 3%.
+    effective = dict(params)
+    effective["risk_layer_enabled"] = True
+    effective["stop_loss_pct"] = config.values["stop_loss_pct"]
+    risk = _parse_fixed_risk_params(effective, template_initial_stop=True)
+    return dict(strategy=make_top_lsr_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Top Long Short Ratio Reversal", min_bars=2, top_lsr_config=config,
+                template_assumptions=config.assumptions)
+
+
+# S4: long-liquidation spike reversal. Spot, long-only; rides the macro engine's single-position/stop plumbing
+# (strategy_liquidation_reversal). Day records are bound from the central 1d series in run_backtest, before OHLCV.
+LIQUIDATION_REVERSAL_TOOL_ID = "local.backtesting_py.liquidation_reversal"
+
+
+def _build_liquidation_reversal(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(
+        params, TOOL_SPECS[LIQUIDATION_REVERSAL_TOOL_ID]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = LiquidationReversalConfig.parse(params)
+    effective = {key: value for key, value in params.items() if key != "take_profit_pct"}
+    effective["risk_layer_enabled"] = True
+    risk = _parse_fixed_risk_params(effective, template_initial_stop=True)
+    return dict(strategy=make_liquidation_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Liquidation Reversal", min_bars=2, macro_config=config,
+                template_assumptions={config.kind: config.assumptions})
+
+
 # tool_id -> spec. param_schema_properties drives both the catalog param_schema
 # and (via build) the runtime validation. Add new tools here.
 # Explicit pricing keys switch VWAP / Fibonacci off their built-in frozen price group.
@@ -6030,7 +6102,7 @@ def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     """Whether the template supplies its own frozen stop when the user gives none."""
-    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id == FUNDING_REVERSAL_TOOL_ID
+    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID)
             or tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
@@ -6892,7 +6964,9 @@ def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     **{f"local.backtesting_py.{kind}": {
         "name": f"Local Backtesting.py {kind.replace('_', ' ').title()}",
-        "description": "Inline UTC macro events; one trade per event; intrinsic stop and timed next-open exits; zero warmup.",
+        "description": "Inline UTC macro events; one trade per event; intrinsic stop and timed next-open exits; zero warmup."
+                       + (" A breakout must close within breakout_window_bars candles after the event candle, otherwise the event expires (no entry)."
+                          if kind == "macro_release_breakout" else ""),
         "strategy_family": "calendar", "is_default": False,
         "build": functools.partial(_build_macro_event, kind=kind),
         "param_schema_properties": deepcopy(schema),
@@ -7771,6 +7845,49 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "timeframes": ["15m"],
         "param_schema_properties": dict(FUNDING_REVERSAL_SCHEMA),
     },
+    # S3：大户多空比反向。币安大户账户多空比（日频，中心库），只做多现货；比值很低时买入，回到区间或高于区间时卖出。
+    TOP_LSR_TOOL_ID: {
+        "name": "Local Spot Top Trader Long/Short Ratio Reversal",
+        "description": (
+            "Spot long-only template on the Binance top-trader ACCOUNT long/short ratio (central daily "
+            "series, 1d interval; the series is Binance data whatever exchange the candles come from, and "
+            "the daily basis differs from the original 1-hour definition). When flat and the ratio of the "
+            "previous UTC day is <= long_threshold it buys at the next open; it sells at the next open when "
+            "the ratio is back inside [exit_band_low, exit_band_high] (ratio_back_in_band) or above "
+            "exit_band_high (ratio_above_band), or when the percent stop_loss_pct frozen at the fill is "
+            "touched (candle low; filled at the next open). Each daily value is judged once, the day-D value "
+            "is readable only from D+1 00:00 UTC. No take-profit and no holding limit. One missing day in the "
+            "window fails the run. Series history starts at 2020-05-16 (UTC). Maps to KOL 'top trader "
+            "long/short ratio reversal'"
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_top_lsr,
+        "markets": ["spot"],
+        "timeframes": ["1h", "4h", "1d"],
+        "param_schema_properties": dict(top_lsr.SCHEMA),
+    },
+    # S4：多头爆仓量反转。取中心库 AGGREGATED / liquidation_long / 1d（美元，全市场聚合），只做多现货，1h/4h/1d。
+    LIQUIDATION_REVERSAL_TOOL_ID: {
+        "name": "Local Spot Long-Liquidation Reversal",
+        "description": (
+            "Spot long-only template on the aggregated daily long-liquidation volume (USD, whole market, "
+            "central database, from 2020-01-01). Day D's value is available at D+1 00:00 UTC and is judged "
+            "once, at the close of the first D+1 candle: when it is at or above the threshold (percentile of "
+            "the previous lookback_days days with day D excluded, or a fixed USD amount) AND day D fell by "
+            "at least min_drop_pct (last close of D vs last close of D-1), it buys at the next open while "
+            "flat. Exits: stop_loss_pct, hold_hours, take_profit_pct (stop first), detected on candle "
+            "High/Low and filled at the next open. Daily-series definition, not the original hourly one; "
+            "any missing day in the required window fails the run; look-back days before 2020-01-01 are "
+            "refused. Candles 1h/4h/1d only. Maps to KOL '多头爆仓放量后抄底'"
+        ),
+        "strategy_family": "mean_reversion",
+        "is_default": False,
+        "build": _build_liquidation_reversal,
+        "markets": ["spot"],
+        "timeframes": ["1h", "4h", "1d"],
+        "param_schema_properties": dict(LIQUIDATION_REVERSAL_SCHEMA),
+    },
     "local.backtesting_py.parabolic_sar": {
         "name": "Local Backtesting.py Parabolic SAR Flip",
         "description": (
@@ -7974,6 +8091,22 @@ TOOL_SPECS[FUNDING_REVERSAL_TOOL_ID]["param_schema_properties"] = {
     **deepcopy(FUNDING_REVERSAL_SCHEMA), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
     "exchange": {"type": "string", "default": "binance"},
+}
+
+# S3: same shared sizing/leverage keys as the funding template; no time layer / filters / max_holding_bars
+# (rejected as unknown keys before any fetch). Candle exchange is free (the ratio series is Binance's own).
+TOOL_SPECS[TOP_LSR_TOOL_ID]["param_schema_properties"] = {
+    **deepcopy(top_lsr.SCHEMA), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
+    **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
+    "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+}
+
+# S4: same shared sizing/leverage keys as P2, no time layer / filters / max_holding_bars (sent keys are rejected
+# as unknown before any fetch). Candles come from the request exchange (default binance), spot only.
+TOOL_SPECS[LIQUIDATION_REVERSAL_TOOL_ID]["param_schema_properties"] = {
+    **deepcopy(LIQUIDATION_REVERSAL_SCHEMA), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
+    **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
+    "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
 }
 
 POSITION_SIZING_UNWIRED_TOOLS = frozenset({
@@ -9770,7 +9903,7 @@ async def run_backtest(
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
-            if (effective_tool_id == FUNDING_REVERSAL_TOOL_ID
+            if (effective_tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID)
                     or effective_tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
                 _parse_fixed_risk_params({k: v for k, v in params.items() if k != "take_profit_r"},
                                          template_initial_stop=True)
@@ -9852,6 +9985,20 @@ async def run_backtest(
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     funding_symbol = None
+    top_lsr_symbol = None
+    if effective_tool_id == TOP_LSR_TOOL_ID:
+        # Spot, long only; 1h/4h/1d only. Both rejected before any fetch.
+        if market != "spot":
+            return _validation_failure("INVALID_PARAMS", "top_long_short_reversal requires spot market")
+        if timeframe not in tool_spec["timeframes"]:
+            return _validation_failure(
+                "TIMEFRAME_UNSUPPORTED",
+                f"Unsupported timeframe for this template: {timeframe}. Supported: {tool_spec['timeframes']}",
+            )
+        top_lsr_symbol = str(symbol).replace("/", "").split(":")[0].upper()
+        if not re.fullmatch(r"[A-Z0-9]+(?:USDT|USDC|BUSD)", top_lsr_symbol):
+            return _validation_failure(
+                "INVALID_PARAMS", "top_long_short_reversal requires a USDT/USDC/BUSD quoted symbol")
     if effective_tool_id == FUNDING_REVERSAL_TOOL_ID:
         # Funding evidence is Binance USD-M only (F108: never substitute one venue's funding for another),
         # so candles come from the same venue; 15m only. Both are rejected before any fetch.
@@ -9868,6 +10015,19 @@ async def run_backtest(
         if not re.fullmatch(r"[A-Z0-9]+USDT", funding_symbol):
             return _validation_failure(
                 "INVALID_PARAMS", "funding_settlement_reversal requires a Binance USDT perpetual symbol")
+    liquidation_symbol = None
+    if effective_tool_id == LIQUIDATION_REVERSAL_TOOL_ID:
+        # Spot only, 1h/4h/1d only; both rejected before any fetch.
+        if market != "spot":
+            return _validation_failure("INVALID_PARAMS", "this template requires spot market")
+        if timeframe not in tool_spec["timeframes"]:
+            return _validation_failure(
+                "TIMEFRAME_UNSUPPORTED",
+                f"Unsupported timeframe for this template: {timeframe}. Supported: {tool_spec['timeframes']}",
+            )
+        liquidation_symbol = str(symbol).replace("/", "").split(":")[0].upper()
+        if not re.fullmatch(r"[A-Z0-9]+", liquidation_symbol) or not re.sub(r"(?:USDT|USDC|BUSD)$", "", liquidation_symbol):
+            return _validation_failure("INVALID_PARAMS", "liquidation_reversal requires a spot symbol such as BTCUSDT")
     try:
         built = tool_spec["build"](params, initial_capital=float(initial_capital))
     except ValueError as e:
@@ -9889,6 +10049,15 @@ async def run_backtest(
         funding_failure = _bind_funding_reversal(run_id, macro_config, funding_symbol, start_at, end_at)
         if funding_failure is not None:
             return funding_failure
+    if liquidation_symbol is not None:
+        try:
+            macro_config.bind_timeframe(timeframe)
+        except ValueError as e:
+            return _validation_failure("INVALID_PARAMS", str(e).removeprefix("INVALID_PARAMS:"))
+        liquidation_failure = _bind_liquidation_reversal(
+            run_id, macro_config, liquidation_symbol, start_at, end_at)
+        if liquidation_failure is not None:
+            return liquidation_failure
     if "validate_timeframe" in built:
         try:
             built["validate_timeframe"](timeframe)
@@ -10057,6 +10226,12 @@ async def run_backtest(
             exchange_id=exchange_id,
         )
 
+    top_lsr_config = built.get("top_lsr_config")
+    if top_lsr_config is not None:
+        top_lsr_failure = _bind_top_lsr(run_id, top_lsr_config, top_lsr_symbol, timeframe, df)
+        if top_lsr_failure is not None:
+            return top_lsr_failure
+
     vwap_main_gaps = None
     if is_vwap:
         # Check the main grid even when the optional time layer is off. P-LOW5-VWAP: off-grid or
@@ -10149,7 +10324,7 @@ async def run_backtest(
     # its required_bars prefix; off-state (and filter_timeframe) stays empty.
     warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
                   if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
-                 if range_config is not None or calendar_config is not None or event_window_config is not None or macro_config is not None else
+                 if range_config is not None or calendar_config is not None or event_window_config is not None or macro_config is not None or top_lsr_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
@@ -10598,6 +10773,8 @@ async def run_backtest(
                 **({"calendar_events": stats["_strategy"].calendar_events} if calendar_config is not None else {}),
                 **({"range_breakout_days": list(stats["_strategy"].daily_ranges.values())} if range_config is not None else {}),
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
+                **({"top_long_short_reversal": stats["_strategy"].top_lsr_report}
+                   if hasattr(stats["_strategy"], "top_lsr_report") else {}),
                 **({"top_pattern": stats["_strategy"].top_pattern_report}
                    if hasattr(stats["_strategy"], "top_pattern_report") else {}),
                 **({"bottom_pattern": stats["_strategy"].bottom_pattern_report}
@@ -10692,6 +10869,148 @@ def _bind_funding_reversal(run_id, config, funding_symbol, start_at, end_at):
         config.bind(points, dict(symbol=funding_symbol, central_symbol=central_symbol, rows=rows,
                                  fetched_at_ms=int(time.time() * 1000)))
     except FundingSeriesError as exc:
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:{exc.message}",
+            reason=exc.reason,
+            details=exc.details,
+        )
+    return None
+
+
+def _bind_top_lsr(run_id, config, symbol, timeframe, df):
+    """S3: fetch the central daily top-trader long/short ratio the bars consume and bind it; fail closed.
+
+    The day range comes from the actual bar opens (decision at bar close reads the newest row with
+    available_at <= close). Too-early windows are rejected before any fetch. Returns a failure response or None.
+    """
+    bar_seconds = _timeframe_milliseconds(timeframe) // 1000
+    opens = [int(pd.Timestamp(t).value // 10**9) for t in df.index]
+    need_first, need_last = top_lsr.need_range(opens, bar_seconds)
+    if need_first < TOP_LSR_EARLIEST_TS:
+        return _external_series_history_failure(run_id, TOP_LSR_SERIES, need_first)
+    central_symbol = re.sub(r"(?:USDT|USDC|BUSD)$", "", symbol.upper())
+    metric = TOP_LSR_SERIES["metric"]
+    path = f"$.external_series.{metric}"
+    try:
+        rows = _fetch_metric_series(
+            symbol=central_symbol,
+            exchange=TOP_LSR_SERIES["exchange"],
+            metric=metric,
+            interval=TOP_LSR_SERIES["interval"],
+            start_at=need_first,
+            end_at=need_last + top_lsr.SERIES_STEP_SECONDS,
+            path=path,
+            raise_on_transport_error=True,
+        )
+        if rows[0]["ts"] != need_first or rows[-1]["ts"] != need_last:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                path,
+                "declared stream does not cover the backtest window",
+                required=need_first if rows[0]["ts"] != need_first else need_last,
+                actual=rows[0]["ts"] if rows[0]["ts"] != need_first else rows[-1]["ts"],
+            )
+    except StrategyContractError as exc:
+        if exc.code != ERR_COVERAGE_INCOMPLETE:
+            raise
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            (
+                f"TIME_DATA_GAP:{metric} series is incomplete for the backtest window "
+                f"{_utc_date(need_first)}..{_utc_date(need_last)} ({exc.message}); this template does "
+                "not run on a partial series"
+            ),
+            reason=TOP_LSR_SERIES["gap_reason"],
+            details={
+                "series_metric": metric,
+                "required_first_date": _utc_date(need_first),
+                "required_last_date": _utc_date(need_last),
+            },
+        )
+    except Exception as exc:
+        logger.warning("top long/short ratio series fetch failed symbol=%s: %s", central_symbol, exc)
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:central {metric} series is unavailable for {central_symbol} ({exc}); "
+            "this template does not run without the series",
+            reason=TOP_LSR_SERIES["history_reason"],
+            details={"symbol": central_symbol, "series_metric": metric},
+        )
+    config.bind(rows, symbol=central_symbol, bar_seconds=bar_seconds)
+    return None
+
+
+def _bind_liquidation_reversal(run_id, config, liquidation_symbol, start_at, end_at):
+    """S4: fetch the central 1d liquidation_long series the window needs and bind the judged days; fail closed.
+
+    Day D (first judged day = start day + 1) reads the L days before it (percentile mode) and itself; the
+    needed range is refused before any fetch when it starts before LIQUIDATION_EARLIEST_TS (look-back
+    included). Returns a failure response, or None when the config is bound.
+    """
+    judged = config.judged_days(start_at, end_at)
+    if judged is None:
+        config.unbound_assumptions()
+        return None
+    first_day, last_day = judged
+    need_first, need_last = config.required_range(first_day, last_day)
+    if config.history_unavailable(need_first):
+        earliest = liquidation_utc_date(LIQUIDATION_EARLIEST_TS)
+        return _business_failure(
+            run_id,
+            "INSUFFICIENT_DATA",
+            (
+                f"{LIQUIDATION_CENTRAL_METRIC} history starts at {earliest} (UTC); the backtest window needs "
+                f"{liquidation_utc_date(need_first)} (look-back included). Choose start_at later"
+            ),
+            reason=LIQUIDATION_HISTORY_REASON,
+            details={"earliest_available_date": earliest, "series_metric": LIQUIDATION_CENTRAL_METRIC},
+        )
+    central_symbol = re.sub(r"(?:USDT|USDC|BUSD)$", "", liquidation_symbol)
+    gap_details = config.gap_details(need_first, need_last)
+    try:
+        rows = _fetch_metric_series(
+            symbol=central_symbol,
+            exchange=LIQUIDATION_CENTRAL_EXCHANGE,
+            metric=LIQUIDATION_CENTRAL_METRIC,
+            interval=LIQUIDATION_CENTRAL_INTERVAL,
+            start_at=need_first,
+            end_at=need_last + 86400,
+            path=f"$.liquidation_series.{LIQUIDATION_CENTRAL_METRIC}",
+            raise_on_transport_error=True,
+        )
+    except StrategyContractError as exc:
+        if exc.code != ERR_COVERAGE_INCOMPLETE:
+            raise
+        details = dict(gap_details)
+        if isinstance(exc.required, int):
+            details["missing_date"] = liquidation_utc_date(exc.required)
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:{LIQUIDATION_CENTRAL_METRIC} series is incomplete for the backtest window "
+            f"{gap_details['required_first_date']}..{gap_details['required_last_date']} ({exc.message}); "
+            "this template does not run on a partial series",
+            reason=LIQUIDATION_GAP_REASON,
+            details=details,
+        )
+    except Exception as exc:
+        logger.warning("liquidation series fetch failed symbol=%s: %s", central_symbol, exc)
+        return _business_failure(
+            run_id,
+            "TIME_DATA_GAP",
+            f"TIME_DATA_GAP:central {LIQUIDATION_CENTRAL_METRIC} series is unavailable for {central_symbol} "
+            f"({exc}); this template does not run without the series",
+            reason=LIQUIDATION_HISTORY_REASON,
+            details=dict(gap_details),
+        )
+    try:
+        config.bind(first_day, last_day, dict(central_symbol=central_symbol, rows=rows,
+                                              fetched_at_ms=int(time.time() * 1000)))
+    except LiquiditySeriesError as exc:
         return _business_failure(
             run_id,
             "TIME_DATA_GAP",

@@ -359,7 +359,7 @@ def test_branch_head_isolated_off_golden(warm,explicit,monkeypatch):
 
 def test_catalog_count_and_default_params():
     # main c72c4a1 has 53 tools; SHORT-PAT-3 adds chan_3sell => 54.
-    assert len(p.TOOL_SPECS) == 65  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1
+    assert len(p.TOOL_SPECS) == 67  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1, S3 +1, S4 +1
     spec = p.TOOL_SPECS[TOOL]
     assert spec['markets'] == ['futures']
     props = spec['param_schema_properties']

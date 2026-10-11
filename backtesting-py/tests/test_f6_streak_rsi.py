@@ -115,7 +115,9 @@ def test_user_stop_suppresses_defaults_and_changes_actual_exit():
     stats = run({'stop_loss_pct': 1}, data)
     assert stats['_strategy']._risk['stop_loss_pct'] == .01
     assert 'take_profit_pct' not in stats['_strategy']._risk
-    assert list(stats['_trades'].ExitBar) == [56]
+    # Q42-C: the 1% stop is now judged on bar 45's low (91) instead of the close; legacy exit was bar 56.
+    assert list(stats['_trades'].ExitBar) == [46]
+    assert list(run({'stop_loss_pct': 1, 'risk_layer_enabled': False}, data)['_trades'].ExitBar) == [56]
 
 
 def test_user_target_suppresses_default_stop():

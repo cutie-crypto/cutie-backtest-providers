@@ -56,6 +56,7 @@ def unwired_tools():
 
 # --- keys omitted: byte-identical -------------------------------------------------------------------
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('case', sorted(CASES))
 def test_omitted_keys_byte_identical_to_5ddd8eb(case, monkeypatch, tmp_path):
     monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
@@ -87,7 +88,7 @@ def test_no_catalog_schema_publishes_the_keys_outside_the_whitelist(monkeypatch)
     # templates are wired, plus the 9 of P-PATCONF-2b2; the other 5 stay unpublished.
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     tools = TestClient(p.app).get('/catalog').json()['tools']
-    assert len(tools) == 65  # main 59 + P-EVENT0 + Q18 H1-H3 + P1 fear_greed_scale_in + P2 funding_settlement_reversal
+    assert len(tools) == 67  # main 59 + P-EVENT0 + Q18 H1-H3 + P1 fear_greed_scale_in + P2 funding_settlement_reversal + S3 top_long_short_reversal + S4 liquidation_reversal
     published = set()
     for tool in tools:
         keys = set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(tool['param_schema']['properties'])

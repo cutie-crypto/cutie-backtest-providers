@@ -160,6 +160,7 @@ def test_same_bar_signal_exit_and_liquidation(side):
     expect_liquidation(dict(risk_layer_enabled=True),side=side,signal=True)
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('side',SIDES)
 def test_same_bar_legacy_close_stop(side):
     bar=[100,131,69,85] if side=='long' else [100,131,69,115]
@@ -269,6 +270,7 @@ def baseline_provider():
 
 
 # New calendar / short-pattern tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap', 'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell',
                                   'bearish_engulfing', 'shooting_star', 'evening_star',
                                   'three_black_crows', 'bearish_doji_reversal',
@@ -279,7 +281,11 @@ def baseline_provider():
                                   # Q18 postdates the frozen baseline; explicit L=1 bytes live in its route suite.
                                   'macro_release_breakout', 'macro_surprise_direction', 'fomc_reversal',
                                   # P2 postdates the frozen baseline; L=1 off state is pinned in test_p2_funding_settlement_reversal.py.
-                                  'funding_settlement_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
+                                  'funding_settlement_reversal',
+                                  # S3 postdates the frozen baseline; its route suite is test_s3_top_long_short_reversal.py.
+                                  'top_long_short_reversal',
+                                  # S4 is spot-only (futures is rejected); its route suite is test_s4_liquidation_reversal.py.
+                                  'liquidation_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
