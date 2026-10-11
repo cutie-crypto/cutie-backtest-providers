@@ -2855,6 +2855,10 @@ class _ExitKindOrders(list):
         phase = state.get("_exit_kind_phase")
         kind = state.get("_exit_kind_pending")
         if kind is None:
+            if phase is None and getattr(trade, "_exit_kind", None) == "liquidation":
+                # PIN7-E: a last-bar liquidation was already queued; finalize_trades' own close of the
+                # same trade is not a period-end close and must not relabel it end_of_data.
+                return
             # Outside next() / broker.next() only finalize_trades closes trades: the window ended.
             kind = {"next": "signal_exit", "broker": "unresolved:broker_close"}.get(phase, "end_of_data")
         trade._exit_kind = kind
@@ -2938,6 +2942,104 @@ def _exit_kind_strategy(strategy):
     ExitKinds.__name__ = strategy.__name__
     ExitKinds.__qualname__ = strategy.__qualname__
     return ExitKinds
+
+
+def _final_close_strategy(strategy):
+    """PIN7-E: period-end settlement at the last bar's Close, and no exit decision on that bar.
+
+    backtesting.py's ``finalize_trades`` queues ``trade.close()`` for every leftover trade, then re-runs
+    ``broker.next`` on the last bar's own OHLC, so a market close fills at Open[-1]. That re-run is the
+    only broker pass that starts after the last ``next()`` has finished, so it is told apart from the
+    regular last-bar pass (which runs before ``next()``) and from broker-phase liquidations (which run
+    in the regular pass). Closes filled in the re-run are re-priced to Close[-1]; fee and slippage are
+    computed afterwards from the exit price, so they follow it. What the re-run may fill is an explicit rule
+    (``admit_final_orders``); a trade liquidated on the last bar keeps its liquidation fill. ``_total_bars`` feeds
+    ``_FixedRiskMixin._at_final_bar``.
+    """
+
+    class FinalClose(strategy):
+        def init(self):
+            self.__dict__["_total_bars"] = len(self.data)  # init() sees the full-length data view.
+            super().init()
+            broker = self._broker
+            state = self.__dict__
+            close_trade, broker_next = broker._close_trade, broker.next
+
+            def settle_close(trade, price, time_index):
+                if state.get("_final_rerun"):
+                    rules = state["_final_fills"]
+                    if id(trade) not in rules:
+                        # A fill the re-run rules below did not admit (a partial copy, a second fill of a
+                        # trade, a broker close): fail closed, the run degrades to ENGINE_ERROR.
+                        raise RuntimeError(f"PIN7E_FINAL_RERUN: unexpected fill of trade {trade!r}")
+                    price = rules.pop(id(trade))
+                close_trade(trade, price, time_index)
+
+            def liquidation_fill(trade):
+                # result.v2's fill for a liquidation on this bar (_isolated_liquidation_fills): the
+                # liquidation price, or the bar's Open when it gapped through it.
+                is_long = trade.size > 0
+                liquidation = _isolated_liquidation_price(
+                    Decimal(str(trade.entry_price)), self._risk["leverage"], is_long)
+                opening = Decimal(str(self.data.Open[-1]))
+                return float(opening if (opening <= liquidation if is_long else opening >= liquidation)
+                             else liquidation)
+
+            def admit_final_orders():
+                """The re-run fills exactly three kinds of order; anything else raises.
+
+                (c) no parent_trade: an entry queued by the last next(), with no next bar to fill on -> cancelled.
+                (a) finalize_trades' Trade.close(): queued after the last next() (absent from _final_queued)
+                    and inserted at the head, so it is each trade's first order -> fills at Close[-1].
+                    Orders the last next() queued behind it (template closes, moved SL / TP) never fill.
+                (b) a trade the last next() liquidated (_isolated_liquidations record for this bar, the
+                    same record result.v2 settles from) -> its finalize close fills at the liquidation fill.
+                """
+                queued = state.get("_final_queued", frozenset())
+                bar_open = int(pd.Timestamp(self.data.index[-1]).value // 10**9)
+                liquidated = {record["opened_at"] for record in getattr(self, "_isolated_liquidations", ())
+                              if record["liquidation_bar_open_time"] == bar_open}
+                rules, first = {}, set()
+                for order in list(broker.orders):
+                    trade = order.parent_trade
+                    if trade is None:
+                        order.cancel()  # (c)
+                        continue
+                    if id(trade) in first:
+                        continue
+                    first.add(id(trade))
+                    if (id(order) in queued or order.stop is not None or order.limit is not None
+                            or trade not in broker.trades or order.size != -trade.size):
+                        raise RuntimeError(f"PIN7E_FINAL_RERUN: unexpected first order {order!r}")
+                    opened_at = int(pd.Timestamp(trade.entry_time).value // 10**9)
+                    rules[id(trade)] = (liquidation_fill(trade) if opened_at in liquidated  # (b)
+                                        else float(self.data.Close[-1]))  # (a)
+                if any(id(trade) not in rules for trade in broker.trades):
+                    raise RuntimeError("PIN7E_FINAL_RERUN: a trade has no period-end close")
+                state["_final_fills"] = rules
+
+            def final_next():
+                state["_final_rerun"] = bool(state.get("_final_next_done"))
+                try:
+                    if state["_final_rerun"]:
+                        admit_final_orders()
+                    broker_next()
+                finally:
+                    state["_final_rerun"] = False
+
+            broker._close_trade, broker.next = settle_close, final_next
+
+        def next(self):
+            super().next()
+            if len(self.data) >= self.__dict__["_total_bars"]:
+                self.__dict__["_final_next_done"] = True
+                # Orders queued once the last next() is done: finalize_trades' closes come after.
+                self.__dict__["_final_queued"] = frozenset(id(order) for order in self._broker.orders)
+
+    FinalClose.__module__ = strategy.__module__
+    FinalClose.__name__ = strategy.__name__
+    FinalClose.__qualname__ = strategy.__qualname__
+    return FinalClose
 
 
 def _sorted_exit_kinds(rows: list[tuple[int, int, Any]]) -> list[Any]:
@@ -3145,6 +3247,12 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             process_orders()
         self._broker._process_orders = guarded_orders
 
+    def _at_final_bar(self) -> bool:
+        """PIN7-E: the last bar of the run makes no exit decision; the position goes to the period-end
+        settlement (finalize_trades), which fills at that bar's Close."""
+        total = self.__dict__.get("_total_bars")
+        return total is not None and len(self.data) >= total
+
     def _risk_prepare_entry(self) -> None:
         if not self._risk.get("atr_stop_multiplier"):
             return
@@ -3233,8 +3341,9 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         if candidate is None:
             return False
         price = candidate["liquidation_price"]
-        # Non-gap intrabar stops closer to entry are crossed before liquidation.
-        if not candidate["liquidation_gap"] and stop is not None and (
+        # Non-gap intrabar stops closer to entry are crossed before liquidation. PIN7-E: not on the last
+        # bar, which settles at its Close; a stop there (template, window or user) is treated as absent.
+        if not candidate["liquidation_gap"] and stop is not None and not self._at_final_bar() and (
             stop > price if trade.is_long else stop < price
         ):
             return False
@@ -3273,10 +3382,14 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
                 if stop is not None and (stop <= price if trade.is_long else stop >= price):
                     self._isolated_stop_beyond_trades += 1
         if self._risk.get("leverage", 1) > 1:
-            stop = (self._risk_state.stop_state.effective_stop
-                    if self._risk_state.stop_state is not None else self._risk_state.initial_stop)
+            # PIN7-E: the last bar skips the stop below, so it cannot veto liquidation there.
+            stop = None if self._at_final_bar() else (
+                self._risk_state.stop_state.effective_stop
+                if self._risk_state.stop_state is not None else self._risk_state.initial_stop)
             if self._risk_isolated_exit(stop):
                 return True
+        if self._at_final_bar():
+            return False
         bar = len(self.data) - 1
         fact = self._holding_expiry()
         reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
@@ -3452,6 +3565,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
                 return True
             self._risk_exit_reason = None
         if sl_pct is None and tp_pct is None and not time_enabled:
+            return False
+        if self._at_final_bar():
             return False
         entry_price = self.trades[-1].entry_price
         close = self.data.Close[-1]
@@ -6497,6 +6612,8 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                 return True
             if any(order.parent_trade is trade for order in self.orders):
                 return True
+            if self._at_final_bar():
+                return False
             fact = self._holding_expiry()
             reason = decide_exit(self._risk_state, high=self.data.Close[-1], low=self.data.Close[-1], holding_due=fact.due)
             if reason is None:
@@ -6667,6 +6784,8 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                 return True
             if any(order.parent_trade is trade for order in self.orders):
                 return True
+            if self._at_final_bar():
+                return False
             fact = self._holding_expiry()
             # Disabled risk extension retains close-only triggers; intrinsic
             # expiry still uses the shared fill-bar-is-1 mechanism.
@@ -7070,12 +7189,15 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
             # The frozen intrinsic stop is judged intrabar and joins T2-2b arbitration. An explicit
             # user stop is judged on the close only (decide_exit below), so any intrabar liquidation
             # precedes it: arbitrate without the stop (mixin legacy rule, as F5/F6; P-LIQ1 1010).
+            # PIN7-E: the last bar skips the intrinsic stop too, so it cannot veto liquidation there.
             elif self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(
-                    self._risk_state.initial_stop if intrinsic else None):
+                    self._risk_state.initial_stop if intrinsic and not self._at_final_bar() else None):
                 exited = True
             elif any(order.parent_trade is trade for order in self.orders):
                 return True
             else:
+                if self._at_final_bar():
+                    return False
                 fact = self._holding_expiry()
                 reason = decide_exit(self._risk_state,
                     high=self.data.High[-1] if intrinsic else self.data.Close[-1],
@@ -10656,6 +10778,9 @@ async def run_backtest(
 
         # P6: records each closed trade's exit kind (raw_report.trade_exit_kinds).
         StrategyClass = _exit_kind_strategy(strategy_class)
+        # PIN7-E: period-end settlement at the last Close, no exit decision on the last bar
+        # (the turtle group included, statement 141).
+        StrategyClass = _final_close_strategy(StrategyClass)
         # backtesting.py trades WHOLE units; a small cash on a high-priced asset
         # (e.g. BTC ~$80k with $10k cash) floors position size to 0 units -> no trades.
         # Run with a large internal cash so sizing is effectively continuous, then scale
@@ -10685,8 +10810,9 @@ async def run_backtest(
             cash=internal_cash,
             commission=commission,
             exclusive_orders=tool_spec.get("exclusive_orders", True),
-            # Settle trades still open at the end (close at last bar) so metrics /
-            # trade_count reflect them instead of silently dropping unrealized PnL.
+            # Settle trades still open at the end so metrics / trade_count reflect them instead of
+            # silently dropping unrealized PnL. backtesting.py fills finalize_trades closes at the last
+            # bar's Open; _final_close_strategy (PIN7-E) re-prices them to the last bar's Close.
             finalize_trades=True,
             **_leverage_backtest_kwargs(leverage),
         )

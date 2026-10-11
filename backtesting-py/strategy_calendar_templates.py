@@ -78,7 +78,10 @@ def build_us_open(p, params, initial_capital):
                 risk=self._risk, entry_price=trade.entry_price,
                 direction='long' if trade.is_long else 'short', atr_value=self._risk_entry_atr,
                 entry_at=int(pd.Timestamp(trade.entry_time).value), original_units=abs(trade.size))
-            user_stop = state.stop_state.effective_stop if state.stop_state is not None else state.initial_stop
+            # PIN7-E: on the last bar no stop vetoes liquidation (the window stop included); the base
+            # _risk_isolated_exit ignores the stop there.
+            user_stop = None if self._at_final_bar() else (
+                state.stop_state.effective_stop if state.stop_state is not None else state.initial_stop)
             stops = [value for value in (stop, user_stop, Decimal(str(self._window_stop))) if value is not None]
             closest = max(stops) if trade.is_long else min(stops)
             return super()._risk_isolated_exit(closest)
@@ -222,6 +225,8 @@ def build_cme_gap(p, params, initial_capital):
                 if self._risk_check_exit():
                     pass
                 else:
+                    if self._at_final_bar():
+                        return
                     state = RiskState(Decimal(str(self.trades[-1].entry_price)), None, self._target, None,
                         'long' if self.position.is_long else 'short')
                     if decide_exit(state, high=self.data.High[-1], low=self.data.Low[-1]) is None:

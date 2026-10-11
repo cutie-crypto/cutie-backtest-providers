@@ -461,8 +461,9 @@ def test_close_decided_on_the_last_bar_keeps_its_reason(monkeypatch, tmp_path):
     assert body['result_status'] == 'success', body.get('error_message')
     # tp1 as in PARTIAL (bar 6 open 106); tp2 9R = 122.72 is first touched by bar 22's high 123, so a quarter
     # closes at bar 23 open 123 -- which defers the window close (held 4..22) to bar 23's close. Bar 23 is
-    # the last: finalize fills that queued close at the same open 123, ahead of its own close.
-    assert legs(body) == [(4, '104', 6, '106', 'long'), (4, '104', 23, '123', 'long'), (4, '104', 23, '123', 'long')]
+    # the last: finalize settles that queued close at bar 23's close 123.5 (PIN7-E), still reason window_end;
+    # the tp2 quarter decided on bar 22 keeps its regular fill at bar 23's open 123.
+    assert legs(body) == [(4, '104', 6, '106', 'long'), (4, '104', 23, '123', 'long'), (4, '104', 23, '123.5', 'long')]
     assert [e['reason'] for e in events_of(body)[0]['exits']] == [
         'take_profit_levels', 'take_profit_levels', 'window_end']
 

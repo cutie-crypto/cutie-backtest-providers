@@ -6,12 +6,12 @@
       "0": {
         "warmup_bars": 0,
         "assumptions_sha256": "4776bdc7da4b20e96d94427b66be179723750a5f0381246475dcea46fe9c92eb",
-        "raw_report_sha256": "6364eafacea1b35d2dfb961a41e92ed0fd01d1099edc898121c81e9ff1992eaf"
+        "raw_report_sha256": "27a2aff7488894bee5fdab12e0df88b19163eaddb6e3a8164660aaf2d330033d"
       },
       "1": {
         "warmup_bars": 60,
         "assumptions_sha256": "6c5d00d1c2800207a99e70f297fda9c7891afac6b1e1e095d0b2ce47edd1eedd",
-        "raw_report_sha256": "59d7497986046c83a37c08cca15ef952f78880f1aa50ecd153b0b45dc4b01bc9"
+        "raw_report_sha256": "7abefe158d89c4b8d5a5cac57786ed68b580245bd9a49ffb2e59ba245a06e491"
       }
     }
   }
