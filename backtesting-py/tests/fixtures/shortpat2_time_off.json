@@ -19,12 +19,12 @@
       "0": {
         "warmup_bars": 0,
         "assumptions_sha256": "ade920bbe5ccf56ea109d20277df1dacb0b1828d3fe8232f30b3aa73507241e7",
-        "raw_report_sha256": "f5cdf26763a341f28ac8f625f0bcb9985198683cf4306cf11a00206b3e31b053"
+        "raw_report_sha256": "b8cc4bc4580177381fbc2d9389a73dffa627646b5dfc3786622b3cbacc3cb01d"
       },
       "1": {
         "warmup_bars": 60,
         "assumptions_sha256": "a2ca234527ff6fa1f0d9453de33485c419456f09096b3648dacab8d8a27d0d36",
-        "raw_report_sha256": "0e249a0e24365aeecd8a42807f461c72c62ebea2606658473fa66f6e5fc58984"
+        "raw_report_sha256": "ad2f070e107bce8099a0430017f6fa8e00c0bad8987aba0b78b891cb61ec49df"
       }
     }
   }
