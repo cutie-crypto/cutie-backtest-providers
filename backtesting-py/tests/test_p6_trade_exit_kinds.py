@@ -368,3 +368,47 @@ def test_self_recorded_reports_unchanged_byte_for_byte(monkeypatch, tmp_path, na
     assert canonical(without_kinds(body)) == canonical(before)
     if key is not None:
         assert canonical(body['raw_report'][key]) == canonical(before['raw_report'][key])
+
+
+# ---------------------------------------------------------------- stop source, not price equality (Codex P2)
+
+def breakeven_frame(*, high_a, close_a, low_b=99.0):
+    """Flat 100 base, a jump to 110 crosses EMA5 over EMA20, entry fills at 100 (bar 41 open).
+
+    Bar 42 sets the managed stop (high_a / close_a), bar 43 trades down through 100 (low_b)."""
+    n = 60
+    close = np.full(n, 100.0)
+    close[:40] = np.linspace(101.0, 100.0, 40)
+    close[40] = 110.0
+    open_ = np.r_[close[0], close[:-1]]
+    high, low = np.maximum(open_, close) + 0.1, np.minimum(open_, close) - 0.1
+    for i, (o, h, l, c) in {41: (100.0, 100.5, 99.5, 100.0), 42: (100.0, high_a, 100.0, close_a),
+                            43: (close_a, close_a, low_b, 100.0)}.items():
+        open_[i], high[i], low[i], close[i] = o, h, l, c
+    for i in range(44, n):
+        open_[i], high[i], low[i], close[i] = 100.0, 100.1, 99.9, 100.0
+    index = pd.date_range('2024-01-01', periods=n, freq='1h', tz='UTC')
+    return pd.DataFrame(dict(Open=open_, High=high, Low=low, Close=close, Volume=np.full(n, 500.0)), index=index)
+
+
+def first_trade_kind(monkeypatch, tmp_path, data, breakeven):
+    params = ema(dict(risk_layer_enabled=True, stop_loss_pct=5, trailing_stop_pct=20, breakeven_stop=breakeven))
+    body = post(monkeypatch, tmp_path, 'ema_cross', params, data)
+    assert_aligned(body)
+    trade = body['trades'][0]
+    assert Decimal(trade['entry_price']) == Decimal('100'), trade
+    assert bar_index(data, trade['closed_at']) == 44, trade  # decided on bar 43 (Low 99 <= stop 100)
+    return kinds_of(body)[0]
+
+
+@pytest.mark.parametrize('breakeven', [False, True])
+def test_trailing_stop_at_entry_price_without_active_breakeven_is_trailing(monkeypatch, tmp_path, breakeven):
+    # High 125 pushes the trailing level to 100 (= entry); Close 104 < 105 so breakeven never activates.
+    data = breakeven_frame(high_a=125.0, close_a=104.0)
+    assert first_trade_kind(monkeypatch, tmp_path, data, breakeven) == 'trailing_stop'
+
+
+def test_active_breakeven_lifted_stop_is_stop_loss(monkeypatch, tmp_path):
+    # High 120 puts the trailing level at 96 only; Close 106 >= 105 activates breakeven, which lifts the stop to 100.
+    data = breakeven_frame(high_a=120.0, close_a=106.0)
+    assert first_trade_kind(monkeypatch, tmp_path, data, True) == 'stop_loss'

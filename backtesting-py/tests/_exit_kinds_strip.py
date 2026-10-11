@@ -5,7 +5,7 @@ Only this one key is removed (by name); every other key of the body stays in the
 """
 from __future__ import annotations
 
-import re
+import json
 
 KEY = 'trade_exit_kinds'
 
@@ -19,9 +19,13 @@ def without_exit_kinds(body):
     return out
 
 
-_TEXT = re.compile(r',"trade_exit_kinds":\[[^\]]*\]')
-
-
 def without_exit_kinds_text(text):
-    """Same removal on an unparsed JSON response text (the list holds only flat seq/exit_kind objects)."""
-    return _TEXT.sub('', text)
+    """Same removal on an unparsed JSON response text: parse, drop only raw_report.trade_exit_kinds, re-serialize.
+
+    Re-serialization uses the response encoder's own form (compact separators, non-ASCII kept), so every
+    other byte is unchanged; a same-named key anywhere else (e.g. inside turtle_groups) is left alone.
+    """
+    data = json.loads(text)
+    if isinstance(data, dict) and isinstance(data.get('raw_report'), dict):
+        data['raw_report'].pop(KEY, None)
+    return json.dumps(data, separators=(',', ':'), ensure_ascii=False)

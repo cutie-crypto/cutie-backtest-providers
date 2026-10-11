@@ -2805,23 +2805,30 @@ def _mark_exit_kind(strategy, kind: str) -> None:
 
 
 def _stop_exit_kind(strategy, state) -> str:
-    """stop_loss, or trailing_stop when the stop that fired is the trailing one.
+    """stop_loss, or trailing_stop when the trailing level is the stop that fired.
 
-    Trailing: trailing_stop_pct is configured and the managed stop either moved off its initial
-    level, or its initial level is the trailing offset itself (no other stop source). A stop raised
-    only by breakeven_stop stays stop_loss.
+    The managed stop is the tightest of three sources (strategy_dynamic_stop.advance_stop): the
+    initial stop, the trailing level (extreme * (1 -/+ trailing_pct)) and, once breakeven is
+    ACTIVE, the entry price. trailing_stop only when trailing is configured, its level is at least
+    as tight as the initial stop (a tie means the initial stop is the trailing offset itself) and,
+    when breakeven is active, strictly tighter than the entry price. A stop lifted only by an
+    active breakeven (or left at the fixed initial stop) is stop_loss.
     """
     managed = getattr(state, "stop_state", None)
     trailing = strategy._risk.get("trailing_stop_pct")
     if managed is None or not trailing:
         return "stop_loss"
-    if managed.effective_stop != managed.initial_stop:
-        if strategy._risk.get("breakeven_stop") and managed.effective_stop == managed.entry_price:
-            return "stop_loss"
-        return "trailing_stop"
-    offset = managed.entry_price * Decimal(str(trailing)) / 100
-    trail_start = managed.entry_price - offset if managed.direction == "long" else managed.entry_price + offset
-    return "trailing_stop" if managed.initial_stop == trail_start else "stop_loss"
+    long = managed.direction == "long"
+    trail = managed.extreme * (Decimal(1) + (-1 if long else 1) * Decimal(str(trailing)) / 100)
+
+    def tighter(a: Decimal, b: Decimal) -> bool:
+        return a > b if long else a < b
+
+    if tighter(managed.initial_stop, trail):
+        return "stop_loss"
+    if managed.breakeven_active and not tighter(trail, managed.entry_price):
+        return "stop_loss"
+    return "trailing_stop"
 
 
 class _ExitKindOrders(list):
