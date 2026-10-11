@@ -7,6 +7,9 @@ from portfolio_rotation import (
 )
 
 TOOL_ID = 'local.backtesting_py.portfolio_rotation'
+# EXT-901：服务端 external-result 只认 raw_report_json 为 v4 七键本体（键集严格，API-CONTRACT.md「独立组合回测 v4」）；
+# connector 原样转发 raw_report，所以成功回包的 raw_report 必须就是这七键。
+RAW_REPORT_V4_KEYS = ('schema_version', 'fills', 'snapshots', 'equity_curve', 'btc_benchmark', 'metrics', 'input_manifests')
 RUNNER = 'portfolio_rotation_v4'
 _EXECUTOR = ThreadPoolExecutor(max_workers=4)
 TOOL_SPEC = {
@@ -91,7 +94,8 @@ def rotation_response(body, request, run_id, api, *, tool_spec=None, parser=None
 
     future = _EXECUTOR.submit(execute)
     try:
-        streams, output, decisions, assumptions = future.result(timeout=max(0, deadline-time.monotonic()))
+        # decisions / rejections 不随 raw_report 回传（EXT-901：服务端 v4 键集严格，且无消费方）。
+        streams, output, _decisions, assumptions = future.result(timeout=max(0, deadline-time.monotonic()))
     except TimeoutError:
         future.cancel()
         return api._business_failure(run_id, 'EXECUTION_TIMEOUT', '120 second execution deadline exceeded', reason='execution_deadline')
@@ -110,5 +114,5 @@ def rotation_response(body, request, run_id, api, *, tool_spec=None, parser=None
         **result, 'trades': [], 'initial_capital': str(request.get('initial_capital', '10000')),
         'assumptions': assumptions,
         'limitations': {'verification': 'external_unverified', 'verified_by_cutie': False},
-        'raw_report': {'decisions': decisions, 'rejections': output.rejections},
+        'raw_report': {k: result[k] for k in RAW_REPORT_V4_KEYS},
     })
