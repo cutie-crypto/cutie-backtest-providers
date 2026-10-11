@@ -6924,7 +6924,9 @@ def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     **{f"local.backtesting_py.{kind}": {
         "name": f"Local Backtesting.py {kind.replace('_', ' ').title()}",
-        "description": "Inline UTC macro events; one trade per event; intrinsic stop and timed next-open exits; zero warmup.",
+        "description": "Inline UTC macro events; one trade per event; intrinsic stop and timed next-open exits; zero warmup."
+                       + (" A breakout must close within breakout_window_bars candles after the event candle, otherwise the event expires (no entry)."
+                          if kind == "macro_release_breakout" else ""),
         "strategy_family": "calendar", "is_default": False,
         "build": functools.partial(_build_macro_event, kind=kind),
         "param_schema_properties": deepcopy(schema),
