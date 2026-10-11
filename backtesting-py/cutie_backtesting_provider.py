@@ -138,7 +138,10 @@ DEFAULT_SUPPORTED_SYMBOLS = (
     "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,"
     "ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT"
 )
-EXECUTION_TIMEOUT_MS = 120000
+# 目录声明的单次回测执行超时。对齐 connector 硬上限 300000ms（connector 取
+# min(目录 timeout_ms, 300000)），同时仍低于服务端派单任务的 600s。
+# 原 120000：亚洲盘 15m 208 天回测约需 160s 以上，会被提前判超时（Q46）。
+EXECUTION_TIMEOUT_MS = 300000
 
 # 执行侧真正接受的周期（_validate_run_request 用这一份，别再各写各的）。
 EXECUTION_SUPPORTED_TIMEFRAMES = {
