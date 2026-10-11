@@ -1,5 +1,6 @@
 """OI49: hand-calculated HTTP fills and causal central-series boundaries (no network)."""
 import sys
+import json
 from pathlib import Path
 import pandas as pd
 from backtesting import Backtest
@@ -46,17 +47,17 @@ def install(monkeypatch, tmp_path, data, values=None, *, timeframe='1d', drop=()
             'BTC', 'Binance', 'open_interest', timeframe)
         if fail:
             raise RuntimeError('central offline')
-        return [dict(ts=start + k * step, value=values.get(k, '100')) for k in range(-200, 11)
+        return [dict(ts=start + k * step, value=values.get(k, '100')) for k in range(-200, len(data) + 1)
                 if k not in drop and kwargs['start_at'] <= start + k * step <= kwargs['end_at']]
     monkeypatch.setattr(p, '_fetch_artifact_metric_chunk', fetch)
     return calls
 
 
-def post(params=None, *, timeframe='1d', start=T0, symbol='BTCUSDT', market='spot'):
+def post(params=None, *, timeframe='1d', start=T0, symbol='BTCUSDT', market='spot', bars=10, end_at=None):
     res = TestClient(p.app).post('/cutie/backtest', json={'backtest': dict(
         run_id='oi49', provider_tool_id=TOOL, provider_params={**PARAMS, **(params or {})},
         symbol=symbol, market=market, timeframe=timeframe, start_at=start,
-        end_at=start + 10 * STEPS.get(timeframe, 3600), initial_capital='10000', fee_bps='0', slippage_bps='0')})
+        end_at=end_at if end_at is not None else start + bars * STEPS.get(timeframe, 3600), initial_capital='10000', fee_bps='0', slippage_bps='0')})
     assert res.status_code == 200
     return res.json()
 
@@ -65,7 +66,7 @@ def run(monkeypatch, tmp_path, params=None, **kwargs):
     timeframe = kwargs.pop('timeframe', '1d')
     data = kwargs.pop('data', hand_frame(timeframe))
     install(monkeypatch, tmp_path, data, timeframe=timeframe, **kwargs)
-    body = post(params, timeframe=timeframe, start=int(data.index[0].timestamp()))
+    body = post(params, timeframe=timeframe, start=int(data.index[0].timestamp()), bars=len(data))
     assert body['result_status'] == 'success', body
     return body
 
@@ -107,14 +108,14 @@ def test_low_touch_stop_is_frozen_at_fill_and_wins_over_ema(monkeypatch, tmp_pat
 
 def test_any_oi_gap_fails_entire_run(monkeypatch, tmp_path):
     for tf in STEPS:
-        for missing in (-2, 3, 9):
+        for missing in (-2, 3, 8):
             install(monkeypatch, tmp_path, hand_frame(tf), timeframe=tf, drop=(missing,))
             body = post(timeframe=tf)
             assert body['error_type'] == 'TIME_DATA_GAP'
             assert body['limitations']['reason'] == 'open_interest_data_gap' and body['result_status'] == 'failed'
             limits = body['limitations']
             assert limits['required_first_date'] == p._utc_date(T0 - 2 * STEPS[tf])
-            assert limits['required_last_date'] == p._utc_date(T0 + 9 * STEPS[tf])
+            assert limits['required_last_date'] == p._utc_date(T0 + 8 * STEPS[tf])
             assert not {'required_first_ts', 'required_last_ts'} & set(limits)
 
 
@@ -169,13 +170,83 @@ def test_history_transport_and_sizing_evidence(monkeypatch, tmp_path):
     calls = install(monkeypatch, tmp_path, data, timeframe='1h')
     body = post(timeframe='1h', start=oi.HOURLY_EARLIEST_TS)
     assert body['limitations']['reason'] == 'open_interest_history_unavailable' and calls == []
+    assert body['error_type'] == 'INSUFFICIENT_DATA'
+    assert body['limitations']['earliest_available_date'] == '2026-01-08'
     install(monkeypatch, tmp_path, hand_frame(), fail=True)
-    assert post()['limitations']['reason'] == 'open_interest_history_unavailable'
+    unavailable = post()
+    assert unavailable['error_type'] == 'TIME_DATA_GAP'
+    assert unavailable['limitations']['reason'] == 'open_interest_history_unavailable'
     body = run(monkeypatch, tmp_path, dict(position_size_notional=1200))
     assert p.Decimal(body['trades'][0]['qty']) == 10
     s = body['assumptions']['oi_breakout']['open_interest_series']
     assert (s['symbol'], s['exchange'], s['metric'], s['unit'], s['interval']) == (
         'BTC', 'Binance', 'open_interest', 'usd', '1d')
-    assert s['count'] == 12 and s['gap_policy'] == 'fail_closed'
+    assert s['count'] == 11 and s['gap_policy'] == 'fail_closed'
     assert set(body['trades'][0]) == {'seq', 'side', 'opened_at', 'closed_at', 'entry_price', 'exit_price',
                                      'qty', 'slippage', 'fee', 'pnl'}
+
+
+def test_integer_valued_floats_normalize_and_match_integer_run(monkeypatch, tmp_path):
+    data = pd.DataFrame([[100, 101, 99, 100, 1]] * 30, columns=hand_frame().columns,
+                        index=pd.date_range(pd.to_datetime(T0, unit='s'), periods=30, freq='D'))
+    data.iloc[21, :4] = [100, 111, 99, 110]
+    data.iloc[22, :4] = [120, 122, 119, 121]
+    ints = {key: 20 for key in ('breakout_lookback_bars', 'oi_lookback_bars', 'exit_ema_period')}
+    floats = {key: 20.0 for key in ints}
+    integer = run(monkeypatch, tmp_path, ints, data=data, values={21: '105'})
+    normalized = run(monkeypatch, tmp_path, floats, data=data, values={21: '105'})
+    assert integer['trades']
+    assert json.dumps(normalized, sort_keys=True) == json.dumps(integer, sort_keys=True)
+    assert all(type(value) is int for key, value in p._build_oi_breakout(floats)['oi_config'].values.items()
+               if key in ints)
+
+
+def test_fractional_integer_params_reject_before_fetch(monkeypatch, tmp_path):
+    calls = install(monkeypatch, tmp_path, hand_frame())
+    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: (_ for _ in ()).throw(AssertionError('must reject first')))
+    for key in ('breakout_lookback_bars', 'oi_lookback_bars', 'exit_ema_period'):
+        body = post({key: 20.5})
+        assert body['result_status'] == 'failed' and body['error_type'] == 'INVALID_PARAMS'
+    assert calls == []
+    for key in ('breakout_lookback_bars', 'oi_lookback_bars', 'exit_ema_period'):
+        try:
+            oi.OIBreakoutConfig({key: 20.5})
+        except ValueError as exc:
+            assert str(exc).startswith('INVALID_PARAMS:')
+        else:
+            raise AssertionError('fractional integer silently truncated')
+
+
+def test_risk_pct_sizes_against_actual_fill_stop(monkeypatch, tmp_path):
+    body = run(monkeypatch, tmp_path, dict(position_size_risk_pct=1, position_size_qty_step=0.01))
+    # $10000 * 1% / (120 - 117.6) = 41.666..., rounded down to qty step 0.01.
+    # Signal-close anchoring (110 * 98% = 107.8) would instead give qty 8.19.
+    assert body['trades'][0]['entry_price'] == '120'
+    assert p.Decimal(body['trades'][0]['qty']) == p.Decimal('41.66')
+    fills = body['raw_report']['position_sizing']['fills']
+    assert p.Decimal(fills[0]['initial_stop']) == p.Decimal('117.6')
+
+
+def test_missing_final_oi_is_unused_when_end_at_is_in_latest_bar(monkeypatch, tmp_path):
+    for tf, step in STEPS.items():
+        data = hand_frame(tf)
+        end_at = T0 + 9 * step + step // 2
+        calls = install(monkeypatch, tmp_path, data, timeframe=tf)
+        complete = post(timeframe=tf, end_at=end_at)
+        assert complete['result_status'] == 'success' and complete['trades']
+        calls = install(monkeypatch, tmp_path, data, timeframe=tf, drop=(9,))
+        missing = post(timeframe=tf, end_at=end_at)
+        assert missing == complete
+        assert max(c['end_at'] for c in calls) == T0 + 9 * step - 1
+        # The penultimate decision still has a next open and remains mandatory.
+        install(monkeypatch, tmp_path, data, timeframe=tf, drop=(8,))
+        assert post(timeframe=tf, end_at=end_at)['limitations']['reason'] == 'open_interest_data_gap'
+
+
+def test_unnamed_risk_exit_is_not_reported_as_stop_loss(monkeypatch, tmp_path):
+    def unnamed_exit(strategy):
+        strategy.position.close()
+        return True
+    monkeypatch.setattr(p._FixedRiskMixin, '_risk_check_exit', unnamed_exit)
+    body = run(monkeypatch, tmp_path)
+    assert body['raw_report']['oi_breakout']['executions'][0]['reason'] == 'risk_exit'

@@ -23,6 +23,13 @@ SCHEMA = {
 class OIBreakoutConfig:
     def __init__(self, params):
         self.values = {k: params.get(k, v['default']) for k, v in SCHEMA.items()}
+        for key, spec in SCHEMA.items():
+            if spec['type'] == 'integer':
+                value = self.values[key]
+                number = Decimal(str(value)) if type(value) in (int, float) else None
+                if number is None or not number.is_finite() or number != number.to_integral_value():
+                    raise ValueError(f'INVALID_PARAMS:{key} must be an integer')
+                self.values[key] = int(value)
         self.rows = ()
         self.bar_seconds = None
         self.series = {}
@@ -36,8 +43,8 @@ class OIBreakoutConfig:
         }}
 
     def need_range(self, opens, step):
-        # Include the older OI observation even for the first decision in the window.
-        return opens[0] - self.values['oi_lookback_bars'] * step, opens[-1]
+        # Include the first decision's baseline, but not the final bar: it has no next open.
+        return opens[0] - self.values['oi_lookback_bars'] * step, opens[-2]
 
     def bind(self, rows, *, symbol, bar_seconds, interval):
         self.rows = tuple(rows)
@@ -96,8 +103,9 @@ def make_strategy(mixin, config, risk, initial_capital):
         def next(self):
             bar = len(self.data) - 1
             if self.position:
+                self._risk_exit_reason = None
                 if self._risk_check_exit():
-                    self._log('exit', self._risk_exit_reason or 'stop_loss')
+                    self._log('exit', self._risk_exit_reason or 'risk_exit')
                     return
                 if self.data.Close[-1] < self._oi_ema[bar]:
                     self._log('exit', 'close_below_ema')

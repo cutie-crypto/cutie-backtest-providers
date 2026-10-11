@@ -8207,7 +8207,8 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "increase by at least oi_increase_pct over oi_lookback_bars. Read only closed OI points "
             "(available_at = ts + interval); buy at the next open. Close below EMA exits at the next "
             "open (close_below_ema); low touching stop_loss_pct frozen at actual fill also exits at "
-            "the next open. Any missing OI interval fails the entire run. Binance 1h history starts "
+            "the next open. Any missing OI interval used by a decision with a next open fails the entire "
+            "run; the final bar needs no OI. Binance 1h history starts "
             "at 2026-01-08 (UTC). 做空镜像未开放"
         ),
         "strategy_family": "trend_following", "is_default": False, "build": _build_oi_breakout,
