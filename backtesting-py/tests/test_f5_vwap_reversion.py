@@ -58,7 +58,8 @@ def response(monkeypatch, tmp_path, params=None, data=None, warm=None, timeframe
 
 
 def test_two_day_hand_vwap_and_next_open_fills():
-    stats=run()
+    # Pins the legacy close-only layer (the default 2% stop now runs the unified layer since Q42-C).
+    stats=run({'risk_layer_enabled':False})
     np.testing.assert_allclose(stats['_strategy']._f5_vwap, [np.nan,100,95.5,95.5,200,195,196,196,300],equal_nan=True)
     trades=stats['_trades']
     assert trades[['EntryBar','ExitBar']].values.tolist()==[[3,4],[6,7]]

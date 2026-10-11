@@ -160,6 +160,7 @@ def test_same_bar_signal_exit_and_liquidation(side):
     expect_liquidation(dict(risk_layer_enabled=True),side=side,signal=True)
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('side',SIDES)
 def test_same_bar_legacy_close_stop(side):
     bar=[100,131,69,85] if side=='long' else [100,131,69,115]
