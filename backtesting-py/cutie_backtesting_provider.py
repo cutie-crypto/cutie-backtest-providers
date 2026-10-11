@@ -8225,9 +8225,10 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     FUNDING_REVERSAL_TOOL_ID: {
         "name": "Local Futures Funding Settlement Reversal",
         "description": (
-            "Futures-only 15m template on Binance USD-M settled funding rates (8h: 00/08/16 UTC). "
+            "Futures-only 15m template on Binance USD-M funding rates (8h settlements: 00/08/16 UTC). "
             "lead_minutes before each settlement it enters AGAINST the sign of the previous period's "
-            "settled rate (rate >= +threshold shorts, <= -threshold longs), holds hold_minutes or until "
+            "rate, read as the close of the central 1h funding bar ending at the previous settlement "
+            "(rate >= +threshold shorts, <= -threshold longs), holds hold_minutes or until "
             "stop_loss_pct, one trade per settlement. The period's own rate is never read (it is only "
             "fixed at settlement); the live predicted rate can differ. A missing funding period fails "
             "the run. Maps to KOL 'funding rate settlement reversal'"
@@ -11271,7 +11272,16 @@ async def run_backtest(
                 **(
                     {
                         "funding_rate_included": False,
+                        # pin 8 (统领第 185 封): this template enters against the funding sign, so the
+                        # position is normally on the receiving side at settlement -- excluding funding
+                        # makes its PnL conservative, not optimistic (worker-3 #22: 53 shorts, all received).
                         "funding_rate_note": (
+                            "Backtest excludes funding paid/received at settlement; this template enters "
+                            "against the funding sign, so live positions usually receive funding and PnL "
+                            "here is usually conservative."
+                        )
+                        if effective_tool_id == FUNDING_REVERSAL_TOOL_ID
+                        else (
                             "Futures backtest excludes perpetual funding rate "
                             "costs; PnL may be optimistic vs. live futures trading."
                         ),

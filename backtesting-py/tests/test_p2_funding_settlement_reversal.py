@@ -355,6 +355,22 @@ def test_assumptions_state_basis_range_and_deviation(monkeypatch, tmp_path):
     assert body['raw_report'][KIND]['counts'] == {'entered': 1, 'skipped': 5}
 
 
+def test_funding_note_says_conservative_not_optimistic(monkeypatch, tmp_path):
+    """pin 8 (统领第 185 封): the template trades against the funding sign, so leaving funding out
+    understates PnL; the generic futures "may be optimistic" note was the wrong direction here."""
+    body, _ = run(monkeypatch, tmp_path, {0: '0.00060000'})
+    lim = body['limitations']
+    assert lim['funding_rate_included'] is False
+    assert 'conservative' in lim['funding_rate_note'] and 'optimistic' not in lim['funding_rate_note']
+
+
+def test_catalog_description_names_the_pre_settlement_1h_close(monkeypatch):
+    monkeypatch.setattr(p, 'AUTH_TOKEN', '')
+    tools = {t['tool_id']: t for t in TestClient(p.app).get('/catalog').json()['tools']}
+    description = tools[TOOL]['description']
+    assert 'settled rate' not in description and 'settled funding rates' not in description
+    assert '1h funding bar ending at the previous settlement' in description
+
 def test_catalog_entry(monkeypatch):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     tools = {t['tool_id']: t for t in TestClient(p.app).get('/catalog').json()['tools']}
