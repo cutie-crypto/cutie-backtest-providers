@@ -558,6 +558,48 @@ def test_okx_still_uses_ccxt_fallback(central_configured, monkeypatch):
     assert df.attrs["cutie_central_market_data_used"] is False
 
 
+@pytest.mark.parametrize("cached_central", [False, True])
+def test_binance_central_configured_ignores_ccxt_sourced_cache(central_configured, monkeypatch, cached_central):
+    """CCXT-451（pi review）：升级前 ccxt.binance 回退写下的缓存不再命中；中心源缓存照常命中。"""
+    items = [{"open_time": 0, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}]
+    requested = []
+
+    def fake_urlopen(*_a, **_kw):
+        requested.append(1)
+        return _FakeResponse({"err_code": 100, "data": {"available": True, "count": 1, "items": items}})
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+    monkeypatch.setitem(sys.modules, "ccxt", _fake_ccxt_module("binance", MagicMock(side_effect=AssertionError)))
+    provider.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    source = "cutie_central_market_data" if cached_central else provider.DATA_SOURCE
+    provider._write_cache(
+        provider._cache_key("binance", "spot", "BTCUSDT", "1h", 0, 7200_000),
+        [[0, 9.0, 9.0, 9.0, 9.0, 9.0]],
+        source=source,
+        central_market_data_used=cached_central,
+    )
+
+    df = provider._fetch_ohlcv("binance", "spot", "BTCUSDT", "1h", 0, 7200)
+    assert df.attrs["cutie_data_source"] == "cutie_central_market_data"
+    assert df.attrs["cutie_market_data_cache_hit"] is cached_central
+    assert requested == ([] if cached_central else [1])
+
+
+def test_binance_outside_coverage_is_deterministic_failure(central_configured, monkeypatch):
+    """非 USDT 计价对不在中心覆盖内：不回退 ccxt.binance，也不叫用户重试。"""
+
+    def fake_urlopen(*_a, **_kw):
+        raise AssertionError("central must not be requested for non-USDT quote")
+
+    monkeypatch.setattr(provider._CENTRAL_HTTP_OPENER, "open", fake_urlopen)
+    monkeypatch.setitem(sys.modules, "ccxt", _fake_ccxt_module("binance", MagicMock(side_effect=AssertionError)))
+    with pytest.raises(provider.MarketDataFetchError) as caught:
+        provider._fetch_ohlcv("binance", "spot", "ETH/BTC", "1h", 0, 7200)
+    assert caught.value.error_type == "DATA_FETCH_FAILED"
+    assert caught.value.provenance["central_failure_reason"] == "outside_coverage"
+    assert "retry" not in str(caught.value)
+
+
 def test_fetch_ohlcv_uses_central_and_skips_ccxt(central_configured, monkeypatch):
     """端到端：central 命中时不调用 ccxt。"""
     items = [{"open_time": 0, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100.0}]

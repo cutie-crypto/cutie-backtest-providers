@@ -830,26 +830,26 @@ def _fetch_central_chunk_with_reason(
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         if 500 <= e.code < 600:
-            logger.warning("Central market-data 5xx (%s), falling back to ccxt: %s", e.code, e)
+            logger.warning("Central market-data 5xx (%s); central miss: %s", e.code, e)
         else:
-            logger.warning("Central market-data HTTP error %s, falling back to ccxt", e.code)
+            logger.warning("Central market-data HTTP error %s; central miss", e.code)
         if e.code in {401, 403}:
             return None, CENTRAL_REASON_AUTH_FAILED
         if e.code in {408, 504}:
             return None, CENTRAL_REASON_TIMEOUT
         return None, CENTRAL_REASON_HTTP_ERROR
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        logger.warning("Central market-data unreachable/timeout, falling back to ccxt: %s", e)
+        logger.warning("Central market-data unreachable/timeout; central miss: %s", e)
         return None, CENTRAL_REASON_TIMEOUT
 
     try:
         body = json.loads(raw)
     except json.JSONDecodeError as e:
-        logger.warning("Central market-data response not JSON, falling back to ccxt: %s", e)
+        logger.warning("Central market-data response not JSON; central miss: %s", e)
         return None, CENTRAL_REASON_INVALID_RESPONSE
 
     if body.get("err_code") != 100:
-        logger.warning("Central market-data err_code=%s, falling back to ccxt", body.get("err_code"))
+        logger.warning("Central market-data err_code=%s; central miss", body.get("err_code"))
         return None, CENTRAL_REASON_SERVICE_ERROR
     data = body.get("data") or {}
     if not data.get("available"):
@@ -879,7 +879,7 @@ def _fetch_central_chunk_with_reason(
             is_gap = actual < expected * CENTRAL_GAP_TOLERANCE_RATIO
         if is_gap:
             logger.warning(
-                "Central market-data gap detected (got=%d expected=%d), falling back to ccxt",
+                "Central market-data gap detected (got=%d expected=%d); central miss",
                 len(items),
                 expected,
             )
@@ -891,7 +891,7 @@ def _fetch_central_chunk_with_reason(
             for item in items
         ]
     except (KeyError, TypeError, ValueError):
-        logger.warning("Central market-data rows malformed, falling back to ccxt")
+        logger.warning("Central market-data rows malformed; central miss")
         return None, CENTRAL_REASON_INVALID_RESPONSE
     return rows, CENTRAL_REASON_USED
 
@@ -1013,6 +1013,14 @@ def _fetch_ohlcv_raw(
 
     cache_key = _cache_key(exchange_id, market, symbol, timeframe, start_ms, end_ms)
     cached = _read_cache(cache_key)
+    if (
+        cached is not None
+        and exchange_id == CENTRAL_SUPPORTED_EXCHANGE
+        and _central_market_data_auth_mode() != "disabled"
+        and cached["central_market_data_used"] is not True
+    ):
+        # CCXT-451：升级前 ccxt.binance 回退写下的缓存（TTL 24h）不再吃，否则仍会混入 binance.com 源。
+        cached = None
     central_ohlcv: Optional[list] = None
     central_failure_reason: Optional[str] = None
     central_market_data_attempted = False
@@ -1042,10 +1050,22 @@ def _fetch_ohlcv_raw(
         # CCXT-451：配了中心 API 的 binance 只认中心一个源。ccxt 回退走 api.binance.com /
         # fapi.binance.com，舰队出口全是 451；出口不在美国的机器还会静默混入
         # binance.com 行情。中心 no_data 直接报 NO_DATA，其余失败直接报 DATA_FETCH_FAILED。
+        logger.warning(
+            "Central-only %s %s %s: central miss (reason=%s), no ccxt fallback",
+            exchange_id, market, symbol, central_failure_reason,
+        )
         if central_failure_reason == CENTRAL_REASON_NO_DATA:
             raise MarketDataFetchError(
                 "NO_DATA",
                 "No OHLCV data is available in the requested range",
+                central_failure_reason=central_failure_reason,
+                central_attempted=central_market_data_attempted,
+            )
+        if central_failure_reason == CENTRAL_REASON_OUTSIDE_COVERAGE:
+            # 非 USDT 计价对 / 中心不覆盖的市场：确定性失败，不叫用户重试。
+            raise MarketDataFetchError(
+                "DATA_FETCH_FAILED",
+                "Platform market data does not cover this symbol/market",
                 central_failure_reason=central_failure_reason,
                 central_attempted=central_market_data_attempted,
             )

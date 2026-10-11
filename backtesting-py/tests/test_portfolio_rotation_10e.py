@@ -558,7 +558,7 @@ def test_rotation_gap_reason_distinct_from_fetch_failure():
 
 
 # PROV-PROVENANCE：失败回包带已取流的真实 provenance，不再落写死占位（attempted=false / source=null）。
-@pytest.mark.parametrize('mode', ['fetch_failed', 'gap'])
+@pytest.mark.parametrize('mode', ['fetch_failed', 'gap', 'gap_cached'])
 def test_rotation_failure_report_carries_real_provenance(monkeypatch, mode):
     monkeypatch.setattr(api, '_verify_bearer', lambda _: None)
     req = request()
@@ -573,7 +573,7 @@ def test_rotation_failure_report_carries_real_provenance(monkeypatch, mode):
                                                central_failure_reason='central_timeout', central_attempted=True)
             rows = rows[:5] + rows[6:]
         return ([[r['ts']*1000, r['open'], r['close'], r['open'], r['close'], '1'] for r in rows],
-                'cutie_central_market_data', True, False)
+                'cutie_central_market_data', True, mode == 'gap_cached')
     monkeypatch.setattr(api, '_fetch_ohlcv_raw', raw)
     response = http(req)
     provenance = response['raw_report']['market_data_provenance']
@@ -587,6 +587,8 @@ def test_rotation_failure_report_carries_real_provenance(monkeypatch, mode):
         assert (response['error_type'], response['limitations']['reason']) == ('INSUFFICIENT_DATA', 'stream_gap')
         assert provenance['source'] == 'cutie_central_market_data'
         assert provenance['central_failure_reason'] == 'used'
-        assert provenance['central_market_data_attempted'] is True
+        # 缓存命中的流本次没请求中心（pi review）：attempted 不随 used 一起为真。
+        assert provenance['central_market_data_attempted'] is (mode == 'gap')
+        assert provenance['cache_hit'] is (mode == 'gap_cached')
         assert provenance['central_market_data_used'] is True
         assert response['central_market_data_used'] is True

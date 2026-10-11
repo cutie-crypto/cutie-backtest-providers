@@ -65,7 +65,8 @@ def _streams_provenance(api, metas):
         'provider_revision': api.PROVIDER_REVISION,
         'source': sources.pop() if len(sources) == 1 else None,
         'central_market_data_used': central,
-        'central_market_data_attempted': central,
+        # 缓存命中的流本次没请求中心；attempted 只认本次真发过中心请求的流。
+        'central_market_data_attempted': any(m[1] is True and m[2] is not True for m in metas),
         'central_failure_reason': api.CENTRAL_REASON_USED if central else None,
         'auth_mode': api._central_market_data_auth_mode(),
         'cache_hit': all(m[2] is True for m in metas),
