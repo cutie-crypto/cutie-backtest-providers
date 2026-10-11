@@ -510,7 +510,7 @@ def test_new_schema_consumed_only_by_runtime_mixins(key):
         if tool_id.removeprefix('local.backtesting_py.') in p.MACRO_SCHEMAS:
             included = False  # Q18 intrinsic stops and elapsed-minute holds only.
         if tool_id in (p.FEAR_GREED_TOOL_ID, p.FUNDING_REVERSAL_TOOL_ID, p.TOP_LSR_TOOL_ID, p.LIQUIDATION_REVERSAL_TOOL_ID, p.OI_BREAKOUT_TOOL_ID, p.ETF_FLOW_TOOL_ID, p.EXCHANGE_NETFLOW_TOOL_ID):
-            included = False  # P1/P2/S3/S4/OI49 publish no generic holding / expanded risk keys.
+            included = False  # No generic holding / expanded risk keys; OI49/C38/C52 still publish optional time-layer keys.
         if tool_id == 'local.backtesting_py.token_unlock_event':  # C39 +1: shared holding clock, no dynamic stops/TP
             included = key == 'max_holding_bars'
         assert (key in spec['param_schema_properties']) == included
