@@ -251,7 +251,7 @@ def test_fixed_risk_keys_are_merged_into_every_tool_schema():
             supported = {"stop_loss_pct", "take_profit_pct", "position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars"}
             assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == supported
             continue
-        if tool_id == "local.backtesting_py.top_long_short_reversal":
+        if tool_id in ("local.backtesting_py.top_long_short_reversal", "local.backtesting_py.oi_breakout"):
             # S3：同 P2，只发布定仓两键和自带的 stop_loss_pct。
             assert set(props) & set(_FIXED_RISK_PARAM_SCHEMA_PROPERTIES) == {
                 "position_size_pct", "position_size_notional", "stop_loss_pct"}
