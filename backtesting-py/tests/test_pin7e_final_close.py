@@ -19,6 +19,8 @@ import cutie_backtesting_provider as p
 
 import _pliq1_cases as pliq
 import test_p6_trade_exit_kinds as p6
+import test_f3_us_open as f3
+import test_short_pat4_candles as s4
 
 PREFIX = p6.PREFIX
 N = 60
@@ -253,3 +255,120 @@ def test_liquidation_close_price_unchanged(monkeypatch, tmp_path):
     liquidated = [trade for trade, kind in zip(with_pin7e['trades'], kinds) if kind == 'liquidation']
     assert liquidated == [trade for trade, kind in zip(before['trades'], p6.kinds_of(before))
                           if kind == 'liquidation']
+
+
+# ---------------------------------------------------------------- PIN7-E b2a
+
+def test_last_bar_liquidation_exit_kind_is_liquidation(monkeypatch, tmp_path):
+    # Statement 146: a last-bar liquidation keeps the liquidation kind; finalize_trades' own close of the
+    # same trade must not relabel it end_of_data (server S-1 reads end_of_data as a period-end close).
+    # Same numbers as the b1 case: entry 110, 10x, 20% position, 5% stop, last bar 110 -> 90.
+    data = frame('long', 90.0)
+    body = run(monkeypatch, tmp_path, 'long', True, data, stop_loss_pct=5, take_profit_r=1, leverage=10,
+               position_size_pct=20)
+    assert body['result_status'] == 'success', body.get('error_message')
+    (trade,) = body['trades']
+    report = body['raw_report']['isolated_risk']
+    assert report['liquidation_count'] == 1, report
+    assert p6.kinds_of(body) == ['liquidation']
+    assert Decimal(trade['exit_price']) == Decimal(report['liquidations'][0]['fill_price']) == Decimal('99')
+    # A plain period-end close on the same last bar (no liquidation reached) is still end_of_data at Close.
+    plain = frame('long', 105.0)
+    body = run(monkeypatch, tmp_path, 'long', True, plain, leverage=10, position_size_pct=20)
+    assert body['result_status'] == 'success', body.get('error_message')
+    (trade,) = body['trades']
+    assert body['raw_report']['isolated_risk']['liquidation_count'] == 0
+    assert p6.kinds_of(body) == ['end_of_data']
+    assert Decimal(trade['exit_price']) == Decimal('105')
+
+
+def test_us_open_last_bar_window_stop_cannot_breach_margin(monkeypatch, tmp_path):
+    # US Open Momentum long: window 13:30-14:00 Low 98 is the window stop, entry at the 14:00 open 100,
+    # 10x isolated -> liquidation price 90, margin 2000 of 10000 (20% position). The last bar (14:30)
+    # opens at 100 (no gap) and trades down to 80, closing at 85: it crosses the window stop and the
+    # liquidation price. The last bar settles at its Close, so a window stop there cannot claim it is
+    # crossed first: without the guard the trade would settle at 85 and lose 3000 > margin.
+    data = f3.frame().loc[:'2026-03-09 14:30'].copy()
+    data.loc['2026-03-09 14:30', ['Open', 'High', 'Low', 'Close']] = [100, 100.5, 80, 85]
+    data.index = data.index.tz_localize('UTC')
+    body = p6.post(monkeypatch, tmp_path, 'us_open_momentum', dict(leverage=10, position_size_pct=20), data,
+                   market='futures', timeframe='15m')
+    assert body['result_status'] == 'success', body.get('error_message')
+    (trade,) = body['trades']
+    assert Decimal(trade['entry_price']) == Decimal('100'), trade
+    report = body['raw_report']['isolated_risk']
+    margin = Decimal('2000')
+    assert -Decimal(trade['pnl']) <= margin, trade
+    assert report['liquidation_count'] == 1, report
+    assert Decimal(report['loss_beyond_margin_total']) == 0, report
+    assert p6.kinds_of(body) == ['liquidation']
+
+
+def test_turtle_final_close_at_last_close(monkeypatch, tmp_path):
+    # Statement 141: the turtle group's period-end close also fills at the last Close; closed_at stays the
+    # last bar's open time. The channel break at SIGNAL opens a group that is still open at the end.
+    data = frame('long', 115.0)
+    assert data.Open.iloc[LAST] != data.Close.iloc[LAST]
+    body = p6.post(monkeypatch, tmp_path, 'turtle', {}, data, market='futures')
+    assert body['result_status'] == 'success', body.get('error_message')
+    assert body['trades'], body
+    last_open = int(data.index[LAST].timestamp())
+    assert all(trade['closed_at'] == last_open for trade in body['trades']), body['trades']
+    assert all(Decimal(trade['exit_price']) == Decimal('115') for trade in body['trades']), body['trades']
+    assert set(p6.kinds_of(body)) == {'end_of_data'}
+    (group,) = body['raw_report']['turtle_groups']
+    assert group['trade_seqs'] == [trade['seq'] for trade in body['trades']]
+
+
+def _module_case(name):
+    """(base frame, template params) for one template of each module that hands its frozen stop to T2-2b."""
+    if name in s4.SHORT:
+        return s4.frame(name), {}
+    if name in pliq.b.CASES:
+        build, params, _ = pliq.b.CASES[name]
+        return build(), dict(params)
+    return pliq.base_frame(name), {}
+
+
+# strategy_pattern_template (long / short), strategy_bottom_patterns, strategy_top_patterns, strategy_chan,
+# strategy_divergence: each passes its frozen stop into _risk_isolated_exit before judging the stop.
+MODULE_TEMPLATES = ('bullish_engulfing', s4.SHORT[0], 'double_bottom', 'double_top', 'chan_3sell',
+                    'macd_bearish_divergence')
+# Entry opens moved near the frozen stop so it is nearer than the 10x liquidation price (stop / L):
+# double_bottom 99.9 / 94.5, double_top 100.1 / 104.5, macd_bearish_divergence 122.122 / 127.6.
+# The others already fill with the stop nearer than liquidation.
+NEAR_STOP_ENTRY = {'double_bottom': 105.0, 'double_top': 95.0, 'macd_bearish_divergence': 116.0}
+
+
+@pytest.mark.parametrize('name', MODULE_TEMPLATES)
+def test_template_stop_cannot_veto_last_bar_liquidation(monkeypatch, tmp_path, name):
+    # The first trade's fill bar becomes the second-to-last bar; the last bar opens at the entry (no gap)
+    # and runs 20% against the position, closing 15% against it, through the frozen pattern stop and the
+    # 10x liquidation price. The last bar settles at its Close, so the stop cannot veto liquidation there.
+    base, params = _module_case(name)
+    params = dict(params, leverage=10, position_size_pct=20)
+    probe = pliq.post(monkeypatch, tmp_path, name, params, base, 'futures')
+    assert probe['result_status'] == 'success' and probe['trades'], probe.get('error_message')
+    opened = probe['trades'][0]['opened_at']
+    fill = [int(ts.timestamp()) for ts in base.index].index(opened)
+    long = probe['trades'][0]['side'] == 'long'
+    data = base.iloc[:fill + 2].copy()
+    E = NEAR_STOP_ENTRY.get(name, float(data.Open.iloc[fill]))
+    ohlc = [data.columns.get_loc(column) for column in ('Open', 'High', 'Low', 'Close')]
+    if name == 'macd_bearish_divergence':
+        # A flat fill bar would flip MACD into the template's cross-up exit: keep its close (106) and keep
+        # its low above the 2R target the 116 entry re-freezes (116 - 2 * 6.122 = 103.756).
+        data.iloc[fill, ohlc] = [E, E, 104.5, data.Close.iloc[fill]]
+    else:
+        data.iloc[fill, ohlc] = [E, E * 1.001, E * 0.999, E]
+    data.iloc[fill + 1, ohlc] = [E, E * 1.001, E * 0.8, E * 0.85] if long else [E, E * 1.2, E * 0.999, E * 1.15]
+    body = pliq.post(monkeypatch, tmp_path, name, params, data, 'futures')
+    assert body['result_status'] == 'success', body.get('error_message')
+    (trade,) = body['trades']
+    assert trade['opened_at'] == opened and Decimal(trade['entry_price']) == Decimal(str(E)), trade
+    margin = Decimal(trade['qty']) * Decimal(trade['entry_price']) / 10
+    report = body['raw_report']['isolated_risk']
+    assert report['liquidation_count'] == 1, (report, trade)
+    assert Decimal(report['loss_beyond_margin_total']) == 0, report
+    assert -Decimal(trade['pnl']) <= margin, trade
+    assert p6.kinds_of(body) == ['liquidation']

@@ -2855,6 +2855,10 @@ class _ExitKindOrders(list):
         phase = state.get("_exit_kind_phase")
         kind = state.get("_exit_kind_pending")
         if kind is None:
+            if phase is None and getattr(trade, "_exit_kind", None) == "liquidation":
+                # PIN7-E: a last-bar liquidation was already queued; finalize_trades' own close of the
+                # same trade is not a period-end close and must not relabel it end_of_data.
+                return
             # Outside next() / broker.next() only finalize_trades closes trades: the window ended.
             kind = {"next": "signal_exit", "broker": "unresolved:broker_close"}.get(phase, "end_of_data")
         trade._exit_kind = kind
@@ -3284,8 +3288,9 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         if candidate is None:
             return False
         price = candidate["liquidation_price"]
-        # Non-gap intrabar stops closer to entry are crossed before liquidation.
-        if not candidate["liquidation_gap"] and stop is not None and (
+        # Non-gap intrabar stops closer to entry are crossed before liquidation. PIN7-E: not on the last
+        # bar, which settles at its Close; a stop there (template, window or user) is treated as absent.
+        if not candidate["liquidation_gap"] and stop is not None and not self._at_final_bar() and (
             stop > price if trade.is_long else stop < price
         ):
             return False
@@ -10706,10 +10711,9 @@ async def run_backtest(
 
         # P6: records each closed trade's exit kind (raw_report.trade_exit_kinds).
         StrategyClass = _exit_kind_strategy(strategy_class)
-        if tool_spec.get("runner") != TURTLE_RUNNER:
-            # PIN7-E: period-end settlement at the last Close, no exit decision on the last bar.
-            # The turtle group shares this Backtest but keeps its previous settlement (out of scope).
-            StrategyClass = _final_close_strategy(StrategyClass)
+        # PIN7-E: period-end settlement at the last Close, no exit decision on the last bar
+        # (the turtle group included, statement 141).
+        StrategyClass = _final_close_strategy(StrategyClass)
         # backtesting.py trades WHOLE units; a small cash on a high-priced asset
         # (e.g. BTC ~$80k with $10k cash) floors position size to 0 units -> no trades.
         # Run with a large internal cash so sizing is effectively continuous, then scale
