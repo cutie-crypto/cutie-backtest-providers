@@ -43,9 +43,9 @@ TOOL_SPEC = {
 def rotation_catalog(entry):
     entry['supported_symbols'] = []
     entry['param_schema']['required'] = ['coin_pool']
-    # timeout_ms 沿用 _catalog_tool 已写入的 EXECUTION_TIMEOUT_MS（本模块被 provider 导入，
-    # 反向引用会循环导入，所以这里不再覆盖，避免与共享常量漂移）。
-    entry['execution'].update(max_bars=20000, max_range_days=5000)
+    # Q46（Codex 复审 P2）：轮动自己按 EXECUTION_SECONDS 截止（见 handle 里的 deadline），目录声明
+    # 必须等于运行时实际预算，不能沿用共享的 300s——否则 connector 等 300s、provider 120s 就自行失败。
+    entry['execution'].update(timeout_ms=EXECUTION_SECONDS * 1000, max_bars=20000, max_range_days=5000)
     entry['output_schema'] = {'schema_version': 'cutie.backtest_result.v4',
                               'metrics': ['total_return', 'max_drawdown', 'fill_count'],
                               'artifacts': [], 'series': ['equity_curve', 'btc_benchmark'],
