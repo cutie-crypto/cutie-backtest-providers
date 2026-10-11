@@ -358,6 +358,7 @@ def test_catalog_existing_entries_byte_identical():
         'local.backtesting_py.fomc_reversal',  # Q18
         'local.backtesting_py.fear_greed_scale_in',  # P1
         'local.backtesting_py.funding_settlement_reversal',  # P2
+        'local.backtesting_py.top_long_short_reversal',  # S3
     }
     entry = api._catalog_tool(TOOL_ID, api.TOOL_SPECS[TOOL_ID], symbols)
     assert entry['markets'] == ['spot']

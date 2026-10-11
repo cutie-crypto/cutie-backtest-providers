@@ -442,7 +442,7 @@ def test_branch_head_isolated_off_golden(name,warm,explicit):
 
 def test_catalog_count_and_default_params():
     # 集成 D：做空二基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空一 +2 → 53；SHORT-PAT-3 缠论三卖 +1 → 54
-    assert len(p.TOOL_SPECS)==65  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1
+    assert len(p.TOOL_SPECS)==66  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1, S3 +1
     for name in NAMES:
         assert p.TOOL_SPECS['local.backtesting_py.'+name]['markets']==['futures']
         props=p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']
