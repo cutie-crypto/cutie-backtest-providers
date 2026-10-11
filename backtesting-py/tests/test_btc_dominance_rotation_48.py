@@ -15,6 +15,7 @@ from canonical_json import canonical_json_sha256
 from portfolio_btc_dominance_rotation import TOOL_ID, parse_dominance, run_dominance
 from portfolio_result_v4 import _metric_reference
 from portfolio_rotation import DAY, RotationError, fetch_rotation
+from portfolio_rotation_http import RAW_REPORT_V4_KEYS
 T0 = 1735689600  # 2025-01-01 UTC
 SYMBOLS = ('SOLUSDT', 'ETHUSDT')
 
@@ -295,7 +296,8 @@ def test_http_routes_to_dominance_runner_and_v4_manifest(monkeypatch):
         'metric': 'btc_dominance', 'source': 'coinglass', 'unit': 'percent', 'hash': metric['hash'],
         'start_at': T0-72*DAY, 'end_at': T0+12*DAY, 'point_count': 29}
     assert sorted(calls) == ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
-    assert response['raw_report']['decisions'][0]['value_ts'] == T0
+    assert replay()[1][0]['value_ts'] == T0
+    assert response['raw_report'] == {k: response[k] for k in RAW_REPORT_V4_KEYS}
     assert set(response['fills'][0]) == {'seq', 'ts', 'symbol', 'side', 'qty', 'price', 'fee', 'slippage'}
 
 

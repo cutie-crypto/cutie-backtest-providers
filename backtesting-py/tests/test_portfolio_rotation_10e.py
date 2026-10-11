@@ -29,7 +29,7 @@ import portfolio_rotation as rotation
 from canonical_json import canonical_json_sha256
 from strategy_entry_filters import FILTER_PARAM_SCHEMA_PROPERTIES
 from portfolio_rotation import RotationError, parse_rotation, fetch_rotation, run_rotation, ema200
-from portfolio_rotation_http import TOOL_ID
+from portfolio_rotation_http import RAW_REPORT_V4_KEYS, TOOL_ID
 from strategy_entry_filters import PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES
 from strategy_entry_filters import FILTER_PARAM_SCHEMA_PROPERTIES
 
@@ -592,3 +592,22 @@ def test_rotation_failure_report_carries_real_provenance(monkeypatch, mode):
         assert provenance['cache_hit'] is (mode == 'gap_cached')
         assert provenance['central_market_data_used'] is True
         assert response['central_market_data_used'] is True
+
+
+# EXT-901：服务端 external-result 的 v4 键集（cutie-server _validate_result_v4 / API-CONTRACT.md），两端同口径。
+SERVER_RESULT_V4_KEYS = {'schema_version', 'fills', 'snapshots', 'equity_curve', 'btc_benchmark', 'metrics', 'input_manifests'}
+
+
+def test_success_raw_report_is_exact_v4_body(monkeypatch):
+    """connector 原样转发 raw_report；它必须正好是 v4 七键本体且与顶层同值，否则服务端 901（生产 #47 / #48 首次回传）。"""
+    monkeypatch.setattr(api, '_verify_bearer', lambda _: None)
+    req = request()
+    cfg = parse_rotation(req['provider_params'], req)
+    data = streams(cfg)
+    monkeypatch.setattr(api, '_fetch_ohlcv_raw', lambda e, m, symbol, t, s, en: (
+        [[r['ts']*1000, r['open'], r['close'], r['open'], r['close'], '1'] for r in data[symbol][0]], 'fixture', False, True))
+    response = http(req)
+    assert response['result_status'] == 'success'
+    assert set(response['raw_report']) == SERVER_RESULT_V4_KEYS == set(RAW_REPORT_V4_KEYS)
+    assert response['raw_report'] == {k: response[k] for k in SERVER_RESULT_V4_KEYS}
+    assert response['raw_report']['schema_version'] == 'cutie.backtest_result.v4'
