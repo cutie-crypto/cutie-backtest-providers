@@ -140,7 +140,8 @@ def test_threshold_boundary(monkeypatch, tmp_path, kind, sign, boundary):
 def test_h1_equal_range_boundary_does_not_trigger(monkeypatch, tmp_path, side):
     data = frame()
     data.iloc[12:, data.columns.get_loc('Close')] = 101 if side == 'long' else 99
-    body = post(monkeypatch, tmp_path, H1, params(H1, direction=side), data)
+    # window 96 outlasts the data (event bar 12 + 96 > 95), so the data end, not expiry, is the last word
+    body = post(monkeypatch, tmp_path, H1, params(H1, direction=side, breakout_window_bars=96), data)
     assert not body['trades']
     assert report(body, H1)['events'][0]['reason'] == 'no_breakout_before_data_end'
 
