@@ -132,7 +132,8 @@ def assert_aligned(body):
 def test_catalog_partition_is_explicit():
     excluded = sorted(tool for tool, spec in p.TOOL_SPECS.items() if spec.get('runner') in NON_V2_RUNNERS)
     assert excluded == sorted(PREFIX + name for name in (
-        'basket_ratio_sma_cross', 'basket_ratio_roc', 'basket_ratio_zscore', 'portfolio_rotation'))
+        'basket_ratio_sma_cross', 'basket_ratio_roc', 'basket_ratio_zscore', 'portfolio_rotation',
+        'btc_dominance_rotation'))
     assert set(SPECIAL) <= set(V2_TOOLS)
 
 
