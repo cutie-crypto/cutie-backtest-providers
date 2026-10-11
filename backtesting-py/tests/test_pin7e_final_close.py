@@ -598,3 +598,27 @@ def test_final_rerun_unclosed_trade_degrades_to_engine_error(monkeypatch, tmp_pa
     body = run(monkeypatch, tmp_path, 'long', True, frame('long', 105.0), stop_loss_pct=5, take_profit_r=1)
     assert body['result_status'] != 'success', body
     assert 'PIN7E_FINAL_RERUN: a trade has no period-end close' in body['error_message'], body
+
+
+# Premise pin. The PIN7-E period-end rerun (b) class matches an isolated-liquidation record to a trade by
+# opened_at only (admit_final_orders), so two positions opened on the same bar with only one liquidated would
+# let the other be settled at the liquidation price. Only templates with exclusive_orders=False can hold
+# several positions on one bar; today that is the turtle alone, and its strategy class has no isolated-margin
+# risk (no leverage param, no _risk_isolated_exit, which lives on _FixedRiskMixin). Whoever adds a
+# multi-position template that is also isolated-leveraged must first tighten the match key to per trade (pin 8).
+def test_multi_position_templates_have_no_isolated_leverage():
+    turtle_id = 'local.backtesting_py.turtle'
+    multi = {tool_id for tool_id, spec in p.TOOL_SPECS.items() if spec.get('exclusive_orders', True) is False}
+    assert multi == {turtle_id}, (
+        f'multi-position templates changed: {sorted(multi)}. PIN7-E period-end rerun (b) matches liquidation '
+        'records by opened_at (admit_final_orders), so several positions opened on one bar can be mis-settled; '
+        'tighten the match key to per trade (pin 8) before adding a multi-position + isolated-leverage template')
+    for tool_id in sorted(multi):
+        spec = p.TOOL_SPECS[tool_id]
+        assert 'leverage' not in spec['param_schema_properties'], (
+            f'{tool_id} exposes leverage: multi-position + isolated margin breaks the opened_at match of the '
+            'PIN7-E (b) class; tighten the match key to per trade (pin 8) first')
+        strategy = spec['build']({}, initial_capital=10000.0)['strategy']
+        assert not hasattr(strategy, '_risk_isolated_exit'), (
+            f'{tool_id} strategy carries isolated risk (_risk_isolated_exit): multi-position + isolated margin '
+            'breaks the opened_at match of the PIN7-E (b) class; tighten the match key to per trade (pin 8) first')
