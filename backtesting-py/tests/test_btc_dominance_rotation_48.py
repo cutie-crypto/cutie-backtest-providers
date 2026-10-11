@@ -56,11 +56,40 @@ def replay(req=None, metric=None, data=None):
                          metric_series=series() if metric is None else metric)
 
 
-def http(req, metric):
+def http(req, metric, *, legacy_top_level=False):
+    body = {'schema': 'cutie.backtest_request.v1',
+            'backtest': {**req, 'metric_series': metric}, 'provider': {}}
+    if legacy_top_level:
+        body['metric_series'] = body['backtest'].pop('metric_series')
     class Request:
         async def json(self):
-            return {'backtest': req, 'metric_series': metric}
+            return body
     return json.loads(asyncio.run(api.run_backtest(Request(), authorization=None)).body)
+
+
+def test_connector_envelope_metric_series_passes_identity_and_legacy_top_level_fails(monkeypatch):
+    monkeypatch.setattr(api, '_verify_bearer', lambda _: None)
+    req = request()
+    cfg = parse_dominance(req['provider_params'], req)
+    data = streams(cfg)
+    calls = []
+    def fetch(exchange, market, symbol, timeframe, start, end):
+        calls.append(symbol)
+        rows, source, central, cached = data[symbol]
+        return [{**r, 'open_time': r['ts']} for r in rows], source, central, cached
+    monkeypatch.setattr(api, '_fetch_basket_leg_klines', fetch)
+    metric = series()
+    response = http(req, metric)
+    assert response['result_status'] == 'success'
+    assert response['fills'] == replay(req, metric)[0].result['fills']
+    assert response['input_manifests']['metric_series']['hash'] == metric['hash']
+    assert sorted(calls) == ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
+    calls.clear()
+    response = http(req, metric, legacy_top_level=True)
+    assert response['result_status'] == 'failed'
+    assert response['error_type'] == 'ENGINE_ERROR'
+    assert response['error_message'] == 'invalid frozen BTC.D identity'
+    assert calls == []
 
 
 def test_entry_handwritten_positive_negative_and_btc_range_boundary():
