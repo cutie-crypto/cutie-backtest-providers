@@ -9131,6 +9131,21 @@ def _scale_in_out_rejection(params: dict[str, Any], bt_req: dict[str, Any], mark
     return None
 
 
+def _write_placeholder_report(run_id: str, executed_name: str, note: str) -> str:
+    """PLOT-0 占位 HTML：0 笔或 bt.plot 失败时写，保持 report_url 指向的文件存在。"""
+    import html
+
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_filename = f"{run_id}.html"
+    (REPORTS_DIR / report_filename).write_text(
+        "<!doctype html><meta charset=\"utf-8\">"
+        f"<title>{html.escape(executed_name)}</title><h1>{html.escape(executed_name)}</h1>"
+        f"<p>{html.escape(note)}</p>",
+        encoding="utf-8",
+    )
+    return report_filename
+
+
 def _write_scale_in_out_report(run_id: str, executed_name: str, trades_v2: list[dict[str, Any]]) -> str:
     """极简 HTML 报告（逐批成交表），保持 report_url 契约；不画图。"""
     import html
@@ -10667,7 +10682,17 @@ async def run_backtest(
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         report_filename = f"{run_id}.html"
         report_path = REPORTS_DIR / report_filename
-        bt.plot(filename=str(report_path), open_browser=False)
+        # PLOT-0: 窗口内 0 笔时 backtesting 0.6.5 的 DrawdownDuration 整列 NaN，bt.plot() 在 pandas>=3
+        # 上抛 "Encountered all NA values"，会把本应返回 0 笔的回测变成 ENGINE_ERROR。0 笔不画图，
+        # 其它 plot 失败也只降级成占位报告；report_url 契约（reports/<run_id>.html）保持不变。
+        if _safe_int(stats, "# Trades", 0) == 0:
+            _write_placeholder_report(run_id, executed_name, "no trades executed in this window; chart skipped")
+        else:
+            try:
+                bt.plot(filename=str(report_path), open_browser=False)
+            except Exception as plot_error:
+                logger.warning("bt.plot failed for run %s, degrading to placeholder report: %s", run_id, plot_error)
+                _write_placeholder_report(run_id, executed_name, "chart generation failed; report unavailable")
         _enforce_reports_retention()
 
     except Exception as e:
