@@ -48,6 +48,7 @@ from strategy_position_sizing import (POSITION_SIZE_SCHEMA, POSITION_SIZE_KEYS,
                                       parse_position_sizing, PositionSizingMixin)
 from strategy_range_breakout import RangeConfig, make_strategy, range_assumptions
 from strategy_calendar_schedule import CalendarConfig, make_calendar_strategy, calendar_assumptions, ENTRY_SCHEMA, INTRINSIC_KEYS
+import strategy_token_unlock as token_unlock
 from strategy_event_window import EventWindowConfig, make_event_window_strategy, event_window_assumptions, settle_event_window_exits, SCHEMA as EVENT_WINDOW_SCHEMA
 from strategy_macro_events import MacroConfig, make_macro_strategy, macro_assumptions, macro_report, SCHEMAS as MACRO_SCHEMAS
 from strategy_funding_reversal import (
@@ -59,6 +60,8 @@ from strategy_funding_reversal import (
 import strategy_oi_breakout as oi_breakout
 
 import strategy_etf_flow_follow as etf_flow
+
+import strategy_exchange_netflow as exchange_netflow
 import strategy_top_long_short_reversal as top_lsr
 from strategy_top_long_short_reversal import TopLongShortReversalConfig, make_strategy as make_top_lsr_strategy
 from strategy_liquidation_reversal import (
@@ -6303,6 +6306,20 @@ def _build_event_window(params, *, initial_capital=10000.0):
                 executed_name="Event Window", min_bars=2, event_window_config=config)
 
 
+@_with_time_config
+def _build_token_unlock_event(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS[token_unlock.TOOL_ID]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = token_unlock.UnlockConfig.parse(params)
+    risk = _parse_fixed_risk_params(params)
+    return dict(strategy=token_unlock.make_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Token Unlock Event", min_bars=2, token_unlock_config=config,
+                template_assumptions={"token_unlock_event": {**token_unlock.ASSUMPTIONS,
+                    "pre_days": config.pre_days, "post_days": config.post_days,
+                    "min_pct_of_supply": canonical_decimal_str(config.minimum)}})
+
+
 def _build_macro_event(params, *, kind, initial_capital=10000.0):
     error = _validate_params_against_schema(params, TOOL_SPECS[f"local.backtesting_py.{kind}"]["param_schema_properties"])
     if error:
@@ -6406,6 +6423,24 @@ def _build_etf_flow(params, *, initial_capital=10000.0):
                 executed_name="ETF Flow Follow", min_bars=2, etf_flow_config=config,
                 template_assumptions={"etf_flow_follow": "现货多头；做空镜像未开放"})
 
+# C52: preaggregated daily exchange netflow, BTC/ETH spot only.
+EXCHANGE_NETFLOW_TOOL_ID = "local.backtesting_py.exchange_netflow"
+EXCHANGE_NETFLOW_SERIES = {"exchange": exchange_netflow.CENTRAL_EXCHANGE,
+                         "metric": exchange_netflow.CENTRAL_METRIC, "interval": "1d"}
+
+
+@_with_time_config
+def _build_exchange_netflow(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS[EXCHANGE_NETFLOW_TOOL_ID]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = exchange_netflow.ExchangeNetflowConfig.parse(params)
+    effective = dict(params, risk_layer_enabled=True, stop_loss_pct=config.values["stop_loss_pct"])
+    risk = _parse_fixed_risk_params(effective, template_initial_stop=True)
+    return dict(strategy=exchange_netflow.make_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="Exchange Netflow", min_bars=3, exchange_netflow_config=config,
+                template_assumptions=config.assumptions)
+
 
 # S4: long-liquidation spike reversal. Spot, long-only; rides the macro engine's single-position/stop plumbing
 # (strategy_liquidation_reversal). Day records are bound from the central 1d series in run_backtest, before OHLCV.
@@ -6489,7 +6524,7 @@ def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     """Whether the template supplies its own frozen stop when the user gives none."""
-    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID, OI_BREAKOUT_TOOL_ID, ETF_FLOW_TOOL_ID)
+    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID, OI_BREAKOUT_TOOL_ID, ETF_FLOW_TOOL_ID, EXCHANGE_NETFLOW_TOOL_ID)
             or tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
@@ -7384,6 +7419,13 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": "Inline UTC event list; enter at the open bars_before bars before each event bar, exit at the close of the bars_after-th held bar (next-open fill) or an earlier risk exit.",
         "strategy_family": "calendar", "is_default": False, "build": _build_event_window,
         "param_schema_properties": dict(EVENT_WINDOW_SCHEMA),
+    },
+    token_unlock.TOOL_ID: {
+        "name": "Local Backtesting.py Token Unlock Event",
+        "description": "Inline public unlock schedules: short pre_days before UTC unlock, reverse to long on unlock, close post_days later; fixed 1x USDT perpetual only.",
+        "strategy_family": "calendar", "is_default": False,
+        "markets": ["futures"], "timeframes": ["1h", "4h", "1d"],
+        "build": _build_token_unlock_event, "param_schema_properties": deepcopy(token_unlock.SCHEMA),
     },
     "local.backtesting_py.opening_range_breakout": {
         "name": "Local Backtesting.py Opening Range Breakout",
@@ -8301,6 +8343,25 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "external_series": ETF_FLOW_SERIES,
         "param_schema_properties": etf_flow.schema(),
     },
+    EXCHANGE_NETFLOW_TOOL_ID: {
+        "name": "Local Spot Exchange Netflow",
+        "description": (
+            "BTC/ETH USDT/USDC/BUSD spot pairs, daily long-only exchange netflow. Reads one central "
+            "AGGREGATED exchange_netflow 1d stream in coin units. Day D becomes readable at D+1 "
+            "00:00 UTC, independent of fetched_at. Consecutive strictly negative daily values buy "
+            "at the next open; strictly positive values exit at the next open. Zero is neither. "
+            "The fixed percentage stop uses the actual fill, triggers on Low and exits at the next "
+            "open. Every calendar day in the required lookback must exist, including weekends; "
+            "the final candle needs no netflow row. 做空镜像未开放"
+        ),
+        "strategy_family": "event_driven",
+        "is_default": False,
+        "build": _build_exchange_netflow,
+        "markets": ["spot"],
+        "timeframes": ["1d"],
+        "external_series": EXCHANGE_NETFLOW_SERIES,
+        "param_schema_properties": dict(exchange_netflow.SCHEMA),
+    },
     # S4：多头爆仓量反转。取中心库 AGGREGATED / liquidation_long / 1d（美元，全市场聚合），只做多现货，1h/4h/1d。
     LIQUIDATION_REVERSAL_TOOL_ID: {
         "name": "Local Spot Long-Liquidation Reversal",
@@ -8501,6 +8562,14 @@ for _event_window_key in ("atr_stop_multiplier", "risk_atr_period"):
     del _event_window_properties[_event_window_key]
 del _event_window_properties, _event_window_key
 
+# C39: fixed-percent stops only; retain shared sizing and clocks, no alternate exits.
+TOOL_SPECS[token_unlock.TOOL_ID]["param_schema_properties"] = {
+    **deepcopy(token_unlock.SCHEMA), **POSITION_SIZE_SCHEMA, **_TIME_PARAM_SCHEMA_PROPERTIES,
+    **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key]
+       for key in ("position_size_pct", "position_size_notional", "risk_layer_enabled", "max_holding_bars")},
+    "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+}
+
 # P1 fear_greed_scale_in publishes only its own keys: the shared time layer and max_holding_bars are
 # not wired/verified for the daily external-series template, so requests carrying them are rejected
 # as unknown keys by the schema check before fetch.
@@ -8547,6 +8616,14 @@ TOOL_SPECS[OI_BREAKOUT_TOOL_ID]["param_schema_properties"] = {
 # C38 consumes its intrinsic stop, sizing and the shared time gate, with no alternate risk exits.
 TOOL_SPECS[ETF_FLOW_TOOL_ID]["param_schema_properties"] = {
     **etf_flow.schema(), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
+    **_TIME_PARAM_SCHEMA_PROPERTIES,
+    **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
+    "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+}
+
+# C52 exposes only its fixed stop, shared sizing and the optional time layer.
+TOOL_SPECS[EXCHANGE_NETFLOW_TOOL_ID]["param_schema_properties"] = {
+    **exchange_netflow.SCHEMA, **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     **_TIME_PARAM_SCHEMA_PROPERTIES,
     **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
     "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
@@ -10375,7 +10452,7 @@ async def run_backtest(
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
-            if (effective_tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID, OI_BREAKOUT_TOOL_ID, ETF_FLOW_TOOL_ID)
+            if (effective_tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID, OI_BREAKOUT_TOOL_ID, ETF_FLOW_TOOL_ID, EXCHANGE_NETFLOW_TOOL_ID)
                     or effective_tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
                 _parse_fixed_risk_params({k: v for k, v in params.items() if k != "take_profit_r"},
                                          template_initial_stop=True)
@@ -10454,6 +10531,10 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "short/both direction requires futures market")
     if tool_spec.get("markets") == ["futures"] and market != "futures":
         return _validation_failure("INVALID_PARAMS", "this template requires futures market")
+    if effective_tool_id == token_unlock.TOOL_ID and timeframe not in tool_spec["timeframes"]:
+        return _validation_failure("TIMEFRAME_UNSUPPORTED", "token_unlock_event requires 1h/4h/1d")
+    if effective_tool_id == token_unlock.TOOL_ID and not re.fullmatch(r"[A-Z0-9]+/?USDT(?::USDT)?", str(symbol).upper()):
+        return _validation_failure("INVALID_PARAMS", "token_unlock_event requires a USDT perpetual symbol")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
     etf_symbol = None
@@ -10467,6 +10548,17 @@ async def run_backtest(
         if not match:
             return _validation_failure("INVALID_PARAMS", "etf_flow_follow requires BTC/ETH USDT/USDC/BUSD spot pairs")
         etf_symbol = match.group(1)
+
+    exchange_netflow_symbol = None
+    if effective_tool_id == EXCHANGE_NETFLOW_TOOL_ID:
+        if market != "spot":
+            return _validation_failure("INVALID_PARAMS", "exchange_netflow requires spot market")
+        if timeframe != "1d":
+            return _validation_failure("TIMEFRAME_UNSUPPORTED", "exchange_netflow supports only 1d")
+        match = re.fullmatch(r"(BTC|ETH)(USDT|USDC|BUSD)", str(symbol).replace("/", "").upper())
+        if not match:
+            return _validation_failure("INVALID_PARAMS", "exchange_netflow requires BTC/ETH USDT/USDC/BUSD spot pairs")
+        exchange_netflow_symbol = match.group(1)
     funding_symbol = None
     top_lsr_symbol = None
     oi_symbol = None
@@ -10616,6 +10708,7 @@ async def run_backtest(
         strategy_class._calendar_timeframe = timeframe
 
     event_window_config = built.get("event_window_config")
+    token_unlock_config = built.get("token_unlock_config")
 
     # --- Fetch OHLCV ---
     source_market = tool_spec.get("ohlcv_market", market)
@@ -10736,6 +10829,13 @@ async def run_backtest(
         if etf_failure is not None:
             return etf_failure
 
+
+    exchange_netflow_config = built.get("exchange_netflow_config")
+    if exchange_netflow_config is not None:
+        failure = _bind_exchange_netflow(run_id, exchange_netflow_config, exchange_netflow_symbol, df)
+        if failure is not None:
+            return failure
+
     top_lsr_config = built.get("top_lsr_config")
     if top_lsr_config is not None:
         top_lsr_failure = _bind_top_lsr(run_id, top_lsr_config, top_lsr_symbol, timeframe, df)
@@ -10848,7 +10948,7 @@ async def run_backtest(
     # its required_bars prefix; off-state (and filter_timeframe) stays empty.
     warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
                   if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
-                 if range_config is not None or calendar_config is not None or event_window_config is not None or macro_config is not None or top_lsr_config is not None or etf_flow_config is not None else
+                 if range_config is not None or calendar_config is not None or event_window_config is not None or token_unlock_config is not None or macro_config is not None or top_lsr_config is not None or etf_flow_config is not None or exchange_netflow_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
@@ -11327,6 +11427,9 @@ async def run_backtest(
 
                 **({"etf_flow_follow": etf_flow_config.report(result_v2["trades"], stats["_strategy"].etf_decisions)}
                    if etf_flow_config is not None else {}),
+
+                **({"exchange_netflow": exchange_netflow_config.report(result_v2["trades"],
+                    stats["_strategy"].netflow_decisions)} if exchange_netflow_config is not None else {}),
                 **({"top_long_short_reversal": stats["_strategy"].top_lsr_report}
                    if hasattr(stats["_strategy"], "top_lsr_report") else {}),
                 **({"top_pattern": stats["_strategy"].top_pattern_report}
@@ -11354,6 +11457,9 @@ async def run_backtest(
                     getattr(stats, "_trades", None), stats["_strategy"].closed_trades)),
             },
         })
+        if token_unlock_config is not None:
+            response_body["raw_report"]["token_unlock_event"] = token_unlock.settle_report(
+                stats["_strategy"], response_body["trades"], response_body["raw_report"].get("isolated_risk"))
         if event_window_config is not None:
             # After result.v2 and isolated_risk are final: every submitted event's outcome (entered /
             # rejected_at_fill, exits) is derived from the settled rows, never from live broker fills.
@@ -11498,6 +11604,39 @@ def _bind_etf_flow(run_id, config, symbol, df):
         return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:central ETF flow history is unavailable",
                                  reason=etf_flow.HISTORY_REASON, details=gap_details)
     config.bind(rows, symbol=symbol, ignored_rows_count=series_stats["ignored_rows_count"])
+    return None
+
+
+def _bind_exchange_netflow(run_id, config, symbol, df):
+    """Fetch first, then bind; transport failures and coverage failures remain distinct."""
+    opens = [int(pd.Timestamp(t).value // 10**9) for t in df.index]
+    if any(t % exchange_netflow.DAY for t in opens) or any(
+            b - a != exchange_netflow.DAY for a, b in zip(opens, opens[1:])):
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:exchange netflow requires a complete daily grid",
+                                 reason="time_data_gap")
+    required = config.required_timestamps(opens)
+    details = {"symbol": symbol, "series_metric": exchange_netflow.CENTRAL_METRIC,
+               "required_first_date": _utc_date(required[0]), "required_last_date": _utc_date(required[-1])}
+    series_stats = {}
+    try:
+        rows = _fetch_metric_series(symbol=symbol, **EXCHANGE_NETFLOW_SERIES,
+                                    start_at=required[0], end_at=required[-1] + exchange_netflow.DAY,
+                                    path="$.external_series.exchange_netflow", raise_on_transport_error=True,
+                                    required_timestamps=required, series_stats=series_stats)
+    except StrategyContractError as exc:
+        if exc.code != ERR_COVERAGE_INCOMPLETE:
+            raise
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:exchange netflow series is incomplete",
+                                 reason=exchange_netflow.GAP_REASON, details=details)
+    except Exception as exc:
+        logger.warning("exchange netflow fetch failed symbol=%s: %s", symbol, exc)
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:central exchange netflow history is unavailable",
+                                 reason=exchange_netflow.HISTORY_REASON, details=details)
+    try:
+        config.bind(rows, symbol=symbol, required=required, ignored_rows_count=series_stats["ignored_rows_count"])
+    except exchange_netflow.NetflowCoverageError:
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:exchange netflow series is incomplete",
+                                 reason=exchange_netflow.GAP_REASON, details=details)
     return None
 
 

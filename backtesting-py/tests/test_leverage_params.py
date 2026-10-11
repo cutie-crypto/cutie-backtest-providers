@@ -29,6 +29,13 @@ def request(params, market='spot', name='ema_cross'):
 @pytest.mark.parametrize('name', MIXINS)
 def test_schema_only_runtime_single_position_mixins(name):
     props = provider.TOOL_SPECS['local.backtesting_py.' + name]['param_schema_properties']
+    if name == 'token_unlock_event':  # C39 +1: fixed 1x, both default and explicit 1 covered in time baseline.
+        assert props['leverage'] == dict(type='integer', default=1, enum=[1])
+        built = provider.TOOL_SPECS['local.backtesting_py.' + name]['build']({**required_params(name), 'leverage': 1})
+        assert built['strategy']._risk.get('leverage', 1) == 1
+        with pytest.raises(ValueError, match='INVALID_PARAMS:leverage'):
+            provider.TOOL_SPECS['local.backtesting_py.' + name]['build']({**required_params(name), 'leverage': 20})
+        return
     assert props['leverage'] == dict(type='integer', default=1, minimum=1, maximum=20)
     for value in (1, 20):
         cls = provider.TOOL_SPECS['local.backtesting_py.' + name]['build']({**required_params(name), 'leverage': value})['strategy']

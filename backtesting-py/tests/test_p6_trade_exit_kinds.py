@@ -35,6 +35,8 @@ import test_s4_liquidation_reversal as liq
 import test_oi_breakout_49 as oi49
 
 import test_etf_flow_follow_38 as etf38
+
+import test_exchange_netflow_52 as nf52
 import test_short_pat4_candles as short_candles
 
 PREFIX = 'local.backtesting_py.'
@@ -97,7 +99,14 @@ GENERIC_LEDGER = {
     'dca': dict(amount=100, profit_target_pct=5),
     'rsi_scale_in_out': dict(buy_notional=200, sell_notional=200),
 }
+def unlock_run(mp, tmp):
+    from test_token_unlock_event_39 import post
+    return post(mp, tmp)
+
+
 SPECIAL = {
+    'token_unlock_event': unlock_run,  # C39 +1: required inline events / exact UTC windows.
+
     **{name: via(c2d) for name in c2d.NAMES},
     **{name: via(c2c) for name in ('morning_star', 'three_white_soldiers', 'bullish_doji_reversal')},
     'double_top': via(c2b),
@@ -111,6 +120,8 @@ SPECIAL = {
     'top_long_short_reversal': lambda mp, tmp: lsr.run_daily(mp, tmp, {1: '0.65', 3: '1.10', 4: '0.50', 5: '1.80'}),
     'liquidation_reversal': lambda mp, tmp: liq.run(mp, tmp, dict(liq.SPIKE), rows=liq.ROWS)[0],
     'etf_flow_follow': lambda mp, tmp: etf38.run(mp, tmp, values={'2026-03-06': 400000000})[0],
+
+    'exchange_netflow': lambda mp, tmp: nf52.run(mp, tmp)[0],
     'fear_greed_scale_in': fear_greed_run,
     # The scale-in/out templates refuse to run without at least one warmup candle.
     **{name: generic(params, warmup=100) for name, params in GENERIC_LEDGER.items()},

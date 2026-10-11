@@ -586,7 +586,7 @@ def test_catalog_short_only_and_tool_count(name):
     assert catalog['markets']==['futures']
     assert catalog['param_schema']['properties']['direction']['enum']==['short']
     # 集成 D：做空一基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空二 +2 → 53；SHORT-PAT-3 缠论三卖 +1 → 54
-    assert len(p.TOOL_SPECS)== 70  # pin8: baseline 67 + OI49 + ETF38 + C48
+    assert len(p.TOOL_SPECS)== 72  # pin9: main 70 + C39 +1 + C52 +1
 
 
 @pytest.mark.parametrize('name',NAMES)
