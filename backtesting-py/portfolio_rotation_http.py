@@ -83,10 +83,10 @@ def rotation_response(body, request, run_id, api, *, tool_spec=None, parser=None
 
     def execute():
         if validate_series is not None:
-            validate_series(body.get('metric_series'), config.start, config.end - 86400)
+            validate_series(request.get('metric_series'), config.start, config.end - 86400)
         streams = fetch_rotation(config, fetcher, deadline=deadline)
         output, decisions, assumptions = runner(config, streams, request,
-                                                      metric_series=body.get('metric_series'), deadline=deadline)
+                                                      metric_series=request.get('metric_series'), deadline=deadline)
         return streams, output, decisions, assumptions
 
     future = _EXECUTOR.submit(execute)

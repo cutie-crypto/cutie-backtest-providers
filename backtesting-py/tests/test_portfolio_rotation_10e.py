@@ -242,9 +242,9 @@ def test_fetch_concurrency_shared_four_and_btc_deduplicated():
 
 
 def http(req, metric_series=None):
-    body = {'backtest': req}
+    body = {'schema': 'cutie.backtest_request.v1', 'backtest': dict(req), 'provider': {}}
     if metric_series is not None:
-        body['metric_series'] = metric_series
+        body['backtest']['metric_series'] = metric_series
     class Request:
         async def json(self):
             return body
