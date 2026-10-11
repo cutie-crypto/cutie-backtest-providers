@@ -104,7 +104,7 @@ _LEG_KEYS_V3 = {"leg_id", "symbol", "side", "weight"}
 _LEG_IDS_V3 = ("a", "b")
 _LEG_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
 _BASKET_KEY_MAX_LEN = 30
-_TIMEFRAMES_V3 = {"1h", "4h", "1d"}
+_TIMEFRAMES_V3 = {"15m", "1h", "4h", "1d", "1w"}
 _DERIVED_FEATURE_KEYS_V3 = {
     "key",
     "kind",
@@ -2387,7 +2387,7 @@ def _validate_spec_v3(
     if not _one_of(market["timeframe"], _TIMEFRAMES_V3):
         _raise(
             "$.strategy_spec.market.timeframe",
-            "must be 1h, 4h or 1d",
+            "must be 15m, 1h, 4h, 1d or 1w",
             actual=market["timeframe"],
         )
     legs, basket_key = _validate_legs_v3(market["legs"])
