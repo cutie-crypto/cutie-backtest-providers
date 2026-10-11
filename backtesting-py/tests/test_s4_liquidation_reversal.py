@@ -317,6 +317,18 @@ def test_percentile_mode_fetches_the_lookback_and_never_reads_day_after_the_last
     assert series['last_date'] == lr.utc_date(T0 + 12 * DAY)
 
 
+def test_integral_float_lookback_days_runs_like_the_integer(monkeypatch, tmp_path):
+    # schema accepts lookback_days=30.0 (integer check is is_integer()); bind must not hand range() a float
+    expected, expected_calls = run(monkeypatch, tmp_path, dict(SPIKE), dict(lookback_days=30), rows=ROWS)
+    body, calls = run(monkeypatch, tmp_path, dict(SPIKE), dict(lookback_days=30.0), rows=ROWS)
+    assert body['result_status'] == 'success'
+    assert calls[0]['start_at'] == expected_calls[0]['start_at'] == T0 + DAY - 30 * DAY
+    a = body['assumptions'][KIND]
+    assert a['lookback_days'] == 30 and type(a['lookback_days']) is int
+    assert a['entry_thresholds'] == expected['assumptions'][KIND]['entry_thresholds']
+    assert body['trades'] == expected['trades']
+
+
 def test_fixed_threshold_is_rejected_in_percentile_mode(monkeypatch, tmp_path):
     ohlcv = []
     calls = install(monkeypatch, tmp_path, store_for({}), candles('1d', {}), ohlcv_calls=ohlcv)
