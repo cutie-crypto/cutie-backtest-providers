@@ -142,7 +142,7 @@ def test_short_close_equal_slow_does_not_exit():
 
 
 @pytest.mark.parametrize("risk_params,signal_close", [
-    ({"stop_loss_pct": 5}, 116.0), ({"take_profit_pct": 5}, 90.0),
+    ({"stop_loss_pct": 5, "risk_layer_enabled": False}, 116.0), ({"take_profit_pct": 5}, 90.0),
 ])
 def test_short_fixed_risk_exits_before_trend_exit(risk_params, signal_close):
     closes = [192.0] * 29 + [96.0, 96.0, signal_close, signal_close]

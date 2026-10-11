@@ -369,6 +369,7 @@ def risk_feature_frame(feature):
     return data
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('pricing,reason,exit_price', [
     # 4dc4ee8 expected stop_loss 104.76 here: it passed the close-only user stop to arbitration, which
     # conflicts with the mixin legacy rule (close-only stop => liquidation first). Unified by P-LIQ1 1010.
@@ -393,6 +394,7 @@ def test_explicit_frozen_stop_liquidation_arbitration(monkeypatch, tmp_path, pri
     assert float(body['trades'][0]['exit_price']) == exit_price
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('fill_bar,reason,exit_price,liquidations', [
     # Signal close108, 5% stop102.6, fill109/L10 => liquidation98.1. Low98 crosses L intrabar while
     # the close105 stays above the close-only user stop => liquidation at 98.1 (P-LIQ1 1010).

@@ -64,6 +64,7 @@ def post(monkeypatch, tmp_path, params, data, prefix, requested=None):
 
 # ---- off-state: byte-identical to c72c4a1 ----
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('case', sorted(off.cases()))
 @pytest.mark.parametrize('explicit_defaults', [False, True])
 def test_off_state_byte_identical_to_main(case, explicit_defaults, monkeypatch):
@@ -213,6 +214,7 @@ def judged(prefix, data, bar, period=10):
 
 # ---- off-state ----
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('case', sorted(off2.cases()))
 @pytest.mark.parametrize('explicit_defaults', [False, True])
 def test_7p3b2_off_state_byte_identical_to_main(case, explicit_defaults, monkeypatch):

@@ -28,6 +28,7 @@ def signed_qty(trade):
     return Decimal(trade['qty']) * (-1 if trade['side'] == 'short' else 1)
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name,label', [(n, v) for n in c.GOLDEN_VARIANTS for v in c.GOLDEN_VARIANTS[n]])
 def test_omitted_sizing_keys_match_1f5b8dc_bytes(name, label, monkeypatch, tmp_path):
     golden = (c.GOLDEN_DIR / f'{name}.{label}.json').read_text()

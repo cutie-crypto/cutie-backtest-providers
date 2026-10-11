@@ -190,7 +190,7 @@ def test_fractional_period_rejected(key):
         provider._build_stoch_oversold_cross({key:CONTRACT[key][1]+.5})
 
 
-@pytest.mark.parametrize("risk,price", [({"stop_loss_pct":.02},98.0),({"take_profit_pct":.03},103.0)])
+@pytest.mark.parametrize("risk,price", [({"stop_loss_pct":.02,"risk_layer_enabled":False},98.0),({"take_profit_pct":.03,"risk_layer_enabled":False},103.0)])
 def test_fixed_risk_mixin_exits_without_a_signal(monkeypatch,risk,price):
     count = 40
     monkeypatch.setattr(provider, "_stoch_arrays", lambda *args: dict(

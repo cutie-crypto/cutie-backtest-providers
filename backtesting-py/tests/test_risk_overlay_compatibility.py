@@ -142,6 +142,7 @@ def fingerprint(name, risk_case, warm, disabled=False):
                 result_v2_sha256=hashlib.sha256(canonical_json(v2).encode()).hexdigest())
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', PARAMS)
 @pytest.mark.parametrize('risk_case', RISK_CASES)
 @pytest.mark.parametrize('warm', [False, True])
@@ -159,6 +160,7 @@ def test_compatibility_covers_baseline_templates_among_runtime_mixins():
     assert set(PARAMS) == fixture_names()
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', PARAMS)
 @pytest.mark.parametrize('risk_case', RISK_CASES)
 @pytest.mark.parametrize('warm', [False, True])

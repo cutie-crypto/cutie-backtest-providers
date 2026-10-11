@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import backtesting.backtesting as bb
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _pliq1_cases as q
@@ -40,6 +41,7 @@ def f6_case(monkeypatch, tmp_path, crash):
     return body, closes, trade, q.bar_of(data, trade['closed_at']), k
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 def test_f6_intrabar_liquidation_precedes_close_only_stop(monkeypatch, tmp_path):
     # opus55 review run: E 93, L 83.7, stop 89.24, Low 83.6, Close 90.
     body, closes, trade, closed_bar, k = f6_case(monkeypatch, tmp_path, [93.0, 93.2, 83.6, 90.0])
@@ -65,6 +67,7 @@ def f5_case(monkeypatch, tmp_path, fill_bar):
     return body, closes, first, int(data.index.get_loc(f5.pd.Timestamp(first['closed_at'], unit='s')))
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 def test_f5_intrabar_liquidation_precedes_close_only_stop(monkeypatch, tmp_path):
     body, closes, first, closed_bar = f5_case(monkeypatch, tmp_path, [94, 95, 84, 93])
     assert first['entry_price'] == '94'

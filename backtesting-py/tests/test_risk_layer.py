@@ -114,7 +114,7 @@ def test_wick_only_touch_exits_next_open_not_at_stop_or_take(side, kind):
     assert trade.EntryBar == 2 and trade.ExitBar == 4
     assert trade.ExitPrice == 103  # deliberately different from either protective price
     assert result['_strategy'].reasons[-1] == kind
-    legacy = manual_run(rows, dict(stop_loss_pct=5, take_profit_pct=10), side)
+    legacy = manual_run(rows, dict(risk_layer_enabled=False, stop_loss_pct=5, take_profit_pct=10), side)
     assert legacy['_trades'].iloc[0].ExitBar == 5
 
 

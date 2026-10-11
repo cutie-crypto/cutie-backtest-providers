@@ -122,7 +122,7 @@ def test_two_parameter_changes_produce_different_real_engine_trade_counts():
 
 
 @pytest.mark.parametrize("risk_params,signal_close", [
-    ({"stop_loss_pct": 5}, 180.0), ({"take_profit_pct": 5}, 204.0),
+    ({"stop_loss_pct": 5, "risk_layer_enabled": False}, 180.0), ({"take_profit_pct": 5}, 204.0),
 ])
 def test_fixed_risk_exits_before_trend_exit(risk_params, signal_close):
     closes = [96.0] * 29 + [192.0, 192.0, signal_close, signal_close]

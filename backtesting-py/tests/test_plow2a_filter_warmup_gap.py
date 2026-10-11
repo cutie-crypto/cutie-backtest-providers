@@ -62,6 +62,7 @@ def test_filter_on_gapped_warmup_fails_insufficient(tool, monkeypatch, tmp_path)
                                    'first_gap_segment': 'warmup'}
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('tool', TOOLS)
 def test_filter_on_contiguous_warmup_byte_identical_to_base(tool, monkeypatch, tmp_path):
     monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
@@ -69,6 +70,7 @@ def test_filter_on_contiguous_warmup_byte_identical_to_base(tool, monkeypatch, t
     assert cap.snapshot(monkeypatch, tmp_path, *case) == GOLDEN['cases']['on/' + tool]
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('tool', TOOLS)
 def test_filter_off_gapped_warmup_byte_identical_to_base(tool, monkeypatch, tmp_path):
     monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence

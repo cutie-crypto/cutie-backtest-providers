@@ -222,6 +222,7 @@ def test_monthly_and_signal_execution_rejected_before_fetch(client):
     rejected(client, 'ema_cross', params('ema'), signal_execution={})
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('case', CASES)
 @pytest.mark.parametrize('warm', [False, True])
 @pytest.mark.parametrize('explicit', [False, True])
@@ -256,6 +257,7 @@ def test_runtime_schema_and_baseline_cover_every_single_direction():
         assert issubclass(p.TOOL_SPECS['local.backtesting_py.'+name]['build']({})['strategy'], p._FilterLayerMixin)
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', compat.PARAMS)
 @pytest.mark.parametrize('risk_case', compat.RISK_CASES)
 @pytest.mark.parametrize('warm', [False, True])
