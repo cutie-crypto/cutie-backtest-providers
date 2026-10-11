@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import cutie_backtesting_provider as p  # noqa: E402
 import test_risk_overlay_compatibility as compat  # noqa: E402
+from _exit_kinds_strip import without_exit_kinds
 
 BASELINE_SHA = 'b48e65e'
 PLOW1_TOOLS = {'opening_range_breakout', 'asia_range_breakout', 'calendar_schedule'}
@@ -98,6 +99,7 @@ def cases():
 
 def snapshot(monkeypatch, tmp_path, tool, params, kind):
     body, _ = post(monkeypatch, tmp_path, tool, params, kind)
+    body = without_exit_kinds(body)
     body.pop('report_path', None)
     return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 

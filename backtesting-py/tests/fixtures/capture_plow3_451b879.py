@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import capture_plow2a_b48e65e as cap  # noqa: E402
 import cutie_backtesting_provider as p  # noqa: E402
 import test_risk_overlay_compatibility as compat  # noqa: E402
+from _exit_kinds_strip import without_exit_kinds
 
 BASELINE_SHA = '451b879'
 GAP_AT = 180  # main-range bar removed for the one-bar gap
@@ -59,6 +60,7 @@ def post(monkeypatch, tmp_path, tool, params, data, warm, source=None, fetch_err
 
 
 def dump(body):
+    body = without_exit_kinds(body)
     body.pop('report_path', None)
     return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 

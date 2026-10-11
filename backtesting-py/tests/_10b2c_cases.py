@@ -12,6 +12,7 @@ import cutie_backtesting_provider as p
 import test_9t1_engulf_pin as engulf_pin
 import test_9t2_patterns as candles
 import test_9t3_patterns as bottoms
+from _exit_kinds_strip import without_exit_kinds
 
 GOLDEN_DIR = Path(__file__).resolve().parent / 'golden_10b2c'
 CANDLE = ('bullish_engulfing', 'hammer_pin_bar', 'morning_star', 'three_white_soldiers',
@@ -58,4 +59,4 @@ def post(monkeypatch, tmp_path, name, params=None, data=None, capital='10000', f
 
 
 def canonical(body):
-    return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return json.dumps(without_exit_kinds(body), sort_keys=True, separators=(',', ':'), ensure_ascii=False)

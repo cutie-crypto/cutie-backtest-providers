@@ -15,6 +15,7 @@ import cutie_backtesting_provider as p
 from strategy_chan import ChanRecognizer
 from strategy_time_layer import TimeContext
 from test_time_layer import DEFAULTS as TIME_OFF
+from _exit_kinds_strip import without_exit_kinds
 
 TOOL = 'local.backtesting_py.chan_3sell'
 # Hand count (High=c+1, Low=c-1, Low14=93, Low15=92), no inclusion before bar15:
@@ -348,6 +349,7 @@ def test_branch_head_isolated_off_golden(warm,explicit,monkeypatch):
     fixture = json.loads((Path(__file__).parent/'fixtures/shortpat3_isolated_off.json').read_text())
     body = http_response({'leverage':1,**TIME_OFF} if explicit else {},warm=warm)
     assert body['trades']
+    body = without_exit_kinds(body)
     assert 'isolated_risk' not in body['raw_report']
     assert 'isolated_margin' not in body['assumptions']
     v2 = {key:body[key] for key in ('schema_version','metrics','trades','equity_curve','data_manifest')}
@@ -359,7 +361,7 @@ def test_branch_head_isolated_off_golden(warm,explicit,monkeypatch):
 
 def test_catalog_count_and_default_params():
     # main c72c4a1 has 53 tools; SHORT-PAT-3 adds chan_3sell => 54.
-    assert len(p.TOOL_SPECS) == 65  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1
+    assert len(p.TOOL_SPECS) == 67  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1, S3 +1, S4 +1
     spec = p.TOOL_SPECS[TOOL]
     assert spec['markets'] == ['futures']
     props = spec['param_schema_properties']

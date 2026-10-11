@@ -75,6 +75,7 @@ EVENT0 = {'event_window'}
 LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0}
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', compat.PARAMS)
 @pytest.mark.parametrize('risk_case', compat.RISK_CASES)
 @pytest.mark.parametrize('warm', [False, True])
@@ -91,6 +92,7 @@ def test_ledger_unchanged(name):
     assert capture.ledger_fingerprint(name) == BASELINE['ledger'][name]
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', LEGACY_MIXINS)
 @pytest.mark.parametrize('warm', [False, True])
 def test_disabled_response_and_start_unchanged(monkeypatch, name, warm):

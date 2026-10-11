@@ -14,6 +14,7 @@ import test_f2_calendar as f2
 import test_f3_us_open as f3
 import test_f4_cme_gap as f4
 import test_f6_streak_rsi as f6
+from _exit_kinds_strip import without_exit_kinds
 
 GOLDEN_DIR = Path(__file__).resolve().parent / 'golden_10b2d'
 NAMES = ('opening_range_breakout', 'asia_range_breakout', 'calendar_schedule', 'red_streak_rsi',
@@ -74,4 +75,4 @@ def post(monkeypatch, tmp_path, name, params=None, data=None, side='long', capit
 
 
 def canonical(body):
-    return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return json.dumps(without_exit_kinds(body), sort_keys=True, separators=(',', ':'), ensure_ascii=False)

@@ -14,6 +14,7 @@ import cutie_backtesting_provider as p
 from strategy_divergence import divergence_signals, macd_values
 from strategy_time_layer import TimeConfig, TimeContext
 from test_time_layer import DEFAULTS as TIME_OFF
+from _exit_kinds_strip import without_exit_kinds
 
 NAMES = ('macd_bearish_divergence', 'rsi_bearish_divergence')
 
@@ -431,6 +432,7 @@ def test_branch_head_isolated_off_golden(name,warm,explicit):
     params={'leverage':1,**TIME_OFF} if explicit else {}
     body=http_response(name,params,warm=warm)
     assert body['trades']
+    body = without_exit_kinds(body)
     assert 'isolated_risk' not in body['raw_report']
     assert 'isolated_margin' not in body['assumptions']
     v2={key:body[key] for key in ('schema_version','metrics','trades','equity_curve','data_manifest')}
@@ -442,7 +444,7 @@ def test_branch_head_isolated_off_golden(name,warm,explicit):
 
 def test_catalog_count_and_default_params():
     # 集成 D：做空二基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空一 +2 → 53；SHORT-PAT-3 缠论三卖 +1 → 54
-    assert len(p.TOOL_SPECS)==65  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1
+    assert len(p.TOOL_SPECS)==67  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1, S3 +1, S4 +1
     for name in NAMES:
         assert p.TOOL_SPECS['local.backtesting_py.'+name]['markets']==['futures']
         props=p.TOOL_SPECS['local.backtesting_py.'+name]['param_schema_properties']

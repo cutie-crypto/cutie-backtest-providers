@@ -30,6 +30,7 @@ import _10b2d_cases as range_cases  # noqa: E402
 import capture_plow2a_b48e65e as cap  # noqa: E402
 import cutie_backtesting_provider as p  # noqa: E402
 import test_short_pat4_candles as short_pat4  # noqa: E402
+from _exit_kinds_strip import without_exit_kinds
 
 BASELINE_SHA = '5ddd8eb'
 TRADED = {**{name: cases_a for name in ('fibonacci_retracement', 'macd_bullish_divergence', 'rsi_bullish_divergence',
@@ -70,6 +71,7 @@ def snapshot(monkeypatch, tmp_path, tool, params, state):
         body = body[0] if TRADED[tool] is short_pat4 else body
     else:
         body, _ = cap.post(monkeypatch, tmp_path, tool, params, state)
+    body = without_exit_kinds(body)
     body.pop('report_path', None)
     return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 

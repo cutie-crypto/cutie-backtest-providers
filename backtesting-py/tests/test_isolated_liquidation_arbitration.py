@@ -17,6 +17,7 @@ from canonical_json import canonical_json
 from strategy_time_layer import TimeConfig, TimeContext
 from test_isolated_liquidation_settlement import server_recompute
 from test_leverage_params import request
+from _exit_kinds_strip import without_exit_kinds
 
 START, STEP = 1800000000, 3600
 WAVEB_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_waveb_e698d26_6b85dbf_9f8a6b0.json').read_text())
@@ -160,6 +161,7 @@ def test_same_bar_signal_exit_and_liquidation(side):
     expect_liquidation(dict(risk_layer_enabled=True),side=side,signal=True)
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('side',SIDES)
 def test_same_bar_legacy_close_stop(side):
     bar=[100,131,69,85] if side=='long' else [100,131,69,115]
@@ -269,6 +271,7 @@ def baseline_provider():
 
 
 # New calendar / short-pattern tools did not exist at frozen e25886e; their L=1 proof is in their route suite.
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name',[name for name in compat.enumerate_mixin_cases() if name not in ('us_open_momentum', 'cme_weekend_gap', 'macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell',
                                   'bearish_engulfing', 'shooting_star', 'evening_star',
                                   'three_black_crows', 'bearish_doji_reversal',
@@ -279,7 +282,11 @@ def baseline_provider():
                                   # Q18 postdates the frozen baseline; explicit L=1 bytes live in its route suite.
                                   'macro_release_breakout', 'macro_surprise_direction', 'fomc_reversal',
                                   # P2 postdates the frozen baseline; L=1 off state is pinned in test_p2_funding_settlement_reversal.py.
-                                  'funding_settlement_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
+                                  'funding_settlement_reversal',
+                                  # S3 postdates the frozen baseline; its route suite is test_s3_top_long_short_reversal.py.
+                                  'top_long_short_reversal',
+                                  # S4 is spot-only (futures is rejected); its route suite is test_s4_liquidation_reversal.py.
+                                  'liquidation_reversal')])  # SHORT-PAT-4: futures-only, see test_short_pat4_candles
 @pytest.mark.parametrize('market,extra',[('futures',{}),('futures',{'leverage':1}),('spot',{})],
                          ids=['default','leverage_one','spot'])
 def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,name,market,extra):
@@ -308,7 +315,7 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         req['backtest'].update(start_at=int(data.index[0].timestamp()),end_at=int(data.index[-1].timestamp())+STEP)
         out=TestClient(module.app).post('/cutie/backtest',json=req).json()
         assert out['result_status']=='success',out
-        return out
+        return without_exit_kinds(out)
     result=invoke(p)
     if name == 'ema_cross':
         # Validate the added S4b disclosure separately, then keep the exact

@@ -20,6 +20,7 @@ from canonical_json import canonical_json
 from strategy_top_patterns import top_signals
 from test_9t1_engulf_pin import run
 from test_time_layer import DEFAULTS
+from _exit_kinds_strip import without_exit_kinds
 
 NAMES = ('double_top', 'head_shoulders')
 V2_KEYS = ('schema_version', 'trades', 'equity_curve', 'metrics', 'data_manifest')
@@ -420,6 +421,7 @@ def off_response(name,params,warm):
 
 
 def fingerprint(body):
+    body=without_exit_kinds(body)
     digest=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
     return dict(trade_count=len(body['trades']),warmup_bars=body['assumptions']['indicator_warmup_bars'],
         assumptions_sha256=digest(body['assumptions']),raw_report_sha256=digest(body['raw_report']),
@@ -584,7 +586,7 @@ def test_catalog_short_only_and_tool_count(name):
     assert catalog['markets']==['futures']
     assert catalog['param_schema']['properties']['direction']['enum']==['short']
     # 集成 D：做空一基于 main 32ae030（48 个）+2 = 50；同批合入 10-E 轮动 +1、做空二 +2 → 53；SHORT-PAT-3 缠论三卖 +1 → 54
-    assert len(p.TOOL_SPECS)==65  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1
+    assert len(p.TOOL_SPECS)==67  # SHORT-PAT-4 +3, SHORT-PAT-5 +2, P-EVENT0 +1, Q18 +3, P1 +1, P2 +1, S3 +1, S4 +1
 
 
 @pytest.mark.parametrize('name',NAMES)

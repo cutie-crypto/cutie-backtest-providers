@@ -11,6 +11,7 @@ import cutie_backtesting_provider as p
 import test_9t4_divergence as div
 import test_9t5_fibonacci as fib
 import test_f5_vwap_reversion as vwap
+from _exit_kinds_strip import without_exit_kinds
 
 GOLDEN_DIR = Path(__file__).resolve().parent / 'golden_10b2a'
 
@@ -65,4 +66,4 @@ def post(monkeypatch, tmp_path, name, params=None, data=None, capital='10000', f
 
 
 def canonical(body):
-    return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return json.dumps(without_exit_kinds(body), sort_keys=True, separators=(',', ':'), ensure_ascii=False)

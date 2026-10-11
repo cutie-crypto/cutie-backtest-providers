@@ -45,7 +45,8 @@ def test_defaults_schema_and_request_isolation():
     second = p.TOOL_SPECS[TOOL]['build'](SCHEDULE)
     assert first['strategy'] is not second['strategy']
     assert first['strategy']._time_config is None
-    assert first['strategy']._risk == {'stop_loss_pct': .03}
+    # Q42-C: the template's default 3% stop reaches the parser as stop_loss_pct, so the unified layer is on.
+    assert first['strategy']._risk == {'risk_layer_enabled': True, 'stop_loss_pct': .03}
     assert first['calendar_config'].at == ''
     schema = p.TOOL_SPECS[TOOL]['param_schema_properties']
     assert [schema[k]['default'] for k in ('time_entry_at', 'time_entry_weekday', 'time_entry_monthday')] == ['', -1, 0]

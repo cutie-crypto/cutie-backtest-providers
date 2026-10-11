@@ -11,6 +11,7 @@ from backtesting import Backtest
 import test_patconf2b1_patterns as b1
 import test_patconf2b2_more as b2
 import test_event0_event_window as event
+from _exit_kinds_strip import without_exit_kinds
 
 p = b1.p
 PATTERNS = ('double_bottom', 'inverse_head_shoulders', 'double_top', 'head_shoulders')
@@ -199,11 +200,13 @@ def off_digest(monkeypatch, tmp_path, name, explicit_false=False, gap=False):
             opening = data.Close.iloc[s] * 1.05
         b1.set_bar(data, s + 1, opening, opening + .1, opening - .1, opening)
     body = api.post(monkeypatch, tmp_path, name, params, data)
+    body = without_exit_kinds(body)
     body.pop('report_path', None)  # Only machine-local artifact path is excluded.
     return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False,
                                     separators=(',', ':')).encode()).hexdigest()
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', OFF_NAMES)
 @pytest.mark.parametrize('explicit_false', [False, True])
 def test_off_response_bytes_match_pin3(name, explicit_false, monkeypatch, tmp_path):
@@ -211,6 +214,7 @@ def test_off_response_bytes_match_pin3(name, explicit_false, monkeypatch, tmp_pa
     assert off_digest(monkeypatch, tmp_path, name, explicit_false) == expected[name]
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', [*PATTERNS, 'red_streak_rsi', 'vwap_reversion'])
 def test_off_gap_response_bytes_match_pin3(name, monkeypatch, tmp_path):
     expected = json.loads(OFF_GOLDEN.read_text())
