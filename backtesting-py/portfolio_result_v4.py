@@ -10,6 +10,7 @@ from typing import Mapping, Sequence
 from canonical_json import canonical_json_sha256
 from portfolio_ledger import decimal_text, decimal_value, reconcile_snapshots, timestamp
 
+BTC_DOMINANCE_3D_MAX_GAP_DAYS = 7
 SCHEMA = "cutie.backtest_result.v4"
 PRICE_KEYS = {"source", "symbol", "market", "timeframe", "start_at", "end_at", "kline_count", "checksum_algo", "checksum"}
 
@@ -49,11 +50,11 @@ def _coinglass_reference(series, start, end):
         if decimal_text(value) != raw or value > 100:
             raise ValueError("invalid BTC.D value")
         if point["ts"] % 86400 or point["available_at"] < point["ts"] or (
-            i and not 0 < point["ts"] - points[i-1]["ts"] <= 7 * 86400
+            i and not 0 < point["ts"] - points[i-1]["ts"] <= BTC_DOMINANCE_3D_MAX_GAP_DAYS * 86400
         ):
             raise ValueError("invalid BTC.D point timeline")
-    # Server v4 still requires the reference to cover its snapshot interval.
-    if points[0]["ts"] > start - 20 * 86400 or points[-1]["ts"] != end:
+    # Sparse 3d tail may precede the final snapshot by up to the shared maximum gap; never follow it.
+    if points[0]["ts"] > start - 20 * 86400 or not end - BTC_DOMINANCE_3D_MAX_GAP_DAYS * 86400 <= points[-1]["ts"] <= end:
         raise ValueError("BTC.D needs 20 warmup days plus interval")
     expected = canonical_json_sha256({k: v for k, v in series.items() if k != "hash"})
     if series["hash"] != expected:

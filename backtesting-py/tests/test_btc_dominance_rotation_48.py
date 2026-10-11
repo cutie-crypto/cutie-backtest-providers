@@ -257,3 +257,20 @@ def test_http_routes_to_dominance_runner_and_v4_manifest(monkeypatch):
     assert sorted(calls) == ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
     assert response['raw_report']['decisions'][0]['value_ts'] == T0
     assert set(response['fills'][0]) == {'seq', 'ts', 'symbol', 'side', 'qty', 'price', 'fee', 'slippage'}
+
+
+@pytest.mark.parametrize('tail_days,accepted', [(1, True), (7, True), (8, False), (-1, False)])
+def test_coinglass_sparse_tail_coverage_boundary(tail_days, accepted):
+    # Shift every real point, preserving valid spacing/count/hash: only the tail boundary changes.
+    metric = series()
+    for point in metric['points']:
+        point['ts'] -= tail_days*DAY
+        point['available_at'] -= tail_days*DAY
+    rehash(metric)
+    if not accepted:
+        with pytest.raises(ValueError, match='warmup days plus interval'):
+            replay(metric=metric)
+        return
+    output, _, _ = replay(metric=metric)
+    assert output.result['input_manifests']['metric_series']['end_at'] == T0+(12-tail_days)*DAY
+    assert output.result['snapshots'][-1]['ts'] == T0+12*DAY
