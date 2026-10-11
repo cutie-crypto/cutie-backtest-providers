@@ -8228,6 +8228,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "Futures-only 15m template on Binance USD-M funding rates (8h settlements: 00/08/16 UTC). "
             "lead_minutes before each settlement it enters AGAINST the sign of the previous period's "
             "rate, read as the close of the central 1h funding bar ending at the previous settlement "
+            "(the hour immediately before it), "
             "(rate >= +threshold shorts, <= -threshold longs), holds hold_minutes or until "
             "stop_loss_pct, one trade per settlement. The period's own rate is never read (it is only "
             "fixed at settlement); the live predicted rate can differ. A missing funding period fails "

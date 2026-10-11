@@ -370,6 +370,7 @@ def test_catalog_description_names_the_pre_settlement_1h_close(monkeypatch):
     description = tools[TOOL]['description']
     assert 'settled rate' not in description and 'settled funding rates' not in description
     assert '1h funding bar ending at the previous settlement' in description
+    assert 'the hour immediately before it' in description
 
 def test_catalog_entry(monkeypatch):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
