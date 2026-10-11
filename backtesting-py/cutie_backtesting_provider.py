@@ -123,6 +123,9 @@ from portfolio_rotation_http import (
     TOOL_ID as ROTATION_TOOL_ID, RUNNER as ROTATION_RUNNER, TOOL_SPEC as ROTATION_TOOL_SPEC,
     rotation_catalog, rotation_response,
 )
+from portfolio_btc_dominance_rotation import (
+    TOOL_ID as BTC_DOMINANCE_TOOL_ID, TOOL_SPEC as BTC_DOMINANCE_TOOL_SPEC, dominance_response,
+)
 from scale_in_out_ledger import (
     LedgerBar,
     LedgerInvariantError,
@@ -8426,6 +8429,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 }
 
 TOOL_SPECS[ROTATION_TOOL_ID] = ROTATION_TOOL_SPEC
+TOOL_SPECS[BTC_DOMINANCE_TOOL_ID] = BTC_DOMINANCE_TOOL_SPEC
 
 # A6 二层：固定止损/止盈/仓位对全部 13 个内置模板统一生效，直接合并进每个工具的
 # param_schema_properties（而不是逐个手写 13 遍），新工具接入 TOOL_SPECS 时自动带上。
@@ -8559,6 +8563,7 @@ POSITION_SIZING_UNWIRED_TOOLS = frozenset({
     "local.backtesting_py.dca", "local.backtesting_py.turtle",
     "local.backtesting_py.basket_ratio_sma_cross", "local.backtesting_py.basket_ratio_roc",
     "local.backtesting_py.basket_ratio_zscore",
+    BTC_DOMINANCE_TOOL_ID,
     ROTATION_TOOL_ID,  # 10-E 轮动：v4 组合账本自管仓位，不消费定仓键（集成 D 登记）
     FEAR_GREED_TOOL_ID,  # P1 恐贪分批：每份金额由 buy_notional 定
 })
@@ -8577,6 +8582,7 @@ RUNNER_SIZING_ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "local.backtesting_py.basket_ratio_roc": frozenset(),
     "local.backtesting_py.basket_ratio_zscore": frozenset(),
     "local.backtesting_py.portfolio_rotation": frozenset(),
+    BTC_DOMINANCE_TOOL_ID: frozenset(),
     "local.backtesting_py.fear_greed_scale_in": frozenset(),
 }  # 字面量逐个登记：新增不接定仓的 runner 忘了登记，下面的 import 期检查报红
 
@@ -8604,6 +8610,7 @@ _RUNNER_SIZING_HINTS = {
     "local.backtesting_py.basket_ratio_sma_cross": "margin per leg is set by margin_per_leg",
     "local.backtesting_py.basket_ratio_roc": "margin per leg is set by margin_per_leg",
     "local.backtesting_py.basket_ratio_zscore": "margin per leg is set by margin_per_leg",
+    BTC_DOMINANCE_TOOL_ID: "it buys an equal-weight frozen basket and has no single-position sizing",
     ROTATION_TOOL_ID: "it rebalances to equal 1/K weights of net value and has no single-position sizing",
     FEAR_GREED_TOOL_ID: "per-lot amount is set by buy_notional and the lot count by max_lots",
 }
@@ -10293,12 +10300,13 @@ async def run_backtest(
     if tool_id and tool_id not in TOOL_SPECS:
         return _validation_failure("TOOL_NOT_FOUND", f"Unknown provider_tool_id: {tool_id}")
     effective_tool_id = tool_id or DEFAULT_TOOL_ID
-    if effective_tool_id == ROTATION_TOOL_ID:
+    if effective_tool_id in (ROTATION_TOOL_ID, BTC_DOMINANCE_TOOL_ID):
         # 集成 D：轮动是不接定仓的 runner，带定仓键与其它不接 runner 同形状在取数前拒（下方定仓检查走不到这里）
         _rotation_sizing_message = _unwired_sizing_rejected_message(effective_tool_id, params)
         if _rotation_sizing_message:
             return _position_sizing_failure(_rotation_sizing_message)
-        return rotation_response(body, bt_req, run_id, sys.modules[__name__])
+        response_fn = dominance_response if effective_tool_id == BTC_DOMINANCE_TOOL_ID else rotation_response
+        return response_fn(body, bt_req, run_id, sys.modules[__name__])
 
     # --- Validate symbol ---
     if not symbol:

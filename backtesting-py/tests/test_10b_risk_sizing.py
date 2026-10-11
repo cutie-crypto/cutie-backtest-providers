@@ -146,6 +146,7 @@ UNWIRED_OWN_PARAMS = {
     'basket_ratio_sma_cross': ('margin_per_leg',), 'basket_ratio_roc': ('margin_per_leg',),
     'basket_ratio_zscore': ('margin_per_leg',), 'portfolio_rotation': ('1/K',),
     'fear_greed_scale_in': ('buy_notional', 'max_lots'),  # P1
+    'btc_dominance_rotation': ('equal-weight',),  # C48: basket weights, no single-position sizing
 }
 
 
