@@ -125,6 +125,7 @@ from scale_in_out_ledger import (
     LedgerInvariantError,
     result_v2_equity_curve as _scale_in_out_curve_v2,
     result_v2_trades as _scale_in_out_trades_v2,
+    result_v2_trade_exit_kinds as _scale_in_out_trade_exit_kinds,
     round_cash,
     run_scale_in_out,
     threshold_signal,
@@ -3719,7 +3720,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
                 if below == "stop_loss" and not reset_pending:
                     reset_pending = True
                     if holdings > 0:
-                        return "sell_all"
+                        return ("sell_all", "stop_loss")  # P6: the full sell is the grid's stop.
                 return "hold"
             if reset_pending and 0 <= lv <= n:
                 ref_level = lv
@@ -5182,7 +5183,7 @@ def _build_dca(params: dict[str, Any], *, initial_capital: float = 10000.0) -> d
             close = bars[index].close
             with localcontext(exact):
                 if round_qty and close * round_qty >= round_notional * profit_factor:
-                    return "sell_all"
+                    return ("sell_all", "take_profit")  # P6: the round's profit target.
                 if round_qty and dip_adds_this_round < max_adds and close <= last_buy_price * dip_factor:
                     dip_adds_this_round += 1  # A skipped buy still consumes this attempt.
                     pending_amount, pending_dip = dip_amount, True
@@ -9402,6 +9403,8 @@ def _run_scale_in_out_backtest(
                     "auth_mode": _central_market_data_auth_mode(),
                     "cache_hit": bool(df.attrs.get("cutie_market_data_cache_hit", False)),
                 },
+                **_trade_exit_kinds_report(result_v2["trades"], _scale_in_out_trade_exit_kinds(
+                    ledger.trades, ledger.trade_exit_kinds)),
             },
         })
         return _bounded_template_response(run_id, response_body)

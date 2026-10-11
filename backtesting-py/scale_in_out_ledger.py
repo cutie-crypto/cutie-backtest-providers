@@ -84,6 +84,9 @@ SELL = "sell"
 HOLD = "hold"
 SELL_LOT = "sell_lot"
 SELL_ALL = "sell_all"
+# P6: a signal may return (SELL_ALL, kind) to name a full sell that is not a plain signal exit
+# (grid below-range stop, DCA round profit target).
+SELL_ALL_EXIT_KINDS = frozenset({"stop_loss", "take_profit"})
 _SIGNALS = frozenset({BUY, SELL, HOLD, SELL_ALL})
 FIFO = "fifo"
 LIFO = "lifo"
@@ -207,6 +210,8 @@ class LedgerResult:
     total_invested: Decimal
     max_unrealized_loss: Decimal
     time_expiry_fills: int = 0
+    # P6: exit kind per entry of ``trades`` (same order): signal_exit / stop_loss / time_exit / end_of_data.
+    trade_exit_kinds: tuple[str, ...] = ()
 
 
 def threshold_signal(values: Sequence[float], *, buy_below: float, sell_above: float) -> SignalFn:
@@ -274,6 +279,9 @@ class ScaleInOutLedger:
         self.buys_this_bar = 0
         self.sells_this_bar = 0
         self.last_sold_opened_at: Optional[int] = None
+        # P6: the caller names why the next sells happen; each closed portion records it.
+        self.exit_kind = "signal_exit"
+        self.trade_exit_kinds: list[str] = []
 
     # -- 估值 --------------------------------------------------------------
     @_exact
@@ -408,6 +416,7 @@ class ScaleInOutLedger:
             "slippage": slippage,
             "pnl": pnl,
         })
+        self.trade_exit_kinds.append(self.exit_kind)
 
     # -- 不变量（全部精确相等） ------------------------------------------------
     @_exact
@@ -435,7 +444,7 @@ def _parse_signal(index: int, raw: Any) -> tuple[str, Optional[Decimal]]:
     if isinstance(raw, tuple):
         if raw == (SELL_LOT,):
             return SELL_LOT, None
-        if raw == (SELL_ALL,):
+        if raw == (SELL_ALL,) or (len(raw) == 2 and raw[0] == SELL_ALL and raw[1] in SELL_ALL_EXIT_KINDS):
             return SELL_ALL, None
         if (
             len(raw) == 2 and raw[0] == BUY and isinstance(raw[1], Decimal)
@@ -480,6 +489,7 @@ def run_scale_in_out(
     last = len(bars) - 1
     round_entry_bar = None
     pending_reason = None
+    pending_exit_kind = "signal_exit"
     time_expiry_fills = 0
     reason_aware = False
     if time_context is not None and on_fill is not None:
@@ -501,6 +511,7 @@ def run_scale_in_out(
         filled = False
         action, notional = pending
         was_empty = not ledger.lots
+        ledger.exit_kind = "time_exit" if pending_reason == "time_expiry" else pending_exit_kind
         if action == BUY:
             filled = ledger.buy(bar.open_time, bar.open, notional=notional)
         elif action == SELL:
@@ -545,6 +556,7 @@ def run_scale_in_out(
             points[bar.close_time] = ledger.equity_by_cash(bar.close)
         if index < last and bars[index + 1].open_time < end_at:
             pending_reason = None
+            pending_exit_kind = "signal_exit"
             fact = None
             if time_context is not None and round_entry_bar is not None:
                 fact = expiry_due(
@@ -557,7 +569,10 @@ def run_scale_in_out(
                 if fact.flatten_delay_bars is not None:
                     time_context.flatten_delays.append(fact.flatten_delay_bars)
             else:
-                pending = _parse_signal(index, signal(index))
+                raw = signal(index)
+                pending = _parse_signal(index, raw)
+                if isinstance(raw, tuple) and len(raw) == 2 and raw[0] == SELL_ALL:
+                    pending_exit_kind = raw[1]
                 if time_context is not None and pending[0] == BUY:
                     bar_open = datetime.fromtimestamp(bar.open_time, timezone.utc)
                     if (bar_open >= time_context.last_open_utc or
@@ -568,6 +583,7 @@ def run_scale_in_out(
             pending = (HOLD, None)  # D5：最后一根（及成交会落在 end_at 上的那根）不判新信号
 
     if ledger.lots and bars:
+        ledger.exit_kind = "end_of_data"
         ledger.sell(end_at, bars[-1].close, sell_all=True)
         fill_ts.add(end_at)
         points[end_at] = ledger.cash
@@ -590,7 +606,16 @@ def run_scale_in_out(
         total_invested=ledger.total_invested,
         max_unrealized_loss=min([Decimal(0), *(snap.unrealized_pnl for snap in snapshots)]),
         time_expiry_fills=time_expiry_fills,
+        trade_exit_kinds=tuple(ledger.trade_exit_kinds),
     )
+
+
+def result_v2_trade_exit_kinds(trades: Sequence[dict[str, Any]], kinds: Sequence[str]) -> list[str]:
+    """P6: kinds reordered exactly like result_v2_trades (stable closed_at, opened_at sort)."""
+    if len(kinds) != len(trades):
+        return [f"unresolved:{len(kinds)}_kinds_for_{len(trades)}_trades"] * len(trades)
+    order = sorted(range(len(trades)), key=lambda i: (trades[i]["closed_at"], trades[i]["opened_at"]))
+    return [kinds[i] for i in order]
 
 
 @_exact
