@@ -370,7 +370,7 @@ def test_catalog_entry(monkeypatch):
     assert not {'events', 'max_holding_bars', 'time_layer_enabled', 'time_calendar', 'atr_stop_multiplier',
                 'take_profit_pct'} & set(props)
     assert 'required' not in tool['param_schema']
-    assert len(tools) == 65
+    assert len(tools) == 66  # + S3 top_long_short_reversal
 
 
 def test_window_without_settlement_point_fetches_nothing(monkeypatch, tmp_path):
