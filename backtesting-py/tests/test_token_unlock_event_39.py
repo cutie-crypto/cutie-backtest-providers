@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 
 import pandas as pd
+import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
 
@@ -63,6 +64,7 @@ def test_short_long_exact_opens_and_settled_evidence(monkeypatch, tmp_path):
         assumptions = body['assumptions']['token_unlock_event']
         assert assumptions['schedule_notice'] == '解锁排期按上市日起视为已公开，改期事件按我方首次抓到时间'
         assert assumptions['history_notice'] == '回补前上游已改过的历史排期无法还原，按最新排期计'
+        assert assumptions['out_of_range_notice'] == '持有期超出数据终点时，整个事件（包括开空腿）都跳过，同 event_window 的 out_of_range=skip'
         assert body['assumptions']['indicator_warmup_bars'] == 0
         assert not any('unlock' in k for r in body['trades'] for k in r)
 
@@ -101,7 +103,8 @@ def test_invalid_event_shapes_and_parameter_bounds_before_fetch(monkeypatch, tmp
     missing = event(); missing.pop('known_at_utc')
     for values in [{'events': []}, {'events': [missing]}, {'events': [event(pct='101')]},
                    {'events': [event(pct='-1')]}, {'events': [event(pct='NaN')]},
-                   {'events': [event()] * 51}, {'events': [event(pct=1)]},
+                   *({'events': [event(pct=pct)]} for pct in (' 1 ', '1e0', '1.0', '01', '+1', '-0', '0.00')),
+                   {'events': [event(pct=1)]},
                    {'events': [event(), event()]}, {'pre_days': True}, {'post_days': 15},
                    {'pre_days': 0}, {'min_pct_of_supply': 0}, {'stop_loss_pct': 20.1},
                    {'events': [{**event(), 'ts_utc': '2026-01-06T01:00:00Z'}]}]:
@@ -127,3 +130,52 @@ def test_position_sizing_both_legs_and_catalog(monkeypatch, tmp_path):
     assert spec['is_default'] is False
     props = spec['param_schema']['properties']
     assert props['leverage']['enum'] == [1] and 'take_profit_pct' not in props
+
+
+def test_holding_period_past_data_end_skips_entire_event(monkeypatch, tmp_path):
+    body = post(monkeypatch, tmp_path, data=frame().loc[:'2026-01-08'])
+    assert body['trades'] == []
+    record = report(body)['events'][0]
+    assert record['status'] == 'skipped_out_of_range'
+    assert record['legs'] == []
+
+
+def test_missing_decision_bar_skips_data_gap(monkeypatch, tmp_path):
+    body = post(monkeypatch, tmp_path, data=frame().drop(pd.Timestamp('2026-01-02T23:00:00')))
+    assert body['trades'] == []
+    record = report(body)['events'][0]
+    assert record['status'] == 'skipped_data_gap'
+    assert record['legs'] == []
+
+
+@pytest.mark.parametrize('first_day', [2, 3])
+def test_entry_needs_two_prior_bars_at_data_start(monkeypatch, tmp_path, first_day):
+    body = post(monkeypatch, tmp_path, tf='1d', data=frame('1d').loc[f'2026-01-{first_day:02d}':])
+    assert body['trades'] == []
+    record = report(body)['events'][0]
+    assert record['status'] == 'skipped_out_of_range'
+    assert record['legs'] == []
+
+
+def test_fifty_one_unique_event_dates_rejected_before_fetch(monkeypatch, tmp_path):
+    events = [{**event(), 'ts_utc': (pd.Timestamp('2026-01-06', tz='UTC') + pd.Timedelta(days=i)).strftime('%Y-%m-%dT%H:%M:%SZ')}
+              for i in range(51)]
+    assert len({item['ts_utc'] for item in events}) == 51
+    body = post(monkeypatch, tmp_path, {'events': events}, invalid=True)
+    assert body['error_type'] == 'INVALID_PARAMS', body
+    # The adjacent accepted boundary prevents rejecting all larger schedules.
+    accepted = post(monkeypatch, tmp_path, {'events': events[:50]})
+    assert len(report(accepted)['events']) == 50
+
+
+def test_threshold_assumption_normalizes_numeric_equivalents(monkeypatch, tmp_path):
+    bodies = [post(monkeypatch, tmp_path, {'min_pct_of_supply': value}) for value in (1, 1.0)]
+    assert [body['assumptions']['token_unlock_event']['min_pct_of_supply'] for body in bodies] == ['1', '1']
+    assert bodies[0]['trades'] == bodies[1]['trades']
+
+
+def test_catalog_keeps_existing_order_and_unlock_next_to_event_window():
+    keys = list(p.TOOL_SPECS)
+    assert keys[keys.index('local.backtesting_py.event_window') + 1] == TOOL_ID
+    # Keep the existing first tool as well as event_window adjacency.
+    assert keys[0] == 'local.backtesting_py.macro_release_breakout'

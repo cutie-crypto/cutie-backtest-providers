@@ -6293,7 +6293,7 @@ def _build_token_unlock_event(params, *, initial_capital=10000.0):
                 executed_name="Token Unlock Event", min_bars=2, token_unlock_config=config,
                 template_assumptions={"token_unlock_event": {**token_unlock.ASSUMPTIONS,
                     "pre_days": config.pre_days, "post_days": config.post_days,
-                    "min_pct_of_supply": str(config.minimum)}})
+                    "min_pct_of_supply": canonical_decimal_str(config.minimum)}})
 
 
 def _build_macro_event(params, *, kind, initial_capital=10000.0):
@@ -7309,13 +7309,6 @@ def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
 
 
 TOOL_SPECS: dict[str, dict[str, Any]] = {
-    token_unlock.TOOL_ID: {
-        "name": "Local Backtesting.py Token Unlock Event",
-        "description": "Inline public unlock schedules: short pre_days before UTC unlock, reverse to long on unlock, close post_days later; fixed 1x USDT perpetual only.",
-        "strategy_family": "calendar", "is_default": False,
-        "markets": ["futures"], "timeframes": ["1h", "4h", "1d"],
-        "build": _build_token_unlock_event, "param_schema_properties": deepcopy(token_unlock.SCHEMA),
-    },
     **{f"local.backtesting_py.{kind}": {
         "name": f"Local Backtesting.py {kind.replace('_', ' ').title()}",
         "description": "Inline UTC macro events; one trade per event; intrinsic stop and timed next-open exits; zero warmup."
@@ -7344,6 +7337,13 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": "Inline UTC event list; enter at the open bars_before bars before each event bar, exit at the close of the bars_after-th held bar (next-open fill) or an earlier risk exit.",
         "strategy_family": "calendar", "is_default": False, "build": _build_event_window,
         "param_schema_properties": dict(EVENT_WINDOW_SCHEMA),
+    },
+    token_unlock.TOOL_ID: {
+        "name": "Local Backtesting.py Token Unlock Event",
+        "description": "Inline public unlock schedules: short pre_days before UTC unlock, reverse to long on unlock, close post_days later; fixed 1x USDT perpetual only.",
+        "strategy_family": "calendar", "is_default": False,
+        "markets": ["futures"], "timeframes": ["1h", "4h", "1d"],
+        "build": _build_token_unlock_event, "param_schema_properties": deepcopy(token_unlock.SCHEMA),
     },
     "local.backtesting_py.opening_range_breakout": {
         "name": "Local Backtesting.py Opening Range Breakout",

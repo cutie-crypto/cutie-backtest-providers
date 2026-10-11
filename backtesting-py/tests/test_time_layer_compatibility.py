@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import importlib.util
 import json
+import copy
 from pathlib import Path
 import sys
 
@@ -409,7 +410,13 @@ def test_c39_disabled_time_bytes_and_midnight_entry_gate(monkeypatch, tmp_path):
     expected = json.loads((Path(__file__).parent / 'fixtures/token_unlock_39_time_off.json').read_text())
     assert len(absent['trades']) == 2
     for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
-        assert capture.digest(absent[key]) == capture.digest(explicit[key]) == expected[key], key
+        assert capture.digest(absent[key]) == capture.digest(explicit[key]), key
+        baseline_value = absent[key]
+        if key == 'assumptions':
+            # C39R authorizes one added notice; preserve every pre-existing baseline byte.
+            baseline_value = copy.deepcopy(baseline_value)
+            baseline_value['token_unlock_event'].pop('out_of_range_notice')
+        assert capture.digest(baseline_value) == expected[key], key
     assert 'time_layer' not in explicit['assumptions']
     for risk_enabled in (False, True):
         gated = post(monkeypatch, tmp_path, dict(time_layer_enabled=True,

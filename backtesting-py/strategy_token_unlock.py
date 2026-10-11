@@ -2,16 +2,20 @@
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
+import re
 
 from backtesting import Strategy
+from canonical_json import canonical_decimal_str
 from strategy_event_window import _parse_ts, settle_event_window_exits
 from strategy_time_layer import utc_datetime
 
 TOOL_ID = 'local.backtesting_py.token_unlock_event'
+_DECIMAL_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$")
 ASSUMPTIONS = {
     'data_source': 'inline_params_only',
     'schedule_notice': '解锁排期按上市日起视为已公开，改期事件按我方首次抓到时间',
     'history_notice': '回补前上游已改过的历史排期无法还原，按最新排期计',
+    'out_of_range_notice': '持有期超出数据终点时，整个事件（包括开空腿）都跳过，同 event_window 的 out_of_range=skip',
     'fill': 'previous_close_order_next_open; UTC_midnight; leverage_1',
     'overlap': 'skip_later_event_for_entire_planned_window',
     'known_at': 'known_at_utc <= short_entry_open; otherwise_skip_entire_event_without_delay',
@@ -53,12 +57,17 @@ class UnlockConfig:
             ts, known = _parse_ts(item['ts_utc']), _parse_ts(item['known_at_utc'])
             if ts.hour or ts.minute or ts.second or ts.microsecond or ts in seen:
                 raise ValueError('INVALID_PARAMS:unlock dates must be unique UTC midnights')
+            raw_pct = item['pct_of_supply']
+            if _DECIMAL_RE.fullmatch(raw_pct) is None:
+                raise ValueError('INVALID_PARAMS:pct_of_supply must be a canonical decimal string')
             try:
-                pct = Decimal(item['pct_of_supply'])
+                pct = Decimal(raw_pct)
             except InvalidOperation:
                 raise ValueError('INVALID_PARAMS:pct_of_supply must be a decimal string')
             if not pct.is_finite() or not Decimal(0) <= pct <= Decimal(100):
                 raise ValueError('INVALID_PARAMS:pct_of_supply must be within 0-100')
+            if canonical_decimal_str(pct) != raw_pct:
+                raise ValueError('INVALID_PARAMS:pct_of_supply must be a canonical decimal string')
             seen.add(ts)
             parsed.append((ts, known, pct))
         return cls(tuple(sorted(parsed)), int(params.get('pre_days', 3)),

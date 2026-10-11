@@ -51,7 +51,7 @@ def test_catalog_declares_max_bars_so_callers_can_derive_a_range_limit():
     artifact_tool = provider._artifact_catalog_tool(symbols, None)
     assert artifact_tool["execution"]["max_bars"] == provider.CATALOG_MAX_BARS_CENTRAL
 
-    tool_id, spec = next((tool, spec) for tool, spec in provider.TOOL_SPECS.items() if "timeframes" not in spec)
+    tool_id, spec = next(iter(provider.TOOL_SPECS.items()))
     exchange_tool = provider._catalog_tool(tool_id, spec, symbols)
     assert exchange_tool["execution"]["max_bars"] == provider.CATALOG_MAX_BARS_EXCHANGE
 
@@ -65,6 +65,6 @@ def test_catalog_tools_use_the_shared_constants():
     artifact_tool = provider._artifact_catalog_tool(symbols, None)
     assert artifact_tool["timeframes"] == list(provider.CATALOG_TIMEFRAMES_CENTRAL)
 
-    tool_id, spec = next((tool, spec) for tool, spec in provider.TOOL_SPECS.items() if "timeframes" not in spec)
+    tool_id, spec = next(iter(provider.TOOL_SPECS.items()))
     exchange_tool = provider._catalog_tool(tool_id, spec, symbols)
     assert exchange_tool["timeframes"] == list(provider.CATALOG_TIMEFRAMES_EXCHANGE)
