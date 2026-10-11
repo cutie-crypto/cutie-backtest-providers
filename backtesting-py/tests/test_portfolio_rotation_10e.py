@@ -363,6 +363,7 @@ def test_catalog_existing_entries_byte_identical():
         'local.backtesting_py.funding_settlement_reversal',  # P2
         'local.backtesting_py.top_long_short_reversal',  # S3
         'local.backtesting_py.liquidation_reversal',  # S4
+        'local.backtesting_py.exchange_netflow',  # C52 +1
     }
     entry = api._catalog_tool(TOOL_ID, api.TOOL_SPECS[TOOL_ID], symbols)
     assert entry['markets'] == ['spot']

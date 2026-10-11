@@ -61,6 +61,10 @@ BASELINE['single'].update(SHORTPAT3_BASELINE['single'])
 EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
 assert set(EMA_WARMUP_BASELINE['single']) == {'ema_cross'}
 BASELINE['single'].update(EMA_WARMUP_BASELINE['single'])
+EXNF52_BASELINE = json.loads((Path(__file__).parent / 'fixtures/exchange_netflow_52_time_off.json').read_text())
+assert BASELINE['single'].keys().isdisjoint(EXNF52_BASELINE['single'])
+BASELINE['single'].update(EXNF52_BASELINE['single'])
+EXNF52 = {'exchange_netflow'}
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -72,7 +76,7 @@ SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
 # P-EVENT0: event_window postdates every baseline above; its off state is pinned by
 # tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
 EVENT0 = {'event_window'}
-LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0}
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | EXNF52}
 
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')
@@ -210,7 +214,20 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         # Entries at 07:00 (inside 06:00-10:00) exit 12 bars later at 19:00 (outside); the 03:00 one is gated.
         params['events'] = [dict(ts_utc=f'2026-01-0{day}T{hour}:00:00Z', label=f'gate-{day}')
                             for day, hour in ((2, '07'), (3, '07'), (4, '03'), (5, '07'))]
-    cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
+    if name in EXNF52:
+        from test_exchange_netflow_52 import frame, T0, DAY
+        # Entry at Monday day7; inflow exit at Tuesday day8 is outside the Monday gate.
+        data = frame(n=11)
+        params = dict(outflow_days=1, inflow_exit_days=1, time_layer_enabled=True, time_weekdays=1)
+        tf = '1d'
+        built = provider.TOOL_SPECS['local.backtesting_py.exchange_netflow']['build'](params)
+        config = built['exchange_netflow_config']
+        required = config.required_timestamps([int(t.timestamp()) for t in data.index])
+        config.bind([dict(ts=t, value=1 if t == T0 + 7 * DAY else -1) for t in required],
+                    symbol='BTC', required=required)
+        cls = built['strategy']
+    else:
+        cls = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)['strategy']
     ctx = TimeContext.build(cls._time_config, tf, data.index)
     cls._time_context = ctx
     trades = Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades']
@@ -399,3 +416,23 @@ def test_f6_disabled_time_bytes_unchanged(warm):
     for key in (*capture.V2_KEYS, "assumptions", "raw_report"):
         assert capture.digest(omitted[key]) == capture.digest(disabled[key])
     assert "time_layer" not in disabled["assumptions"]
+
+
+@pytest.mark.parametrize('explicit_leverage', [False, True])
+def test_c52_disabled_time_frozen_bytes(monkeypatch, tmp_path, explicit_leverage):
+    from test_exchange_netflow_52 import run
+    params = {'leverage': 1} if explicit_leverage else {}
+    absent, _ = run(monkeypatch, tmp_path, params=params)
+    def forbidden(*a, **kw):
+        pytest.fail('disabled C52 time layer must not construct TimeContext')
+    monkeypatch.setattr(TimeContext, 'build', forbidden)
+    disabled, _ = run(monkeypatch, tmp_path, params={**params, **DEFAULTS})
+    assert absent['result_status'] == disabled['result_status'] == 'success'
+    assert absent['trades']
+    expected = EXNF52_BASELINE['single']['exchange_netflow']
+    assert provider.TOOL_SPECS['local.backtesting_py.exchange_netflow']['build'](params)['min_bars'] == expected['min_bars']
+    for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
+        assert capture.digest(absent[key]) == capture.digest(disabled[key]) == expected[key + '_sha256'], key
+    assert 'time_layer' not in disabled['assumptions']
+    assert 'time_layer' not in disabled['raw_report']
+    assert EXNF52 <= set(MIXINS)

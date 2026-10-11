@@ -1,0 +1,14 @@
+{
+  "single": {
+    "exchange_netflow": {
+      "min_bars": 3,
+      "schema_version_sha256": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "trades_sha256": "8ef84b6fb6f4f2b04e84057cbcb993a723370553c1434699dc18e0b7b102b199",
+      "equity_curve_sha256": "45c5864e8933ca0c364330f08e00f1d0a4d523c8a2d3421907e42482bf56b469",
+      "metrics_sha256": "db25ee5b2d156fedcd36d5ee6419d448685ff7b70bfe3c866177300d027a652c",
+      "data_manifest_sha256": "be89d5cd6ffb86e6ad564204fd561715913a78a78c1930467ae704ef170b8286",
+      "assumptions_sha256": "874dbc6ce658aa424312f3f4cbbd5b5cb484bcbe889a5b7e8ab236802b23bfbb",
+      "raw_report_sha256": "fe2feee7970c6954aaedec791a0a9efc70f0cce157ec5ba0809227c1d4191492"
+    }
+  }
+}
