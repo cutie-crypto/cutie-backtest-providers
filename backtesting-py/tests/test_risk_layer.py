@@ -58,6 +58,8 @@ def test_new_keys_merged_into_runtime_mixins_and_excluded_from_other_runners():
                 supported = tool_id.endswith('macro_release_breakout') and key == 'take_profit_r'
             if tool_id in (p.FUNDING_REVERSAL_TOOL_ID, p.TOP_LSR_TOOL_ID, p.LIQUIDATION_REVERSAL_TOOL_ID, p.OI_BREAKOUT_TOOL_ID, p.ETF_FLOW_TOOL_ID):
                 supported = False  # P2/S3/S4/OI49: intrinsic stops, none of the new risk keys
+            if tool_id == 'local.backtesting_py.token_unlock_event':  # C39 +1: fixed percent only
+                supported = key == 'risk_layer_enabled'
             assert (key in spec['param_schema_properties']) == supported
 
 

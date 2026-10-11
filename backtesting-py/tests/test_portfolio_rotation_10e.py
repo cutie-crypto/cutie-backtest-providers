@@ -363,6 +363,7 @@ def test_catalog_existing_entries_byte_identical():
         'local.backtesting_py.fear_greed_scale_in',  # P1
         'local.backtesting_py.funding_settlement_reversal',  # P2
         'local.backtesting_py.top_long_short_reversal',  # S3
+        'local.backtesting_py.token_unlock_event',  # C39 +1
         'local.backtesting_py.liquidation_reversal',  # S4
         'local.backtesting_py.oi_breakout',  # OI49 +1
 
