@@ -519,7 +519,13 @@ def test_c52_disabled_time_frozen_bytes(monkeypatch, tmp_path, explicit_leverage
     expected = EXNF52_BASELINE['single']['exchange_netflow']
     assert provider.TOOL_SPECS['local.backtesting_py.exchange_netflow']['build'](params)['min_bars'] == expected['min_bars']
     for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
-        assert capture.digest(absent[key]) == capture.digest(disabled[key]) == expected[key + '_sha256'], key
+        assert capture.digest(absent[key]) == capture.digest(disabled[key]), key
+        baseline_value = absent[key]
+        if key == 'assumptions':
+            # C52R authorizes one signal notice; preserve every pre-existing baseline byte.
+            baseline_value = copy.deepcopy(baseline_value)
+            baseline_value['exchange_netflow'].pop('decisions_notice')
+        assert capture.digest(baseline_value) == expected[key + '_sha256'], key
     assert 'time_layer' not in disabled['assumptions']
     assert 'time_layer' not in disabled['raw_report']
     assert EXNF52 <= set(MIXINS)

@@ -27,6 +27,7 @@ class ExchangeNetflowConfig:
             "balance_snapshots": "余额快照为上游日终值、按日期 +1 天可读；缺所当日不计入合计",
             "exchange": CENTRAL_EXCHANGE, "metric": CENTRAL_METRIC, "interval": "1d", "unit": "coin",
             "decision_time": "bar_close", "fill": "next_bar_open", "direction": "long",
+            "decisions_notice": "decisions 记录的是信号，成交时被定仓拒的不产生交易",
             **values,
         }}
 

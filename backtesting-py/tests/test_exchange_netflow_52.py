@@ -80,6 +80,7 @@ def test_entry_exit_catalog_and_frozen_result(monkeypatch, tmp_path):
         assert calls[0]['start_at'] == T0 - DAY  # day1 first decision needs days -1,0,1
         assert calls[0]['end_at'] == T0 + 7 * DAY - 1  # last decision day6, no day7
         assert body['assumptions']['exchange_netflow']['balance_snapshots'] == '余额快照为上游日终值、按日期 +1 天可读；缺所当日不计入合计'
+        assert body['assumptions']['exchange_netflow']['decisions_notice'] == 'decisions 记录的是信号，成交时被定仓拒的不产生交易'
     spec = p.TOOL_SPECS[TOOL]
     assert spec['markets'] == ['spot'] and spec['timeframes'] == ['1d'] and not spec['is_default']
     assert spec['description'].endswith('做空镜像未开放')
