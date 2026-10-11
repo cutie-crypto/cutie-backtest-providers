@@ -75,6 +75,7 @@ def run_spied(monkeypatch, tmp_path, name, scenario, sizing):
     return body, data, k, calls, closes
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('sizing', q.SIZINGS)
 @pytest.mark.parametrize('scenario', q.SCENARIOS)
 @pytest.mark.parametrize('name', q.LONG)
@@ -99,6 +100,7 @@ def test_scenario_matrix_follows_t2_2b(monkeypatch, tmp_path, name, scenario, si
     assert sorted({call['bar'] for call in calls}) == [k - 1, k]
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', q.LONG)
 def test_insolvency_bridge_passes_frozen_stop(monkeypatch, tmp_path, name):
     body, data, k, calls, closes = run_spied(monkeypatch, tmp_path, name, 'A2', 'full')
@@ -118,6 +120,7 @@ def test_control_group_bytes_match_fac1d60(monkeypatch, tmp_path, key):
     assert q.control_snapshot(monkeypatch, tmp_path, *q.control_cases()[key]) == GOLDEN['cases']['control/' + key]
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('key', sorted(q.lev1_cases()))
 def test_without_leverage_bytes_match_fac1d60(monkeypatch, tmp_path, key):
     assert q.lev1_snapshot(monkeypatch, tmp_path, *q.lev1_cases()[key]) == GOLDEN['cases']['lev1/' + key]

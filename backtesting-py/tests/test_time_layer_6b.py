@@ -202,7 +202,7 @@ def test_same_bar_priority_and_signal_suppression(risk, side, mode, expected):
 
 def test_time_only_retains_close_price_stop_semantics():
     rows = [FLAT]*2 + [[100,121,89,100], FLAT, FLAT, FLAT]
-    result = run(dict(stop_loss_pct=10, take_profit_pct=10, max_holding_bars=2), rows=rows)
+    result = run(dict(risk_layer_enabled=False, stop_loss_pct=10, take_profit_pct=10, max_holding_bars=2), rows=rows)
     assert result['_strategy'].snapshots[0] == (2, False, None)
     assert result['_strategy'].snapshots[-1] == (3, True, 'time_expiry')
 
@@ -233,6 +233,8 @@ def test_every_registered_single_template_consumes_holding_bars(name):
         params['flatten_at'] = '23:00'  # 1h test grid
     if name == 'calendar_schedule':
         params.update(time_entry_at='02:00', time_max_holding_minutes=60*24, calendar_stop_enabled=False)
+    if name in ('red_streak_rsi', 'vwap_reversion'):
+        params['risk_layer_enabled'] = False  # their default stops would turn the layer on (Q42-C); this test is time-only
     if name.endswith('_short'):
         params['direction'] = 'short'
     if name.endswith('_bullish_divergence'):

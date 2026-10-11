@@ -206,6 +206,7 @@ def off_digest(monkeypatch, tmp_path, name, explicit_false=False, gap=False):
                                     separators=(',', ':')).encode()).hexdigest()
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', OFF_NAMES)
 @pytest.mark.parametrize('explicit_false', [False, True])
 def test_off_response_bytes_match_pin3(name, explicit_false, monkeypatch, tmp_path):
@@ -213,6 +214,7 @@ def test_off_response_bytes_match_pin3(name, explicit_false, monkeypatch, tmp_pa
     assert off_digest(monkeypatch, tmp_path, name, explicit_false) == expected[name]
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', [*PATTERNS, 'red_streak_rsi', 'vwap_reversion'])
 def test_off_gap_response_bytes_match_pin3(name, monkeypatch, tmp_path):
     expected = json.loads(OFF_GOLDEN.read_text())

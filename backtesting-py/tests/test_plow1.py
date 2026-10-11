@@ -293,6 +293,7 @@ def test_f12_bar8_event_passes_with_contiguous_prefix(monkeypatch, tmp_path):
 GOLDEN2 = json.loads((Path(__file__).parent / 'fixtures/7p3b2_off_c72c4a1.json').read_text())
 
 
+@pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('case', [k for k in off2.cases() if k.split('/')[0] in F12])
 def test_f12_off_state_byte_identical_to_golden(case):
     # snapshot() raises if F1/F2 fetch any indicator warmup while the filter is off.
