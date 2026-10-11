@@ -51,6 +51,7 @@ def _reference(case):
     fee, slip = Fraction(case['fee_bps'])/10000, Fraction(case['slippage_bps'])/10000
     lots, trades, actions, fills, losses = [], [], [], [], []
     pending, ref, reset, skipped = None, levels[0], False, 0
+    lot_lines, buy_line = [], None  # v2: buy line of each filled lot; ref moves only on fills
     def rounded(value):
         # Positive fees/slippage, half-up to ledger's eight decimal cash places.
         return Fraction((value*10**8+Fraction(1, 2)).numerator //
@@ -65,10 +66,16 @@ def _reference(case):
                 cash -= cost
                 lots.append((i, price, qty, rounded(notional*fee)+rounded(notional*slip)))
                 fills.append((i, 'buy'))
+                lot_lines.append(buy_line)
+                ref = buy_line-1
             else:
                 skipped += 1
         elif pending in ('sell_lot', 'sell_all') and lots:
             fills.append((i, pending))
+            if pending == 'sell_lot':
+                ref = lot_lines.pop()
+            else:
+                lot_lines.clear()
             for _ in range(1 if pending == 'sell_lot' else len(lots)):
                 opened, entry, qty, costs = lots.pop()
                 exit_costs = rounded(qty*price*fee)+rounded(qty*price*slip)
@@ -86,13 +93,13 @@ def _reference(case):
                     pending = 'sell_all'
         elif reset and 0 <= lv <= n:
             ref, reset = lv, False
-        elif 0 <= lv <= n and lv < ref:
-            pending, ref = 'buy', ref-1
+        elif 0 <= lv <= n and lv < min(ref, n-1):  # v2: top line n never buys
+            pending, buy_line = 'buy', min(ref, n-1)
+        elif lots:
+            if lv >= lot_lines[-1]+1:  # v2: sell one line above the newest lot's buy line
+                pending = 'sell_lot'
         elif lv > ref:
-            if lots:
-                pending, ref = 'sell_lot', ref+1
-            else:
-                ref = min(lv, n)
+            ref = min(lv, n)
         if pending:
             actions.append(dict(bar=i, action=pending, amount=str(p['amount_per_grid']) if pending == 'buy' else None))
     for opened, entry, qty, costs in reversed(lots):
@@ -156,8 +163,9 @@ def test_hand_counted_golden_and_next_open_fills(case):
         expected_avg = round_cash(sum(pnls)/len(pnls)) if pnls else None
     assert (D(a['grid_cell_profit_avg']) if pnls else a['grid_cell_profit_avg']) == expected_avg
     if case['name'] == 'arithmetic':
-        # 7 笔整批卖出 pnl 合计 57.81，÷7 = 8.258571428…，按 1e-8 量化输出
-        assert a['grid_cell_profit_avg'] == '8.25857143'
+        # v2（PIN7-G1）：卖出信号落在 bar 8/9/10，次根开盘均为 125，bar 8 开盘 200 不再成交；
+        # 5 笔整批卖出 pnl 都是 -0.3（同开盘价、两边各 0.15 费用），平均 -0.3。非整除量化见 test_grid_rule_v2.py。
+        assert a['grid_cell_profit_avg'] == '-0.3'
     assert a['position_mode'] == 'grid'
 
 
@@ -307,7 +315,8 @@ def test_stop_loss_without_holdings_resets_only_after_reentry():
 
 
 def test_failed_fill_does_not_create_phantom_holdings():
-    case = {**CASES[0], 'initial_capital':'1', 'opens':[125]*5,'closes':[150,140,150,160,160]}
+    # v2: the top line (150) never buys, so the failed buy is triggered on line 4 (close 130).
+    case = {**CASES[0], 'initial_capital':'1', 'opens':[125]*5,'closes':[150,130,150,160,160]}
     result, a, actions, _ = _run(case)
     assert actions == [dict(bar=1,action='buy',amount='100')]
     assert result.skipped_buys_insufficient_cash == 1

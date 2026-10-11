@@ -3728,55 +3728,59 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
 
     stats = {"grid_fills": 0, "stop_loss_triggered": 0, "sell_lot_ts": set()}
 
+    # Grid rule v2 (PIN7-G1): a lot bought on line k sells only once the close reaches
+    # line k+1, so every cell earns at least one grid step before fees. ``lot_lines`` holds
+    # the buy line of each actually filled lot (LIFO, matching the ledger's lot order).
+    # The reference only moves on real fills: an unfilled (cash-short) or time-blocked
+    # buy leaves the line available for the next signal. The top line never buys, so at
+    # most n-1 lots (lines 1..n-1) are held.
     def signal_factory(bars, *, time_context=None):
         ref_level = level(bars[0].close) if bars else 0
-        holdings = 0
+        lot_lines: list[int] = []
         reset_pending = False
-        entry_ref_before = ref_level
+        pending_buy_line = None
         stats.update(grid_fills=0, stop_loss_triggered=0, sell_lot_ts=set())
 
         def signal(index):
-            nonlocal ref_level, reset_pending, entry_ref_before
+            nonlocal ref_level, reset_pending, pending_buy_line
             if index == 0:
                 return "hold"
             lv = level(bars[index].close)
             if lv == -1:
                 if below == "stop_loss" and not reset_pending:
                     reset_pending = True
-                    if holdings > 0:
+                    if lot_lines:
                         return ("sell_all", "stop_loss")  # P6: the full sell is the grid's stop.
                 return "hold"
             if reset_pending and 0 <= lv <= n:
                 ref_level = lv
                 reset_pending = False
                 return "hold"
-            if 0 <= lv <= n and lv < ref_level:
-                entry_ref_before = ref_level
-                ref_level -= 1  # Advance even if the next-open buy lacks cash.
+            buy_line = min(ref_level, n - 1)  # v2: the top line never buys.
+            if 0 <= lv <= n and lv < buy_line:
+                pending_buy_line = buy_line
                 return ("buy", amount)
-            if lv > ref_level:
-                if holdings > 0:
-                    ref_level += 1
+            if lot_lines:
+                if lv >= lot_lines[-1] + 1:  # v2: one line above the newest lot's buy line.
                     return ("sell_lot",)
+            elif lv > ref_level:
                 ref_level = min(lv, n)
             return "hold"
 
         def on_fill(index, action, filled, price, *, reason=None):
-            nonlocal holdings, ref_level, reset_pending
-            if reason == "time_entry_blocked":
-                ref_level = entry_ref_before
-                return
-            if not filled:
-                return
+            nonlocal ref_level, reset_pending
+            if reason == "time_entry_blocked" or not filled:
+                return  # Nothing advanced at signal time, so nothing to roll back.
             if action == "buy":
-                holdings += 1
+                lot_lines.append(pending_buy_line)
+                ref_level = pending_buy_line - 1
                 stats["grid_fills"] += 1
             elif action == "sell_lot":
-                holdings -= 1
+                ref_level = lot_lines.pop()
                 stats["grid_fills"] += 1
                 stats["sell_lot_ts"].add(bars[index].open_time)
             elif action == "sell_all":
-                holdings = 0
+                lot_lines.clear()
                 if reason == "time_expiry":
                     ref_level = level(price)
                     reset_pending = False
@@ -3794,6 +3798,7 @@ def _build_grid(params: dict[str, Any], *, initial_capital: float = 10000.0) -> 
             avg = canonical_decimal_str(round_cash(sum(pnls, Decimal(0)) / Decimal(len(pnls)))) if pnls else None
         return {
             "position_mode": "grid",
+            "grid_rule": "v2",
             "grid_fills": stats["grid_fills"],
             "grid_cell_profit_avg": avg,
             "max_unrealized_loss": canonical_decimal_str(ledger.max_unrealized_loss),

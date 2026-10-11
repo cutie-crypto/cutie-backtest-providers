@@ -12,14 +12,14 @@
       "raw_report_sha256": "a651a4fb8ee18ee302465710ca8f68ceaa9199d638624ec99aebf4635a185985"
     },
     "grid": {
-      "trade_count": 29,
-      "trades_sha256": "431b05f5caee5820f2bed49a5b9d4557cf68a966175975e05e6dd91973a61219",
-      "equity_sha256": "9a63daa52236c56fdc11accaa7761b4d944f58b17cf9db9c39151ec2eb5f720b",
-      "result_v2_sha256": "6552476e9403aa82c497f17def609eae051dd33487bf950df50669a017968af5",
+      "trade_count": 26,
+      "trades_sha256": "d210282366958673037b64b06ec1a0d6e7c77b50a3332c6c9bd541ce7686f86a",
+      "equity_sha256": "91be5004f56ec67d2e0af06409ec931240e2c44e626c8f124479e2233535fe04",
+      "result_v2_sha256": "1a38bbb1aa631f60b640b0f7da635d38ebc00e67ff9d2ba0a79ecbbe542f1164",
       "min_bars": 1,
       "warmup_bars": 60,
-      "assumptions_sha256": "9dbcd404a3984077d9c8d6dda28b6510582808b044b6c2e69b7f94619a6c5066",
-      "raw_report_sha256": "d7ceca796951927746e899c191ef7eceef72f42b66360f00ad25e6c000086f57"
+      "assumptions_sha256": "1a528e817cdff31d186d8cb14b775418324eabc76158a48d721ff6f6e39559e7",
+      "raw_report_sha256": "1bb6c8e70c6793d2248479a3deaa36c08964f4bb9775f882d451c1c051fe376a"
     },
     "dca": {
       "trade_count": 28,

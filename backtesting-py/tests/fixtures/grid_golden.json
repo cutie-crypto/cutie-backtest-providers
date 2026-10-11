@@ -1,5 +1,5 @@
 {
-  "description": "Hand-counted 40-bar cases; opens deliberately differ from trigger closes/grid lines. Amount 100 / open 125 = 0.8, each side fee 0.1 + slippage 0.05; sell_lot pnl -0.3. Final lots close at last close. Arithmetic bar 8 open is 200: latest 0.8 lot exits for pnl 59.61; the other six cell pnls are -0.3, so mean is 57.81/7 (80-digit Decimal).",
+  "description": "Hand-counted 40-bar cases; opens deliberately differ from trigger closes/grid lines. Amount 100 / open 125 = 0.8, each side fee 0.1 + slippage 0.05; sell_lot pnl -0.3. Final lots close at last close. Grid rule v2 (PIN7-G1): a lot bought on line k sells only when the close reaches line k+1, the top line never buys, and the reference moves only on real fills (cash-short buys retry the same line). Arithmetic: the bar-8 open of 200 no longer meets a fill (v2 sells fill on bars 9-11 at 125), so all five cell pnls are -0.3.",
   "cases": [
     {
       "name": "arithmetic",
@@ -155,11 +155,6 @@
           "amount": "100"
         },
         {
-          "bar": 7,
-          "action": "sell_lot",
-          "amount": null
-        },
-        {
           "bar": 8,
           "action": "sell_lot",
           "amount": null
@@ -170,12 +165,7 @@
           "amount": null
         },
         {
-          "bar": 13,
-          "action": "buy",
-          "amount": "100"
-        },
-        {
-          "bar": 16,
+          "bar": 10,
           "action": "sell_lot",
           "amount": null
         },
@@ -190,16 +180,6 @@
           "amount": "100"
         },
         {
-          "bar": 20,
-          "action": "buy",
-          "amount": "100"
-        },
-        {
-          "bar": 22,
-          "action": "sell_lot",
-          "amount": null
-        },
-        {
           "bar": 23,
           "action": "sell_lot",
           "amount": null
@@ -210,7 +190,7 @@
           "amount": null
         }
       ],
-      "expected_trades": 7,
+      "expected_trades": 5,
       "expected_grid_lines": [
         "100",
         "110",
@@ -375,11 +355,6 @@
           "amount": "100"
         },
         {
-          "bar": 4,
-          "action": "sell_lot",
-          "amount": null
-        },
-        {
           "bar": 5,
           "action": "sell_lot",
           "amount": null
@@ -390,17 +365,17 @@
           "amount": null
         },
         {
-          "bar": 10,
-          "action": "buy",
-          "amount": "100"
+          "bar": 7,
+          "action": "sell_lot",
+          "amount": null
         },
         {
-          "bar": 11,
+          "bar": 10,
           "action": "buy",
           "amount": "100"
         }
       ],
-      "expected_trades": 5,
+      "expected_trades": 4,
       "expected_grid_lines": [
         "100",
         "200",
@@ -578,14 +553,9 @@
           "bar": 9,
           "action": "sell_all",
           "amount": null
-        },
-        {
-          "bar": 12,
-          "action": "buy",
-          "amount": "100"
         }
       ],
-      "expected_trades": 5,
+      "expected_trades": 4,
       "expected_grid_lines": [
         "100",
         "110",
@@ -767,11 +737,6 @@
           "bar": 13,
           "action": "sell_lot",
           "amount": null
-        },
-        {
-          "bar": 14,
-          "action": "sell_lot",
-          "amount": null
         }
       ],
       "expected_trades": 4,
@@ -943,13 +908,18 @@
           "amount": "100"
         },
         {
+          "bar": 5,
+          "action": "buy",
+          "amount": "100"
+        },
+        {
           "bar": 6,
           "action": "sell_lot",
           "amount": null
         }
       ],
       "expected_trades": 1,
-      "expected_skipped_buys": 3,
+      "expected_skipped_buys": 4,
       "expected_grid_lines": [
         "100",
         "110",
