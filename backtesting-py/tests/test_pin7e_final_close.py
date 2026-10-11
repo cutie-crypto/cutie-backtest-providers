@@ -372,3 +372,107 @@ def test_template_stop_cannot_veto_last_bar_liquidation(monkeypatch, tmp_path, n
     assert Decimal(report['loss_beyond_margin_total']) == 0, report
     assert -Decimal(trade['pnl']) <= margin, trade
     assert p6.kinds_of(body) == ['liquidation']
+
+
+# ---------------------------------------------------------------- the last bar opens nothing in the re-run
+
+def record_leftovers(monkeypatch):
+    """Record, per Backtest.run, the trades still open and the orders still queued after finalize_trades."""
+    leftovers, run_backtest = [], Backtest.run
+
+    def recording(self, **kwargs):
+        stats = run_backtest(self, **kwargs)
+        broker = stats._strategy._broker
+        leftovers.append(([(t.size, t.entry_price, t.entry_bar) for t in broker.trades], list(broker.orders)))
+        return stats
+
+    monkeypatch.setattr(Backtest, 'run', recording)
+    return leftovers
+
+
+def summary_matches_trades(body):
+    """Legacy summary return (engine equity, rounded to 0.01 pct) vs the sum of the itemised pnl.
+
+    fee_bps / slippage_bps are 0 on these runs, so the two only differ by the 2-decimal rounding of
+    total_return_pct (<= 0.005 pct) when every filled trade is settled."""
+    capital = Decimal(body['initial_capital'])
+    itemised = sum((Decimal(t['pnl']) for t in body['trades']), Decimal(0)) / capital * 100
+    summary = Decimal(str(body['raw_report']['legacy_metrics']['total_return_pct']))
+    return abs(summary - itemised) <= Decimal('0.0051'), (summary, itemised)
+
+
+def tp_then_cross_frame():
+    """Codex's PIN7-E P2 case on ema_cross 5/20 with two take-profit levels (stop 5%, tp1 1R, tp2 2R).
+
+    Golden cross at bar 30 (entry fills at Close[30] = 103, trade_on_close). Bar 58 (second to last)
+    touches tp1 (High 109 >= 108.15) and closes 99: the partial take profit returns before the death
+    cross is looked at. The last bar closes 120: golden cross again, High above tp2 (113.3). Fixed
+    fe3f762 settled tp2 there; PIN7-E skips the last bar's exit, so the template went on to _risk_buy and
+    the period-end re-run filled that buy at Close[-2] (99) and never settled it."""
+    close = np.r_[np.linspace(100, 99, 30), [103.0], np.full(27, 104.0), [99.0, 120.0]]
+    open_ = np.r_[close[0], close[:-1]]
+    high, low = np.maximum(open_, close) + 0.1, np.minimum(open_, close) - 0.1
+    high[58] = 109.0
+    index = pd.date_range('2024-01-01', periods=len(close), freq='1h', tz='UTC')
+    return pd.DataFrame(dict(Open=open_, High=high, Low=low, Close=close, Volume=np.full(len(close), 500.0)),
+                        index=index)
+
+
+TP_LEVELS = dict(ema_fast=5, ema_slow=20, risk_layer_enabled=True, stop_loss_pct=5,
+                 tp1_r=1, tp1_close_pct=50, tp2_r=2, tp2_close_pct=50)
+
+
+def test_last_bar_new_entry_not_filled_in_final_rerun(monkeypatch, tmp_path):
+    leftovers = record_leftovers(monkeypatch)
+    data = tp_then_cross_frame()
+    body = p6.post(monkeypatch, tmp_path, 'ema_cross', TP_LEVELS, data)
+    assert body['result_status'] == 'success', body.get('error_message')
+    assert leftovers == [([], [])], leftovers
+    ok, detail = summary_matches_trades(body)
+    assert ok, detail
+    # fe3f762 also closed two rows here: the tp1 half, and the rest (at tp2 there, at period end now).
+    assert len(body['trades']) == 2 and p6.kinds_of(body) == ['take_profit', 'end_of_data'], body['trades']
+    assert Decimal(body['trades'][1]['exit_price']) == Decimal(str(data.Close.iloc[-1]))
+
+
+# Generic-run templates whose entry, cut right after its signal bar, the period-end re-run used to fill and
+# leave open (fe3f762 already did; it is not specific to the PIN7-E last-bar exit skip). turtle enters
+# through its own group orders, not _FixedRiskMixin._risk_open. vwap_reversion / red_streak_rsi and the
+# candle / pattern templates refuse a last-bar entry themselves and are not listed.
+CUT_AT_SIGNAL = [
+    'adx_di_cross', 'bias_reversion', 'bollinger_breakout', 'bollinger_reversal', 'bollinger_squeeze_breakout',
+    'breakout', 'cci_rsi', 'ema_cross', 'ema_pullback', 'ema_rsi_pullback', 'ema_trend_rsi',
+    'ema_triple_alignment', 'ichimoku_cloud_breakout', 'keltner_breakout', 'macd', 'macd_above_zero',
+    'parabolic_sar', 'roc', 'rsi_reversal', 'stoch_oversold_cross', 'supertrend', 'turtle', 'volume_breakout',
+]
+
+
+@pytest.mark.parametrize('name', CUT_AT_SIGNAL)
+def test_last_bar_signal_entry_not_filled(monkeypatch, tmp_path, name):
+    # Cut the generic run right after the signal bar of its last entry: that entry is then queued by the
+    # last next() and has no next bar to fill on.
+    p6.CURRENT[0] = name
+    full = p6.generic()(monkeypatch, tmp_path / 'full')
+    assert full['result_status'] == 'success' and full['trades'], full.get('error_message')
+    data = p6.generic_frame()
+    opened = full['trades'][-1]['opened_at']
+    fill = p6.bar_index(data, opened)
+    leftovers = record_leftovers(monkeypatch)
+    markets = p.TOOL_SPECS[PREFIX + name].get('markets') or ['spot']
+    body = p6.post(monkeypatch, tmp_path, name, None, data.iloc[:fill],
+                   market='spot' if 'spot' in markets else 'futures')
+    assert body['result_status'] == 'success', body.get('error_message')
+    assert leftovers == [([], [])], leftovers
+    ok, detail = summary_matches_trades(body)
+    assert ok, detail
+    assert len(body['trades']) == sum(t['opened_at'] < opened for t in full['trades']), body['trades']
+
+
+@pytest.mark.parametrize('name', p6.V2_TOOLS)
+def test_summary_return_equals_trade_pnl_across_templates(monkeypatch, tmp_path, name):
+    """Filled-but-unsettled detector: the summary return equals the itemised pnl on every template's run."""
+    p6.CURRENT[0] = name
+    body = p6.SPECIAL.get(name, p6.generic())(monkeypatch, tmp_path)
+    assert body['result_status'] == 'success', body.get('error_message')
+    ok, detail = summary_matches_trades(body)
+    assert ok, (name, detail)

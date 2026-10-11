@@ -2972,6 +2972,13 @@ def _final_close_strategy(strategy):
             def final_next():
                 state["_final_rerun"] = bool(state.get("_final_next_done"))
                 try:
+                    if state["_final_rerun"]:
+                        # Stand-alone orders (no parent_trade) still queued here were placed by the last
+                        # next(): new entries with no next bar to fill on. The re-run would fill them on
+                        # the last bar and leave them unsettled, so they are dropped. Closes from
+                        # Trade.close() and contingent SL / TP orders carry parent_trade and stay.
+                        for order in [order for order in broker.orders if order.parent_trade is None]:
+                            order.cancel()
                     broker_next()
                 finally:
                     state["_final_rerun"] = False
