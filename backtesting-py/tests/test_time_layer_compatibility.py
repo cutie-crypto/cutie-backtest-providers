@@ -65,6 +65,9 @@ OI_BASELINE = json.loads((Path(__file__).parent / 'fixtures/oi49_time_off.json')
 assert BASELINE['single'].keys().isdisjoint(OI_BASELINE['single'])
 BASELINE['single'].update(OI_BASELINE['single'])
 OI_CASES = {'oi_breakout'}
+
+ETF38_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_etf38_off.json').read_text())
+ETF38 = {'etf_flow_follow'}
 F1_CASES = {'opening_range_breakout', 'asia_range_breakout'}
 F2_CASES = {'calendar_schedule'}
 MIXINS = {name: cls for name, cls in compat.enumerate_mixin_cases().items()
@@ -76,7 +79,7 @@ SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
 # P-EVENT0: event_window postdates every baseline above; its off state is pinned by
 # tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
 EVENT0 = {'event_window'}
-LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | OI_CASES}
+LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | OI_CASES | ETF38}
 
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')
@@ -124,7 +127,7 @@ def test_schema_only_runtime_single_position_templates():
     # TURTLE-TIME: 海龟组级 runner 也声明并消费时间层（行为用例在 test_turtle_time_layer.py）。
     assert actual == ({compat.tool_name(name) for name in MIXINS} | set(capture.LEDGER_PARAMS) | {"red_streak_rsi"}
                       | set(compat.enumerate_turtle_cases()))
-    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 == set(MIXINS)
+    assert set(BASELINE['single']) | F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | ETF38 == set(MIXINS)
 
 
 @pytest.mark.parametrize('name', MIXINS)
@@ -219,6 +222,13 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         data = oi49.hand_frame('1h', start=oi49.T0 + 3 * 3600)
         params = {**oi49.PARAMS, 'stop_loss_pct': 50, 'time_layer_enabled': True,
                   'time_session_start': '06:00', 'time_session_end': '10:00'}
+
+    if name in ETF38:
+        from test_etf_flow_follow_38 import frame, rows_for
+        data = frame('2026-03-09', '2026-03-11')
+        params = dict(time_layer_enabled=True, time_timezone='America/New_York',
+                      time_session_start='09:30', time_session_end='10:30')
+        tf = '15m'
     built = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)
     if name in OI_CASES:
         start = int(data.index[0].timestamp())
@@ -226,6 +236,11 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
                      value='105' if k == 5 else '100', revision='frozen') for k in range(-2, 10)]
         built['oi_config'].bind(rows, symbol='BTC', bar_seconds=3600, interval='1h')
     cls = built['strategy']
+    if name in ETF38:
+        config = built['etf_flow_config']
+        config.plan(int(data.index[0].timestamp()), int(data.index[-1].timestamp()) + 900)
+        config.bind([dict(row, available_at=row['ts'] + 86400, revision='fixture')
+                     for row in rows_for(data, {'2026-03-06': 400000000, '2026-03-09': 400000000})], symbol='BTC')
     ctx = TimeContext.build(cls._time_config, tf, data.index)
     cls._time_context = ctx
     trades = Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades']
@@ -435,3 +450,18 @@ def test_oi_disabled_matches_frozen_http_baseline(monkeypatch, tmp_path, warm):
     assert {key: capture.digest(body[key]) for key in expected} == expected
     omitted = oi49.run(monkeypatch, tmp_path, warm=warm)
     assert {key: capture.digest(omitted[key]) for key in expected} == expected
+
+def test_etf38_disabled_matches_frozen_baseline(monkeypatch, tmp_path):
+    from test_etf_flow_follow_38 import run
+    absent, _ = run(monkeypatch, tmp_path, values={'2026-03-06': 400000000})
+    def forbidden(*args, **kwargs):
+        raise AssertionError('disabled ETF time layer must not construct TimeContext')
+    monkeypatch.setattr(provider.TimeContext, 'build', forbidden)
+    disabled, _ = run(monkeypatch, tmp_path, values={'2026-03-06': 400000000}, params=DEFAULTS)
+    explicit_one, _ = run(monkeypatch, tmp_path, values={'2026-03-06': 400000000}, params={'leverage': 1})
+    assert absent['trades'] and disabled['trades']
+    assert provider.TOOL_SPECS['local.backtesting_py.etf_flow_follow']['build'](DEFAULTS)['strategy']._time_config is None
+    for key in (*capture.V2_KEYS, 'assumptions', 'raw_report'):
+        assert capture.digest(absent[key]) == capture.digest(disabled[key]) == capture.digest(explicit_one[key]) == ETF38_BASELINE[key], key
+    assert 'time_layer' not in disabled['assumptions']
+    assert 'time_layer' not in disabled['raw_report']

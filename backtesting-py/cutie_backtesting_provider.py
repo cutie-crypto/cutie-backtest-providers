@@ -57,6 +57,8 @@ from strategy_funding_reversal import (
     FundingReversalConfig, FundingSeriesError, SCHEMA as FUNDING_REVERSAL_SCHEMA,
 )
 import strategy_oi_breakout as oi_breakout
+
+import strategy_etf_flow_follow as etf_flow
 import strategy_top_long_short_reversal as top_lsr
 from strategy_top_long_short_reversal import TopLongShortReversalConfig, make_strategy as make_top_lsr_strategy
 from strategy_liquidation_reversal import (
@@ -1690,6 +1692,8 @@ def _fetch_metric_series(
     end_at: int,
     path: str = "$.data_streams.feature",
     raise_on_transport_error: bool = False,
+    required_timestamps: Optional[tuple[int, ...]] = None,
+    series_stats: Optional[dict[str, int]] = None,
 ) -> list[dict[str, Any]]:
     """Generic external metric series over the half-open ``[start_at, end_at)``.
 
@@ -1720,9 +1724,15 @@ def _fetch_metric_series(
         )
         cursor = chunk_end
     rows: list[dict[str, Any]] = []
+    required_set = set(required_timestamps) if required_timestamps is not None else None
+    ignored_rows_count = 0
     for raw in raw_rows:
         try:
             timestamp = int(raw["ts"])
+            if required_set is not None and timestamp not in required_set:
+                # ETF decisions consume only P(T): discard other dates before validating their values.
+                ignored_rows_count += 1
+                continue
             value = canonical_decimal_str(str(raw["value"]))
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise StrategyContractError(
@@ -1739,7 +1749,15 @@ def _fetch_metric_series(
             path,
             "declared feature stream is empty or contains duplicate timestamps",
         )
-    _assert_contiguous(rows, "ts", interval, path)
+    if required_timestamps is None:
+        _assert_contiguous(rows, "ts", interval, path)
+    elif tuple(item["ts"] for item in rows) != required_timestamps:
+        # C38 keeps only required predecessor dates: missing rows fail, extra dates were discarded.
+        # Default callers retain the existing fixed-interval continuity check above.
+        raise StrategyContractError(ERR_COVERAGE_INCOMPLETE, path,
+                                    "feature stream does not match the required trading dates")
+    if series_stats is not None:
+        series_stats["ignored_rows_count"] = ignored_rows_count
     revision = canonical_json_sha256(rows)
     step = _timeframe_milliseconds(interval) // 1000
     return [
@@ -6366,6 +6384,26 @@ def _build_top_lsr(params, *, initial_capital=10000.0):
                 template_assumptions=config.assumptions)
 
 
+# C38: previous NYSE trading day's aggregate ETF flow, BTC/ETH spot only.
+ETF_FLOW_TOOL_ID = "local.backtesting_py.etf_flow_follow"
+ETF_FLOW_SERIES = {"exchange": etf_flow.CENTRAL_EXCHANGE, "metric": etf_flow.CENTRAL_METRIC,
+                   "interval": etf_flow.CENTRAL_INTERVAL, "gap_reason": etf_flow.GAP_REASON,
+                   "history_reason": etf_flow.HISTORY_REASON}
+
+
+@_with_time_config
+def _build_etf_flow(params, *, initial_capital=10000.0):
+    error = _validate_params_against_schema(params, TOOL_SPECS[ETF_FLOW_TOOL_ID]["param_schema_properties"])
+    if error:
+        raise ValueError(f"INVALID_PARAMS:{error}")
+    config = etf_flow.EtfFlowConfig.parse(params)
+    effective = dict(params, risk_layer_enabled=True, stop_loss_pct=config.values["stop_loss_pct"])
+    risk = _parse_fixed_risk_params(effective, template_initial_stop=True)
+    return dict(strategy=etf_flow.make_strategy(_FixedRiskMixin, config, risk, initial_capital),
+                executed_name="ETF Flow Follow", min_bars=2, etf_flow_config=config,
+                template_assumptions={"etf_flow_follow": "现货多头；做空镜像未开放"})
+
+
 # S4: long-liquidation spike reversal. Spot, long-only; rides the macro engine's single-position/stop plumbing
 # (strategy_liquidation_reversal). Day records are bound from the central 1d series in run_backtest, before OHLCV.
 LIQUIDATION_REVERSAL_TOOL_ID = "local.backtesting_py.liquidation_reversal"
@@ -6448,7 +6486,7 @@ def _vwap_effective_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _sizing_template_initial_stop(tool_id: str, params: dict[str, Any]) -> bool:
     """Whether the template supplies its own frozen stop when the user gives none."""
-    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID, OI_BREAKOUT_TOOL_ID)
+    if (tool_id in _SIZING_INTRINSIC_STOP_TOOLS or tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID, OI_BREAKOUT_TOOL_ID, ETF_FLOW_TOOL_ID)
             or tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
         return True
     if tool_id == "local.backtesting_py.fibonacci_retracement":
@@ -8236,6 +8274,28 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "timeframes": ["1h", "4h", "1d"],
         "param_schema_properties": dict(top_lsr.SCHEMA),
     },
+    ETF_FLOW_TOOL_ID: {
+        "name": "Local Spot ETF Flow Follow",
+        "description": (
+            "Spot long-only BTC/ETH USDT/USDC/BUSD pairs, 15m only. The central AGGREGATED etf_flow "
+            "1d series is net USD flow: day D is readable from D+1 00:00 UTC, independent of fetched_at. "
+            "At 09:30 America/New_York it buys when the previous NYSE trading day's flow is at least "
+            "flow_threshold_usd. It exits at the 16:00 open (13:00 on half days, us_session_close), or "
+            "when low touches stop_loss_pct frozen at the actual fill, at the next open. One trade per "
+            "day, no overnight holding, no short mirror. Missing NYSE trading-day rows fail the whole "
+            "run (etf_flow_data_gap); only P(T) for session opens <= end_at is required, never T itself. "
+            "Extra dates are ignored; unreadable history fails with etf_flow_history_unavailable. Calendar covers 2024-2026 only "
+            "(etf_calendar_unavailable beyond it). BTC history starts 2024-01-11, ETH 2024-07-23, "
+            "subject to the central database's earliest row. Maps to KOL '现货 ETF 资金流跟随'"
+        ),
+        "strategy_family": "event_driven",
+        "is_default": False,
+        "build": _build_etf_flow,
+        "markets": ["spot"],
+        "timeframes": ["15m"],
+        "external_series": ETF_FLOW_SERIES,
+        "param_schema_properties": etf_flow.schema(),
+    },
     # S4：多头爆仓量反转。取中心库 AGGREGATED / liquidation_long / 1d（美元，全市场聚合），只做多现货，1h/4h/1d。
     LIQUIDATION_REVERSAL_TOOL_ID: {
         "name": "Local Spot Long-Liquidation Reversal",
@@ -8475,6 +8535,14 @@ TOOL_SPECS[OI_BREAKOUT_TOOL_ID]["param_schema_properties"] = {
     **oi_breakout.schema(), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
     **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
     **_TIME_PARAM_SCHEMA_PROPERTIES,
+    "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
+}
+
+# C38 consumes its intrinsic stop, sizing and the shared time gate, with no alternate risk exits.
+TOOL_SPECS[ETF_FLOW_TOOL_ID]["param_schema_properties"] = {
+    **etf_flow.schema(), **POSITION_SIZE_SCHEMA, **_LEVERAGE_PARAM_SCHEMA_PROPERTIES,
+    **_TIME_PARAM_SCHEMA_PROPERTIES,
+    **{key: _FIXED_RISK_PARAM_SCHEMA_PROPERTIES[key] for key in ("position_size_pct", "position_size_notional")},
     "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
 }
 
@@ -10297,7 +10365,7 @@ async def run_backtest(
         if effective_tool_id in POSITION_SIZING_PENDING_TOOLS:
             return _position_sizing_failure("position sizing is not wired to this template yet")
         try:
-            if (effective_tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID, OI_BREAKOUT_TOOL_ID)
+            if (effective_tool_id in (FUNDING_REVERSAL_TOOL_ID, TOP_LSR_TOOL_ID, LIQUIDATION_REVERSAL_TOOL_ID, OI_BREAKOUT_TOOL_ID, ETF_FLOW_TOOL_ID)
                     or effective_tool_id.removeprefix("local.backtesting_py.") in MACRO_SCHEMAS):
                 _parse_fixed_risk_params({k: v for k, v in params.items() if k != "take_profit_r"},
                                          template_initial_stop=True)
@@ -10378,6 +10446,17 @@ async def run_backtest(
         return _validation_failure("INVALID_PARAMS", "this template requires futures market")
     raw_exchange = params.get("exchange")  # F7: explicit None handling (str(None) -> "none")
     exchange_id = str(raw_exchange).lower() if raw_exchange else DEFAULT_EXCHANGE
+    etf_symbol = None
+    if effective_tool_id == ETF_FLOW_TOOL_ID:
+        if market != "spot":
+            return _validation_failure("INVALID_PARAMS", "etf_flow_follow requires spot market")
+        if timeframe != "15m":
+            return _validation_failure("TIMEFRAME_UNSUPPORTED", "etf_flow_follow supports only 15m")
+        normalized = str(symbol).replace("/", "").upper()
+        match = re.fullmatch(r"(BTC|ETH)(USDT|USDC|BUSD)", normalized)
+        if not match:
+            return _validation_failure("INVALID_PARAMS", "etf_flow_follow requires BTC/ETH USDT/USDC/BUSD spot pairs")
+        etf_symbol = match.group(1)
     funding_symbol = None
     top_lsr_symbol = None
     oi_symbol = None
@@ -10443,6 +10522,13 @@ async def run_backtest(
     except Exception as e:  # F8: don't let build bugs become bare 500s with lost context
         logger.exception("strategy build failed tool=%s", effective_tool_id)
         return _business_failure(run_id, "ENGINE_ERROR", f"Strategy build failed: {e}")
+    etf_flow_config = built.get("etf_flow_config")
+    if etf_flow_config is not None:
+        try:
+            etf_flow_config.plan(start_at, end_at)
+        except etf_flow.CalendarUnavailable:
+            return _business_failure(run_id, "INSUFFICIENT_DATA", "INSUFFICIENT_DATA:etf_calendar_unavailable",
+                                     reason=etf_flow.CALENDAR_REASON)
     macro_config = built.get("macro_config")
     if macro_config is not None and market == "spot":
         if (macro_config.kind == "macro_release_breakout" and macro_config.values["direction"] != "long"
@@ -10635,6 +10721,11 @@ async def run_backtest(
         if failure is not None:
             return failure
 
+    if etf_flow_config is not None:
+        etf_failure = _bind_etf_flow(run_id, etf_flow_config, etf_symbol, df)
+        if etf_failure is not None:
+            return etf_failure
+
     top_lsr_config = built.get("top_lsr_config")
     if top_lsr_config is not None:
         top_lsr_failure = _bind_top_lsr(run_id, top_lsr_config, top_lsr_symbol, timeframe, df)
@@ -10747,7 +10838,7 @@ async def run_backtest(
     # its required_bars prefix; off-state (and filter_timeframe) stays empty.
     warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
                   if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
-                 if range_config is not None or calendar_config is not None or event_window_config is not None or macro_config is not None or top_lsr_config is not None else
+                 if range_config is not None or calendar_config is not None or event_window_config is not None or macro_config is not None or top_lsr_config is not None or etf_flow_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
                                         max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
@@ -11214,6 +11305,9 @@ async def run_backtest(
                 **({"strategy_signal_result": signal_result} if signal_result is not None else {}),
                 **({"oi_breakout": oi_breakout.report(stats["_strategy"], result_v2["trades"])}
                    if effective_tool_id == OI_BREAKOUT_TOOL_ID else {}),
+
+                **({"etf_flow_follow": etf_flow_config.report(result_v2["trades"], stats["_strategy"].etf_decisions)}
+                   if etf_flow_config is not None else {}),
                 **({"top_long_short_reversal": stats["_strategy"].top_lsr_report}
                    if hasattr(stats["_strategy"], "top_lsr_report") else {}),
                 **({"top_pattern": stats["_strategy"].top_pattern_report}
@@ -11353,6 +11447,38 @@ def _bind_oi_breakout(run_id, config, symbol, timeframe, df):
         return _business_failure(run_id, "TIME_DATA_GAP", f"Open interest history unavailable: {exc}",
                                  reason=oi_breakout.HISTORY_REASON)
     config.bind(rows, symbol=central_symbol, bar_seconds=step, interval=timeframe)
+
+def _bind_etf_flow(run_id, config, symbol, df):
+    """Fetch through the external-series mechanism, validating NYSE dates instead of every UTC day."""
+    opens = [int(pd.Timestamp(t).value // 10**9) for t in df.index]
+    if any(t % etf_flow.BAR_SECONDS for t in opens) or any(
+            b - a != etf_flow.BAR_SECONDS for a, b in zip(opens, opens[1:])):
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:ETF sessions require a complete 15m grid",
+                                 reason="time_data_gap")
+    required = config.required_ts
+    if not required:
+        config.bind([], symbol=symbol)
+        return None
+    gap_details = {"symbol": symbol, "series_metric": etf_flow.CENTRAL_METRIC,
+                   "required_first_date": _utc_date(required[0]),
+                   "required_last_date": _utc_date(required[-1])}
+    series_stats = {}
+    try:
+        rows = _fetch_metric_series(symbol=symbol, exchange=ETF_FLOW_SERIES["exchange"],
+                                    metric=ETF_FLOW_SERIES["metric"], interval=ETF_FLOW_SERIES["interval"],
+                                    start_at=required[0], end_at=required[-1] + etf_flow.DAY,
+                                    path="$.external_series.etf_flow", raise_on_transport_error=True,
+                                    required_timestamps=required, series_stats=series_stats)
+    except StrategyContractError as exc:
+        if exc.code != ERR_COVERAGE_INCOMPLETE:
+            raise
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:ETF flow series is incomplete",
+                                 reason=etf_flow.GAP_REASON, details=gap_details)
+    except Exception as exc:
+        logger.warning("ETF flow series fetch failed symbol=%s: %s", symbol, exc)
+        return _business_failure(run_id, "TIME_DATA_GAP", "TIME_DATA_GAP:central ETF flow history is unavailable",
+                                 reason=etf_flow.HISTORY_REASON, details=gap_details)
+    config.bind(rows, symbol=symbol, ignored_rows_count=series_stats["ignored_rows_count"])
     return None
 
 
