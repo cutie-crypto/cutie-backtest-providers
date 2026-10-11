@@ -17,6 +17,7 @@ from canonical_json import canonical_json
 from strategy_time_layer import TimeConfig, TimeContext
 from test_isolated_liquidation_settlement import server_recompute
 from test_leverage_params import request
+from _exit_kinds_strip import without_exit_kinds
 
 START, STEP = 1800000000, 3600
 WAVEB_GOLDEN = json.loads((Path(__file__).parent/'fixtures/isolated_off_waveb_e698d26_6b85dbf_9f8a6b0.json').read_text())
@@ -312,7 +313,7 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         req['backtest'].update(start_at=int(data.index[0].timestamp()),end_at=int(data.index[-1].timestamp())+STEP)
         out=TestClient(module.app).post('/cutie/backtest',json=req).json()
         assert out['result_status']=='success',out
-        return out
+        return without_exit_kinds(out)
     result=invoke(p)
     if name == 'ema_cross':
         # Validate the added S4b disclosure separately, then keep the exact

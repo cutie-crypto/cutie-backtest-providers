@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import _10b2b_cases as c
+from _exit_kinds_strip import without_exit_kinds
 
 BASELINE_SHA = '1d66844'
 SESSION = dict(time_layer_enabled=True, time_session_start='00:00', time_session_end='23:00')
@@ -33,6 +34,7 @@ def cases():
 def snapshot(monkeypatch, tmp_path, tool, params):
     body = c.post(monkeypatch, tmp_path, tool, params)
     assert body.get('result_status') == 'success', body
+    body = without_exit_kinds(body)
     body.pop('report_path', None)
     return c.canonical(body)
 

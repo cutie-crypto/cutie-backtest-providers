@@ -2914,6 +2914,7 @@ def _exit_kind_strategy(strategy):
             finally:
                 state["_exit_kind_phase"], state["_exit_kind_pending"] = None, None
 
+    ExitKinds.__module__ = strategy.__module__  # Keep template identity for module-based introspection.
     ExitKinds.__name__ = strategy.__name__
     ExitKinds.__qualname__ = strategy.__qualname__
     return ExitKinds

@@ -12,6 +12,7 @@ import test_9t6_chan_3buy as chan_buy
 import test_short_pat1 as top
 import test_short_pat2 as bear
 import test_short_pat3_chan_3sell as chan_sell
+from _exit_kinds_strip import without_exit_kinds
 
 GOLDEN_DIR = Path(__file__).resolve().parent / 'golden_10b2b'
 SHORT = ('macd_bearish_divergence', 'rsi_bearish_divergence', 'double_top', 'head_shoulders', 'chan_3sell')
@@ -58,4 +59,4 @@ def post(monkeypatch, tmp_path, name, params=None, data=None, capital='10000', f
 
 
 def canonical(body):
-    return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return json.dumps(without_exit_kinds(body), sort_keys=True, separators=(',', ':'), ensure_ascii=False)

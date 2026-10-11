@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as provider
 from backtesting import Backtest
 from fastapi.testclient import TestClient
+from _exit_kinds_strip import without_exit_kinds
 
 TOOL = 'local.backtesting_py.red_streak_rsi'
 BASELINE_SHA = 'c72c4a1'
@@ -80,6 +81,7 @@ def snapshot(params, data_name, warm):
             symbol='BTCUSDT', market='spot', timeframe='1h', start_at=int(data.index[0].timestamp()),
             end_at=int(data.index[-1].timestamp()) + 3600, initial_capital='10000', fee_bps='10', slippage_bps='0')
         body = TestClient(provider.app).post('/cutie/backtest', json={'backtest': request}).json()
+    body = without_exit_kinds(body)
     body.pop('report_path', None)
     return json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 

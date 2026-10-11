@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as provider
 import test_risk_overlay_compatibility as compat
+from _exit_kinds_strip import without_exit_kinds
 from backtesting import Backtest
 from canonical_json import canonical_json
 from fastapi.testclient import TestClient
@@ -73,7 +74,7 @@ def response(name, params, warm=True):
         assert res.status_code == 200, res.text
         body = res.json()
         assert body['result_status'] == 'success', body
-        return body
+        return without_exit_kinds(body)
 
 
 def digest(value):
