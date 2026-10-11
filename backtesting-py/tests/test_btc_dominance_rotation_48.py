@@ -6,6 +6,7 @@ import asyncio
 import json
 import sys
 from copy import deepcopy
+from decimal import Decimal
 from pathlib import Path
 import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -147,10 +148,20 @@ def test_gap_and_closed_point_identity_value_hash_validation(monkeypatch):
                        ('value', '5e1'), ('value', 'NaN'), ('value', 50), ('extra', 'x')]:
         bad = series()
         bad['points'][10][field] = val
+        # canonical_json forbids floats; that type case asserts timestamp rejection directly.
+        if not isinstance(val, float):
+            rehash(bad)  # isolate all canonicalizable bad points from hash rejection
+        expected = ('invalid BTC.D point keys' if field == 'extra' else
+                    'timestamp must be a positive safe integer' if val is True or val == 1.5 else
+                    'invalid BTC.D point timeline' if field in ('ts', 'available_at') else
+                    'BTC.D must be a finite nonnegative Decimal' if val == '-0.1' else
+                    'invalid BTC.D value')
+        with pytest.raises(ValueError, match=expected):
+            _metric_reference(bad, T0, T0+12*DAY)
         cases.append(bad)
     missing = series()
     del missing['points'][10]['value']
-    cases.append(missing)
+    cases.append(rehash(missing))
     duplicate = series()
     duplicate['points'][10]['ts'] = duplicate['points'][9]['ts']
     cases.append(rehash(duplicate))
@@ -274,3 +285,49 @@ def test_coinglass_sparse_tail_coverage_boundary(tail_days, accepted):
     output, _, _ = replay(metric=metric)
     assert output.result['input_manifests']['metric_series']['end_at'] == T0+(12-tail_days)*DAY
     assert output.result['snapshots'][-1]['ts'] == T0+12*DAY
+
+
+def test_point_ema_matches_hand_calculated_values():
+    # period=7 => alpha=1/4. Seed 50, then 46 => 49; another 46 => 48.25;
+    # 53 => 49.4375. These literals are independent of the provider EMA implementation.
+    req = request()
+    req['provider_params']['btcd_ema_period'] = 7
+    metric = series()
+    for point in metric['points']:
+        point['value'] = '50' if point['ts'] < T0 else '46' if point['ts'] < T0+6*DAY else '53'
+    _, decisions, _ = replay(req, metric=rehash(metric))
+    assert [(d['decision_at'], d['action'], Decimal(d['ema'])) for d in decisions] == [
+        (T0+DAY, 'entry', Decimal('49')), (T0+7*DAY, 'exit', Decimal('49.4375'))]
+
+
+def test_held_dominance_equal_to_ema_does_not_exit():
+    # period=7, alpha=1/4: 50 -> 46 gives EMA49. A new point49 stays equal,
+    # so the day3 close must retain the position; only point53 on day6 exits.
+    req = request()
+    req['provider_params']['btcd_ema_period'] = 7
+    metric = series()
+    for point in metric['points']:
+        point['value'] = ('50' if point['ts'] < T0 else '46' if point['ts'] == T0
+                          else '49' if point['ts'] == T0+3*DAY else '53')
+    output, decisions, _ = replay(req, metric=rehash(metric))
+    assert [(d['decision_at'], d['action']) for d in decisions] == [
+        (T0+DAY, 'entry'), (T0+7*DAY, 'exit')]
+    assert [(p['symbol'], p['qty']) for p in output.result['snapshots'][4]['positions']] == [
+        ('ETHUSDT', '25'), ('SOLUSDT', '50')]
+
+
+def test_readable_point_count_exactly_period_is_ready_one_less_fails():
+    req = request()
+    req['provider_params']['btcd_ema_period'] = 5
+    metric = series()
+    # At the first decision only points[-12d,-9d,-6d,-3d,0d] are readable.
+    # Older archived points still exist for coverage but arrive after this run.
+    for point in metric['points']:
+        if point['ts'] < T0-12*DAY:
+            point['available_at'] = T0+100*DAY
+    _, decisions, _ = replay(req, metric=rehash(metric))
+    assert decisions[0]['decision_at'] == T0+DAY
+    next(p for p in metric['points'] if p['ts'] == T0-12*DAY)['available_at'] = T0+100*DAY
+    with pytest.raises(RotationError, match='insufficient readable BTC.D EMA warmup points') as error:
+        replay(req, metric=rehash(metric))
+    assert (error.value.code, error.value.reason) == ('INSUFFICIENT_DATA', 'btc_dominance_history_unavailable')
