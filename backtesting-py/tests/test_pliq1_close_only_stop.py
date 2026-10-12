@@ -53,8 +53,9 @@ def test_f6_intrabar_liquidation_precedes_close_only_stop(monkeypatch, tmp_path)
 
 def test_f6_close_below_stop_without_liquidation_is_stop_loss(monkeypatch, tmp_path):
     body, closes, trade, closed_bar, k = f6_case(monkeypatch, tmp_path, [93.0, 93.2, 85.0, 88.0])
-    assert (trade['exit_price'], closed_bar) == ('93', k + 1)
-    assert closes == [(k, 'stop_loss')]
+    assert (trade['exit_price'], closed_bar) == ('89.24', k)
+    assert all(reason != 'stop_loss' for _, reason in closes)  # native SL bypasses Position.close
+    assert body['raw_report']['trade_exit_kinds'][0]['exit_kind'] == 'stop_loss'
     assert body['raw_report']['isolated_risk']['liquidation_count'] == 0
 
 
@@ -79,6 +80,7 @@ def test_f5_intrabar_liquidation_precedes_close_only_stop(monkeypatch, tmp_path)
 def test_f5_close_below_stop_without_liquidation_is_stop_loss(monkeypatch, tmp_path):
     body, closes, first, closed_bar = f5_case(monkeypatch, tmp_path, [94, 95, 90, 91])
     assert first['entry_price'] == '94'
-    assert (first['exit_price'], closed_bar) == ('200', 4)
-    assert closes[0] == (3, 'stop_loss')
+    assert (first['exit_price'], closed_bar) == ('92.12', 3)
+    assert all(reason != 'stop_loss' for _, reason in closes)  # native SL bypasses Position.close
+    assert body['raw_report']['trade_exit_kinds'][0]['exit_kind'] == 'stop_loss'
     assert body['raw_report']['isolated_risk']['liquidation_count'] == 0

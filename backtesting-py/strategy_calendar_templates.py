@@ -110,6 +110,11 @@ def build_us_open(p, params, initial_capital):
                 entry_utc=t.entry_time, bar_open=self.data.index[-1], context=self._cutoff_context)
             return HoldingExpiry(user.due or own.due, user.flatten_delay_bars)
 
+        def _risk_native_record_exit(self):
+            decision = utc_datetime(self.data.index[-1]) + self._period
+            self._template_report['exits'].append({'at': int(decision.timestamp()),
+                                                   'reason': self._risk_exit_reason})
+
         def next(self):
             now = utc_datetime(self.data.index[-1])
             decision = now + self._period
@@ -214,6 +219,11 @@ def build_cme_gap(p, params, initial_capital):
             own = expiry_due(holding_bars=0, entry_bar=trade.entry_bar, bar=len(self.data)-1,
                 entry_utc=trade.entry_time, bar_open=self.data.index[-1], context=self._cutoff_context)
             return HoldingExpiry(user.due or own.due, user.flatten_delay_bars)
+
+        def _risk_native_record_exit(self):
+            decision = utc_datetime(self.data.index[-1]) + self._period
+            self._template_report['exits'].append({'at': int(decision.timestamp()),
+                                                   'reason': self._risk_exit_reason})
 
         def next(self):
             now = utc_datetime(self.data.index[-1])

@@ -1,4 +1,4 @@
-"""Opt-in provider risk prices; touch decisions do not model protective fills.
+"""Provider risk prices; native broker orders execute protective fills.
 
 ATR reuses the runtime kernel's first-TR seed and Wilder alpha=1/period.
 Only CLOSED bars preceding the entry fill belong to the frozen entry history.
@@ -97,7 +97,12 @@ def initial_risk_state(*, risk: dict, entry_price: float, direction: str,
 
 
 def decide_exit(state: RiskState, *, high: float, low: float, holding_due: bool = False) -> str | None:
-    """Stop wins a real simultaneous High/Low touch. Caller queues next-open close."""
+    """Protective orders are handled by the broker; expiry stays next-open market."""
+    return 'time_expiry' if holding_due else None
+
+
+def decide_legacy_exit(state: RiskState, *, high: float, low: float, holding_due: bool = False) -> str | None:
+    """Frozen template and explicit off-state triggers keep next-open close."""
     high, low = Decimal(str(high)), Decimal(str(low))
     if not high.is_finite() or not low.is_finite() or low <= 0 or high < low:
         raise ValueError('INVALID_PARAMS:invalid risk bar High/Low')
@@ -114,6 +119,7 @@ def decide_exit(state: RiskState, *, high: float, low: float, holding_due: bool 
     ):
         return 'take_profit'
     return None
+
 
 
 def advance_risk_state(state: RiskState, risk: dict, *, open_at: int, close_at: int,
@@ -152,11 +158,13 @@ def level_exit(state: RiskState, *, high: float, low: float, remaining_units: in
 def risk_assumptions(risk: dict) -> dict:
     if not risk.get('risk_layer_enabled'):
         return {}
+    native = any(risk.get(key) for key in (
+        'stop_loss_pct', 'take_profit_pct', 'atr_stop_multiplier', 'take_profit_r', 'trailing_stop_pct'))
     layer = {
         'trigger': 'current_bar_high_low',
         'same_bar_priority': 'stop_loss_before_take_profit',
-        'fill': 'next_bar_open_market',
-        'fill_price_is_stop_price': False,
+        'fill': 'trigger_price_or_gap_open' if native else 'next_bar_open_market',
+        'fill_price_is_stop_price': native,
         'final_bar': 'engine_finalize_trades_settlement',
         'atr_seed': 'first_true_range',
         'atr_smoothing': 'alpha=1/period, adjust=False',
@@ -165,6 +173,8 @@ def risk_assumptions(risk: dict) -> dict:
         'initial_levels_based_on': 'actual_entry_fill_price',
         'live_execution_parity': False,
     }
+    if native:
+        layer['time_expiry_fill'] = 'next_bar_open_market'
     if risk.get('trailing_stop_pct'):
         layer.update(trailing_basis='post_entry_highest_high_or_lowest_low',
                      dynamic_stop_effective='following_bar', dynamic_stop_bar_end='next_open_minus_1ns')
@@ -175,6 +185,6 @@ def risk_assumptions(risk: dict) -> dict:
         layer.update(holding_bar_count_from='entry_fill_bar_is_1',
                      same_bar_priority='stop_loss_before_time_expiry_before_take_profit')
     if risk.get('tp1_r'):
-        layer.update(take_profit_levels_basis='original_units_cumulative_floor_frozen_initial_R',
+        layer.update(take_profit_levels_fill='next_bar_open_market', take_profit_levels_basis='original_units_cumulative_floor_frozen_initial_R',
                      take_profit_final_100='close_all_remaining', take_profit_zero_units='mark_reached_without_order')
     return {'risk_layer': layer}

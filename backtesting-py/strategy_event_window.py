@@ -130,6 +130,7 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
                     continue
                 record.update(entry_bar_utc=opens[entry].isoformat(), planned_exit_decision_bar_utc=opens[exit_bar].isoformat())
                 self._by_decision.setdefault(entry - 1, []).append(record)
+            self._native_decisions = {}
             self._decisions = {}   # decision bar -> reason of the close order queued at its close
             self._next_bar = -1    # last bar next() ran on; short of the last bar => the run broke there
 
@@ -138,8 +139,19 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
             """What settle_event_window_exits needs besides result.v2: decisions, bar opens, break bar."""
             opens = [int(utc_datetime(t).timestamp()) for t in self.data.index]
             stop = self._next_bar + 1
-            return dict(decisions=dict(self._decisions), bar_opens=opens,
+            return dict(decisions=dict(self._decisions), native_decisions=dict(self._native_decisions), bar_opens=opens,
                         stop_bar=stop if stop < len(opens) else None)
+
+        def _risk_native_record_exit(self):
+            # Native protective fills are current-bar facts; pending partial / time
+            # closes in _decisions keep their next-open mapping.
+            if self._risk_exit_reason != 'liquidation':
+                self._native_decisions[len(self.data)-1] = self._risk_exit_reason
+
+        def _risk_native_blocked_next(self):
+            bar = self._next_bar = len(self.data)-1
+            for record in self._by_decision.get(bar, ()):
+                record.update(status='skipped_in_position')
 
         def next(self):
             bar = self._next_bar = len(self.data) - 1
@@ -149,7 +161,7 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
                 if self._risk_check_exit():
                     self._decisions[bar] = self._risk_exit_reason or 'risk_exit'
                 elif bar >= trade.entry_bar + config.bars_after - 1 and not any(
-                        order.parent_trade is trade for order in self.orders):
+                        order.parent_trade is trade and not order.is_contingent for order in self.orders):
                     self._decisions[bar] = 'window_end'
                     # P6: the event window's bars_after ran out -- a time exit, not a signal.
                     self.__dict__['_exit_kind_pending'] = 'time_exit'
@@ -171,7 +183,8 @@ def _utc(seconds):
     return datetime.fromtimestamp(seconds, timezone.utc).isoformat()
 
 
-def settle_event_window_exits(events, trades_v2, isolated_risk, decisions, bar_opens, stop_bar):
+def settle_event_window_exits(events, trades_v2, isolated_risk, decisions, bar_opens, stop_bar,
+                              native_decisions=None):
     """After the run: derive every submitted event's outcome from the settled result.v2 rows.
 
     The strategy only recorded its decisions (which events it submitted, and the reason of each close
@@ -200,6 +213,7 @@ def settle_event_window_exits(events, trades_v2, isolated_risk, decisions, bar_o
     by_fill = {}
     for bar in sorted(decisions):
         by_fill.setdefault(bar_opens[min(bar + 1, len(bar_opens) - 1)], []).append(decisions[bar])
+    native_fills = {bar_opens[bar]: reason for bar, reason in (native_decisions or {}).items()}
     insolvent_at = bar_opens[stop_bar] if stop_bar is not None else None
     submitted = [record for record in events if record.get('status') == 'submitted']
     rows = {id(record): [] for record in submitted}
@@ -215,6 +229,8 @@ def settle_event_window_exits(events, trades_v2, isolated_risk, decisions, bar_o
             return 'liquidation'
         if by_fill.get(row['closed_at']):
             return by_fill[row['closed_at']].pop(0)
+        if row['closed_at'] in native_fills:
+            return native_fills.pop(row['closed_at'])
         if row['closed_at'] == insolvent_at:
             return 'insolvency'
         return 'engine_finalize_trades_settlement'

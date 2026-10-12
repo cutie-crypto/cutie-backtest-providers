@@ -87,6 +87,10 @@ def manual_run(rows, params, side='long', entry_bar=1, warm=None, second_entry=N
             self.states = []
             self.reasons = []
 
+        def _risk_native_record_exit(self):
+            self.states.append(self._risk_state)
+            self.reasons.append(self._risk_exit_reason)
+
         def next(self):
             if self.position:
                 exited = self._risk_check_exit()
@@ -106,15 +110,15 @@ def manual_run(rows, params, side='long', entry_bar=1, warm=None, second_entry=N
 
 @pytest.mark.parametrize('side', ['long', 'short'])
 @pytest.mark.parametrize('kind', ['stop_loss', 'take_profit'])
-def test_wick_only_touch_exits_next_open_not_at_stop_or_take(side, kind):
+def test_wick_only_touch_fills_protective_price_on_trigger_bar(side, kind):
     stop = (94, 101) if side == 'long' else (99, 106)
     take = (99, 111) if side == 'long' else (89, 101)
     low, high = stop if kind == 'stop_loss' else take
     rows = [[100, 101, 99, 100]] * 3 + [[100, high, low, 100], [103, 104, 102, 103], [100, 101, 99, 100]]
     result = manual_run(rows, dict(risk_layer_enabled=True, stop_loss_pct=5, take_profit_pct=10), side)
     trade = result['_trades'].iloc[0]
-    assert trade.EntryBar == 2 and trade.ExitBar == 4
-    assert trade.ExitPrice == 103  # deliberately different from either protective price
+    assert trade.EntryBar == 2 and trade.ExitBar == 3
+    assert trade.ExitPrice == (95 if side == 'long' else 105) if kind == 'stop_loss' else trade.ExitPrice == (110 if side == 'long' else 90)
     assert result['_strategy'].reasons[-1] == kind
     legacy = manual_run(rows, dict(risk_layer_enabled=False, stop_loss_pct=5, take_profit_pct=10), side)
     assert legacy['_trades'].iloc[0].ExitBar == 5
@@ -124,7 +128,8 @@ def test_wick_only_touch_exits_next_open_not_at_stop_or_take(side, kind):
 def test_real_same_bar_dual_touch_stop_reason_wins(side):
     rows = [[100, 101, 99, 100]] * 3 + [[100, 111, 89, 100], [102, 103, 101, 102], [100, 101, 99, 100]]
     result = manual_run(rows, dict(risk_layer_enabled=True, stop_loss_pct=5, take_profit_pct=10), side)
-    assert result['_trades'].iloc[0].ExitBar == 4
+    assert result['_trades'].iloc[0].ExitBar == 3
+    assert result['_trades'].iloc[0].ExitPrice == (95 if side == 'long' else 105)
     assert result['_strategy'].reasons[-1] == 'stop_loss'
 
 
@@ -136,7 +141,8 @@ def test_r_targets_use_positive_frozen_initial_distance(side, stop, take):
     assert state.initial_distance == D(5)
     assert state.take_price == D(take)
     assert decide_exit(state, high=take if side == 'long' else 101,
-                       low=take if side == 'short' else 99) == 'take_profit'
+                       low=take if side == 'short' else 99) is None
+    assert decide_exit(state, high=110, low=90, holding_due=True) == 'time_expiry'
 
 
 def test_atr_uses_first_tr_wilder_seed_gap_and_preentry_history():
@@ -151,8 +157,8 @@ def test_atr_uses_first_tr_wilder_seed_gap_and_preentry_history():
     assert state.initial_stop == D('114.75')
     assert state.take_price == D('130.50')
     assert result['_strategy'].reasons[0] == 'take_profit'  # fill bar high hits target
-    assert result['_trades'].iloc[0].ExitPrice == 121
-    assert result['_trades'].iloc[0].ExitBar == 4
+    assert result['_trades'].iloc[0].ExitPrice == 130.5
+    assert result['_trades'].iloc[0].ExitBar == 3
 
 
 def test_atr_includes_warmup_prefix_and_does_not_recompute_after_entry():
@@ -180,15 +186,15 @@ def test_risk_state_resets_for_reentry_at_different_fill():
             [102, 103, 101, 102], [200, 201, 199, 200], [200, 201, 189, 200], [198, 199, 197, 198]]
     result = manual_run(rows, dict(risk_layer_enabled=True, stop_loss_pct=5, take_profit_r=2), second_entry=4)
     assert list(result['_trades'].EntryPrice) == [100, 200]
-    assert list(result['_trades'].ExitBar) == [4, 7]
+    assert list(result['_trades'].ExitBar) == [3, 6]
     assert result['_strategy'].states[-1].initial_distance == 10
 
 
 def test_assumptions_only_added_for_opt_in():
     assert risk_assumptions({}) == {}
     assumptions = risk_assumptions(NEW)['risk_layer']
-    assert assumptions['fill'] == 'next_bar_open_market'
-    assert assumptions['fill_price_is_stop_price'] is False
+    assert assumptions['fill'] == 'trigger_price_or_gap_open'
+    assert assumptions['fill_price_is_stop_price'] is True
     assert assumptions['atr_seed'] == 'first_true_range'
 
 from fastapi.testclient import TestClient
@@ -252,7 +258,7 @@ def test_http_assumptions_and_atr_warmup_window(monkeypatch, tmp_path, enabled):
     assert calls[1] == (int(data.index[60].timestamp()) - 202*3600, int(data.index[60].timestamp()))
     assert body['assumptions']['indicator_warmup_bars'] == expected_warmup
     if enabled:
-        assert body['assumptions']['risk_layer']['fill_price_is_stop_price'] is False
+        assert body['assumptions']['risk_layer']['fill_price_is_stop_price'] is True
         assert body['assumptions']['risk_layer']['atr_seed'] == 'first_true_range'
     assert len(calls) == 2
     assert body['trades']

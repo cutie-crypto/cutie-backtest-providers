@@ -75,6 +75,9 @@ def run(extra=None, *, side='long', rows=None, signal=False, reentry=False, fee=
         def init(self):
             self._risk_init()
             self.decisions, self.signal_orders, self.blocked_orders = {}, 0, []
+        def _risk_native_record_exit(self):
+            self.decisions[len(self.data)-1] = (True, self._risk_exit_reason)
+
         def next(self):
             i = len(self.data)-1
             if self.position:
@@ -133,7 +136,7 @@ def test_same_bar_stop_nearer_than_liquidation(side):
     stats,result,report=run(dict(risk_layer_enabled=True,stop_loss_pct=10),side=side)
     assert stats['_strategy'].decisions[3]==(True,'stop_loss')
     assert report['liquidation_count']==0
-    assert result['trades'][0]['closed_at']==START+4*STEP
+    assert result['trades'][0]['closed_at']==START+3*STEP
 
 
 @pytest.mark.parametrize('side',SIDES)

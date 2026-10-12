@@ -2900,6 +2900,23 @@ def _stop_exit_kind(strategy, state) -> str:
     return "trailing_stop"
 
 
+def _filled_parent_order(orders, trade, data):
+    """Identify the native broker's fill just before _reduce_trade (0.6.5).
+
+    Triggered SL has had its stop consumed. A pending plain close at the queue
+    head must still win over a later TP touched on the same bar.
+    """
+    for order in orders:
+        if order.parent_trade is not trade or order.stop is not None:
+            continue
+        if order.limit is not None and not (
+            data.Low[-1] <= order.limit if order.is_long else data.High[-1] >= order.limit
+        ):
+            continue
+        return order
+    return None
+
+
 class _ExitKindOrders(list):
     """broker.orders that stamps the exit kind on a trade when a plain close order is queued for it.
 
@@ -2928,6 +2945,15 @@ class _ExitKindOrders(list):
             # Outside next() / broker.next() only finalize_trades closes trades: the window ended.
             kind = {"next": "signal_exit", "broker": "unresolved:broker_close"}.get(phase, "end_of_data")
         trade._exit_kind = kind
+
+    def stamp_fill(self, trade):
+        order = _filled_parent_order(self, trade, self._strategy.data)
+        if order is trade._sl_order and order is not None:
+            risk_state = getattr(self._strategy, "_risk_state", None)
+            trade._exit_kind = (_stop_exit_kind(self._strategy, risk_state)
+                                if risk_state is not None else "stop_loss")
+        elif order is trade._tp_order and order is not None:
+            trade._exit_kind = "take_profit"
 
     def insert(self, index, order):
         self._stamp(order)
@@ -2974,6 +3000,7 @@ def _exit_kind_strategy(strategy):
                 close_trade(trade, price, time_index)
 
             def reduce_and_reset(trade, price, size, time_index):
+                broker.orders.stamp_fill(trade)
                 reduce_trade(trade, price, size, time_index)
                 if trade in broker.trades:
                     trade._exit_kind = None  # The closed copy keeps the kind; the remainder starts over.
@@ -3191,7 +3218,7 @@ class _FilterLayerMixin:
 class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
     """单仓模板共用覆盖层；1 倍且 risk_layer_enabled=false 完整保留旧层。
 
-    3a 显式开启时用 High/Low 判触发，仍提交下一根开盘市价平仓。
+    风控层用原生保护单按触发价成交，跳空取开盘；动态止损收盘更新、下一根生效。
 
     旧层决策时钟只认收盘价（不看当根 High/Low 触碰）：``_risk_check_exit`` 在 next() 每根
     K 线收盘后判定，同一根先判止损、后判止盈；命中即调用现有 position.close()，与
@@ -3231,6 +3258,11 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         return wrapped
 
     def _risk_init(self) -> None:
+        # Some templates force the old High/Low layer for intrinsic stops even
+        # when the optional layer is off. Their intrinsic fills stay in P2.
+        self._risk_native_enabled = bool(self._risk.get("risk_layer_enabled")) and bool(
+            type(self)._risk.get("risk_layer_enabled")) and any(self._risk.get(key) for key in (
+                "stop_loss_pct", "take_profit_pct", "atr_stop_multiplier", "take_profit_r", "trailing_stop_pct"))
         self._start_equity = self.equity
         if self._risk.get("leverage", 1) > 1 or self._risk.get("position_sizing_enabled"):
             self._isolated_liquidations = []
@@ -3246,6 +3278,7 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             self._risk_state = None
             self._risk_entry_atr = None
             self._risk_exit_reason = None
+            self._risk_native_closed_bar = -1
             if self._risk.get("trailing_stop_pct") or self._risk.get("breakeven_stop"):
                 # Timestamp.value is nanoseconds; kernel bars have inclusive ends.
                 self._risk_bar_times = [int(pd.Timestamp(t).value) for t in self.data.index]
@@ -3264,6 +3297,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
 
         if self._risk.get("position_sizing_enabled"):
             self._sizing_install()
+        if self._risk_native_enabled:
+            self._risk_native_install()
         if (self._filter_config is not None and self._filter_config.pattern_confirm_enabled
                 and getattr(self, "_pattern_confirm_signal_stop", False)):
             # Installed inside template guards, outside sizing: stop/target guards run first,
@@ -3348,6 +3383,17 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         self._isolated_realized = Decimal(0)
 
         def settle_close(trade, price, time_index):
+            if self._risk_native_enabled:
+                opened_at = int(pd.Timestamp(trade.entry_time).value // 10**9)
+                at = int(pd.Timestamp(self.data.index[-1]).value // 10**9)
+                if any(record["opened_at"] == opened_at and record["liquidation_bar_open_time"] == at
+                       for record in self._isolated_liquidations):
+                    candidate = _isolated_liquidation_candidate(
+                        entry_price=trade.entry_price, leverage=self._risk["leverage"],
+                        is_long=trade.is_long, open_price=self.data.Open[-1],
+                        high=self.data.High[-1], low=self.data.Low[-1])
+                    price = float(self.data.Open[-1] if candidate["liquidation_gap"]
+                                  else candidate["liquidation_price"])
             close_trade(trade, price, time_index)
             closed = broker.closed_trades[-1]
             rows = pd.DataFrame([dict(Size=closed.size, EntryPrice=closed.entry_price,
@@ -3398,7 +3444,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
 
     def _risk_isolated_exit(self, stop: Optional[Decimal] = None) -> bool:
         trade = self.trades[-1]
-        if any(order.parent_trade is trade for order in self.orders):
+        if any(order.parent_trade is trade and not order.is_contingent
+               and order is not self.__dict__.get("_risk_native_reduced_order") for order in self.orders):
             return True
         candidate = _isolated_liquidation_candidate(
             entry_price=trade.entry_price, leverage=self._risk["leverage"],
@@ -3421,16 +3468,13 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         })
         self._isolated_blocked_bar = len(self.data) - 1
         self._risk_exit_reason = "liquidation"
+        if self._risk_native_enabled:
+            self._risk_native_record_exit()
         self.position.close()
         return True
 
-    def _risk_layer_check_exit(self) -> bool:
-        from strategy_risk_overlay import initial_risk_state, decide_exit, advance_risk_state, level_exit
-
-        trade = self.trades[-1]
-        # Parent orders remain pending until the broker confirms the next-open fill.
-        if any(order.parent_trade is trade for order in self.orders):
-            return True
+    def _risk_native_state(self, trade) -> None:
+        from strategy_risk_overlay import initial_risk_state
         if self._risk_trade is not trade:
             self._risk_trade = trade
             self._risk_state = self._sizing_states.get(trade) if self._risk.get("position_sizing_enabled") else None
@@ -3447,6 +3491,107 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
                     Decimal(str(trade.entry_price)), self._risk["leverage"], trade.is_long)
                 if stop is not None and (stop <= price if trade.is_long else stop >= price):
                     self._isolated_stop_beyond_trades += 1
+
+    def _risk_native_protect(self, trade) -> None:
+        state = self._risk_state
+        stop = state.stop_state.effective_stop if state.stop_state is not None else state.initial_stop
+        # TP1-3 remain market partial closes; only a single target is a native limit.
+        if state.take_price is not None and not state.levels:
+            trade.tp = float(state.take_price)
+        if stop is not None:
+            trade.sl = float(stop)
+
+    def _risk_native_record_exit(self) -> None:
+        """Template reporting hook for a protective fill, before next()."""
+
+    def _risk_native_blocked_next(self) -> None:
+        """Template bookkeeping for a bar whose protective fill prevents entry."""
+
+    def _risk_native_install(self) -> None:
+        broker = self._broker
+        process, opened, reduced = broker._process_orders, broker._open_trade, broker._reduce_trade
+        self._risk_native_closed_bar = -1
+        new_trade = False
+
+        def on_open(price, size, sl, tp, time_index, tag):
+            nonlocal new_trade
+            opened(price, size, sl, tp, time_index, tag)
+            trade = broker.trades[-1]
+            self._risk_native_state(trade)
+            if not self._at_final_bar():
+                self._risk_native_protect(trade)
+            new_trade = True
+
+        def on_reduce(trade, price, size, time_index):
+            nonlocal new_trade
+            order = _filled_parent_order(broker.orders, trade, self.data)
+            if order is not None and order in (trade._sl_order, trade._tp_order):
+                self._risk_exit_reason = "stop_loss" if order is trade._sl_order else "take_profit"
+                self._risk_native_record_exit()
+                if abs(size) == abs(trade.size):
+                    self._risk_native_closed_bar = len(self.data) - 1
+            reduced(trade, price, size, time_index)
+            if trade in broker.trades and order is not None and not order.is_contingent:
+                # A queued partial market close fills before this bar's protective
+                # orders. Arbitrate liquidation of the remainder before SL can fill.
+                self.__dict__["_risk_native_reduced_order"] = order
+                count = len(getattr(self, "_isolated_liquidations", ()))
+                try:
+                    arbitrate()
+                finally:
+                    self.__dict__.pop("_risk_native_reduced_order", None)
+                if len(getattr(self, "_isolated_liquidations", ())) > count:
+                    new_trade = True  # Reprocess the newly queued liquidation close.
+
+        def arbitrate():
+            for trade in list(broker.trades):
+                self._risk_native_state(trade)
+                if self._at_final_bar():
+                    trade.sl = trade.tp = None
+                if self._risk.get("leverage", 1) > 1:
+                    state = self._risk_state
+                    stop = None if self._at_final_bar() else (
+                        state.stop_state.effective_stop if state.stop_state is not None else state.initial_stop)
+                    if self._risk_isolated_exit(stop):
+                        # A liquidation winner must remove protective orders before the
+                        # broker fills its close. Settlement keeps the existing isolated fill.
+                        if self._risk_exit_reason == "liquidation":
+                            trade.sl = trade.tp = None
+
+        def protected_process():
+            nonlocal new_trade
+            new_trade = False
+            arbitrate()
+            process()
+            if new_trade and broker.trades:
+                # Entry prices are only known after a market fill. Re-run the native
+                # broker on the same OHLC so entry-bar touches are not delayed.
+                new_trade = False
+                arbitrate()
+                process()
+
+        broker._open_trade, broker._reduce_trade = on_open, on_reduce
+        broker._process_orders = protected_process
+        strategy_next = self.next
+
+        def protected_next():
+            if self._risk_native_closed_bar == len(self.data) - 1:
+                self._risk_native_blocked_next()
+                return
+            strategy_next()
+
+        # Cover direct Backtest runs as well as run_backtest's reporting subclass;
+        # templates that call buy() directly must share the same no-reentry clock.
+        self.next = protected_next
+
+    def _risk_layer_check_exit(self) -> bool:
+        from strategy_risk_overlay import decide_exit, decide_legacy_exit, advance_risk_state, level_exit
+
+        trade = self.trades[-1]
+        # Parent orders remain pending until the broker confirms the next-open fill.
+        if any(order.parent_trade is trade and not order.is_contingent for order in self.orders):
+            return True
+        self._risk_native_state(trade)
         if self._risk.get("leverage", 1) > 1:
             # PIN7-E: the last bar skips the stop below, so it cannot veto liquidation there.
             stop = None if self._at_final_bar() else (
@@ -3458,7 +3603,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             return False
         bar = len(self.data) - 1
         fact = self._holding_expiry()
-        reason = decide_exit(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
+        decide = decide_exit if self._risk_native_enabled else decide_legacy_exit
+        reason = decide(self._risk_state, high=self.data.High[-1], low=self.data.Low[-1], holding_due=fact.due)
         if reason is not None:
             self._risk_exit_reason = reason
             if reason == "time_expiry":
@@ -3476,6 +3622,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
             self._risk_state = advance_risk_state(
                 self._risk_state, self._risk, open_at=open_at, close_at=next_open - 1,
                 high=self.data.High[-1], low=self.data.Low[-1], close=self.data.Close[-1])
+        if self._risk_native_enabled:
+            self._risk_native_protect(trade)
         if units:
             self._risk_exit_reason = "take_profit_levels"
             # Precompute integer units to bypass Trade.close's minimum-one/round semantics.
@@ -3518,6 +3666,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
 
     def _risk_open(self, is_long: bool) -> Optional[str]:
         """Shared market-entry path; returns the blocking gate, None once the order is queued."""
+        if self._risk.get("risk_layer_enabled") and self._risk_native_closed_bar == len(self.data) - 1:
+            return "protective_exit_bar"
         if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
             return "isolated_liquidation_bar"
         if not self._time_allow_entry():
@@ -3584,6 +3734,8 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
         """The shared entry gates of a confirmed signal, judged at the confirming bar k (2b1 / 2b2)."""
         # Unreachable on the confirmation path; if ever hit, the call-order premise has been broken
         # (_pattern_confirm_advance files it under position_or_order_open).
+        if self._risk.get("risk_layer_enabled") and self._risk_native_closed_bar == len(self.data) - 1:
+            return "protective_exit_bar"
         if self._risk.get("leverage", 1) > 1 and self._isolated_blocked_bar == len(self.data) - 1:
             return "isolated_liquidation_bar"
         if not self._time_allow_entry():
@@ -6612,7 +6764,7 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
     from dataclasses import replace
     from strategy_time_layer import HoldingExpiry
     from strategy_time_series import PeriodDefinition, SeriesBar, prefix_vwap
-    from strategy_risk_overlay import initial_risk_state, decide_exit
+    from strategy_risk_overlay import initial_risk_state, decide_legacy_exit
     from strategy_dynamic_stop import initial_stop_state
 
     class VwapReversionStrategy(_FixedRiskMixin, Strategy):
@@ -6724,10 +6876,7 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
             self._f5_expiries.append(dict(decision_at=int(self._f5_clock.decision_utc(self.data.index[-1]).timestamp()),
                 reason="utc_day_end" if self._f5_daily_due else "configured_time_expiry"))
 
-        def _risk_check_exit(self):
-            if not self.position or not self.trades:
-                return False
-            trade = self.trades[-1]
+        def _risk_native_state(self, trade):
             if self._risk_trade is not trade:
                 self._risk_trade = trade
                 state = self._f5_frozen
@@ -6742,6 +6891,12 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
                         self._f5_stop_beyond_liquidation += 1
                         if any(self._risk.get(key) for key in ("atr_stop_multiplier", "trailing_stop_pct", "breakeven_stop")):
                             self._isolated_stop_beyond_trades += 1
+
+        def _risk_check_exit(self):
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            self._risk_native_state(trade)
             if self._risk.get("risk_layer_enabled"):
                 return self._risk_layer_check_exit()
             # Off the risk layer the stop below is close-only, so any intrabar liquidation precedes
@@ -6753,7 +6908,7 @@ def _build_vwap_reversion(params: dict[str, Any], *, initial_capital: float = 10
             if self._at_final_bar():
                 return False
             fact = self._holding_expiry()
-            reason = decide_exit(self._risk_state, high=self.data.Close[-1], low=self.data.Close[-1], holding_due=fact.due)
+            reason = decide_legacy_exit(self._risk_state, high=self.data.Close[-1], low=self.data.Close[-1], holding_due=fact.due)
             if reason is None:
                 return False
             self._risk_exit_reason = reason
@@ -6844,7 +6999,7 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
     risk = _parse_fixed_risk_params(effective)
     risk["max_holding_bars"] = holding
     from backtesting import Strategy
-    from strategy_risk_overlay import initial_risk_state, decide_exit
+    from strategy_risk_overlay import initial_risk_state, decide_legacy_exit
     from dataclasses import replace
     from strategy_dynamic_stop import initial_stop_state
 
@@ -6902,10 +7057,7 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
             # same initial_stop _risk_check_exit keeps after the fill; consulted after the gap guard.
             return self._f6_frozen.initial_stop if order is self._f6_order else None
 
-        def _risk_check_exit(self):
-            if not self.position or not self.trades:
-                return False
-            trade = self.trades[-1]
+        def _risk_native_state(self, trade):
             if self._risk_trade is not trade:
                 self._risk_trade = trade
                 state = self._f6_frozen
@@ -6914,6 +7066,12 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
                     if state.stop_state is not None else None)
                 self._risk_state = replace(state, entry_price=Decimal(str(trade.entry_price)),
                                            stop_state=managed, original_units=abs(trade.size))
+
+        def _risk_check_exit(self):
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            self._risk_native_state(trade)
             if self._risk.get("risk_layer_enabled"):
                 return self._risk_layer_check_exit()
             # Off the risk layer the stop below is close-only, so any intrabar liquidation precedes
@@ -6927,7 +7085,7 @@ def _build_red_streak_rsi(params: dict[str, Any], *, initial_capital: float = 10
             fact = self._holding_expiry()
             # Disabled risk extension retains close-only triggers; intrinsic
             # expiry still uses the shared fill-bar-is-1 mechanism.
-            reason = decide_exit(self._risk_state, high=self.data.Close[-1], low=self.data.Close[-1],
+            reason = decide_legacy_exit(self._risk_state, high=self.data.Close[-1], low=self.data.Close[-1],
                                  holding_due=fact.due)
             if reason is None:
                 return False
@@ -7222,7 +7380,7 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
     from backtesting import Strategy
     from dataclasses import replace
     from strategy_swing_points import swing_points
-    from strategy_risk_overlay import RiskState, initial_risk_state, decide_exit
+    from strategy_risk_overlay import RiskState, initial_risk_state, decide_legacy_exit
     from strategy_dynamic_stop import initial_stop_state
 
     class FibonacciRetracementStrategy(_FixedRiskMixin, Strategy):
@@ -7305,10 +7463,11 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                     wave["invalidated_at"] = at
             self._fib_seen = bar
 
-        def _risk_check_exit(self):
-            if not self.position or not self.trades:
-                return False
-            trade = self.trades[-1]
+        def _risk_native_record_exit(self):
+            self._fib_exits.append(dict(decision_index=self._warmup_bars + len(self.data) - 1,
+                                        reason=self._risk_exit_reason))
+
+        def _risk_native_state(self, trade):
             if self._risk_trade is not trade:
                 self._risk_trade = trade
                 state = self._fib_frozen
@@ -7322,6 +7481,12 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                     liquidation = _isolated_liquidation_price(Decimal(str(trade.entry_price)), self._risk["leverage"], True)
                     if state.initial_stop is not None and state.initial_stop <= liquidation:
                         self._isolated_stop_beyond_trades += 1
+
+        def _risk_check_exit(self):
+            if not self.position or not self.trades:
+                return False
+            trade = self.trades[-1]
+            self._risk_native_state(trade)
             if self._risk.get("risk_layer_enabled"):
                 exited = self._risk_layer_check_exit()
             # The frozen intrinsic stop is judged intrabar and joins T2-2b arbitration. An explicit
@@ -7337,7 +7502,7 @@ def _build_fibonacci_retracement(params: dict[str, Any], *, initial_capital: flo
                 if self._at_final_bar():
                     return False
                 fact = self._holding_expiry()
-                reason = decide_exit(self._risk_state,
+                reason = decide_legacy_exit(self._risk_state,
                     high=self.data.High[-1] if intrinsic else self.data.Close[-1],
                     low=self.data.Low[-1] if intrinsic else self.data.Close[-1], holding_due=fact.due)
                 exited = reason is not None

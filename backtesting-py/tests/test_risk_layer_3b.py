@@ -100,6 +100,9 @@ def run(rows, extra, side='long', size=11, repeat=False, signal=False, finalize=
             self.snapshots = []
             self.signal_orders = 0
             self.close_orders = []
+        def _risk_native_record_exit(self):
+            self.snapshots.append((len(self.data)-1, self._risk_state, abs(self.trades[-1].size), self._risk_exit_reason))
+
         def next(self):
             i = len(self.data)-1
             if i == 1:
@@ -108,10 +111,10 @@ def run(rows, extra, side='long', size=11, repeat=False, signal=False, finalize=
                 return
             exited = self._risk_check_exit()
             self.snapshots.append((i, self._risk_state, abs(self.trades[-1].size), self._risk_exit_reason))
-            self.close_orders.append((i, len([o for o in self.orders if o.parent_trade is self.trades[-1]])))
+            self.close_orders.append((i, len([o for o in self.orders if o.parent_trade is self.trades[-1] and not o.is_contingent])))
             if repeat and exited:
                 assert self._risk_check_exit()
-                assert len([o for o in self.orders if o.parent_trade is self.trades[-1]]) == 1
+                assert len([o for o in self.orders if o.parent_trade is self.trades[-1] and not o.is_contingent]) == 1
             if exited:
                 return
             if signal and i >= 3:
@@ -130,13 +133,13 @@ def test_trailing_prior_stop_next_bar_entry_extreme_and_ratchet(side):
     rows = [FLAT, FLAT, [100,150,99,100], [100,120,100,115],
             [115,119,113,115], [110,111,107,109], [104,105,103,104], FLAT]
     result = run(rows, dict(trailing_stop_pct=10), side)
-    assert list(result['_trades'].ExitBar) == [6]
+    assert list(result['_trades'].ExitBar) == [5]
     s2,s3,s4 = [snap(result,i).stop_state for i in (2,3,4)]
     assert s2.extreme == 100  # entry fill bar's extreme is excluded
     assert s3.extreme == (120 if side == 'long' else 80)
     assert s3.effective_stop == (108 if side == 'long' else 88)
     assert s4.extreme == s3.extreme and s4.effective_stop == s3.effective_stop
-    assert result['_trades'].iloc[0].ExitPrice == (104 if side == 'long' else 96)
+    assert result['_trades'].iloc[0].ExitPrice == (108 if side == 'long' else 90)  # short gaps through 88
 
 @pytest.mark.parametrize('side', ['long','short'])
 def test_breakeven_wick_exact_close_and_following_bar(side):
@@ -145,7 +148,7 @@ def test_breakeven_wick_exact_close_and_following_bar(side):
     assert not snap(result,3).stop_state.breakeven_active
     assert snap(result,4).stop_state.breakeven_active
     assert snap(result,4).stop_state.effective_stop == 100
-    assert list(result['_trades'].ExitBar) == [6]
+    assert list(result['_trades'].ExitBar) == [5]
 
 @pytest.mark.parametrize('side', ['long','short'])
 def test_breakeven_never_loosens_tighter_trailing_and_uses_initial_R(side):
@@ -209,7 +212,8 @@ def test_partial_exit_does_not_reset_extreme_or_initial_R(side):
     result = run(rows, params, side)
     assert snap(result,4).initial_distance == 10
     assert snap(result,4).stop_state.extreme == (120 if side == 'long' else 80)
-    assert list(result['_trades'].ExitBar) == [4,5]
+    assert list(result['_trades'].ExitBar) == [4,4]
+    assert result['_trades'].iloc[1].ExitPrice == (108 if side == 'long' else 88)
     assert list(abs(result['_trades'].Size)) == [3,8]
 
 @pytest.mark.parametrize('side', ['long','short'])
@@ -227,7 +231,7 @@ def test_priority_and_template_signal_suppression(mode, expected, side):
     assert result['_strategy'].snapshots[-1][3] == expected
     assert result['_strategy'].signal_orders == 0
     assert list(abs(result['_trades'].Size)) == [11]
-    assert list(result['_trades'].ExitBar) == [4]
+    assert list(result['_trades'].ExitBar) == [3 if mode == 'stop' else 4]
 
 @pytest.mark.parametrize('side', ['long','short'])
 def test_partial_order_suppresses_template_signal(side):
@@ -444,6 +448,11 @@ def test_every_runtime_mixin_feature_real_backtest(name,feature,monkeypatch):
         data = risk_feature_frame(feature)
         params['swing_n'] = 2
     cls=p.TOOL_SPECS['local.backtesting_py.'+tool_name(name)]['build'](params)['strategy']
+    record_exit = cls._risk_native_record_exit
+    def observe_fill(self):
+        record_exit(self)
+        observations.append((self._risk_state, self._risk_exit_reason, True))
+    cls._risk_native_record_exit = observe_fill
     stats=Backtest(data,cls,cash=100000,exclusive_orders=True,finalize_trades=True).run()
     assert not stats['_trades'].empty and observations
     assert any(exited or (feature == 'breakeven' and s.stop_state.breakeven_active)
