@@ -80,9 +80,9 @@ and `ema_pullback` use the same tenfold, capped, best-effort path. The longest
 EMA period determines the tenfold request; RSI periods do not contribute to it.
 Each template retains its original `min_bars` and entry/exit rules. The shared
 fetch takes `max(tenfold target, min_bars)`, so when `rsi_period + 1` exceeds
-`10 × ema_slow` (`ema_trend_rsi`) or `10 × ema_period` (`ema_rsi_pullback`) the
-prefix still covers `min_bars` and the minimum-bars guard no longer delays the
-first eligible main-range entry; `actual_bars` may then exceed the reported
+`10 × ema_slow` — reachable under the public schema only for `ema_trend_rsi` —
+the prefix still covers `min_bars` and the minimum-bars guard no longer delays
+the first eligible main-range entry; `actual_bars` may then exceed the reported
 tenfold `target_bars`. Warmup candles seed indicators only and never generate
 trades or equity points. Other templates retain their existing warmup depth.
 
