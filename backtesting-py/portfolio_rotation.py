@@ -27,9 +27,25 @@ _NEXT_FETCH = 0.0
 
 
 class RotationError(ValueError):
-    def __init__(self, code, reason, message):
+    def __init__(self, code, reason, message, *, provenance=None, stream=None):
         super().__init__(message)
         self.code, self.reason = code, reason
+        # PROV-PROVENANCE：取数失败带 provider 原样 provenance；已取到的流出错带 (source, central, cached)。
+        self.provenance, self.stream = provenance, stream
+
+
+def _stream_fetch_error(symbol, e):
+    """CCXT-451：按单币路径口径分开上报取数失败，不再全压成 INSUFFICIENT_DATA。"""
+    provenance = getattr(e, 'provenance', None)
+    provenance = provenance if isinstance(provenance, dict) else None
+    error_type = getattr(e, 'error_type', None)
+    if error_type == 'NO_DATA' or (error_type is None and isinstance(e, ValueError) and str(e) == 'NO_DATA'):
+        return RotationError('NO_DATA', 'stream_no_data', f'required stream {symbol}: no market data in requested range', provenance=provenance)
+    if error_type is not None:
+        return RotationError('DATA_FETCH_FAILED', 'stream_fetch_failed', f'required stream {symbol}: market data fetch failed', provenance=provenance)
+    if isinstance(e, RuntimeError) and 'RATE_LIMITED' in str(e):
+        return RotationError('RATE_LIMITED', 'rate_limited', f'required stream {symbol}: exchange rate limit exceeded', provenance=provenance)
+    return RotationError('INSUFFICIENT_DATA', 'required_stream_missing', f'required stream {symbol} failed: {e}', provenance=provenance)
 
 
 @dataclass(frozen=True)
@@ -146,19 +162,20 @@ def fetch_rotation(config, fetcher, *, deadline=None):
             except RotationError:
                 raise
             except Exception as e:
-                raise RotationError('INSUFFICIENT_DATA', 'required_stream_missing', f'required stream {symbol} failed: {e}') from e
+                raise _stream_fetch_error(symbol, e) from e
+            meta = (source, central, cached)
             total += len(rows)
             if total > MAX_BARS:
-                raise RotationError('DATA_BUDGET_EXCEEDED', 'price_bar_budget', 'actual price bars exceed 20000')
+                raise RotationError('DATA_BUDGET_EXCEEDED', 'price_bar_budget', 'actual price bars exceed 20000', stream=meta)
             expected = range(config.fetch_start, config.end, DAY)
             if len(rows) != len(expected) or any(r.get('ts') != ts for r, ts in zip(rows, expected)):
-                raise RotationError('INSUFFICIENT_DATA', 'required_stream_missing', f'{symbol}: full interval and {RISK_WARMUP if config.risk_enabled else 8} warmup bars required')
+                raise RotationError('INSUFFICIENT_DATA', 'stream_gap', f'{symbol}: full interval and {RISK_WARMUP if config.risk_enabled else 8} warmup bars required', stream=meta)
             try:
                 for row in rows:
                     for key in ('open', 'close'):
                         decimal_value(Decimal(row[key]), f'{symbol} {key}', positive=True)
             except (KeyError, ValueError, ArithmeticError, TypeError) as e:
-                raise RotationError('INSUFFICIENT_DATA', 'invalid_stream_price', f'{symbol}: invalid price') from e
+                raise RotationError('INSUFFICIENT_DATA', 'invalid_stream_price', f'{symbol}: invalid price', stream=meta) from e
             streams[symbol] = (rows, source, central, cached)
         return streams
     finally:
