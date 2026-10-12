@@ -357,12 +357,16 @@ def test_runtime_mixin_off_state_bytes(monkeypatch,tmp_path,baseline_provider,na
         assert out['result_status']=='success',out
         return without_exit_kinds(out)
     def comparable(out):
-        if name == 'ema_cross':
-            # Validate the added S4b disclosure separately, then keep the exact
-            # historical comparator for every pre-existing field and result.v2.
-            assert out['assumptions'].pop('ema_warmup') == 'EMA 预热取 10×最长周期（目标 600 根，实得 0 根）'
-            assert out['raw_report'].pop('ema_warmup') == dict(requested_bars=600,
-                target_bars=600, actual_bars=0, truncated=False, tenfold_reached=False)
+        ema_targets = {'ema_cross': 600, 'ema_triple_alignment': 1200,
+            'bias_reversion': 200, 'ema_rsi_pullback': 2000, 'ema_trend_rsi': 2000,
+            'ema_pullback': 600, 'ema_pullback_short': 600}
+        if name in ema_targets:
+            # Validate new disclosure, retaining the exact historical comparator
+            # for every pre-existing field and result.v2 (zero warmup here).
+            target = ema_targets[name]
+            assert out['assumptions'].pop('ema_warmup') == f'EMA 预热取 10×最长周期（目标 {target} 根，实得 0 根）'
+            assert out['raw_report'].pop('ema_warmup') == dict(requested_bars=target,
+                target_bars=target, actual_bars=0, truncated=False, tenfold_reached=False)
         return out
     result=comparable(invoke(p))
     v2=('schema_version','trades','equity_curve','metrics','data_manifest')

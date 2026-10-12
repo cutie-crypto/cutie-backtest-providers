@@ -21,6 +21,11 @@ import capture_plow2a_b48e65e as cap  # noqa: E402
 import test_risk_overlay_compatibility as compat  # noqa: E402
 
 GOLDEN = json.loads((Path(__file__).parent / 'fixtures/plow2a_b48e65e.json').read_text())
+# PROV-ARM-WARM: retain frozen cases except the five EMA warmup changes.
+ARM_EMA_OVERRIDES = json.loads((Path(__file__).parent / 'fixtures/arm_ema_warmup_response_overrides.json').read_text())['plow']
+assert set(ARM_EMA_OVERRIDES) == {state + '/' + tool for state in ('on', 'off')
+    for tool in ('ema_triple_alignment', 'ema_trend_rsi', 'ema_rsi_pullback', 'bias_reversion', 'ema_pullback')}
+GOLDEN['cases'].update(ARM_EMA_OVERRIDES)
 # SHORT-PAT-4's three tools postdate the b48e65e golden; their filter gate is covered in test_short_pat4_candles.py.
 SHORT_PAT4 = {'bearish_engulfing', 'shooting_star', 'evening_star',
                     'three_black_crows', 'bearish_doji_reversal'}  # SHORT-PAT-5 +2

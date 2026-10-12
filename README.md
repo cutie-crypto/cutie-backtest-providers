@@ -63,7 +63,7 @@ flag and trade count use each entry's frozen initial stop, including equality;
 subsequent stop ratchets do not increase this count. These nodes appear only for
 futures L>1. Funding, MMR>0, and exchange-specific liquidation rules are excluded.
 
-### EMA cross indicator warmup
+### EMA indicator warmup
 
 `ema_cross` fetches up to `min(10 × max(ema_fast, ema_slow), 20000)`
 closed candles before the main range through the existing OHLCV cache/fetch path.
@@ -75,7 +75,15 @@ meets the uncapped tenfold request). `assumptions.ema_warmup` discloses the
 capped target and actual count. Result.v2 gains no fields.
 Backtests provide reference readings and may have unconverged opening indicators;
 live EMA arming instead rejects requests above 20000 bars because it manages money.
-Other templates retain their existing warmup depth.
+`ema_triple_alignment`, `ema_trend_rsi`, `ema_rsi_pullback`, `bias_reversion`,
+and `ema_pullback` use the same tenfold, capped, best-effort path. The longest
+EMA period determines the request; RSI periods do not contribute. Each template
+retains its original `min_bars` and entry/exit rules. For `ema_trend_rsi`,
+when `rsi_period + 1 > 10 × ema_slow`, the EMA-only target fetches fewer
+prefix candles than the former `min_bars` seed; the unchanged minimum-bars
+guard can delay the first eligible main-range entry. Warmup candles seed
+indicators only and never generate trades or equity points. Other templates
+retain their existing warmup depth.
 
 ### Closed higher-timeframe entry filters
 

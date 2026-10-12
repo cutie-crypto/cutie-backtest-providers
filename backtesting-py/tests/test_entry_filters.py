@@ -40,6 +40,13 @@ BASELINE = json.loads((Path(__file__).parent / 'fixtures/entry_filters_5b8320a.j
 EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
 assert set(EMA_WARMUP_BASELINE['entry_filters']) == {'ema_cross/0', 'ema_cross/1'}
 BASELINE['cases'].update(EMA_WARMUP_BASELINE['entry_filters'])
+# PROV-ARM-WARM: retain engine/result fingerprints, update report disclosure.
+ARM_EMA_BASELINE = json.loads((Path(__file__).parent / 'fixtures/arm_ema_warmup_metadata.json').read_text())
+assert set(ARM_EMA_BASELINE['entry_filters']) == {
+    name + '/' + str(warm) for name in ('ema_triple_alignment', 'ema_trend_rsi',
+    'ema_rsi_pullback', 'bias_reversion', 'ema_pullback', 'ema_pullback@long',
+    'ema_pullback@short') for warm in (0, 1)}
+BASELINE['cases'].update(ARM_EMA_BASELINE['entry_filters'])
 SINGLE_NAMES = sorted({name for name, _ in CASES.values()})
 EXCLUDED = [key.removeprefix('local.backtesting_py.') for key, value in p.TOOL_SPECS.items()
             if value.get('runner') in ('kernel_v3', p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, p.ROTATION_RUNNER)
