@@ -126,7 +126,7 @@ def test_exit_all_to_cash_and_unsellable_order_fails():
     assert decisions[1]['reason'] == 'btc_dominance_above_ema'
     assert output.result['snapshots'][7]['cash'] == '1000'
     assert all(p['qty'] == '0' for p in output.result['snapshots'][7]['positions'])
-    assert output.result['metrics'] == {'total_return': '0', 'max_drawdown': '0', 'fill_count': '4'}
+    assert output.result['metrics'] == {'total_return': '0', 'max_drawdown': '0', 'fill_count': '4', 'trade_count': '2'}
     req = request()
     req['instrument_rules']['SOLUSDT']['min_notional'] = '100'
     cfg = parse_dominance(req['provider_params'], req)
@@ -290,7 +290,7 @@ def test_http_routes_to_dominance_runner_and_v4_manifest(monkeypatch):
     response = http(req, metric)
     assert response['result_status'] == 'success'
     assert response['schema_version'] == 'cutie.backtest_result.v4'
-    assert response['metrics'] == {'total_return': '0', 'max_drawdown': '0', 'fill_count': '4'}
+    assert response['metrics'] == {'total_return': '0', 'max_drawdown': '0', 'fill_count': '4', 'trade_count': '2'}
     assert response['fills'] == replay()[0].result['fills']
     assert response['input_manifests']['metric_series'] == {
         'metric': 'btc_dominance', 'source': 'coinglass', 'unit': 'percent', 'hash': metric['hash'],

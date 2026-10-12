@@ -23,6 +23,17 @@ POST /cutie/backtest      # Bearer auth. JSON body. Returns backtest result.
 
 See the Cutie Feature 37 W3.8 Provider Bridge IMPL in `cutie-docs` for the full schema specification. The provider source in this repository is a reference implementation of that contract.
 
+### Metrics: closed trade count
+
+Every successful result includes `metrics.trade_count`. Portfolio result v4
+(the shared runner, weekly rotation and BTC-dominance rotation) serializes it as
+a nonnegative integer **string**, such as `"0"` or `"12"`, matching the server
+contract. It counts ledger sell fills: a partial reduction counts once, and a
+single sale spanning several FIFO lots counts once. Buy fills and positions
+still open at the end do not count; `fill_count` continues to count both sides.
+Non-v4 results retain their existing integer type and closed-trade or closed-lot
+counting rules. This field does not change execution or any other metric.
+
 ### Single-position template leverage
 
 The single-position `backtesting.py` templates that use the fixed-risk overlay
