@@ -83,6 +83,15 @@ class EventWindowConfig:
         return cls(tuple(sorted(parsed, key=lambda pair: pair[0])), bars_before, bars_after, direction)
 
 
+def skip_native_exit_events(records, reason=None):
+    """A protective fill consumes this decision bar; do not overwrite settled outcomes."""
+    for record in records:
+        if 'status' not in record:
+            record.update(status='skipped_in_position')
+            if reason is not None:
+                record['reason'] = reason
+
+
 def make_event_window_strategy(mixin, config, risk, initial_capital):
     class EventWindowStrategy(mixin, Strategy):
         _risk = risk
@@ -150,8 +159,7 @@ def make_event_window_strategy(mixin, config, risk, initial_capital):
 
         def _risk_native_blocked_next(self):
             bar = self._next_bar = len(self.data)-1
-            for record in self._by_decision.get(bar, ()):
-                record.update(status='skipped_in_position')
+            skip_native_exit_events(self._by_decision.get(bar, ()))
 
         def next(self):
             bar = self._next_bar = len(self.data) - 1
