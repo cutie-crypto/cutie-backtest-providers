@@ -62,6 +62,11 @@ BASELINE['single'].update(SHORTPAT3_BASELINE['single'])
 EMA_WARMUP_BASELINE = json.loads((Path(__file__).parent / 'fixtures/ema_warmup_metadata.json').read_text())
 assert set(EMA_WARMUP_BASELINE['single']) == {'ema_cross'}
 BASELINE['single'].update(EMA_WARMUP_BASELINE['single'])
+# PROV-ARM-WARM: only five builders' report fingerprints change.
+ARM_EMA_BASELINE = json.loads((Path(__file__).parent / 'fixtures/arm_ema_warmup_metadata.json').read_text())
+assert set(ARM_EMA_BASELINE['single']) == {'ema_triple_alignment', 'ema_trend_rsi',
+    'ema_rsi_pullback', 'bias_reversion', 'ema_pullback', 'ema_pullback_short'}
+BASELINE['single'].update(ARM_EMA_BASELINE['single'])
 OI_BASELINE = json.loads((Path(__file__).parent / 'fixtures/oi49_time_off.json').read_text())
 assert BASELINE['single'].keys().isdisjoint(OI_BASELINE['single'])
 BASELINE['single'].update(OI_BASELINE['single'])

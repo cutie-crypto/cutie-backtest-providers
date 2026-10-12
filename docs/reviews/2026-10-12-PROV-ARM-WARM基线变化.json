@@ -1,0 +1,1126 @@
+[
+  {
+    "case": "ema_triple_alignment/0",
+    "old": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "db22c753d50ca29710777cf1a7088ebb043423ad658e7230366febd64832beb3",
+      "raw_report_sha256": "d86dccfe90335e53538a3c517f63ee1a5c3f00b2e7438be9071c2bd8a7deec8c"
+    },
+    "new": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "ec24076bb5a78941a3cea6f6ae1f4c7841229791227e24b2c8419cb651734667",
+      "raw_report_sha256": "a52edbc4d245fd9aebcaedcbd7e1ebb5fc094551563c1702bf8d41e724ae9f74"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_triple_alignment/1",
+    "old": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "03da4f5fca25ab086fa73b8f46d2a2ab81f2e14797735e4bcedbd4f2c712e3fd",
+      "raw_report_sha256": "1275c435840ef509ef8335bfc87ce24a133c34bc0057bd312b9359ee7c7a25e1"
+    },
+    "new": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "edb59c500a7b9ce8754de86eef95d1efa97e78fff705b34dc183e5a43d879962",
+      "raw_report_sha256": "bf4498ed12a849e26c43a5eaf99b3392eb695350b369290b71c8353030db9d40"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_trend_rsi/0",
+    "old": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "7458d4909723e626f28761cca2a033c453056f817edbf104c94cc891fc176527",
+      "raw_report_sha256": "89471bcacf81e82263e4693be54bbf55d1a2254d06d6ec5ce9d8dc1c7262ce8d"
+    },
+    "new": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "b3e4b93683e9a73c43b344ba8fcb962ca4bddc027252dfc67c9d3acda74e4f83",
+      "raw_report_sha256": "a201415749441ea9e16ef74678e3d275e3f44bb3851d3a4e8519c1a3a924fab0"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_trend_rsi/1",
+    "old": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "532460a380c4f8dc88966e3d6d95ee601903baef8a99a84b34648df0abe2080d",
+      "raw_report_sha256": "670d87abdf1e9899fee1b6403e5d8dfb6f3d9fae7781e160459a6173eb2bc407"
+    },
+    "new": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "d106d7a712d8482d9a1013fcf2f87e58c8df5d644ffeb42fc342370bef76b47c",
+      "raw_report_sha256": "d61c31a1ae37e8dc0271b8470b44dd1978d558bd62ab4432d97451a2f8c699bc"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_rsi_pullback/0",
+    "old": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "8082fa8225d74953f3fe8eef13c31fbbe27f7066830e787d2d06ea0ce010498d",
+      "raw_report_sha256": "a19a6cf0bc976ca7ccb6ea17b70c6f3c236212143e755147ab2e4acf98ef3068"
+    },
+    "new": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "0686ebe90f0ae96922186d6ca36aa6bc275110acd41f4a3f9e6ae3868d7cb744",
+      "raw_report_sha256": "f1dbf70ca7994f11a4369d91d92a44d869cf245a9b0cbb91829d156fb5af7610"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_rsi_pullback/1",
+    "old": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "0c1ed33cb31b4bf804c10af884f628698aa1fa9124c778dc95251683f95e5029",
+      "raw_report_sha256": "1289e9ce7cbbfbd0583e7c5c2681baaa2aa9b7897714856097a70c752d311a8a"
+    },
+    "new": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "811adb9836d0559cb498e6e3abc3ce4b2299112937f92edf39620276a083353c",
+      "raw_report_sha256": "ccb7c3adc439987e68c1f8f63d6487144ae053ab1dcea41ec193a55d32436b47"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "bias_reversion/0",
+    "old": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "a58f34f9df48d792d1b0e44bea895fd6e0f1148ba057e217cbc094bcca4dedeb",
+      "raw_report_sha256": "7574b35b34e85be0f8cb26c166c1600700c870c38bc39e64e16860fb60c07c15"
+    },
+    "new": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "93514036eb69ee9c2680d04c98f7b0e1d8f08e2e3040057c8a2216c246dbf2ee",
+      "raw_report_sha256": "b396e4b0e0b1edbd8894827ff4ece9bd1b20ebb058de60f139d86875d3fb7106"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "bias_reversion/1",
+    "old": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "e43efc5128d2be6ae639340f35849a0d0a97926cb89237a859f7b32267f22c0a",
+      "raw_report_sha256": "7574b35b34e85be0f8cb26c166c1600700c870c38bc39e64e16860fb60c07c15"
+    },
+    "new": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "64b0ad2b663bf2658c33460d26cf5ee71ce134130974b4472f60f5dfe105eaa3",
+      "raw_report_sha256": "fc56101e4be65a87cfe8fc902c2e2cbbbd980750ee2f14ce856339e60d4e2fe3"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_pullback/0",
+    "old": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "8122804761a1b1a77f5be127f64fdec69e170285e2fbeccd75f5417924e38462",
+      "raw_report_sha256": "dd28e8b1fa1df0ef7d9fe009e5f622afaf8da707a45cd7a4f198cdb94f610018"
+    },
+    "new": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "b33aa807c89c21a9d92f25f723048e42c2d68fb43f31b1d720bba64ce22273b1",
+      "raw_report_sha256": "cb706b8086c0e62cba5265d2298ec028e202073639a8489245535150c29f45fd"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_pullback/1",
+    "old": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "2e0e12144ca2f2b9637ca01a2f3472c0685d7165c3647f070d186be7e170dfe9",
+      "raw_report_sha256": "a1d32e44f121ade6b431914f4fa111267bdbd56ea6895f2af9908d0eea581975"
+    },
+    "new": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "3561397528e02b317a75c5c89bfe45fe73bdaa7db63f0c0e7182959f60391ccf",
+      "raw_report_sha256": "d24a3fad5b2c42993d16a179e784462402b6899c1e7c236a442fa2ed581a20ed"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_pullback_short/0",
+    "old": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "03029cafba75a2ecb670eeb5a298f26540f0d34419e1ef061853d487061e0289",
+      "raw_report_sha256": "a50a87487c6961bf78f6d49e53864afed8a70361d0d0ec7665bb0453ce6e854f"
+    },
+    "new": {
+      "warmup_bars": 0,
+      "assumptions_sha256": "31959f1362852e20e944d1f19a13b6e0d8b6f3cc9fca5309673a58075cc995ba",
+      "raw_report_sha256": "2ba1b73a16606925df1991ad2c89c9a90a280ead0dafd8607a1cc40f4cf5e100"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "ema_pullback_short/1",
+    "old": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "0263a8b6e072aa54b538fdd55665f2c30c90fdf0ebdd63baaa8ef724eec2e609",
+      "raw_report_sha256": "ca2c8fc15ee8095685ae2ca028099daa78d196415fd71e7b535353dd982d5511"
+    },
+    "new": {
+      "warmup_bars": 60,
+      "assumptions_sha256": "d5549cc59690f79f68891336e9a08d26eead96488f187ab53c2a59bd1a50b630",
+      "raw_report_sha256": "32c43c94f190768e641b81618656d99c651f0187cc4575f236c2c3a6d1985d7c"
+    },
+    "reason": "EMA warmup disclosure added; available prefix and min_bars unchanged"
+  },
+  {
+    "case": "filter/ema_triple_alignment/0",
+    "old": {
+      "min_bars": 120,
+      "engine_trades": "3dc5b2327ffcaf8abe3d5091ef89c269458656d5cbf179af598bade238834070",
+      "engine_equity": "2c9f49c1532f833bbc1df313ccb063cb21d3ced11ce1fbefcb5c0e3a2815661e",
+      "result_v2": "3b15ba39821c12926a4e14eef52ccef3207cb01b2c68c358cda9e71ac4e01a0b",
+      "warmup_bars": 0,
+      "assumptions": "db22c753d50ca29710777cf1a7088ebb043423ad658e7230366febd64832beb3",
+      "raw_report": "d86dccfe90335e53538a3c517f63ee1a5c3f00b2e7438be9071c2bd8a7deec8c"
+    },
+    "new": {
+      "min_bars": 120,
+      "engine_trades": "3dc5b2327ffcaf8abe3d5091ef89c269458656d5cbf179af598bade238834070",
+      "engine_equity": "2c9f49c1532f833bbc1df313ccb063cb21d3ced11ce1fbefcb5c0e3a2815661e",
+      "result_v2": "3b15ba39821c12926a4e14eef52ccef3207cb01b2c68c358cda9e71ac4e01a0b",
+      "warmup_bars": 0,
+      "assumptions": "ec24076bb5a78941a3cea6f6ae1f4c7841229791227e24b2c8419cb651734667",
+      "raw_report": "a52edbc4d245fd9aebcaedcbd7e1ebb5fc094551563c1702bf8d41e724ae9f74"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_triple_alignment/1",
+    "old": {
+      "min_bars": 120,
+      "engine_trades": "2b74a563f2257a31b69c19f67207b4c5d56195ae29d6da1ced429d97b4292adb",
+      "engine_equity": "7ff3ca76321e32fe10cdd83758b4d59f1cb3aaca28bc7a59417460aab98831dc",
+      "result_v2": "daa256be476044549471348ee331d6500bbf265f007051f316448c35a3e275d2",
+      "warmup_bars": 60,
+      "assumptions": "03da4f5fca25ab086fa73b8f46d2a2ab81f2e14797735e4bcedbd4f2c712e3fd",
+      "raw_report": "1275c435840ef509ef8335bfc87ce24a133c34bc0057bd312b9359ee7c7a25e1"
+    },
+    "new": {
+      "min_bars": 120,
+      "engine_trades": "2b74a563f2257a31b69c19f67207b4c5d56195ae29d6da1ced429d97b4292adb",
+      "engine_equity": "7ff3ca76321e32fe10cdd83758b4d59f1cb3aaca28bc7a59417460aab98831dc",
+      "result_v2": "daa256be476044549471348ee331d6500bbf265f007051f316448c35a3e275d2",
+      "warmup_bars": 60,
+      "assumptions": "edb59c500a7b9ce8754de86eef95d1efa97e78fff705b34dc183e5a43d879962",
+      "raw_report": "bf4498ed12a849e26c43a5eaf99b3392eb695350b369290b71c8353030db9d40"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/bias_reversion/0",
+    "old": {
+      "min_bars": 20,
+      "engine_trades": "33138bf11196b9eb7f80e983ef0c8f18620627773c91d9464b82598408bbe4e6",
+      "engine_equity": "032e7340fa9d3124ab856f847af1e4c9228a8df4aa7e9d0471d40aa9a02209ae",
+      "result_v2": "61b0dac35c4853517b00623472232420e4ce72f413d6b3efe2b842d5c7a26386",
+      "warmup_bars": 0,
+      "assumptions": "a58f34f9df48d792d1b0e44bea895fd6e0f1148ba057e217cbc094bcca4dedeb",
+      "raw_report": "7574b35b34e85be0f8cb26c166c1600700c870c38bc39e64e16860fb60c07c15"
+    },
+    "new": {
+      "min_bars": 20,
+      "engine_trades": "33138bf11196b9eb7f80e983ef0c8f18620627773c91d9464b82598408bbe4e6",
+      "engine_equity": "032e7340fa9d3124ab856f847af1e4c9228a8df4aa7e9d0471d40aa9a02209ae",
+      "result_v2": "61b0dac35c4853517b00623472232420e4ce72f413d6b3efe2b842d5c7a26386",
+      "warmup_bars": 0,
+      "assumptions": "93514036eb69ee9c2680d04c98f7b0e1d8f08e2e3040057c8a2216c246dbf2ee",
+      "raw_report": "b396e4b0e0b1edbd8894827ff4ece9bd1b20ebb058de60f139d86875d3fb7106"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/bias_reversion/1",
+    "old": {
+      "min_bars": 20,
+      "engine_trades": "78354ed08c6b9f14d511ec0c3538824ac668becd9c3b5cc4bc8d672c80e59bcb",
+      "engine_equity": "032e7340fa9d3124ab856f847af1e4c9228a8df4aa7e9d0471d40aa9a02209ae",
+      "result_v2": "61b0dac35c4853517b00623472232420e4ce72f413d6b3efe2b842d5c7a26386",
+      "warmup_bars": 60,
+      "assumptions": "e43efc5128d2be6ae639340f35849a0d0a97926cb89237a859f7b32267f22c0a",
+      "raw_report": "7574b35b34e85be0f8cb26c166c1600700c870c38bc39e64e16860fb60c07c15"
+    },
+    "new": {
+      "min_bars": 20,
+      "engine_trades": "78354ed08c6b9f14d511ec0c3538824ac668becd9c3b5cc4bc8d672c80e59bcb",
+      "engine_equity": "032e7340fa9d3124ab856f847af1e4c9228a8df4aa7e9d0471d40aa9a02209ae",
+      "result_v2": "61b0dac35c4853517b00623472232420e4ce72f413d6b3efe2b842d5c7a26386",
+      "warmup_bars": 60,
+      "assumptions": "64b0ad2b663bf2658c33460d26cf5ee71ce134130974b4472f60f5dfe105eaa3",
+      "raw_report": "fc56101e4be65a87cfe8fc902c2e2cbbbd980750ee2f14ce856339e60d4e2fe3"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_rsi_pullback/0",
+    "old": {
+      "min_bars": 200,
+      "engine_trades": "f075a04d658cf4c3e40fb12e25d94a7638f7d867d5c1920b0b131a85d4c99b1c",
+      "engine_equity": "cadf1cb4243320445a148ed048c3590f9325abe677c3fd201bebfe9b185b6cf6",
+      "result_v2": "62a78b8abad8c7b582a50d8eb26760637b75825d5197f538c428466cfe1d5d5c",
+      "warmup_bars": 0,
+      "assumptions": "8082fa8225d74953f3fe8eef13c31fbbe27f7066830e787d2d06ea0ce010498d",
+      "raw_report": "a19a6cf0bc976ca7ccb6ea17b70c6f3c236212143e755147ab2e4acf98ef3068"
+    },
+    "new": {
+      "min_bars": 200,
+      "engine_trades": "f075a04d658cf4c3e40fb12e25d94a7638f7d867d5c1920b0b131a85d4c99b1c",
+      "engine_equity": "cadf1cb4243320445a148ed048c3590f9325abe677c3fd201bebfe9b185b6cf6",
+      "result_v2": "62a78b8abad8c7b582a50d8eb26760637b75825d5197f538c428466cfe1d5d5c",
+      "warmup_bars": 0,
+      "assumptions": "0686ebe90f0ae96922186d6ca36aa6bc275110acd41f4a3f9e6ae3868d7cb744",
+      "raw_report": "f1dbf70ca7994f11a4369d91d92a44d869cf245a9b0cbb91829d156fb5af7610"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_rsi_pullback/1",
+    "old": {
+      "min_bars": 200,
+      "engine_trades": "efd09d28bd5588557c16dbf4dcdceef76fe143f484e7f1d669e3e9fe4d39d409",
+      "engine_equity": "716921b4c024f72176633ddf8a1c82f09976a045f3a3105f7af0d2f982e6dd09",
+      "result_v2": "3e1468bb3aac730fb31a4c1d493c991307911ea567281232c27b5ca42696435a",
+      "warmup_bars": 60,
+      "assumptions": "0c1ed33cb31b4bf804c10af884f628698aa1fa9124c778dc95251683f95e5029",
+      "raw_report": "1289e9ce7cbbfbd0583e7c5c2681baaa2aa9b7897714856097a70c752d311a8a"
+    },
+    "new": {
+      "min_bars": 200,
+      "engine_trades": "efd09d28bd5588557c16dbf4dcdceef76fe143f484e7f1d669e3e9fe4d39d409",
+      "engine_equity": "716921b4c024f72176633ddf8a1c82f09976a045f3a3105f7af0d2f982e6dd09",
+      "result_v2": "3e1468bb3aac730fb31a4c1d493c991307911ea567281232c27b5ca42696435a",
+      "warmup_bars": 60,
+      "assumptions": "811adb9836d0559cb498e6e3abc3ce4b2299112937f92edf39620276a083353c",
+      "raw_report": "ccb7c3adc439987e68c1f8f63d6487144ae053ab1dcea41ec193a55d32436b47"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_trend_rsi/0",
+    "old": {
+      "min_bars": 200,
+      "engine_trades": "b6a5a6f965e6cdba77cb4e729e066bcb0b0db482758f3e881eb5ee8d8e09b86d",
+      "engine_equity": "ad08cbefcda9863064f47a800175faa6c4389cdb174516a5d8bbd909669fa834",
+      "result_v2": "ea390a83e036679904fd69d5d3d2a3a61cd105eab13f525372e09006f9fd7613",
+      "warmup_bars": 0,
+      "assumptions": "7458d4909723e626f28761cca2a033c453056f817edbf104c94cc891fc176527",
+      "raw_report": "89471bcacf81e82263e4693be54bbf55d1a2254d06d6ec5ce9d8dc1c7262ce8d"
+    },
+    "new": {
+      "min_bars": 200,
+      "engine_trades": "b6a5a6f965e6cdba77cb4e729e066bcb0b0db482758f3e881eb5ee8d8e09b86d",
+      "engine_equity": "ad08cbefcda9863064f47a800175faa6c4389cdb174516a5d8bbd909669fa834",
+      "result_v2": "ea390a83e036679904fd69d5d3d2a3a61cd105eab13f525372e09006f9fd7613",
+      "warmup_bars": 0,
+      "assumptions": "b3e4b93683e9a73c43b344ba8fcb962ca4bddc027252dfc67c9d3acda74e4f83",
+      "raw_report": "a201415749441ea9e16ef74678e3d275e3f44bb3851d3a4e8519c1a3a924fab0"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_trend_rsi/1",
+    "old": {
+      "min_bars": 200,
+      "engine_trades": "8d5fcbf1a58d928550e9402860b40faa09ae288cdc232560001a3db0f9382e23",
+      "engine_equity": "bf6a7096a750a66974c431c93850bec391769229294e6544e879e979272291ef",
+      "result_v2": "9ed142d2e97719d49bc795be6c0c24655fc46ca51fb1d131532e7f591e7a0c69",
+      "warmup_bars": 60,
+      "assumptions": "532460a380c4f8dc88966e3d6d95ee601903baef8a99a84b34648df0abe2080d",
+      "raw_report": "670d87abdf1e9899fee1b6403e5d8dfb6f3d9fae7781e160459a6173eb2bc407"
+    },
+    "new": {
+      "min_bars": 200,
+      "engine_trades": "8d5fcbf1a58d928550e9402860b40faa09ae288cdc232560001a3db0f9382e23",
+      "engine_equity": "bf6a7096a750a66974c431c93850bec391769229294e6544e879e979272291ef",
+      "result_v2": "9ed142d2e97719d49bc795be6c0c24655fc46ca51fb1d131532e7f591e7a0c69",
+      "warmup_bars": 60,
+      "assumptions": "d106d7a712d8482d9a1013fcf2f87e58c8df5d644ffeb42fc342370bef76b47c",
+      "raw_report": "d61c31a1ae37e8dc0271b8470b44dd1978d558bd62ab4432d97451a2f8c699bc"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_pullback/0",
+    "old": {
+      "min_bars": 60,
+      "engine_trades": "4da9e8833fe7ce00376471caffcf1e0cdd8d700e3f732844481a9b2b76e7db6f",
+      "engine_equity": "19c4663f277811a9f4e669452b1ab6e0c47a25ed4ce6647a531134278ef870ee",
+      "result_v2": "5cb1b9ec92654f010198e6fa51f5191d8053f035b800bafc3dea8ad76deac5c2",
+      "warmup_bars": 0,
+      "assumptions": "8122804761a1b1a77f5be127f64fdec69e170285e2fbeccd75f5417924e38462",
+      "raw_report": "dd28e8b1fa1df0ef7d9fe009e5f622afaf8da707a45cd7a4f198cdb94f610018"
+    },
+    "new": {
+      "min_bars": 60,
+      "engine_trades": "4da9e8833fe7ce00376471caffcf1e0cdd8d700e3f732844481a9b2b76e7db6f",
+      "engine_equity": "19c4663f277811a9f4e669452b1ab6e0c47a25ed4ce6647a531134278ef870ee",
+      "result_v2": "5cb1b9ec92654f010198e6fa51f5191d8053f035b800bafc3dea8ad76deac5c2",
+      "warmup_bars": 0,
+      "assumptions": "b33aa807c89c21a9d92f25f723048e42c2d68fb43f31b1d720bba64ce22273b1",
+      "raw_report": "cb706b8086c0e62cba5265d2298ec028e202073639a8489245535150c29f45fd"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_pullback/1",
+    "old": {
+      "min_bars": 60,
+      "engine_trades": "75de6a160923e8f005e568ee81693130477156088c39c1b7d226355964589a0d",
+      "engine_equity": "09bfe65ce4ada0c4124306d811a6a120164c70e2a20ca1ff57246fb8332f15a0",
+      "result_v2": "67f2fc3c36e3375b920f342a9a1139ec58b81c1cad80c5a8947aca8f50591044",
+      "warmup_bars": 60,
+      "assumptions": "2e0e12144ca2f2b9637ca01a2f3472c0685d7165c3647f070d186be7e170dfe9",
+      "raw_report": "a1d32e44f121ade6b431914f4fa111267bdbd56ea6895f2af9908d0eea581975"
+    },
+    "new": {
+      "min_bars": 60,
+      "engine_trades": "75de6a160923e8f005e568ee81693130477156088c39c1b7d226355964589a0d",
+      "engine_equity": "09bfe65ce4ada0c4124306d811a6a120164c70e2a20ca1ff57246fb8332f15a0",
+      "result_v2": "67f2fc3c36e3375b920f342a9a1139ec58b81c1cad80c5a8947aca8f50591044",
+      "warmup_bars": 60,
+      "assumptions": "3561397528e02b317a75c5c89bfe45fe73bdaa7db63f0c0e7182959f60391ccf",
+      "raw_report": "d24a3fad5b2c42993d16a179e784462402b6899c1e7c236a442fa2ed581a20ed"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_pullback@long/0",
+    "old": {
+      "min_bars": 60,
+      "engine_trades": "4da9e8833fe7ce00376471caffcf1e0cdd8d700e3f732844481a9b2b76e7db6f",
+      "engine_equity": "19c4663f277811a9f4e669452b1ab6e0c47a25ed4ce6647a531134278ef870ee",
+      "result_v2": "5cb1b9ec92654f010198e6fa51f5191d8053f035b800bafc3dea8ad76deac5c2",
+      "warmup_bars": 0,
+      "assumptions": "8122804761a1b1a77f5be127f64fdec69e170285e2fbeccd75f5417924e38462",
+      "raw_report": "dd28e8b1fa1df0ef7d9fe009e5f622afaf8da707a45cd7a4f198cdb94f610018"
+    },
+    "new": {
+      "min_bars": 60,
+      "engine_trades": "4da9e8833fe7ce00376471caffcf1e0cdd8d700e3f732844481a9b2b76e7db6f",
+      "engine_equity": "19c4663f277811a9f4e669452b1ab6e0c47a25ed4ce6647a531134278ef870ee",
+      "result_v2": "5cb1b9ec92654f010198e6fa51f5191d8053f035b800bafc3dea8ad76deac5c2",
+      "warmup_bars": 0,
+      "assumptions": "b33aa807c89c21a9d92f25f723048e42c2d68fb43f31b1d720bba64ce22273b1",
+      "raw_report": "cb706b8086c0e62cba5265d2298ec028e202073639a8489245535150c29f45fd"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_pullback@long/1",
+    "old": {
+      "min_bars": 60,
+      "engine_trades": "75de6a160923e8f005e568ee81693130477156088c39c1b7d226355964589a0d",
+      "engine_equity": "09bfe65ce4ada0c4124306d811a6a120164c70e2a20ca1ff57246fb8332f15a0",
+      "result_v2": "67f2fc3c36e3375b920f342a9a1139ec58b81c1cad80c5a8947aca8f50591044",
+      "warmup_bars": 60,
+      "assumptions": "2e0e12144ca2f2b9637ca01a2f3472c0685d7165c3647f070d186be7e170dfe9",
+      "raw_report": "a1d32e44f121ade6b431914f4fa111267bdbd56ea6895f2af9908d0eea581975"
+    },
+    "new": {
+      "min_bars": 60,
+      "engine_trades": "75de6a160923e8f005e568ee81693130477156088c39c1b7d226355964589a0d",
+      "engine_equity": "09bfe65ce4ada0c4124306d811a6a120164c70e2a20ca1ff57246fb8332f15a0",
+      "result_v2": "67f2fc3c36e3375b920f342a9a1139ec58b81c1cad80c5a8947aca8f50591044",
+      "warmup_bars": 60,
+      "assumptions": "3561397528e02b317a75c5c89bfe45fe73bdaa7db63f0c0e7182959f60391ccf",
+      "raw_report": "d24a3fad5b2c42993d16a179e784462402b6899c1e7c236a442fa2ed581a20ed"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_pullback@short/0",
+    "old": {
+      "min_bars": 60,
+      "engine_trades": "f6a4ad788465284fe57b627e67e2656d9269f243f898ccd7e0f1a65a9342dfff",
+      "engine_equity": "7f56ac8b6341676e39ec6c14861442c80e2b8cba1f354009facb08dd38b1b6d2",
+      "result_v2": "d33833ac7db0cbefdc4c70bc21ced283e7401c12ccc834a5b1d567a313310ef5",
+      "warmup_bars": 0,
+      "assumptions": "03029cafba75a2ecb670eeb5a298f26540f0d34419e1ef061853d487061e0289",
+      "raw_report": "a50a87487c6961bf78f6d49e53864afed8a70361d0d0ec7665bb0453ce6e854f"
+    },
+    "new": {
+      "min_bars": 60,
+      "engine_trades": "f6a4ad788465284fe57b627e67e2656d9269f243f898ccd7e0f1a65a9342dfff",
+      "engine_equity": "7f56ac8b6341676e39ec6c14861442c80e2b8cba1f354009facb08dd38b1b6d2",
+      "result_v2": "d33833ac7db0cbefdc4c70bc21ced283e7401c12ccc834a5b1d567a313310ef5",
+      "warmup_bars": 0,
+      "assumptions": "31959f1362852e20e944d1f19a13b6e0d8b6f3cc9fca5309673a58075cc995ba",
+      "raw_report": "2ba1b73a16606925df1991ad2c89c9a90a280ead0dafd8607a1cc40f4cf5e100"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "filter/ema_pullback@short/1",
+    "old": {
+      "min_bars": 60,
+      "engine_trades": "e267e72e6b8f139a2d2e2b41c5e1715c8ff2030768036f163da4beda946f5f72",
+      "engine_equity": "09fb7a3596dd71fa6b9836bbce57379bcdf01160f2af5a850a9b2fcd8efe2bc4",
+      "result_v2": "4778e12db23b7044cb8b172866a8f836bf34ef1a4c64a3f74c7c3fcf7d7b383d",
+      "warmup_bars": 60,
+      "assumptions": "0263a8b6e072aa54b538fdd55665f2c30c90fdf0ebdd63baaa8ef724eec2e609",
+      "raw_report": "ca2c8fc15ee8095685ae2ca028099daa78d196415fd71e7b535353dd982d5511"
+    },
+    "new": {
+      "min_bars": 60,
+      "engine_trades": "e267e72e6b8f139a2d2e2b41c5e1715c8ff2030768036f163da4beda946f5f72",
+      "engine_equity": "09fb7a3596dd71fa6b9836bbce57379bcdf01160f2af5a850a9b2fcd8efe2bc4",
+      "result_v2": "4778e12db23b7044cb8b172866a8f836bf34ef1a4c64a3f74c7c3fcf7d7b383d",
+      "warmup_bars": 60,
+      "assumptions": "d5549cc59690f79f68891336e9a08d26eead96488f187ab53c2a59bd1a50b630",
+      "raw_report": "32c43c94f190768e641b81618656d99c651f0187cc4575f236c2c3a6d1985d7c"
+    },
+    "reason": "only EMA report disclosure changed; all five engine/result/minimum keys proven unchanged"
+  },
+  {
+    "case": "patconf/off/bias_reversion",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 10,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 100
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 100
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 100 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "patconf/on/bias_reversion",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 100
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 100 根，实得 60 根）"
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 100
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.indicator_warmup_bars": {
+        "old": 10,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      }
+    }
+  },
+  {
+    "case": "patconf/off/ema_pullback",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 30,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 300
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 300
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 300 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "patconf/on/ema_pullback",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 30,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 300
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 300
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 300 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "patconf/off/ema_rsi_pullback",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 2000
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 2000 根，实得 60 根）"
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 2000
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      }
+    }
+  },
+  {
+    "case": "patconf/on/ema_rsi_pullback",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 2000
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 2000 根，实得 60 根）"
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 2000
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      }
+    }
+  },
+  {
+    "case": "patconf/off/ema_trend_rsi",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 20,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 200
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 200
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 200 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "patconf/on/ema_trend_rsi",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 20,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 200
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 200
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 200 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "patconf/off/ema_triple_alignment",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 600
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 600
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 600 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "patconf/on/ema_triple_alignment",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 600
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 600
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 600 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "plow/on/bias_reversion",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 100
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 100 根，实得 60 根）"
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 100
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.indicator_warmup_bars": {
+        "old": 10,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      }
+    }
+  },
+  {
+    "case": "plow/off/bias_reversion",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 10,
+        "new": 59
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 100
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 59
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 100
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 100 根，实得 59 根）"
+      }
+    }
+  },
+  {
+    "case": "plow/on/ema_pullback",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 30,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 300
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 300
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 300 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "plow/off/ema_pullback",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 30,
+        "new": 59
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 300
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 59
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 300
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 300 根，实得 59 根）"
+      }
+    }
+  },
+  {
+    "case": "plow/on/ema_rsi_pullback",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 2000
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 2000 根，实得 60 根）"
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 2000
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      }
+    }
+  },
+  {
+    "case": "plow/off/ema_rsi_pullback",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 2000
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 59
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 2000 根，实得 59 根）"
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 2000
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      }
+    }
+  },
+  {
+    "case": "plow/on/ema_trend_rsi",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 20,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 200
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 200
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 200 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "plow/off/ema_trend_rsi",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".assumptions.indicator_warmup_bars": {
+        "old": 20,
+        "new": 59
+      },
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 200
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 59
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 200
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 200 根，实得 59 根）"
+      }
+    }
+  },
+  {
+    "case": "plow/on/ema_triple_alignment",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 600
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 60
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 600
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 600 根，实得 60 根）"
+      }
+    }
+  },
+  {
+    "case": "plow/off/ema_triple_alignment",
+    "reason": "EMA tenfold fetch extends finite prefix; only warmup report fields change, no trades/equity/metrics/manifest leaf changes",
+    "moved_leaves": {
+      ".raw_report.ema_warmup.target_bars": {
+        "old": null,
+        "new": 600
+      },
+      ".raw_report.ema_warmup.truncated": {
+        "old": null,
+        "new": false
+      },
+      ".raw_report.ema_warmup.actual_bars": {
+        "old": null,
+        "new": 59
+      },
+      ".raw_report.ema_warmup.requested_bars": {
+        "old": null,
+        "new": 600
+      },
+      ".raw_report.ema_warmup.tenfold_reached": {
+        "old": null,
+        "new": false
+      },
+      ".assumptions.ema_warmup": {
+        "old": null,
+        "new": "EMA 预热取 10×最长周期（目标 600 根，实得 59 根）"
+      }
+    }
+  }
+]

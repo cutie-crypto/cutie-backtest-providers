@@ -32,6 +32,11 @@ from strategy_entry_filters import (FILTER_PARAM_SCHEMA_PROPERTIES, PATTERN_CONF
 PATTERN_CONFIRM_SCHEMA_KEYS = tuple(PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES)
 
 GOLDEN = json.loads((Path(__file__).parent / 'fixtures/patconf1_5ddd8eb.json').read_text())
+# PROV-ARM-WARM: retain frozen cases except the five EMA warmup changes.
+ARM_EMA_OVERRIDES = json.loads((Path(__file__).parent / 'fixtures/arm_ema_warmup_response_overrides.json').read_text())['patconf']
+assert set(ARM_EMA_OVERRIDES) == {state + '/' + tool for state in ('on', 'off')
+    for tool in ('ema_triple_alignment', 'ema_trend_rsi', 'ema_rsi_pullback', 'bias_reversion', 'ema_pullback')}
+GOLDEN['cases'].update(ARM_EMA_OVERRIDES)
 # P-EVENT0: event_window postdates 5ddd8eb (not in the immutable golden); its keys-omitted body is pinned
 # byte-for-byte by tests/fixtures/event0_window_golden.json (test_event0_event_window.py).
 EVENT0 = {'event_window'}

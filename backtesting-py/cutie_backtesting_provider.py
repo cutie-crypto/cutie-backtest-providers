@@ -4882,6 +4882,7 @@ def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 
     from backtesting import Strategy
 
     min_bars = max(ema_period, rsi_period + 1)
+    ema_warmup_requested_bars = EMA_WARMUP_MULTIPLIER * ema_period
 
     class EmaRsiPullbackStrategy(_FixedRiskMixin, Strategy):
         _risk = risk
@@ -4930,6 +4931,8 @@ def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 
             f"dip<{rsi_entry:g}/exit>{rsi_exit:g})"
         ),
         "min_bars": min_bars,
+        "ema_warmup_requested_bars": ema_warmup_requested_bars,
+        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
     }
 
 
@@ -5324,6 +5327,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
     from backtesting import Strategy
 
     min_bars = max(ema_slow, rsi_period + 1)
+    ema_warmup_requested_bars = EMA_WARMUP_MULTIPLIER * ema_slow
 
     class EmaTrendRsiStrategy(_FixedRiskMixin, Strategy):
         _risk = risk
@@ -5375,6 +5379,8 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
             f"<{rsi_entry_below:g}/>{rsi_exit_above:g})"
         ),
         "min_bars": min_bars,
+        "ema_warmup_requested_bars": ema_warmup_requested_bars,
+        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
     }
 
 
@@ -5405,6 +5411,7 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
     from backtesting import Strategy
 
     min_bars = ema_slow
+    ema_warmup_requested_bars = EMA_WARMUP_MULTIPLIER * max(ema_fast, ema_slow)
 
     class EmaPullbackStrategy(_FixedRiskMixin, Strategy):
         _risk = risk
@@ -5461,6 +5468,8 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
         "strategy": EmaPullbackStrategy,
         "executed_name": f"EMA Pullback ({ema_fast}/{ema_slow}, tolerance={tolerance:g}%)" + (" Short" if direction == "short" else ""),
         "min_bars": min_bars,
+        "ema_warmup_requested_bars": ema_warmup_requested_bars,
+        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
     }
 
 
@@ -6121,6 +6130,7 @@ def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10
     from backtesting import Strategy
 
     min_bars = period
+    ema_warmup_requested_bars = EMA_WARMUP_MULTIPLIER * period
 
     class BiasReversionStrategy(_FixedRiskMixin, Strategy):
         _risk = risk
@@ -6153,6 +6163,8 @@ def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10
         "strategy": BiasReversionStrategy,
         "executed_name": f"BIAS Reversion ({period}/-{entry:g}%)",
         "min_bars": min_bars,
+        "ema_warmup_requested_bars": ema_warmup_requested_bars,
+        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
     }
 
 
@@ -6179,6 +6191,7 @@ def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: floa
     from backtesting import Strategy
 
     min_bars = long
+    ema_warmup_requested_bars = EMA_WARMUP_MULTIPLIER * long
 
     class EmaTripleAlignmentStrategy(_FixedRiskMixin, Strategy):
         _risk = risk
@@ -6218,6 +6231,8 @@ def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: floa
         "strategy": EmaTripleAlignmentStrategy,
         "executed_name": f"EMA Triple Alignment ({short}/{mid}/{long})",
         "min_bars": min_bars,
+        "ema_warmup_requested_bars": ema_warmup_requested_bars,
+        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
     }
 
 
