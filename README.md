@@ -77,13 +77,14 @@ Backtests provide reference readings and may have unconverged opening indicators
 live EMA arming instead rejects requests above 20000 bars because it manages money.
 `ema_triple_alignment`, `ema_trend_rsi`, `ema_rsi_pullback`, `bias_reversion`,
 and `ema_pullback` use the same tenfold, capped, best-effort path. The longest
-EMA period determines the request; RSI periods do not contribute. Each template
-retains its original `min_bars` and entry/exit rules. For `ema_trend_rsi`,
-when `rsi_period + 1 > 10 × ema_slow`, the EMA-only target fetches fewer
-prefix candles than the former `min_bars` seed; the unchanged minimum-bars
-guard can delay the first eligible main-range entry. Warmup candles seed
-indicators only and never generate trades or equity points. Other templates
-retain their existing warmup depth.
+EMA period determines the tenfold request; RSI periods do not contribute to it.
+Each template retains its original `min_bars` and entry/exit rules. The shared
+fetch takes `max(tenfold target, min_bars)`, so when `rsi_period + 1` exceeds
+`10 × ema_slow` (`ema_trend_rsi`) or `10 × ema_period` (`ema_rsi_pullback`) the
+prefix still covers `min_bars` and the minimum-bars guard no longer delays the
+first eligible main-range entry; `actual_bars` may then exceed the reported
+tenfold `target_bars`. Warmup candles seed indicators only and never generate
+trades or equity points. Other templates retain their existing warmup depth.
 
 ### Closed higher-timeframe entry filters
 

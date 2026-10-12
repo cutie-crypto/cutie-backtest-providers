@@ -11161,7 +11161,8 @@ async def run_backtest(
                                      **({"details": e.details} if e.details is not None else {}))
         entry_filter_htf_gaps = strategy_class._filter_context.gaps
 
-    # start_at 之前按模板目标取指标预热；min_bars 仍只约束最少可算/主区间长度。
+    # start_at 之前按 max(模板 EMA 目标, min_bars) 取指标预热；min_bars 仍只约束最少可算/主区间长度，
+    # 但取数至少要盖住它：RSI 周期大于 10×EMA 慢线时，只按 EMA 目标取数会把首批入场交给 min_bars 守卫后移。
     # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
     risk = getattr(strategy_class, "_risk", {})
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
@@ -11175,7 +11176,7 @@ async def run_backtest(
                   if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
                  if range_config is not None or calendar_config is not None or event_window_config is not None or token_unlock_config is not None or macro_config is not None or top_lsr_config is not None or etf_flow_config is not None or exchange_netflow_config is not None else
                  _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
-                                        max(built.get("ema_warmup_target_bars", min_bars), risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
+                                        max(built.get("ema_warmup_target_bars", min_bars), min_bars, risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
     # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
     # since P-LOW3): the warmup prefix is concatenated in front of the main range for the filter mask,
     # so a non-empty prefix must be gap-free and end one bar before the main range -- a hole would
