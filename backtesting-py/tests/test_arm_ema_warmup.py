@@ -126,7 +126,7 @@ def test_http_cap_reports_and_fetches_at_most_maximum(client, monkeypatch, name,
     body = post(client, params, name, count=360)
     assert calls == [(START, START+360*STEP), (START-20002*STEP, START)]
     assert body['raw_report']['ema_warmup'] == dict(requested_bars=period*2000,
-        target_bars=20000, actual_bars=20000, truncated=True, tenfold_reached=False)
+        target_bars=20000, actual_bars=20000, truncated=True, tenfold_reached=True)
     assert '回测已把预热截到 20000 根' in body['assumptions']['ema_warmup']
     assert f'需 {period*2000} 根' in body['assumptions']['ema_warmup']
     assert '无法布防自动信号' in body['assumptions']['ema_warmup']
@@ -146,8 +146,8 @@ def test_trend_rsi_long_rsi_fetches_min_bars_and_matches_sufficient_baseline(cli
     monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(full, calls))
     body = post(client, params, 'ema_trend_rsi', count=360)
     assert calls == [(START, START+360*STEP), (START-103*STEP, START)]
-    assert body['raw_report']['ema_warmup']['actual_bars'] == 101
-    assert body['raw_report']['ema_warmup']['tenfold_reached'] is True
+    assert body['raw_report']['ema_warmup'] == dict(requested_bars=30,
+        target_bars=30, actual_bars=101, truncated=False, tenfold_reached=True)
     assert [t['opened_at'] for t in body['trades']] == [START+5*STEP]
     # History-sufficient baseline: an explicit min_bars seed must be
     # indistinguishable from the default max(target, min_bars) fetch.
@@ -184,4 +184,16 @@ def test_default_parameters_fetch_depth_unchanged(client, monkeypatch, name, par
     monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(built['min_bars'], target+2), calls))
     body = post(client, params, name, count=360)
     assert calls == [(START, START+360*STEP), (START-(target+2)*STEP, START)]
-    assert body['raw_report']['ema_warmup']['actual_bars'] == target
+    assert body['raw_report']['ema_warmup'] == dict(requested_bars=target,
+        target_bars=target, actual_bars=target, truncated=False, tenfold_reached=True)
+
+
+@pytest.mark.parametrize('warm_count,reached', [(15,False), (30,True), (50,True)])
+def test_trend_rsi_short_history_reports_against_tenfold_target(client, monkeypatch, warm_count, reached):
+    params = {'ema_fast':2, 'ema_slow':3, 'rsi_period':100}
+    calls = []
+    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(3, warm_count), calls))
+    body = post(client, params, 'ema_trend_rsi', count=360)
+    assert calls == [(START, START+360*STEP), (START-103*STEP, START)]
+    assert body['raw_report']['ema_warmup'] == dict(requested_bars=30,
+        target_bars=30, actual_bars=warm_count, truncated=False, tenfold_reached=reached)

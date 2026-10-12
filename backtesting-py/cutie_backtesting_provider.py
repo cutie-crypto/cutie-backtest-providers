@@ -11241,7 +11241,7 @@ async def run_backtest(
             "target_bars": target,
             "actual_bars": indicator_warmup_bars,
             "truncated": requested > target,
-            "tenfold_reached": indicator_warmup_bars >= requested,
+            "tenfold_reached": indicator_warmup_bars >= target,
         }}
         ema_warmup_assumptions = {"ema_warmup":
             f"EMA 预热取 10×最长周期（目标 {target} 根，实得 {indicator_warmup_bars} 根）"}

@@ -81,7 +81,7 @@ def test_http_fetch_depth_and_cap(client, monkeypatch, fast, slow, target):
     body = post(client, params, count=slow+1)
     assert calls == [(START, START+(slow+1)*STEP), (START-(target+2)*STEP, START)]
     assert body['raw_report']['ema_warmup'] == dict(requested_bars=slow*10,
-        target_bars=target, actual_bars=target, truncated=(slow==3000), tenfold_reached=(slow!=3000))
+        target_bars=target, actual_bars=target, truncated=(slow==3000), tenfold_reached=True)
     expected = f'EMA 预热取 10×最长周期（目标 {target} 根，实得 {target} 根）'
     if slow == 3000:
         # Frozen customer-facing cap disclosure; requested=30000 is handwritten.

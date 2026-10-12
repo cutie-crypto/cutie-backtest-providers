@@ -70,9 +70,15 @@ closed candles before the main range through the existing OHLCV cache/fetch path
 Its minimum calculable/main-range bars remain `max(ema_fast, ema_slow) + 1`.
 Warmup stays best-effort: short or unavailable history does not fail the backtest.
 `raw_report.ema_warmup` records the uncapped `requested_bars`, capped
-`target_bars`, `actual_bars`, `truncated`, and `tenfold_reached` (actual history
-meets the uncapped tenfold request). `assumptions.ema_warmup` discloses the
-capped target and actual count. Result.v2 gains no fields.
+`target_bars`, `actual_bars`, `truncated`, and `tenfold_reached`. Per the
+commander's 2026-10-13 ruling, `target_bars` retains the EMA-only tenfold target
+(with the existing 20000-bar cap); `min_bars` never raises this report target.
+`actual_bars` records the actual fetched prefix and may exceed `target_bars`.
+`tenfold_reached` is exactly `actual_bars >= target_bars`: false for short
+history below target, true when a `min_bars` floor raises actual above target,
+and true when the capped target is met even if `truncated` is true.
+`assumptions.ema_warmup` discloses the capped target and actual count.
+Result.v2 gains no fields.
 Backtests provide reference readings and may have unconverged opening indicators;
 live EMA arming instead rejects requests above 20000 bars because it manages money.
 `ema_triple_alignment`, `ema_trend_rsi`, `ema_rsi_pullback`, `bias_reversion`,
