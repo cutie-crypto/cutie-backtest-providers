@@ -169,7 +169,7 @@ def build_us_open(p, params, initial_capital):
 
 
 def build_cme_gap(p, params, initial_capital):
-    from strategy_risk_overlay import RiskState, decide_exit
+    from strategy_risk_overlay import RiskState, decide_legacy_exit
     gap = params.get('gap_pct', 1)
     direction = params.get('direction', 'both')
     schema = p.TOOL_SPECS['local.backtesting_py.cme_weekend_gap']['param_schema_properties']
@@ -239,7 +239,7 @@ def build_cme_gap(p, params, initial_capital):
                         return
                     state = RiskState(Decimal(str(self.trades[-1].entry_price)), None, self._target, None,
                         'long' if self.position.is_long else 'short')
-                    if decide_exit(state, high=self.data.High[-1], low=self.data.Low[-1]) is None:
+                    if decide_legacy_exit(state, high=self.data.High[-1], low=self.data.Low[-1]) is None:
                         return
                     self._risk_exit_reason = 'gap_filled'
                     self.position.close()

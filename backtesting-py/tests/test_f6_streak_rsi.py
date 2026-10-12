@@ -115,8 +115,8 @@ def test_user_stop_suppresses_defaults_and_changes_actual_exit():
     stats = run({'stop_loss_pct': 1}, data)
     assert stats['_strategy']._risk['stop_loss_pct'] == .01
     assert 'take_profit_pct' not in stats['_strategy']._risk
-    # Q42-C: the 1% stop is now judged on bar 45's low (91) instead of the close; legacy exit was bar 56.
-    assert list(stats['_trades'].ExitBar) == [46]
+    # Native 1% stop fills on bar 45's low touch; legacy close-only exit remains bar 56.
+    assert list(stats['_trades'].ExitBar) == [45]
     assert list(run({'stop_loss_pct': 1, 'risk_layer_enabled': False}, data)['_trades'].ExitBar) == [56]
 
 
@@ -141,8 +141,8 @@ def test_same_bar_priority(kind, reason):
     when = 44 if kind == 'target' else 45
     data.loc[data.index[when], ['High','Low']] = [96,88 if kind == 'stop' else 91]
     stats = run({'risk_layer_enabled': True, 'max_holding_bars': 2}, data)
-    assert stats['_strategy']._risk_exit_reason == reason
-    assert list(stats['_trades'].ExitBar) == [when+1]
+    assert stats['_strategy']._risk_exit_reason == ('stop_loss' if kind == 'stop' else 'take_profit')
+    assert list(stats['_trades'].ExitBar) == [when]
 
 
 @pytest.mark.parametrize('entry_open', [89, 89.24])

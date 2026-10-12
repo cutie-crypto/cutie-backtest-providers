@@ -210,7 +210,7 @@ def test_defaults_catalog_and_risk_schema():
     assert built["strategy"]._risk == {}  # ATR stop is opt-in, absent from the template default.
 
 
-def test_shared_atr_stop_exits_before_template_signal_at_next_open():
+def test_shared_atr_stop_exits_on_touch_before_template_signal():
     fx = _fixture()
     entry_bar = fx["expected_entries"][0]+1
     # Entry bar touches the risk stop, while its close is still above EMA (no template exit).
@@ -220,12 +220,12 @@ def test_shared_atr_stop_exits_before_template_signal_at_next_open():
     stopped = _run(fx, risk_params)
     trade = stopped["_trades"].iloc[0]
     assert trade.EntryBar == entry_bar
-    assert trade.ExitBar == entry_bar+1 < plain["_trades"].iloc[0].ExitBar
-    assert trade.ExitTime == _frame(fx).index[entry_bar+1]
-    assert trade.ExitPrice == fx["opens"][entry_bar+1]
+    assert trade.ExitBar == entry_bar < plain["_trades"].iloc[0].ExitBar
+    assert trade.ExitTime == _frame(fx).index[entry_bar]
     assert fx["closes"][entry_bar] > _hand(fx)["mid"][entry_bar]
     from strategy_risk_overlay import risk_atr_series
     atr = risk_atr_series(fx["highs"], fx["lows"], fx["closes"], 14)[entry_bar-1]
+    assert trade.ExitPrice == pytest.approx(trade.EntryPrice-2*atr)
     assert fx["lows"][entry_bar] <= trade.EntryPrice-2*atr
     # Isolate this first trade to inspect its actual shared-layer reason and frozen signal ATR.
     short = {k: v[:entry_bar+2] if isinstance(v, list) else v for k, v in fx.items()}

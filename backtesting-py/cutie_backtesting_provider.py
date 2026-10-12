@@ -3219,6 +3219,9 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
     """单仓模板共用覆盖层；1 倍且 risk_layer_enabled=false 完整保留旧层。
 
     风控层用原生保护单按触发价成交，跳空取开盘；动态止损收盘更新、下一根生效。
+    同根优先级按执行顺序：原生 SL、单一 TP 在 broker 内先成交，随后 next() 才判
+    max_holding；所以单一 TP 与 max_holding 同根到期时 TP 优先。分批 TP 仍在
+    next() 判定，保留 max_holding 优先于分批 TP 的旧顺序。
 
     旧层决策时钟只认收盘价（不看当根 High/Low 触碰）：``_risk_check_exit`` 在 next() 每根
     K 线收盘后判定，同一根先判止损、后判止盈；命中即调用现有 position.close()，与
@@ -3557,6 +3560,7 @@ class _FixedRiskMixin(PositionSizingMixin, _TimeLayerMixin, _FilterLayerMixin):
                         # broker fills its close. Settlement keeps the existing isolated fill.
                         if self._risk_exit_reason == "liquidation":
                             trade.sl = trade.tp = None
+                            self._risk_native_closed_bar = len(self.data) - 1
 
         def protected_process():
             nonlocal new_trade

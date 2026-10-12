@@ -88,7 +88,7 @@ def test_entry_positive_negative_and_regular_session_exit(monkeypatch, tmp_path)
         assert not any(d['action'] == 'entry' for d in negative['raw_report']['etf_flow_follow']['decisions'])
 
 
-def test_stop_frozen_at_fill_next_open_and_no_reentry(monkeypatch, tmp_path):
+def test_stop_frozen_at_fill_native_touch_and_no_reentry(monkeypatch, tmp_path):
     data = frame()
     data.loc[pd.Timestamp('2026-03-09 13:30')] = [120, 121, 117.6, 120, 1]
     data.loc[pd.Timestamp('2026-03-09 13:45')] = [90, 91, 89, 90, 1]
@@ -96,7 +96,7 @@ def test_stop_frozen_at_fill_next_open_and_no_reentry(monkeypatch, tmp_path):
     assert len(body['trades']) == 1
     trade = body['trades'][0]
     assert (trade['opened_at'], trade['closed_at'], trade['entry_price'], trade['exit_price']) == (
-        ts('2026-03-09 13:30'), ts('2026-03-09 13:45'), '120', '90')
+        ts('2026-03-09 13:30'), ts('2026-03-09 13:30'), '120', '117.6')
     assert body['raw_report']['etf_flow_follow']['fills'][0]['reason'] == 'stop_loss'
     # Wide stop is 108 at the 120 fill, so low 117.6 does not trigger it.
     data.loc[pd.Timestamp('2026-03-09 13:45'):] = [120, 121, 119, 120, 1]

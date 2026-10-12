@@ -148,7 +148,7 @@ def test_user_stop_closer_than_liquidation_wins_with_wide_window():
     assert len(stats['_trades']) == 1
     assert stats['_strategy']._risk_exit_reason == 'stop_loss'
     assert not stats['_strategy']._isolated_liquidations
-    assert stats['_trades'].iloc[0].ExitTime == pd.Timestamp('2026-03-09 14:15')
+    assert stats['_trades'].iloc[0].ExitTime == pd.Timestamp('2026-03-09 14:00')
 
 
 @pytest.mark.parametrize('side', ['long', 'short'])

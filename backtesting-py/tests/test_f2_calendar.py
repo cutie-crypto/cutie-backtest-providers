@@ -131,30 +131,30 @@ def test_flatten_dst_and_elapsed_utc(start, at, expected):
 
 @pytest.mark.parametrize('stop,high,low,expected', [(True, 110, 96, 'stop_loss'),
     (True, 110, 99, 'time_expiry'), (False, 110, 96, 'time_expiry')])
-def test_stop_then_time_then_take_priority(stop, high, low, expected):
+def test_native_stop_then_take_precede_time(stop, high, low, expected):
     data = frame()
     data.iloc[3] = [100, high, low, 100, 1]
     stats = direct(data, {**SCHEDULE, 'take_profit_pct': 5, 'calendar_stop_enabled': stop})
-    # Avoid an earlier TP on the fill bar; both events occur at the 04:00 decision.
-    assert stats['_trades'].iloc[0].ExitBar == 4
-    assert stats['_strategy'].calendar_events[0]['exit_reason'] == expected
+    # Native SL/TP fill in bar 3 before the 04:00 time-expiry decision.
+    assert stats['_trades'].iloc[0].ExitBar == 3
+    assert stats['_strategy'].calendar_events[0]['exit_reason'] == ('stop_loss' if stop and low == 96 else 'take_profit')
 
 
 def test_take_profit_before_later_time_deadline():
     data = frame()
     data.iloc[2] = [100, 106, 99, 101, 1]
     stats = direct(data, {**SCHEDULE, 'take_profit_pct': 5})
-    assert stats['_trades'].iloc[0].ExitBar == 3
+    assert stats['_trades'].iloc[0].ExitBar == 2
     assert stats['_strategy'].calendar_events[0]['exit_reason'] == 'take_profit'
 
 
-def test_stop_frozen_at_signal_and_market_exit():
+def test_stop_frozen_at_signal_and_native_exit():
     data = frame()
     data.iloc[2] = [110, 111, 98, 110, 1]  # 97 frozen signal stop; fill-based stop would be 106.7
     data.iloc[3] = [110, 111, 96, 100, 1]
     data.iloc[4] = [90, 91, 89, 90, 1]
     stats = direct(data)
-    assert (stats['_trades'].iloc[0].EntryPrice, stats['_trades'].iloc[0].ExitBar, stats['_trades'].iloc[0].ExitPrice) == (110, 4, 90)
+    assert (stats['_trades'].iloc[0].EntryPrice, stats['_trades'].iloc[0].ExitBar, stats['_trades'].iloc[0].ExitPrice) == (110, 3, 97)
     assert stats['_strategy'].calendar_events[0]['stop_price'] == 97
     assert stats['_strategy'].calendar_events[0]['exit_reason'] == 'stop_loss'
 

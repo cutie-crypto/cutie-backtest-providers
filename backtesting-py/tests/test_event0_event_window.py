@@ -210,11 +210,11 @@ def test_stop_exit_precedes_window_end(monkeypatch, tmp_path, risk_layer, reason
     params = {**one('2026-01-01T05:00:00Z', bars_before=1, bars_after=3), 'stop_loss_pct': 2,
               'risk_layer_enabled': risk_layer}
     body = post(monkeypatch, tmp_path, params, data=stop_frame())
-    # Entry bar 4 open 104; stop decided at bar 5's close, filled at bar 6 open 95 -- before the
-    # window-end fill at bar 7.
-    assert legs(body) == [(4, '104', 6, '95', 'long')]
+    # Entry bar 4 open 104; native stop fills on bar 5 at 101.92.
+    # Explicit off-state retains bar 6 open 95; both precede the window-end fill at bar 7.
+    assert legs(body) == ([(4, '104', 5, '101.92', 'long')] if risk_layer else [(4, '104', 6, '95', 'long')])
     record = events_of(body)[0]
-    assert (record['status'], record['exit_reason'], record['exit_price']) == ('entered', reason, '95')
+    assert (record['status'], record['exit_reason'], record['exit_price']) == ('entered', reason, '101.92' if risk_layer else '95')
 
 
 def test_time_layer_closed_gate_is_recorded(monkeypatch, tmp_path):

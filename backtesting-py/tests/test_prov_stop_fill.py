@@ -84,3 +84,24 @@ def test_partial_take_keeps_next_open_fill():
                    params=dict(tp1_r=1, tp1_close_pct=50, tp2_r=2, tp2_close_pct=50))
     trade = stats['_trades'].iloc[0]
     assert (trade.ExitBar, trade.ExitPrice) == (4, 103)
+
+
+def test_direct_buy_native_liquidation_blocks_same_bar_reentry():
+    frame = pd.DataFrame([[100, 101, 99, 100]] * 3 + [[100, 101, 40, 100]]
+                         + [[100, 101, 99, 100]] * 4,
+                         columns=['Open', 'High', 'Low', 'Close'],
+                         index=pd.date_range('2026-01-01', periods=8, freq='h')).assign(Volume=1)
+    class Direct(p._FixedRiskMixin, Strategy):
+        _risk = p._parse_fixed_risk_params(dict(risk_layer_enabled=True, stop_loss_pct=60, leverage=2))
+        def init(self):
+            self._risk_init()
+        def next(self):
+            if self.position and self._risk_check_exit():
+                return
+            if not self.position:
+                self.buy(size=10)
+    stats = Backtest(frame, p._final_close_strategy(p._exit_kind_strategy(Direct)), cash=10000,
+                     exclusive_orders=True, finalize_trades=True).run()
+    assert list(stats['_trades'].EntryBar) == [2, 5]
+    assert list(stats['_trades'].ExitBar) == [3, 7]
+    assert p._engine_trade_exit_kinds(stats['_trades'], stats['_strategy']._broker.closed_trades)[0] == 'liquidation'

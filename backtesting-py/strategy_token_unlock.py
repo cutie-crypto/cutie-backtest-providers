@@ -82,7 +82,7 @@ def make_strategy(mixin, config, risk, initial_capital):
         def init(self):
             self._risk_init()
             self.unlock_events, self._actions = [], {}
-            self._decisions, self._next_bar = {}, -1
+            self._decisions, self._native_decisions, self._next_bar = {}, {}, -1
             opens = [utc_datetime(t) for t in self.data.index]
             bars = {t: i for i, t in enumerate(opens)}
             reserved_end = None
@@ -122,28 +122,42 @@ def make_strategy(mixin, config, risk, initial_capital):
         def event_window_log(self):
             opens = [int(utc_datetime(t).timestamp()) for t in self.data.index]
             stop = self._next_bar + 1
-            return dict(decisions=dict(self._decisions), bar_opens=opens,
+            return dict(decisions=dict(self._decisions), native_decisions=dict(self._native_decisions), bar_opens=opens,
                         stop_bar=stop if stop < len(opens) else None)
+
+        def _record_risk_exit(self, native=False):
+            target = self._native_decisions if native else self._decisions
+            target[len(self.data) - 1] = self._risk_exit_reason or 'risk_exit'
+
+        def _risk_native_record_exit(self):
+            if self._risk_exit_reason != 'liquidation':
+                self._record_risk_exit(native=True)
+
+        def _risk_native_blocked_next(self):
+            bar = self._next_bar = len(self.data) - 1
+            for action, leg in self._actions.get(bar, ()):
+                if action == 'entry':
+                    leg['status'] = 'skipped_in_position'
 
         def next(self):
             bar = self._next_bar = len(self.data) - 1
             if self.position:
                 self._risk_exit_reason = None
                 if self._risk_check_exit():
-                    self._decisions[bar] = self._risk_exit_reason or 'risk_exit'
+                    self._record_risk_exit()
             actions = self._actions.get(bar, ())
             # Close first, then queue the other direction: both settle at the same next open.
             for action, leg in actions:
                 if action == 'exit' and self.position:
                     trade = self.trades[-1]
-                    if not any(order.parent_trade is trade for order in self.orders):
+                    if not any(order.parent_trade is trade and not order.is_contingent for order in self.orders):
                         self._decisions[bar] = 'unlock_day' if leg['side'] == 'short' else 'post_days'
                         self.__dict__['_exit_kind_pending'] = 'time_exit'
                         self.position.close()
             for action, leg in actions:
                 if action != 'entry':
                     continue
-                closing = self.position and any(o.parent_trade is self.trades[-1] for o in self.orders)
+                closing = self.position and any(o.parent_trade is self.trades[-1] and not o.is_contingent for o in self.orders)
                 if (self.position and not closing) or any(o.parent_trade is None for o in self.orders):
                     leg['status'] = 'skipped_in_position'
                     continue

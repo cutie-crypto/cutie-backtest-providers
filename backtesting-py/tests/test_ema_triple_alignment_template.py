@@ -83,7 +83,7 @@ def test_sustained_alignment_does_not_reenter_after_risk_exit_until_reformed():
     trades = result["_trades"]
     assert len(trades) == 2
     assert trades.iloc[0].EntryBar == 66
-    assert trades.iloc[0].ExitBar == 68
+    assert trades.iloc[0].ExitBar == 67
     strategy = result["_strategy"]
     aligned = [s > m > l for s, m, l in zip(strategy.ema_short, strategy.ema_mid, strategy.ema_long)]
     assert all(aligned[65:83])

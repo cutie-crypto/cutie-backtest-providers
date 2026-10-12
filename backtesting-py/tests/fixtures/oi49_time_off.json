@@ -2,20 +2,20 @@
   "single": {
     "oi_breakout": {
       "0": {
-        "trades": "e9a21bc2f81df4a907088c6b61a011af18f49e3ce7298581832dde3683f1b831",
-        "equity_curve": "39ca460c46a2a33b28b4412ae929c755349eaca2704dfb0b414b84f988cc7fb9",
-        "metrics": "5aae2be7ada94907ecd3cf49ab82cc3e06b072b369735316e0a7bdbd54759725",
+        "trades": "eb097182179abdd7c8fe7c9db047b363c32824911bf231efd1c8ae48b1afbe66",
+        "equity_curve": "7eaace7374705011a1660f132cc08c9488302b1b0eeaafa2fec7a502c3056c3b",
+        "metrics": "f8686792e6777c889c77d61e44107811f01b14a70c7e17626d02912777f51d7b",
         "data_manifest": "e0227d5621dadb2124a013bd596940dc65e007868cbda87ee47bbcd0031dc2d7",
-        "assumptions": "ea5f453c5b79ab801145e1d1a3d56a91a98fc0bb2cf3bc7d3214a3d44c28d3d3",
-        "raw_report": "bd1ff6a9d6d8b3ccef51ea9364673681cae7716c5ba4aea8c15dabfe2ca8bbd1"
+        "assumptions": "236c00ccda88724438bf7b284a2503932fcd42ca546751ba73413695a765e044",
+        "raw_report": "270a65805fe3156bf6517f46a5f6a76a3058a3179bad6d052eb9ef1b035f28ec"
       },
       "1": {
-        "trades": "e9a21bc2f81df4a907088c6b61a011af18f49e3ce7298581832dde3683f1b831",
-        "equity_curve": "39ca460c46a2a33b28b4412ae929c755349eaca2704dfb0b414b84f988cc7fb9",
-        "metrics": "5aae2be7ada94907ecd3cf49ab82cc3e06b072b369735316e0a7bdbd54759725",
+        "trades": "eb097182179abdd7c8fe7c9db047b363c32824911bf231efd1c8ae48b1afbe66",
+        "equity_curve": "7eaace7374705011a1660f132cc08c9488302b1b0eeaafa2fec7a502c3056c3b",
+        "metrics": "f8686792e6777c889c77d61e44107811f01b14a70c7e17626d02912777f51d7b",
         "data_manifest": "e0227d5621dadb2124a013bd596940dc65e007868cbda87ee47bbcd0031dc2d7",
-        "assumptions": "7726225c9d1d606bfda2866f2364e93610824987410f302160bb318c4dacb2c0",
-        "raw_report": "bd1ff6a9d6d8b3ccef51ea9364673681cae7716c5ba4aea8c15dabfe2ca8bbd1"
+        "assumptions": "d506318aca81b57f5d725f86af38a618acee48cd78f135a43b8e217b809ab787",
+        "raw_report": "270a65805fe3156bf6517f46a5f6a76a3058a3179bad6d052eb9ef1b035f28ec"
       }
     }
   }

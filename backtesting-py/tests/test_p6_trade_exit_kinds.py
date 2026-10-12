@@ -197,7 +197,7 @@ def test_stop_loss_risk_layer_intrabar(monkeypatch, tmp_path):
     assert stops
     intrabar = 0
     for trade in body['trades']:
-        bar = decided(data, trade)
+        bar = bar_index(data, trade['closed_at']) if trade in stops else decided(data, trade)
         stop = Decimal(trade['entry_price']) * Decimal('0.99')
         touched = Decimal(str(data.Low.iloc[bar])) <= stop
         # Stop wins every bar whose Low touched it: those exits and only those are stop_loss.
@@ -414,7 +414,7 @@ def first_trade_kind(monkeypatch, tmp_path, data, breakeven):
     assert_aligned(body)
     trade = body['trades'][0]
     assert Decimal(trade['entry_price']) == Decimal('100'), trade
-    assert bar_index(data, trade['closed_at']) == 44, trade  # decided on bar 43 (Low 99 <= stop 100)
+    assert bar_index(data, trade['closed_at']) == 43, trade  # native fill on bar 43 (Low 99 <= stop 100)
     return kinds_of(body)[0]
 
 
