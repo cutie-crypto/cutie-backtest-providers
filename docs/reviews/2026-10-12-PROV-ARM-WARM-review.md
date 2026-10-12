@@ -85,3 +85,10 @@ Baseline d7c7467. Read-only static review; execution evidence collected separate
 **Info,不属于缺陷:** moved_leaves 的 `reason` 写的是"derived indicators/results change",但记录里没有一个结果叶子变化。这是措辞偏宽,不影响判断。如果要写得精确,可以改成"仅报告字段变化"。
 
 Implementation: first full suite37 failed/10595 passed, all37 from three historical report comparators. Four-file repair481 passed EXIT=0. All20 response override cases change only assumptions/raw_report leaves; no trades/equity/metrics/manifest leaves change. Overbroad reason text corrected. Second full suite running after those repairs; pending result.
+
+## Final gates
+
+- Checkpoint commit66e7a46. Full serial suite after comparator repairs:10632 passed,185 warnings in259.62s, EXIT=0. First full:37 failed/10595 passed, EXIT=1. No xdist installed or parallel test run.
+- Six-file focused gate1617 passed EXIT=0; final new-template suite41 passed EXIT=0; repaired sibling suite481 passed EXIT=0; diff --check EXIT=0.
+- Source scope remains five builder EMA assignments/keys only; all other provider AST matches d7c7467. README and review records disclose the valid short-EMA/long-RSI edge; target remains explicitly mandated EMA-only policy. Alternative shared-fetch change requires a separate command ruling.
+- No TokenBeep write or pin update; no main merge, Pre/production/device claims. Existing server BIAS fixture in arm-a1 worktree needs new-pin source attribution and tenfold-prefix parity regeneration. A2/A3 parity fixtures do not yet exist in inspected origin/dev or arm-a2/arm-a3 paths. Existing s4b_parity_cases covers EMA cross/MACD/RSI only, not these five; it needs no regeneration because of this batch.
