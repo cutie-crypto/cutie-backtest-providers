@@ -86,6 +86,8 @@ def run(extra, *, rows=None, start='2026-01-01', period='1h', side='long', signa
             self._risk_init()
             self.snapshots = []
             self.signal_orders = 0
+        def _risk_native_record_exit(self):
+            self.snapshots.append((len(self.data) - 1, True, self._risk_exit_reason))
         def _risk_entry_size(self):
             return 11
         def next(self):
@@ -101,7 +103,8 @@ def run(extra, *, rows=None, start='2026-01-01', period='1h', side='long', signa
                 if repeat:
                     count = len(self.orders)
                     assert self._risk_check_exit()
-                    assert len(self.orders) == count == 1
+                    assert len(self.orders) == count
+                    assert sum(not o.is_contingent for o in self.orders) == 1
                 return
             if signal and i >= 3:
                 self.signal_orders += 1
@@ -195,9 +198,9 @@ def test_same_bar_priority_and_signal_suppression(risk, side, mode, expected):
     if mode != 'signal':
         extra['take_profit_pct'] = 10
     result = run(extra, rows=[FLAT]*3+[row,FLAT,FLAT], side=side, signal=True)
-    assert result['_strategy'].snapshots[-1] == (3, True, expected)
+    assert result['_strategy'].snapshots[-1] == (3, True, 'take_profit' if risk and mode == 'take' else expected)
     assert result['_strategy'].signal_orders == 0
-    assert list(result['_trades'].ExitBar) == [4]
+    assert list(result['_trades'].ExitBar) == [3 if risk and mode != 'signal' else 4]
 
 
 def test_time_only_retains_close_price_stop_semantics():

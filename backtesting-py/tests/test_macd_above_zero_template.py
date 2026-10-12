@@ -134,11 +134,11 @@ def test_warmup_guard_and_default_name():
 
 
 @pytest.mark.parametrize("risk,close", [({"stop_loss_pct": 5}, 90.), ({"take_profit_pct": 5}, 110.)])
-def test_fixed_risk_exit_uses_next_open(risk, close):
+def test_fixed_risk_exit_uses_native_gap_open(risk, close):
     result = _run([100.] * 90 + [101., 101., close, 99.], risk)
     assert list(result["_trades"].EntryBar) == [91]
-    assert list(result["_trades"].ExitBar) == [93]
-    assert result["_trades"].iloc[0].ExitPrice == 99.
+    assert list(result["_trades"].ExitBar) == [92]
+    assert result["_trades"].iloc[0].ExitPrice == close  # Trigger-bar Open gaps through the protective price.
 
 
 def test_two_parameter_changes_produce_different_real_engine_trade_counts():

@@ -186,8 +186,7 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
             if fact.flatten_delay_bars is not None:
                 self._calendar_clock.flatten_delays.append(fact.flatten_delay_bars)
 
-        def _risk_check_exit(self):
-            trade = self.trades[-1]
+        def _risk_native_state(self, trade):
             if self._risk_trade is not trade:
                 _, record, stop = self._pending_entry
                 self._pending_entry = None
@@ -199,6 +198,13 @@ def make_calendar_strategy(mixin, config, risk, initial_capital):
                 self._risk_trade = trade
                 self._risk_state = RiskState(entry, Decimal(str(stop)) if stop is not None else None,
                     take, abs(entry-Decimal(str(stop))) if stop is not None else None, 'long' if trade.is_long else 'short')
+
+        def _risk_native_record_exit(self):
+            self._active_event['exit_reason'] = self._risk_exit_reason
+
+        def _risk_check_exit(self):
+            trade = self.trades[-1]
+            self._risk_native_state(trade)
             closed = self._risk_layer_check_exit()
             if closed:
                 self._active_event['exit_reason'] = self._risk_exit_reason

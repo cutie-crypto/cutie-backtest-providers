@@ -185,13 +185,13 @@ def hourly_stop_frame():
 
 
 def test_hourly_judges_each_value_once_and_stop_blocks_same_day_reentry(monkeypatch, tmp_path):
-    # Day 1 = 0.65 -> buy at bar 48 (day 2 00:00). Bar 50 low touches the stop -> sell at bar 51 open (95).
+    # Day 1 = 0.65 -> buy at bar 48 (day 2 00:00). Bar 50 low touches the stop -> sell at the stop (97) on bar 50.
     # Bars 51..71 still read day 1's value (<= threshold) but it was judged once: no re-entry that day.
     # Day 2 = 0.60 is published at bar 71's close -> buy at bar 72. Day 3 = 1.10 -> sell at bar 96.
     install(monkeypatch, tmp_path, {1: '0.65', 2: '0.60', 3: '1.10'}, hourly_stop_frame())
     body = post(timeframe='1h', bars=120)
     assert body['result_status'] == 'success', body
-    assert legs(body, 3600) == [(48, '100', 51, '95'), (72, '95', 96, '95')]
+    assert legs(body, 3600) == [(48, '100', 50, '97'), (72, '95', 96, '95')]
     counts = body['raw_report'][KEY]['counts']
     # judged values: days -1..4 (bar 1 reads day -1; bar 119 reads day 4) -> 6, each exactly once
     assert counts['judged_values'] == 6 and counts['entry_signals'] == 2
@@ -209,22 +209,22 @@ def test_hourly_first_value_is_judged_once(monkeypatch, tmp_path):
 
 # ------------------------------------------------------------------ stop-loss
 
-def test_intrabar_stop_fills_at_next_open(monkeypatch, tmp_path):
+def test_intrabar_stop_fills_at_stop_on_touch(monkeypatch, tmp_path):
     data = daily_frame(8)
     data.iloc[2] = [120, 122, 115, 121, 1]  # entry 120 -> stop 116.4; low 115 touches
     body = run_daily(monkeypatch, tmp_path, {1: '0.65'}, data=data)
-    # detected on the entry bar's own candle, filled at the next open (130), not at the 116.4 stop price
-    assert legs(body)[0] == (2, '120', 3, '130')
+    # Entry-bar touch fills at the frozen 116.4 stop on the same bar.
+    assert legs(body)[0] == (2, '120', 2, '116.4')
     assert body['raw_report'][KEY]['counts']['stop_loss_exits'] == 1
 
 
-def test_gap_below_stop_fills_at_following_open(monkeypatch, tmp_path):
+def test_gap_below_stop_fills_at_gap_open(monkeypatch, tmp_path):
     data = daily_frame(8)
     data.iloc[3] = [110, 112, 108, 109, 1]  # bar 3 gaps below the 116.4 stop
     data.iloc[4] = [105, 107, 103, 106, 1]
     body = run_daily(monkeypatch, tmp_path, {1: '0.65'}, data=data)
-    assert legs(body)[0] == (2, '120', 4, '105')
-    assert body['trades'][0]['exit_price'] == '105'
+    assert legs(body)[0] == (2, '120', 3, '110')
+    assert body['trades'][0]['exit_price'] == '110'
 
 
 def test_stop_wins_over_signal_exit_on_the_same_bar(monkeypatch, tmp_path):

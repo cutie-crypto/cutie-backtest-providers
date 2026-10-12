@@ -115,7 +115,7 @@ def test_partial_opening_day_fail_closed_and_next_day_works(source):
 def test_complete_warmup_reaches_midnight_instead_of_skipping_day():
     data=frame()
     stats=run(data=data.iloc[1:],warm=data.iloc[:1])
-    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[2,3],[5,6]]
+    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[2,2],[5,6]]
     assert stats['_strategy']._f5_history==[]
     assert stats['_strategy']._f5_vwap[1]==95.5
 
@@ -149,15 +149,15 @@ def test_frozen_signal_stop_not_actual_fill_basis(enabled):
 @pytest.mark.parametrize('kind,reason',[('stop','stop_loss'),('daily','time_expiry'),('target','take_profit')])
 def test_same_bar_stop_daily_target_template_priority(kind,reason):
     data=frame()
-    # At entry3, close at or above VWAP and high touches target; daily wins.
+    # At entry3, native protection precedes daily expiry and template close.
     data.loc[data.index[3],['High','Low','Close']]=[110,92 if kind=='stop' else 94,100]
     if kind=='target':
         data.index=pd.date_range('2026-01-01',periods=9,freq='3h') # entry3 no daily due.
     stats=run({'risk_layer_enabled':True,'take_profit_pct':1,'stop_loss_pct':2},data.iloc[:5])
-    assert stats['_trades'].iloc[0].ExitBar==4
-    assert stats['_strategy']._risk_exit_reason==reason
+    assert stats['_trades'].iloc[0].ExitBar==3
+    assert stats['_strategy']._risk_exit_reason==('stop_loss' if kind=='stop' else 'take_profit')
     if kind=='daily':
-        assert stats['_strategy']._f5_expiries[0]['reason']=='utc_day_end'
+        assert stats['_strategy']._f5_expiries==[]
     elif kind=='stop':
         assert stats['_strategy']._f5_expiries==[]
 
@@ -265,7 +265,7 @@ def test_optional_time_and_filter_entry_gates_preserve_exits():
     assert run({'time_layer_enabled':True,'time_session_start':'01:00','time_session_end':'02:00'})['_trades'].empty
     assert not (run({'filter_layer_enabled':True,'filter_ema_enabled':True,'filter_ema_period':2})['_trades'].EntryBar==3).any()
     stats=run({'time_layer_enabled':True,'time_session_start':'12:00','time_session_end':'19:00'})
-    assert stats['_trades'].iloc[0].ExitBar==4
+    assert stats['_trades'].iloc[0].ExitBar==3
 
 
 def test_fifteen_minute_http_target_period(monkeypatch,tmp_path):
@@ -294,9 +294,9 @@ def test_default_stop_exits_and_target_only_removes_it():
     data.index=pd.date_range('2026-01-01',periods=9,freq='h')
     data.loc[data.index[3],['High','Low','Close']]=[94,91,91]
     default=run(data=data)
-    assert default['_trades'].iloc[0].ExitBar==4
+    assert default['_trades'].iloc[0].ExitBar==3
     custom=run({'take_profit_pct':90},data)
-    assert custom['_trades'].iloc[0].ExitBar==5
+    assert custom['_trades'].iloc[0].ExitBar==4  # Gap open 200 exceeds the single target 180.5.
 
 
 def test_all_zero_volume_never_enters():
@@ -312,9 +312,9 @@ def test_optional_flatten_reuses_priority_before_template():
     data.index=pd.date_range('2026-01-01',periods=5,freq='3h')
     data.loc[data.index[3],['High','Low','Close']]=[110,94,100]
     stats=run({'time_layer_enabled':True,'time_flatten_at':'12:00','take_profit_pct':1},data)
-    assert stats['_trades'].iloc[0].ExitBar==4
-    assert stats['_strategy']._risk_exit_reason=='time_expiry'
-    assert stats['_strategy']._f5_expiries[0]['reason']=='configured_time_expiry'
+    assert stats['_trades'].iloc[0].ExitBar==3
+    assert stats['_strategy']._risk_exit_reason=='take_profit'
+    assert stats['_strategy']._f5_expiries==[]
 
 
 @pytest.mark.parametrize('enabled',[False,True])

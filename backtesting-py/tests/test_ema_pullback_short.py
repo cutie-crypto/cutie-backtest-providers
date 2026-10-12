@@ -148,7 +148,7 @@ def test_short_fixed_risk_exits_before_trend_exit(risk_params, signal_close):
     closes = [192.0] * 29 + [96.0, 96.0, signal_close, signal_close]
     result = run(closes, [192.0] * len(closes), params={**PARAMS, **risk_params})
     assert signal_close < result["_strategy"].ema_slow[31]
-    assert result["_trades"][["EntryBar", "ExitBar"]].values.tolist() == [[30, 32]]
+    assert result["_trades"][["EntryBar", "ExitBar"]].values.tolist() == [[30, 31 if "take_profit_pct" in risk_params else 32]]
     assert all(result["_trades"].Size < 0)
 
 

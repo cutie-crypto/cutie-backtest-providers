@@ -112,10 +112,11 @@ def test_sizing_initial_stop_is_the_stop_the_exit_fires_on(name, monkeypatch, tm
     [record] = body['raw_report']['position_sizing']['fills']
     assert Decimal(record['initial_stop']) == stop
     [trade] = body['trades']
-    # Decided on the crossing bar f+1; the queued market close fills at the open of f+2.
+    # Shared native protection fills at the frozen stop on f+1; intrinsic market exits stay f+2.
     closed = pd.Timestamp(trade['closed_at'], unit='s', tz=data.index.tz)
-    assert closed == data.index[f + 2], trade
-    assert Decimal(trade['exit_price']) == Decimal(str(data['Open'].iloc[f + 2])), trade
+    native = name in ('calendar_schedule', 'red_streak_rsi', 'vwap_reversion')
+    assert closed == data.index[f + (1 if native else 2)], trade
+    assert Decimal(trade['exit_price']) == (stop if native else Decimal(str(data['Open'].iloc[f + 2]))), trade
 
 
 # 2. Self-placed template entries carry _sizing_signal_bar (the no_next_open guard reads it).

@@ -97,7 +97,7 @@ def test_low_touch_stop_is_frozen_at_fill_and_wins_over_ema(monkeypatch, tmp_pat
     body = run(monkeypatch, tmp_path, data=hand_frame(stop=True))
     trade = body['trades'][0]
     # Actual fill 120 => stop 117.6; signal close 110 would incorrectly give stop 107.8.
-    assert (trade['closed_at'], trade['exit_price']) == (T0 + 7 * 86400, '90')
+    assert (trade['closed_at'], trade['exit_price']) == (T0 + 6 * 86400, '117.6')
     assert body['raw_report']['oi_breakout']['executions'][0]['reason'] == 'stop_loss'
     assert body['raw_report']['trade_exit_kinds'][0]['exit_kind'] == 'stop_loss'
     both = hand_frame()

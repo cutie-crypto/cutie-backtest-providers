@@ -107,7 +107,15 @@ def test_the_bar_before_the_last_still_exits_normally(monkeypatch, tmp_path, dir
     body = run(monkeypatch, tmp_path, direction, layer, data, **risk)
     assert body['result_status'] == 'success', body.get('error_message')
     assert p6.kinds_of(body)[0] in {'stop_loss', 'take_profit'}, p6.kinds_of(body)
-    assert Decimal(body['trades'][0]['exit_price']) == Decimal(str(data.Open.iloc[LAST]))
+    if layer:
+        kind = p6.kinds_of(body)[0]
+        offset = Decimal('0.05') * (1 if direction == 'long' else -1)
+        multiplier = 1 + offset if kind == 'take_profit' else 1 - offset
+        expected = Decimal(body['trades'][0]['entry_price']) * multiplier
+        assert body['trades'][0]['closed_at'] == int(data.index[LAST-1].timestamp())
+    else:
+        expected = Decimal(str(data.Open.iloc[LAST]))
+    assert Decimal(body['trades'][0]['exit_price']) == expected
 
 
 def test_last_bar_isolated_liquidation_not_vetoed_by_skipped_stop(monkeypatch, tmp_path):
@@ -161,8 +169,12 @@ def test_last_bar_queues_no_take_profit_order(monkeypatch, tmp_path, direction, 
     calls = count_position_closes(monkeypatch)
     only_trade(run(monkeypatch, tmp_path, direction, layer, frame(direction, last_close), **risk))
     assert calls == []
-    run(monkeypatch, tmp_path, direction, layer, trigger_one_bar_earlier(direction, last_close), **risk)
-    assert calls, 'control: the same verdict one bar before the last must queue a close'
+    body = run(monkeypatch, tmp_path, direction, layer, trigger_one_bar_earlier(direction, last_close), **risk)
+    if layer:
+        assert calls == []
+        assert p6.kinds_of(body) == ['take_profit']
+    else:
+        assert calls, 'legacy control still queues Position.close'
 
 
 @pytest.mark.parametrize('direction,layer,risk,last_close', STOP)
@@ -173,8 +185,12 @@ def test_last_bar_names_no_stop_exit(monkeypatch, tmp_path, direction, layer, ri
     monkeypatch.setattr(p, '_mark_exit_kind', lambda strategy, kind: (names.append(kind), mark_exit_kind(strategy, kind)))
     only_trade(run(monkeypatch, tmp_path, direction, layer, frame(direction, last_close), **risk))
     assert names == []
-    run(monkeypatch, tmp_path, direction, layer, trigger_one_bar_earlier(direction, last_close), **risk)
-    assert names == ['stop_loss'], 'control: the same verdict one bar before the last names the stop'
+    body = run(monkeypatch, tmp_path, direction, layer, trigger_one_bar_earlier(direction, last_close), **risk)
+    if layer:
+        assert names == []
+        assert p6.kinds_of(body) == ['stop_loss']
+    else:
+        assert names == ['stop_loss']
 
 
 # ---------------------------------------------------------------- every engine-path v2 tool

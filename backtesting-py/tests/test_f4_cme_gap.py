@@ -74,7 +74,7 @@ def test_stop_then_expiry_then_profit_and_user_stop_override():
     data.loc['2026-03-09 03:00','Low']=97.5
     assert response(data)['trades'][0]['closed_at']==int(pd.Timestamp('2026-03-11').timestamp())
     result=response(data,{'stop_loss_pct':1})
-    assert result['trades'][0]['closed_at']==int(pd.Timestamp('2026-03-09 04:00').timestamp())
+    assert result['trades'][0]['closed_at']==int(pd.Timestamp('2026-03-09 03:00').timestamp())
     assert result['raw_report'][NAME]['exits'][0]['reason']=='stop_loss'
 
 

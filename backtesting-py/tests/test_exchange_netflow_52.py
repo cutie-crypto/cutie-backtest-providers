@@ -105,8 +105,8 @@ def test_intrabar_stop_actual_fill_and_risk_percentage_sizing(monkeypatch, tmp_p
     body, _ = run(monkeypatch, tmp_path, data=data,
                   params=dict(position_size_risk_pct=1, position_size_qty_step=.01))
     trade, = body['trades']
-    assert (trade['opened_at'], trade['closed_at']) == (T0 + 3 * DAY, T0 + 4 * DAY)
-    assert (trade['entry_price'], trade['exit_price']) == ('120', '90')
+    assert (trade['opened_at'], trade['closed_at']) == (T0 + 3 * DAY, T0 + 3 * DAY)
+    assert (trade['entry_price'], trade['exit_price']) == ('120', '116.4')
     assert Decimal(trade['qty']) == Decimal('27.77')  # $100 / (120 - 116.4), floored to .01
     evidence, = body['raw_report']['exchange_netflow']['executions']
     assert evidence['exit_reason'] == 'stop_loss' and Decimal(evidence['stop_price']) == Decimal('116.4')

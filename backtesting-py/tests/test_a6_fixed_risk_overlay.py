@@ -111,11 +111,8 @@ def test_stop_and_take_both_breached_same_bar_stop_wins():
     # at once, so "stop wins" is instead proven by making sure the exit is driven
     # by the earlier stop-breaching bar and NOT by a later bar that happens to
     # cross the take level. entry requested at bar 1 -> filled at bar 2 (open=100).
-    # Bar 3 closes at 94, breaching the 5% stop (<=95); _risk_check_exit's stop
-    # branch returns True immediately (the take branch is never reached), queuing
-    # a close order that fills at bar 4's open=96. 96 is still well below the 20%
-    # take level (120), so this exit cannot be mistaken for a take-profit exit
-    # that merely happened to land on the same bar.
+    # Bar 3 opens at 94, gapping through the 95 stop; its native stop fills
+    # at 94 on bar 3, before the later take-profit opportunity.
     prices = [100, 100, 100, 94, 96]
     df = _flat_frame(prices)
     risk = _parse_fixed_risk_params({"stop_loss_pct": 5, "take_profit_pct": 20})
@@ -123,8 +120,8 @@ def test_stop_and_take_both_breached_same_bar_stop_wins():
     trades = Backtest(df, cls, cash=100000, finalize_trades=True).run()["_trades"]
     assert len(trades) == 1
     assert trades.iloc[0]["EntryBar"] == 2
-    assert trades.iloc[0]["ExitBar"] == 4
-    assert trades.iloc[0]["ExitPrice"] == pytest.approx(96.0)
+    assert trades.iloc[0]["ExitBar"] == 3
+    assert trades.iloc[0]["ExitPrice"] == pytest.approx(94.0)
 
 
 def test_take_profit_triggers_when_stop_not_breached():

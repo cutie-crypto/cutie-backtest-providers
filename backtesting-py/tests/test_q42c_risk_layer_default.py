@@ -1,5 +1,5 @@
 """Q42-C: a request that carries stop_loss_pct / take_profit_pct without risk_layer_enabled now runs the
-unified risk layer (intrabar High/Low touch, exit at the next open); an explicit false keeps the close-only
+unified risk layer (intrabar High/Low touch, exit at its protective price on the trigger bar); an explicit false keeps the close-only
 legacy layer; a request with neither key is byte-identical to before.
 
 Server-side nothing changes: this batch only touches the provider. The S4-S None cases QA asked for are
@@ -50,7 +50,7 @@ def _flag(tool, params):
 
 def test_default_stop_judged_on_low_not_close():
     # Bar 31 wicks to 150 (-22%) and closes back at 192, above the 2% stop (188.16).
-    assert _ema({"stop_loss_pct": 2}, lows={31: 150.0}) == [[30, 32]]
+    assert _ema({"stop_loss_pct": 2}, lows={31: 150.0}) == [[30, 31]]
 
 
 def test_explicit_false_keeps_close_only_stop():
@@ -59,7 +59,7 @@ def test_explicit_false_keeps_close_only_stop():
 
 
 def test_take_profit_only_judged_on_high():
-    assert _ema({"take_profit_pct": 5}, highs={31: 260.0}) == [[30, 32]]
+    assert _ema({"take_profit_pct": 5}, highs={31: 260.0}) == [[30, 31]]
     assert _ema({"take_profit_pct": 5, **LEGACY}, highs={31: 260.0}) == []
 
 
@@ -116,14 +116,15 @@ def _trades(stats):
     return stats["_trades"][["EntryBar", "ExitBar"]].values.tolist()
 
 
-def test_calendar_schedule_template_default_stop_flag_on_behavior_unchanged():
+def test_calendar_schedule_default_layer_protective_fill_and_legacy_market_fill():
     # The template always judged its frozen stop intrabar; only the reported flag changes.
     data = cal.frame()
     data.iloc[3, data.columns.get_loc("Low")] = 50.0
     params = dict(cal.SCHEDULE, time_max_holding_minutes=360)
     assert _flag("calendar_schedule", {}) is True
     assert _flag("calendar_schedule", {"calendar_stop_enabled": False}) is False
-    assert _trades(cal.direct(data, params)) == _trades(cal.direct(data, {**params, **LEGACY})) == [[2, 4]]
+    assert _trades(cal.direct(data, params)) == [[2, 3]]
+    assert _trades(cal.direct(data, {**params, **LEGACY})) == [[2, 4]]
 
 
 def test_us_open_momentum_behavior_unchanged():
@@ -141,13 +142,14 @@ def test_red_streak_rsi_default_group_runs_unified_layer():
     data = streak.frame()
     data.iloc[46, data.columns.get_loc("Low")] = 80.0  # wick through the 3% stop; close stays at 92
     assert streak.run({}, data)["_strategy"]._risk["risk_layer_enabled"] is True
-    assert list(streak.run({}, data)["_trades"].ExitBar) == [47]
+    assert list(streak.run({}, data)["_trades"].ExitBar) == [46]
     assert list(streak.run(LEGACY, data)["_trades"].ExitBar) == [56]
 
 
 def test_vwap_reversion_default_stop_preempts_day_end_flatten():
     new, old = vwap.run(), vwap.run(LEGACY)
-    assert _trades(new) == _trades(old) == [[3, 4], [6, 7]]
+    assert _trades(new) == [[3, 3], [6, 7]]
+    assert _trades(old) == [[3, 4], [6, 7]]
     # Bar 3's low (88) is through the 2% stop (92.12): the stop decides, so no utc_day_end expiry is recorded.
     assert new["_strategy"]._f5_expiries == []
     assert old["_strategy"]._f5_expiries == [dict(decision_at=1767312000, reason="utc_day_end")]
@@ -157,7 +159,7 @@ def test_fibonacci_retracement_user_stop_runs_unified_layer():
     data = fib.frame()
     new = fib.run(data, {"stop_loss_pct": 2})
     old = fib.run(data, {"stop_loss_pct": 2, **LEGACY})
-    assert _trades(new) == [[9, 11]]
+    assert _trades(new) == [[9, 10]]
     assert _trades(old) == [[9, 13]]
 
 

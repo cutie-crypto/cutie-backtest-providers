@@ -129,7 +129,7 @@ def test_fixed_risk_exits_before_trend_exit(risk_params, signal_close):
     result = _run(closes, dict(PARAMS, **risk_params), lows=[96.0] * len(closes))
     assert signal_close > result["_strategy"].ema_slow[31]
     assert list(result["_trades"].EntryBar) == [30]
-    assert list(result["_trades"].ExitBar) == [32]
+    assert list(result["_trades"].ExitBar) == ([31] if "take_profit_pct" in risk_params else [32])
 
 
 @pytest.mark.parametrize("touches", [True, False])

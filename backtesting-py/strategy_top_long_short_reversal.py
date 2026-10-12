@@ -150,6 +150,22 @@ def make_strategy(mixin, config, risk, initial_capital):
                 value_ts=row["ts"], value_date=utc_date(row["ts"]), value=str(value), action=action,
                 reason=reason))
 
+        def _record_risk_exit(self, row_index):
+            signals = config.signal_block
+            signals["stop_loss_exits"] += 1
+            if row_index is not None:
+                signals["values_consumed_by_stop"] += 1
+                row = config.rows[row_index]
+                self._log(len(self.data) - 1, row, row["value"], "stop_exit_consumed_value",
+                          self._risk_exit_reason or "stop_loss")
+
+        def _risk_native_record_exit(self):
+            readable = self._lsr_readable[len(self.data) - 1]
+            row_index = readable if readable >= 0 and readable != self._lsr_judged else None
+            if row_index is not None:
+                self._lsr_judged = readable
+            self._record_risk_exit(row_index)
+
         def next(self):
             bar = len(self.data) - 1
             # A value is judged once: on the first next() call at which it is readable (the engine never
@@ -163,12 +179,7 @@ def make_strategy(mixin, config, risk, initial_capital):
                 self._risk_exit_reason = None
                 if self._risk_check_exit():
                     # Stop first: a stop exit consumes this bar (no signal exit, no re-entry on the same bar).
-                    signals["stop_loss_exits"] += 1
-                    if row_index is not None:
-                        signals["values_consumed_by_stop"] += 1
-                        row = config.rows[row_index]
-                        self._log(bar, row, row["value"], "stop_exit_consumed_value",
-                                  self._risk_exit_reason or "stop_loss")
+                    self._record_risk_exit(row_index)
                     return
             if row_index is None:
                 return

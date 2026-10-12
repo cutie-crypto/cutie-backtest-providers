@@ -112,6 +112,14 @@ def make_strategy(mixin, config, risk, initial_capital):
             price = Decimal(str(self._broker._adjusted_price(order.size, self.data.Open[-1])))
             return price * (1 - Decimal(str(config.values["stop_loss_pct"])) / 100)
 
+        def _record_risk_exit(self, native=False):
+            at = int(self.data.index[-1].timestamp())
+            self.netflow_decisions.append({"decision_at": at if native else at + DAY,
+                "action": "exit", "reason": self._risk_exit_reason or "risk_exit"})
+
+        def _risk_native_record_exit(self):
+            self._record_risk_exit(native=True)
+
         def next(self):
             if self._at_final_bar():
                 return
@@ -120,8 +128,7 @@ def make_strategy(mixin, config, risk, initial_capital):
             if self.position:
                 self._risk_exit_reason = None
                 if self._risk_check_exit():
-                    self.netflow_decisions.append({"decision_at": decision_at, "action": "exit",
-                        "reason": self._risk_exit_reason or "risk_exit"})
+                    self._record_risk_exit()
                     return
                 window = config.window(decision_at, config.values["inflow_exit_days"])
                 if window and all(row["value"] > 0 for row in window):

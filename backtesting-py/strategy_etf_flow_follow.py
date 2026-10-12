@@ -182,6 +182,14 @@ def make_strategy(mixin, config, risk, initial_capital):
                                           action=action, reason=reason,
                                           flow_ts=event['flow_ts'] if event else None))
 
+        def _record_risk_exit(self, native=False):
+            self._decision('exit', self._risk_exit_reason or 'stop_loss')
+            if native:
+                self.etf_decisions[-1]['fill_at'] = self._etf_opens[len(self.data) - 1]
+
+        def _risk_native_record_exit(self):
+            self._record_risk_exit(native=True)
+
         def next(self):
             bar = len(self.data) - 1
             # Require an actual next open: period-end settlement cannot fabricate an entry at the tail.
@@ -191,7 +199,7 @@ def make_strategy(mixin, config, risk, initial_capital):
             if self.position:
                 self._risk_exit_reason = None
                 if self._risk_check_exit():
-                    self._decision('exit', self._risk_exit_reason or 'stop_loss')
+                    self._record_risk_exit()
                     return
                 trade_event = config.sessions.get(int(pd.Timestamp(self.trades[-1].entry_time).value // 10**9))
                 if trade_event is not None and decision_at == trade_event['close_at']:

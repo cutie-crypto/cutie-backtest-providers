@@ -213,6 +213,10 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         data = fibonacci_frame()
         data.loc[data.index[10], ['High', 'Close']] = [117, 116]
         params['swing_n'] = 2
+        # Exercise the time gate with the intrinsic wave stop/target; user protective
+        # pricing can now close inside the session before the outside-exit candle.
+        params.pop('stop_loss_pct')
+        params.pop('take_profit_pct')
     tf = '1h'
     if name == 'us_open_momentum':
         data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
@@ -503,7 +507,7 @@ def test_c39_disabled_time_bytes_and_midnight_entry_gate(monkeypatch, tmp_path):
         gated = post(monkeypatch, tmp_path, dict(time_layer_enabled=True,
                      time_timezone='UTC', time_weekdays=2, risk_layer_enabled=risk_enabled, stop_loss_pct=3))
         assert [r['side'] for r in gated['trades']] == ['long']
-        assert gated['trades'][0]['closed_at'] == 1767916800  # Friday exit allowed outside Tuesday gate.
+        assert gated['trades'][0]['closed_at'] == 1767916800  # Exit allowed outside Tuesday gate.
 
 @pytest.mark.parametrize('explicit_leverage', [False, True])
 def test_c52_disabled_time_frozen_bytes(monkeypatch, tmp_path, explicit_leverage):

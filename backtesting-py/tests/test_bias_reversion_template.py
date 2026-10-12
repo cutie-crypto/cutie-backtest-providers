@@ -106,11 +106,11 @@ def test_warmup_guard_blocks_early_oversold():
 
 
 @pytest.mark.parametrize("risk,close", [({"stop_loss_pct": 5}, 85.), ({"take_profit_pct": 5}, 99.)])
-def test_fixed_risk_exit_uses_next_open(risk, close):
+def test_fixed_risk_exit_uses_native_gap_open(risk, close):
     result = _run([100.] * 25 + [94., 94., close, 98.], risk)
     assert list(result["_trades"].EntryBar) == [26]
-    assert list(result["_trades"].ExitBar) == [28]
-    assert result["_trades"].iloc[0].ExitPrice == 98
+    assert list(result["_trades"].ExitBar) == [27]
+    assert result["_trades"].iloc[0].ExitPrice == close  # Trigger-bar Open gaps through the protective price.
 
 
 def test_two_parameter_changes_produce_different_real_engine_trade_counts():

@@ -100,12 +100,18 @@ def make_strategy(mixin, config, risk, initial_capital):
                 decision_bar_open=int(pd.Timestamp(self.data.index[-1]).value // 10**9),
                 action=action, reason=reason, **detail))
 
+        def _record_risk_exit(self, native=False):
+            self._log('exit', self._risk_exit_reason or 'risk_exit', **({'native_fill': True} if native else {}))
+
+        def _risk_native_record_exit(self):
+            self._record_risk_exit(native=True)
+
         def next(self):
             bar = len(self.data) - 1
             if self.position:
                 self._risk_exit_reason = None
                 if self._risk_check_exit():
-                    self._log('exit', self._risk_exit_reason or 'risk_exit')
+                    self._record_risk_exit()
                     return
                 if self.data.Close[-1] < self._oi_ema[bar]:
                     self._log('exit', 'close_below_ema')
@@ -137,8 +143,9 @@ def report(strategy, trades):
     """Derive execution evidence only after result.v2 has settled the trades."""
     decisions = list(strategy._oi_decisions)
     next_opens = dict(zip(strategy._oi_opens, strategy._oi_opens[1:]))
-    exits = {next_opens[d['decision_bar_open']]: d['reason'] for d in decisions
-             if d['action'] == 'exit' and d['decision_bar_open'] in next_opens}
+    exits = {(d['decision_bar_open'] if d.get('native_fill') else next_opens[d['decision_bar_open']]):
+             d['reason'] for d in decisions
+             if d['action'] == 'exit' and (d.get('native_fill') or d['decision_bar_open'] in next_opens)}
     return dict(decisions=decisions, executions=[dict(
         seq=t['seq'], opened_at=t['opened_at'], closed_at=t['closed_at'],
         entry_price=t['entry_price'], exit_price=t['exit_price'],

@@ -112,12 +112,12 @@ def test_invalid_event_shapes_and_parameter_bounds_before_fetch(monkeypatch, tmp
         assert body['error_type'] == 'INVALID_PARAMS', body
 
 
-def test_fixed_stop_intrabar_then_next_open_and_long_frozen_separately(monkeypatch, tmp_path):
+def test_fixed_stop_native_touch_and_long_frozen_separately(monkeypatch, tmp_path):
     data = frame()
     data.loc['2026-01-04T12:00:00', 'High'] = 104
     data.loc['2026-01-07T12:00:00', 'Low'] = 96
     body = post(monkeypatch, tmp_path, {'stop_loss_pct': 3}, data)
-    assert [r['closed_at'] for r in body['trades']] == [1767531600, 1767790800]
+    assert [r['closed_at'] for r in body['trades']] == [1767528000, 1767787200]
     assert [l['exit_reason'] for l in report(body)['events'][0]['legs']] == ['stop_loss', 'stop_loss']
 
 
