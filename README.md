@@ -70,20 +70,27 @@ closed candles before the main range through the existing OHLCV cache/fetch path
 Its minimum calculable/main-range bars remain `max(ema_fast, ema_slow) + 1`.
 Warmup stays best-effort: short or unavailable history does not fail the backtest.
 `raw_report.ema_warmup` records the uncapped `requested_bars`, capped
-`target_bars`, `actual_bars`, `truncated`, and `tenfold_reached` (actual history
-meets the uncapped tenfold request). `assumptions.ema_warmup` discloses the
-capped target and actual count. Result.v2 gains no fields.
+`target_bars`, `actual_bars`, `truncated`, and `tenfold_reached`. Per the
+commander's 2026-10-13 ruling, `target_bars` retains the EMA-only tenfold target
+(with the existing 20000-bar cap); `min_bars` never raises this report target.
+`actual_bars` records the actual fetched prefix and may exceed `target_bars`.
+`tenfold_reached` is exactly `actual_bars >= target_bars`: false for short
+history below target, true when a `min_bars` floor raises actual above target,
+and true when the capped target is met even if `truncated` is true.
+`assumptions.ema_warmup` discloses the capped target and actual count.
+Result.v2 gains no fields.
 Backtests provide reference readings and may have unconverged opening indicators;
 live EMA arming instead rejects requests above 20000 bars because it manages money.
 `ema_triple_alignment`, `ema_trend_rsi`, `ema_rsi_pullback`, `bias_reversion`,
 and `ema_pullback` use the same tenfold, capped, best-effort path. The longest
-EMA period determines the request; RSI periods do not contribute. Each template
-retains its original `min_bars` and entry/exit rules. For `ema_trend_rsi`,
-when `rsi_period + 1 > 10 × ema_slow`, the EMA-only target fetches fewer
-prefix candles than the former `min_bars` seed; the unchanged minimum-bars
-guard can delay the first eligible main-range entry. Warmup candles seed
-indicators only and never generate trades or equity points. Other templates
-retain their existing warmup depth.
+EMA period determines the tenfold request; RSI periods do not contribute to it.
+Each template retains its original `min_bars` and entry/exit rules. The shared
+fetch takes `max(tenfold target, min_bars)`, so when `rsi_period + 1` exceeds
+`10 × ema_slow` — reachable under the public schema only for `ema_trend_rsi` —
+the prefix still covers `min_bars` and the minimum-bars guard no longer delays
+the first eligible main-range entry; `actual_bars` may then exceed the reported
+tenfold `target_bars`. Warmup candles seed indicators only and never generate
+trades or equity points. Other templates retain their existing warmup depth.
 
 ### Closed higher-timeframe entry filters
 

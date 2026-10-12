@@ -126,24 +126,74 @@ def test_http_cap_reports_and_fetches_at_most_maximum(client, monkeypatch, name,
     body = post(client, params, name, count=360)
     assert calls == [(START, START+360*STEP), (START-20002*STEP, START)]
     assert body['raw_report']['ema_warmup'] == dict(requested_bars=period*2000,
-        target_bars=20000, actual_bars=20000, truncated=True, tenfold_reached=False)
+        target_bars=20000, actual_bars=20000, truncated=True, tenfold_reached=True)
     assert '回测已把预热截到 20000 根' in body['assumptions']['ema_warmup']
     assert f'需 {period*2000} 根' in body['assumptions']['ema_warmup']
     assert '无法布防自动信号' in body['assumptions']['ema_warmup']
 
 
-def test_trend_rsi_long_rsi_retains_taskbook_ema_only_target(client, monkeypatch):
-    # Public schema permits this boundary. The task explicitly keeps RSI out of
-    # the target; min_bars still prevents premature main-range evaluation.
+def test_trend_rsi_long_rsi_fetches_min_bars_and_matches_sufficient_baseline(client, monkeypatch):
+    # Public schema permits this boundary. RSI stays out of the tenfold target
+    # (30), but the shared fetch floors at min_bars (101), so the RSI prefix is
+    # fully seeded and the first entry is no longer delayed by the min_bars guard.
     params = {'ema_fast':2, 'ema_slow':3, 'rsi_period':100}
     built = provider.TOOL_SPECS['local.backtesting_py.ema_trend_rsi']['build'](params)
     assert built['min_bars'] == 101
     assert built['ema_warmup_requested_bars'] == 30
     assert built['ema_warmup_target_bars'] == 30
+    full = market_frame(3, 200)
     calls = []
-    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(3, 200), calls))
+    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(full, calls))
     body = post(client, params, 'ema_trend_rsi', count=360)
-    assert calls == [(START, START+360*STEP), (START-32*STEP, START)]
-    assert body['raw_report']['ema_warmup']['actual_bars'] == 30
-    assert body['raw_report']['ema_warmup']['tenfold_reached'] is True
-    assert all(t['opened_at'] >= START+70*STEP for t in body['trades'])
+    assert calls == [(START, START+360*STEP), (START-103*STEP, START)]
+    assert body['raw_report']['ema_warmup'] == dict(requested_bars=30,
+        target_bars=30, actual_bars=101, truncated=False, tenfold_reached=True)
+    assert [t['opened_at'] for t in body['trades']] == [START+5*STEP]
+    # History-sufficient baseline: an explicit min_bars seed must be
+    # indistinguishable from the default max(target, min_bars) fetch.
+    tool = provider.TOOL_SPECS['local.backtesting_py.ema_trend_rsi']
+    original = tool['build']
+    def baseline_build(supplied, **kwargs):
+        seeded = original(supplied, **kwargs)
+        seeded['ema_warmup_target_bars'] = seeded['min_bars']
+        return seeded
+    monkeypatch.setitem(tool, 'build', baseline_build)
+    calls = []
+    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(full, calls))
+    baseline = post(client, params, 'ema_trend_rsi', count=360)
+    assert calls == [(START, START+360*STEP), (START-103*STEP, START)]
+    assert baseline['trades'] == body['trades']
+
+
+DEFAULTS = [
+    ('ema_triple_alignment', {'ema_short':20, 'ema_mid':60, 'ema_long':120}, 1200),
+    ('ema_trend_rsi', {'ema_fast':50, 'ema_slow':200, 'rsi_period':14}, 2000),
+    ('ema_rsi_pullback', {'ema_period':200, 'rsi_period':14}, 2000),
+    ('bias_reversion', {'ema_period':20, 'bias_entry_pct':3}, 200),
+    ('ema_pullback', {'ema_fast':20, 'ema_slow':60}, 600),
+]
+
+@pytest.mark.parametrize('name,params,target', DEFAULTS, ids=[d[0] for d in DEFAULTS])
+def test_default_parameters_fetch_depth_unchanged(client, monkeypatch, name, params, target):
+    # params mirror each builder's defaults; min_bars <= tenfold target, so the
+    # shared max(target, min_bars) floor is a no-op and depth stays at target.
+    built = provider.TOOL_SPECS['local.backtesting_py.'+name]['build']({})
+    assert built['ema_warmup_target_bars'] == target
+    assert built['min_bars'] <= target
+    calls = []
+    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(built['min_bars'], target+2), calls))
+    body = post(client, params, name, count=360)
+    assert calls == [(START, START+360*STEP), (START-(target+2)*STEP, START)]
+    assert body['raw_report']['ema_warmup'] == dict(requested_bars=target,
+        target_bars=target, actual_bars=target, truncated=False, tenfold_reached=True)
+
+
+@pytest.mark.parametrize('warm_count,reached', [(15,False), (30,True), (50,True)])
+def test_trend_rsi_short_history_reports_against_tenfold_target(client, monkeypatch, warm_count, reached):
+    params = {'ema_fast':2, 'ema_slow':3, 'rsi_period':100}
+    calls = []
+    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(3, warm_count), calls))
+    body = post(client, params, 'ema_trend_rsi', count=360)
+    assert calls == [(START, START+360*STEP), (START-103*STEP, START)]
+    assert body['raw_report']['ema_warmup'] == dict(requested_bars=30,
+        target_bars=30, actual_bars=warm_count, truncated=False, tenfold_reached=reached)
