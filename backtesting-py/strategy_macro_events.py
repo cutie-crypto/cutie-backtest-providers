@@ -13,7 +13,7 @@ from decimal import Decimal
 import math
 
 from backtesting import Strategy
-from strategy_event_window import EventWindowConfig, MAX_EVENTS, _parse_ts, SCHEMA as EVENT_SCHEMA
+from strategy_event_window import EventWindowConfig, MAX_EVENTS, _parse_ts, SCHEMA as EVENT_SCHEMA, skip_native_exit_events
 from strategy_risk_overlay import RiskState
 from strategy_time_layer import HoldingExpiry, utc_datetime
 
@@ -198,6 +198,16 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
             stop = self._next_bar + 1
             return dict(decisions=dict(self._decisions), bar_opens=[int(t.timestamp()) for t in self._opens],
                         stop_bar=stop if stop < len(self._opens) else None)
+
+        def _native_blocked_events(self, bar):
+            yield from self._by_event.get(bar, ())
+            for record, _ in self._by_entry.get(bar, ()):
+                yield record
+            yield from self._watching
+
+        def _risk_native_blocked_next(self):
+            bar = self._next_bar = len(self.data) - 1
+            skip_native_exit_events(self._native_blocked_events(bar), 'native_exit_no_reentry')
 
         def _stop(self, is_long, fill):
             if config.kind == KINDS[0]:

@@ -325,6 +325,18 @@ def make_liquidation_strategy(mixin, config, risk, initial_capital):
                 record["decision_bar_utc"] = self._opens[decision].isoformat()
                 self._liq_by_bar.setdefault(decision, []).append((record, item))
 
+        def _native_blocked_events(self, bar):
+            yield from super()._native_blocked_events(bar)
+            for record, _ in self._liq_by_bar.get(bar, ()):
+                yield record
+
+        def _risk_native_blocked_next(self):
+            super()._risk_native_blocked_next()
+            for record, _ in self._liq_by_bar.get(self._next_bar, ()):
+                # Settlement owns the fail-closed check for a missing outcome.
+                if 'status' in record:
+                    self._count(record)
+
         def _risk_layer_check_exit(self):
             trade = self.trades[-1]
             if self._risk_trade is not trade:
