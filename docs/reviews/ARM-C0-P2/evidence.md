@@ -30,7 +30,7 @@
 
 ## main 基线
 
-origin/main=0da4fc7 的 backtesting-py 源码/测试树与403333f逐字相同（git diff 403333f origin/main -- . 无输出）。既有 docs/reviews/PSF-P2-review.md 112行记录该树全量10685 passed / 165 warnings / EXIT=0（本任务复用已存证据，不冒称本轮重跑 main）。本轮源码树收尾全量10707 passed / 165 warnings / 571.37s / EXIT=0；相对 main 已存基线新增失败0。完整日志 /tmp/arm-c0-p2p/full.log 与 full.exit。异模型审查仍待返回，不宣称验收完成。
+origin/main=0da4fc7 的 backtesting-py 源码/测试树与403333f逐字相同（git diff 403333f origin/main -- . 无输出）。既有 docs/reviews/PSF-P2-review.md 112行记录该树全量10685 passed / 165 warnings / EXIT=0（本任务复用已存证据，不冒称本轮重跑 main）。本轮源码树收尾全量10707 passed / 165 warnings / 571.37s / EXIT=0；相对 main 已存基线新增失败0。完整日志 /tmp/arm-c0-p2p/full.log 与 full.exit。agy只读审查status=SUCCESS / EXIT=0，明确无blocker，原文及可核验限制见review.md。
 
 ## Consumer 证据分层
 
@@ -39,3 +39,7 @@ origin/main=0da4fc7 的 backtesting-py 源码/测试树与403333f逐字相同（
 ## 全量收尾
 
 实现提交11977a2已普通push，PR102保持draft；full.log 为上述实现及当前独立核心金样的最终全量一次。后续若只补审查/证据文档不重复跑；任何实质返修须重新验证受影响范围。compile 与 git diff --check EXIT=0。
+
+## 最终异模型收尾
+
+agy唯一一轮返回无blocker，0条实质finding，无需返修；未使用Claude或Codex自审替代。审查原文中未提供其后台测试退出证据，动态结论仍仅引用本任务日志。三段准确diff索引见review.md，代码/测试/所有既有金样在全量通过后未改。
