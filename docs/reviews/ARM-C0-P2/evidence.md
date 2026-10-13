@@ -30,8 +30,12 @@
 
 ## main 基线
 
-origin/main=0da4fc7 的 backtesting-py 源码/测试树与403333f逐字相同（git diff 403333f origin/main -- . 无输出）。既有 docs/reviews/PSF-P2-review.md 112行记录该树全量10685 passed / 165 warnings / EXIT=0（本任务复用已存证据，不冒称本轮重跑 main）。本轮全量与异模型审查结果待后文追加。
+origin/main=0da4fc7 的 backtesting-py 源码/测试树与403333f逐字相同（git diff 403333f origin/main -- . 无输出）。既有 docs/reviews/PSF-P2-review.md 112行记录该树全量10685 passed / 165 warnings / EXIT=0（本任务复用已存证据，不冒称本轮重跑 main）。本轮源码树收尾全量10707 passed / 165 warnings / 571.37s / EXIT=0；相对 main 已存基线新增失败0。完整日志 /tmp/arm-c0-p2p/full.log 与 full.exit。异模型审查仍待返回，不宣称验收完成。
 
 ## Consumer 证据分层
 
 平台服务核验、成交重放、示范收益和两端主读数所依赖的 schema/trades/metrics/equity_curve/data_manifest 与 trade_exit_kinds/legacy_metrics 保持相同；独立48h原始核心金样与新结果完全相同，4h/1d的旧 arm_c0_p_daily_4h.json 整体一致。消费者静态链见探路 /tmp/arm-c0-p2/REPORT.md 与 EVIDENCE.md：平台验证/成交重放/示范生成器不消费清算逐小时数组，两端无该数组渲染。本轮没有执行平台、设备或UI验证；端侧超限文案由 ARM-C0-P2-S 处理。
+
+## 全量收尾
+
+实现提交11977a2已普通push，PR102保持draft；full.log 为上述实现及当前独立核心金样的最终全量一次。后续若只补审查/证据文档不重复跑；任何实质返修须重新验证受影响范围。compile 与 git diff --check EXIT=0。
