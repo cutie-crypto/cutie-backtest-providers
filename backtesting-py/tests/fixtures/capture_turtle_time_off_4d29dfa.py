@@ -1,4 +1,4 @@
-"""Frozen turtle off-state responses; run once at 4d29dfa, tests import response()/CASES only."""
+"""Turtle seed 4d29dfa capture; --record-psf-p2c replays scalar and HTTP goldens."""
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -55,7 +55,36 @@ def response(case, extra=None):
         return res.text
 
 
+def record_psf_p2c():
+    """Explicitly rebaseline turtle only, using the existing independent accounts."""
+    import hashlib
+    import inspect
+    import re
+    from test_turtle_template import hand, directional_hand
+    from _exit_kinds_strip import without_exit_kinds_text
+    for direction in ('long', 'short', 'both'):
+        path = FIXTURE.with_name(f'turtle_{direction}_golden.json')
+        fx = json.loads(path.read_text())
+        fx['expected'] = hand(fx) if direction == 'long' else directional_hand(fx)
+        path.write_text(json.dumps(fx, indent=2) + '\n')
+    captured = {}
+    for case in CASES:
+        text = response(case)
+        assert text == response(case), f'{case} response is not deterministic'
+        assert json.loads(text)['result_status'] == 'success'
+        captured[case] = re.sub(r',"n":"[^\"]*","stop":"[^\"]*"', '', without_exit_kinds_text(text))
+    # baseline_sha identifies the original market seed, not the native response.
+    payload = dict(baseline_sha=BASELINE_SHA, responses=captured,
+                   protective_fill_contract='PSF-P2c: same-bar trigger price; gaps at open',
+                   capture_source_sha256=hashlib.sha256(inspect.getsource(provider._TurtleGroupMixin).encode()).hexdigest())
+    FIXTURE.write_text(json.dumps(payload, indent=2) + '\n')
+    print('RECALCULATED turtle_scalar=3 turtle_http=4')
+
+
 if __name__ == '__main__':
+    if sys.argv[1:] == ['--record-psf-p2c']:
+        record_psf_p2c()
+        raise SystemExit(0)
     sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     assert sha == BASELINE_SHA, sha
     captured = {}

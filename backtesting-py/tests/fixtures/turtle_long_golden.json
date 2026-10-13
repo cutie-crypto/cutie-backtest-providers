@@ -584,37 +584,37 @@
         "entry_price": 114,
         "size": 117,
         "group_id": "turtle-1",
-        "exit_bar": 23,
-        "exit_price": 140
+        "exit_bar": 22,
+        "exit_price": 146.0
       },
       {
         "entry_bar": 18,
         "entry_price": 130,
         "size": 117,
         "group_id": "turtle-1",
-        "exit_bar": 23,
-        "exit_price": 140
+        "exit_bar": 22,
+        "exit_price": 146.0
       },
       {
         "entry_bar": 19,
         "entry_price": 148,
         "size": 117,
         "group_id": "turtle-1",
-        "exit_bar": 23,
-        "exit_price": 140
+        "exit_bar": 22,
+        "exit_price": 146.0
       },
       {
         "entry_bar": 21,
         "entry_price": 163,
         "size": 117,
         "group_id": "turtle-1",
-        "exit_bar": 23,
-        "exit_price": 140
+        "exit_bar": 22,
+        "exit_price": 146.0
       },
       {
         "entry_bar": 51,
         "entry_price": 109,
-        "size": 118,
+        "size": 121,
         "group_id": "turtle-2",
         "exit_bar": 54,
         "exit_price": 100.0
@@ -622,7 +622,7 @@
       {
         "entry_bar": 101,
         "entry_price": 99,
-        "size": 995,
+        "size": 1023,
         "group_id": "turtle-3",
         "exit_bar": 104,
         "exit_price": 100
@@ -635,14 +635,14 @@
         "n": 8.5,
         "q": 117,
         "exit_signal": 22,
-        "exit_bar": 23,
+        "exit_bar": 22,
         "reason": "stop"
       },
       {
         "group_id": "turtle-2",
         "signal": 50,
         "n": 8.50000030042429,
-        "q": 118,
+        "q": 121,
         "exit_signal": 53,
         "exit_bar": 54,
         "reason": "channel"
@@ -651,7 +651,7 @@
         "group_id": "turtle-3",
         "signal": 100,
         "n": 1.0000000041909156,
-        "q": 995,
+        "q": 1023,
         "exit_signal": 103,
         "exit_bar": 104,
         "reason": "channel"
