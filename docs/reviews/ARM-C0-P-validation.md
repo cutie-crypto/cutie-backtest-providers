@@ -21,4 +21,4 @@ daily_changed: mutation_EXIT=1 restore_EXIT=0 test=daily_and_4h_unchanged
 
 每处仅临时改动指定判据，单独定向执行，失败必须 EXIT=1；备份字节恢复后相同用例必须 EXIT=0。最终源码恢复一致。
 
-全量最终结果与异模型审查在收口时补充。证据仅为本地合成数据，不证明已部署环境行为。
+最终全量：10699 passed, 164 warnings，EXIT=0，用时746.14s，日志 `/tmp/arm-c0-p/full.log`；对比main的10683 passed，新增16条，新增失败0、基线失败0。异模型审查见 `ARM-C0-P-review.md`。证据仅为本地合成数据，不证明已部署环境行为。
