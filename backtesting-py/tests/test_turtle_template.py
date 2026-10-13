@@ -58,6 +58,13 @@ def hand(fx):
                 cash += entry['size']*op
                 trades.append({**entry, 'exit_bar': i, 'exit_price': op})
             held, exit_reason, blocked_bar = [], None, i
+        if pending and held and op <= last-p['stop_atr_multiplier']*n:
+            # Gap through the OLD protection closes before the queued add.
+            groups[-1].update(exit_signal=i, exit_bar=i, reason='stop')
+            for entry in held:
+                cash += entry['size']*op
+                trades.append({**entry, 'exit_bar': i, 'exit_price': op})
+            held, pending, blocked_bar = [], None, i
         if pending:
             size, gid = pending
             if size*op <= cash:
@@ -393,6 +400,13 @@ def directional_hand(fx):
                 cash += t['size']*(op-t['entry_price'])
                 trades.append({**t, 'exit_bar': i, 'exit_price': op})
             held, reason, blocked = [], None, i
+        prior_stop = last-side*p['stop_atr_multiplier']*n if held else None
+        if pending and held and (op <= prior_stop if side == 1 else op >= prior_stop):
+            groups[-1].update(exit_signal=i, exit_bar=i, reason='stop')
+            for entry in held:
+                cash += entry['size']*(op-entry['entry_price'])
+                trades.append({**entry, 'exit_bar': i, 'exit_price': op})
+            held, pending, blocked = [], None, i
         if pending:
             size, gid = pending
             equity = cash + sum(t['size']*(close-t['entry_price']) for t in held)

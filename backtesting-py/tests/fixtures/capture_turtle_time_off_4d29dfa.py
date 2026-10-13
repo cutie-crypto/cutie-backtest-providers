@@ -58,6 +58,7 @@ def response(case, extra=None):
 def record_psf_p2c():
     """Explicitly rebaseline turtle only, using the existing independent accounts."""
     import hashlib
+    import inspect
     import re
     from test_turtle_template import hand, directional_hand
     from _exit_kinds_strip import without_exit_kinds_text
@@ -75,7 +76,7 @@ def record_psf_p2c():
     # baseline_sha identifies the original market seed, not the native response.
     payload = dict(baseline_sha=BASELINE_SHA, responses=captured,
                    protective_fill_contract='PSF-P2c: same-bar trigger price; gaps at open',
-                   capture_source_sha256=hashlib.sha256(Path(provider.__file__).read_bytes()).hexdigest())
+                   capture_source_sha256=hashlib.sha256(inspect.getsource(provider._TurtleGroupMixin).encode()).hexdigest())
     FIXTURE.write_text(json.dumps(payload, indent=2) + '\n')
     print('RECALCULATED turtle_scalar=3 turtle_http=4')
 

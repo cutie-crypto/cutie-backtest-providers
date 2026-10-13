@@ -58,11 +58,13 @@ def run(data, params, finalize=True):
     return stats['_strategy'], cls, trades
 
 
-# ---- off state: complete responses byte-identical to 4d29dfa ----
+# ---- off state: PSF-P2c native responses from the original 4d29dfa market seed ----
 
 def test_baseline_fixture_is_pinned_to_4d29dfa():
     assert BASELINE['baseline_sha'] == capture.BASELINE_SHA
     assert set(BASELINE['responses']) == set(capture.CASES)
+    import hashlib, inspect
+    assert BASELINE['capture_source_sha256'] == hashlib.sha256(inspect.getsource(p._TurtleGroupMixin).encode()).hexdigest()
 
 
 @pytest.mark.parametrize('case', sorted(capture.CASES))

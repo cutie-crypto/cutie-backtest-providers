@@ -4431,7 +4431,8 @@ class _TurtleGroupMixin(_TimeLayerMixin):
             for trade in self.trades:
                 trade.tp = float(self._group_take) if self._group_take is not None else None
             for trade in self.trades:
-                trade.sl = self._group_stop
+                # A nonpositive long stop cannot trigger on positive market prices.
+                trade.sl = self._group_stop if self._group_stop > 0 else None
 
         def protected_process():
             final = self.__dict__.get("_total_bars")
