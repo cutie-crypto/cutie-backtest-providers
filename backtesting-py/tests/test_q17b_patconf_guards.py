@@ -274,10 +274,12 @@ def test_pi_double_bottom_target_overshoot_exact_prices(monkeypatch, tmp_path):
     b1.set_bar(data, 54, 121, 124, 120, 123)
     b1.set_bar(data, 55, 125, 126, 124, 125)
     b1.set_bar(data, 56, 100, 101, 99, 100)
-    # 待裁：保留旧 target-gap guard 回包预期，不在本批裁定或固化新语义。
+    # PSF-BOTTOM-GAP: actual entry open121 already exceeds target120; skip even with confirmation off.
     off = b1.post(monkeypatch, tmp_path, 'double_bottom', {}, data)
-    assert [(t['entry_price'], t['exit_price'], t['pnl']) for t in off['trades']] == [
-        ('121', '125', '330.576')]
+    assert off['trades'] == []
+    assert off['raw_report']['bottom_pattern']['skipped_entries'] == [dict(
+        reason='entry_open_at_or_above_frozen_target', signal_bar=53, entry_bar=54,
+        entry_open=121., frozen_target=120., adjusted_open=121.)]
     on = b1.post(monkeypatch, tmp_path, 'double_bottom', LAYER, data)
     assert on['trades'] == []
     report = on['raw_report']['bottom_pattern']

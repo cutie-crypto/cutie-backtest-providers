@@ -110,9 +110,9 @@ def make_bottom_strategy(mixin, *, kind, risk, initial_capital, config):
                                 reason='entry_open_at_or_below_frozen_stop', signal_bar=order.tag.signal_bar,
                                 entry_bar=len(self.data)-1, entry_open=opening, frozen_stop=order.tag.stop))
                             order.cancel()
-                        elif (self._pattern_confirm_queue is not None and
-                              self._broker._adjusted_price(order.size, opening) >= order.tag.target):
-                            # Confirmation carries s's target to k+1; no remaining reward means no entry.
+                        elif (self._broker._adjusted_price(order.size, opening) >= order.tag.target):
+                            # Market entries fill at the adjusted next open, including without confirmation.
+                            # Equality leaves no remaining reward, so cancel before sizing/filling.
                             self.bottom_pattern_report['skipped_entry_count'] += 1
                             self.bottom_pattern_report['skipped_entries'].append(dict(
                                 reason='entry_open_at_or_above_frozen_target', signal_bar=order.tag.signal_bar,
