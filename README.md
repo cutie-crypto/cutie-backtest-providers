@@ -134,6 +134,17 @@ Range-breakout days blocked by a filter record `filter_blocked` and
 `direction=both`, ledger templates and `signal_execution` remain unsupported
 with filters. See the [parameter and verification evidence](backtesting-py/tests/entry_filters_7p2_evidence.md).
 
+### Bottom and top pattern entry target gaps (PSF-BOTTOM-GAP)
+
+For `double_bottom` / `inverse_head_shoulders`, cancel entry when the actual
+next-open price adjusted for engine spread is at or above the frozen measured-move
+target. For `double_top` / `head_shoulders`, cancel when that price is at or below
+the frozen target. Equality is rejected. This applies with pattern confirmation
+both enabled and disabled, before position sizing or any position is opened;
+the signal close is not the entry reference. The existing `bottom_pattern` /
+`top_pattern` reports record the skipped entry, bar indexes, adjusted open and
+frozen target in `skipped_entries` and `skipped_entry_count`.
+
 ### Additional long-only patterns (9-T2)
 
 Four registered ids share the existing candle engine and next-open market fills:

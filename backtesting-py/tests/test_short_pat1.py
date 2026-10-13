@@ -530,14 +530,15 @@ BOTTOM_PATCONF2B1_OPEN = (
     b"    return BottomStrategy\n")
 
 
-# Q17b: only this confirmation-on target guard is allowed; historical goldens stay immutable.
+# PSF-BOTTOM-GAP: the approved target guard covers ordinary and confirmation entries;
+# non-gap historical goldens remain immutable.
 BOTTOM_Q17B_TARGET_GUARD = (
     b"                            order.cancel()\n"
     b"                process_orders()\n",
     b"                            order.cancel()\n"
-    b"                        elif (self._pattern_confirm_queue is not None and\n"
-    b"                              self._broker._adjusted_price(order.size, opening) >= order.tag.target):\n"
-    b"                            # Confirmation carries s's target to k+1; no remaining reward means no entry.\n"
+    b"                        elif (self._broker._adjusted_price(order.size, opening) >= order.tag.target):\n"
+    b"                            # Market entries fill at the adjusted next open, including without confirmation.\n"
+    b"                            # Equality leaves no remaining reward, so cancel before sizing/filling.\n"
     b"                            self.bottom_pattern_report['skipped_entry_count'] += 1\n"
     b"                            self.bottom_pattern_report['skipped_entries'].append(dict(\n"
     b"                                reason='entry_open_at_or_above_frozen_target', signal_bar=order.tag.signal_bar,\n"
