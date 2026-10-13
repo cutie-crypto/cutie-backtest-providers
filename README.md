@@ -34,6 +34,14 @@ uvicorn workers or parallel backtest computation. A client timeout or disconnect
 does not stop CPU work already running in the provider thread; queued and running
 work remains bounded by the same limiter.
 
+The concurrency regression holds a backtest worker until a successful `/health`
+response arrives, covering both Python CPU contention and a held worker. It fails
+if health waits for backtest completion; five-second watchdogs only bound broken
+runs. A loose one-second ceiling catches hangs; latency is printed for diagnosis,
+without treating a single 100ms wall-clock sample as a portable scheduling guarantee. Imports are warmed
+before the measurement; exchange construction and report-directory checks still
+run inside each health request.
+
 ### Single-position template leverage
 
 The single-position `backtesting.py` templates that use the fixed-risk overlay
