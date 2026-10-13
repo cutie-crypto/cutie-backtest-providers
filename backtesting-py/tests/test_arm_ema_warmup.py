@@ -1,10 +1,12 @@
-"""Five builders share EMA cross's best-effort tenfold seed."""
+"""Six EMA families keep 10x EMA budgets and reject incomplete recursive seeds."""
 from __future__ import annotations
 import math
 import pandas as pd
 import pytest
 import cutie_backtesting_provider as provider
 from test_ema_backtest_warmup import START, STEP, client, fetcher, frame, post, V2_KEYS
+from test_warmup_explicit import request
+from warmup_rules import wilder_bars
 
 CASES = [
     ('ema_triple_alignment', {'ema_short':5, 'ema_mid':20, 'ema_long':60}, 60, 60),
@@ -25,14 +27,10 @@ def test_builder_tenfold_depth_and_original_minimum(name, params, period, minimu
     assert built['min_bars'] == minimum
 
 @pytest.mark.parametrize('name,params,period,minimum', CASES, ids=IDS)
-def test_builder_caps_request_above_maximum(monkeypatch, name, params, period, minimum):
-    # Public bounded EMA schemas cannot exceed 20000. Simulate a larger request
-    # through the multiplier without changing the public parameter domains.
+def test_builder_rejects_request_above_maximum(monkeypatch, name, params, period, minimum):
     monkeypatch.setattr(provider, 'EMA_WARMUP_MULTIPLIER', 2000)
-    built = provider.TOOL_SPECS['local.backtesting_py.'+name]['build'](params)
-    assert built['ema_warmup_requested_bars'] == period*2000
-    assert built['ema_warmup_target_bars'] == 20000
-    assert built['min_bars'] == minimum
+    with pytest.raises(ValueError, match='INVALID_PARAMS:required_warmup exceeds 20000'):
+        provider.TOOL_SPECS['local.backtesting_py.'+name]['build'](params)
 
 
 def market_frame(period, warm_count):
@@ -43,7 +41,8 @@ def market_frame(period, warm_count):
 @pytest.mark.parametrize('name,params,period,minimum', CASES, ids=IDS)
 def test_sufficient_history_seeds_indicators_without_warmup_signals(client, monkeypatch, name, params, period, minimum):
     target = period*10
-    full = market_frame(period, target+2)
+    required = provider.TOOL_SPECS['local.backtesting_py.'+name]['build'](params)['required_warmup']
+    full = market_frame(period, required+2)
     calls, evaluated, indicators = [], [], {}
     tool = provider.TOOL_SPECS['local.backtesting_py.'+name]
     original = tool['build']
@@ -66,13 +65,13 @@ def test_sufficient_history_seeds_indicators_without_warmup_signals(client, monk
     monkeypatch.setitem(tool, 'build', capture)
     monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(full, calls))
     body = post(client, params, name, count=360)
-    assert calls == [(START, START+360*STEP), (START-(target+2)*STEP, START)]
+    assert calls == [(START, START+360*STEP), (START-(required+2)*STEP, START)]
     assert body['raw_report']['ema_warmup'] == dict(requested_bars=target,
-        target_bars=target, actual_bars=target, truncated=False, tenfold_reached=True)
+        target_bars=target, actual_bars=required, truncated=False, tenfold_reached=True)
     assert evaluated and min(evaluated) >= pd.to_datetime(START, unit='s')
     # Independent recurrence proves actual indicators use the tenfold prefix,
     # not just the report. Earlier unavailable/unused history is excluded.
-    closes = list(full['Close'].iloc[-(target+360):])
+    closes = list(full['Close'].iloc[-(required+360):])
     spans = {'ema_short':params.get('ema_short'), 'ema_mid':params.get('ema_mid'),
              'ema_long':params.get('ema_long'), 'ema_fast':params.get('ema_fast'),
              'ema_slow':params.get('ema_slow'), 'ema':params.get('ema_period'),
@@ -95,74 +94,49 @@ def test_sufficient_history_seeds_indicators_without_warmup_signals(client, monk
 
 @pytest.mark.parametrize('warm_count', [0,15,50])
 @pytest.mark.parametrize('name,params,period,minimum', CASES, ids=IDS)
-def test_short_history_matches_ema_cross_best_effort(client, monkeypatch, name, params, period, minimum, warm_count):
+def test_short_history_is_rejected(client, monkeypatch, name, params, period, minimum, warm_count):
     monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(period, warm_count)))
-    body = post(client, params, name, count=360)
-    assert body['raw_report']['ema_warmup'] == dict(requested_bars=period*10,
-        target_bars=period*10, actual_bars=warm_count, truncated=False, tenfold_reached=False)
-    assert body['assumptions']['ema_warmup'] == f'EMA 预热取 10×最长周期（目标 {period*10} 根，实得 {warm_count} 根）'
-    assert body['data_manifest']['kline_count'] == 360
-    assert all(t['opened_at'] >= START for t in body['trades'])
+    body = request(client, params=params, name=name, count=360)
+    required = provider.TOOL_SPECS['local.backtesting_py.'+name]['build'](params)['required_warmup']
+    assert body['error_type'] == 'WARMUP_INSUFFICIENT'
+    assert body['limitations']['missing_bars'] == required-warm_count
+
 
 @pytest.mark.parametrize('name,params,period,minimum', CASES, ids=IDS)
-def test_unavailable_history_matches_ema_cross_best_effort(client, monkeypatch, name, params, period, minimum):
+def test_unavailable_history_is_fetch_failure(client, monkeypatch, name, params, period, minimum):
     good = fetcher(market_frame(period, 0))
     def flaky(*args):
         if args[-2] < START:
             raise RuntimeError('history unavailable')
         return good(*args)
     monkeypatch.setattr(provider, '_fetch_ohlcv', flaky)
-    body = post(client, params, name, count=360)
-    assert body['raw_report']['ema_warmup']['actual_bars'] == 0
-    assert body['raw_report']['ema_warmup']['tenfold_reached'] is False
+    body = request(client, params=params, name=name, count=360)
+    assert body['error_type'] == 'WARMUP_FETCH_FAILED'
+    assert 'actual_bars' not in body['limitations']
 
 
 @pytest.mark.parametrize('name,params,period,minimum', CASES, ids=IDS)
-def test_http_cap_reports_and_fetches_at_most_maximum(client, monkeypatch, name, params, period, minimum):
+def test_http_over_limit_rejected_without_fetch(client, monkeypatch, name, params, period, minimum):
     monkeypatch.setattr(provider, 'EMA_WARMUP_MULTIPLIER', 2000)
-    full = market_frame(period, 20002)
     calls = []
-    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(full, calls))
-    body = post(client, params, name, count=360)
-    assert calls == [(START, START+360*STEP), (START-20002*STEP, START)]
-    assert body['raw_report']['ema_warmup'] == dict(requested_bars=period*2000,
-        target_bars=20000, actual_bars=20000, truncated=True, tenfold_reached=True)
-    assert '回测已把预热截到 20000 根' in body['assumptions']['ema_warmup']
-    assert f'需 {period*2000} 根' in body['assumptions']['ema_warmup']
-    assert '无法布防自动信号' in body['assumptions']['ema_warmup']
+    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(period,0), calls))
+    body = request(client, params=params, name=name, count=360)
+    assert body['error_type'] == 'INVALID_PARAMS'
+    assert not calls
 
 
-def test_trend_rsi_long_rsi_fetches_min_bars_and_matches_sufficient_baseline(client, monkeypatch):
-    # Public schema permits this boundary. RSI stays out of the tenfold target
-    # (30), but the shared fetch floors at min_bars (101), so the RSI prefix is
-    # fully seeded and the first entry is no longer delayed by the min_bars guard.
+def test_trend_rsi_long_rsi_uses_own_alpha_budget(client, monkeypatch):
     params = {'ema_fast':2, 'ema_slow':3, 'rsi_period':100}
     built = provider.TOOL_SPECS['local.backtesting_py.ema_trend_rsi']['build'](params)
-    assert built['min_bars'] == 101
-    assert built['ema_warmup_requested_bars'] == 30
-    assert built['ema_warmup_target_bars'] == 30
-    full = market_frame(3, 200)
+    required = wilder_bars(100)+1
+    assert built['min_bars'] == 101 and built['ema_warmup_target_bars'] == 30
+    assert built['required_warmup'] == required
     calls = []
-    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(full, calls))
-    body = post(client, params, 'ema_trend_rsi', count=360)
-    assert calls == [(START, START+360*STEP), (START-103*STEP, START)]
-    assert body['raw_report']['ema_warmup'] == dict(requested_bars=30,
-        target_bars=30, actual_bars=101, truncated=False, tenfold_reached=True)
-    assert [t['opened_at'] for t in body['trades']] == [START+5*STEP]
-    # History-sufficient baseline: an explicit min_bars seed must be
-    # indistinguishable from the default max(target, min_bars) fetch.
-    tool = provider.TOOL_SPECS['local.backtesting_py.ema_trend_rsi']
-    original = tool['build']
-    def baseline_build(supplied, **kwargs):
-        seeded = original(supplied, **kwargs)
-        seeded['ema_warmup_target_bars'] = seeded['min_bars']
-        return seeded
-    monkeypatch.setitem(tool, 'build', baseline_build)
-    calls = []
-    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(full, calls))
-    baseline = post(client, params, 'ema_trend_rsi', count=360)
-    assert calls == [(START, START+360*STEP), (START-103*STEP, START)]
-    assert baseline['trades'] == body['trades']
+    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(3,required+2),calls))
+    body = post(client,params,'ema_trend_rsi',count=360)
+    assert calls == [(START,START+360*STEP),(START-(required+2)*STEP,START)]
+    assert body['raw_report']['ema_warmup']['actual_bars'] == required
+    assert body['raw_report']['ema_warmup']['tenfold_reached'] is True
 
 
 DEFAULTS = [
@@ -188,12 +162,10 @@ def test_default_parameters_fetch_depth_unchanged(client, monkeypatch, name, par
         target_bars=target, actual_bars=target, truncated=False, tenfold_reached=True)
 
 
-@pytest.mark.parametrize('warm_count,reached', [(15,False), (30,True), (50,True)])
-def test_trend_rsi_short_history_reports_against_tenfold_target(client, monkeypatch, warm_count, reached):
-    params = {'ema_fast':2, 'ema_slow':3, 'rsi_period':100}
-    calls = []
-    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(market_frame(3, warm_count), calls))
-    body = post(client, params, 'ema_trend_rsi', count=360)
-    assert calls == [(START, START+360*STEP), (START-103*STEP, START)]
-    assert body['raw_report']['ema_warmup'] == dict(requested_bars=30,
-        target_bars=30, actual_bars=warm_count, truncated=False, tenfold_reached=reached)
+@pytest.mark.parametrize('warm_count', [15,30,50,101])
+def test_trend_rsi_short_rsi_seed_is_rejected_even_if_ema_target_met(client, monkeypatch, warm_count):
+    params = {'ema_fast':2,'ema_slow':3,'rsi_period':100}
+    monkeypatch.setattr(provider,'_fetch_ohlcv',fetcher(market_frame(3,warm_count)))
+    body = request(client,params=params,name='ema_trend_rsi',count=360)
+    assert body['error_type'] == 'WARMUP_INSUFFICIENT'
+    assert body['limitations']['required_bars'] == wilder_bars(100)+1
