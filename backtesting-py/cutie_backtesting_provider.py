@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+import anyio
 import numpy as np
 import pandas as pd
 from canonical_json import canonical_decimal_str, canonical_json_sha256
@@ -10535,6 +10536,10 @@ async def catalog(authorization: Optional[str] = Header(default=None)):
     )
 
 
+# One CPU backtest at a time per provider process; waiting requests yield to /health.
+_BACKTEST_LIMITER = anyio.CapacityLimiter(1)
+
+
 @app.post("/cutie/backtest")
 async def run_backtest(
     request: Request,
@@ -10551,6 +10556,13 @@ async def run_backtest(
             "INVALID_REQUEST", "Request body must be valid JSON", status_code=400
         )
 
+    return await anyio.to_thread.run_sync(
+        _run_backtest_sync, body, x_cutie_connector_version, limiter=_BACKTEST_LIMITER,
+    )
+
+
+def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
+    """Original runner, including validation, I/O, CPU work and error mapping."""
     # SPEC §17.5: paper_tick's own explicit schema+execution_mode probe must
     # be checked before is_strategy_execution_intent's key-set fallback --
     # a paper_tick body also carries artifact/strategy_spec/artifact_manifest/

@@ -1,4 +1,5 @@
 fastapi
+anyio>=4,<5
 uvicorn[standard]
 pydantic>=2.0
 ccxt
