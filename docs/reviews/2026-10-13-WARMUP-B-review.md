@@ -135,3 +135,7 @@ NONE 不成立,我有 5 条发现。以下只依据所给的 diff 和契约。�
 - 低6：q42c名单含vwap/calendar；本单与同命令main均从仓根跑，nodeid带backtesting-py前缀，不命中历史tests前缀名单；未改机制，其他cwd门未验。
 - 停件：patconf2b1 6组、P6 10个响应入场变化，两文件自身尝试cp撤回，不改断言/金样；旧新列表见/tmp/warmup-b2/*entry-changes.json。time-layer独立63组暖态探针入场变化0，未据此改整个冷态契约。
 - 高周期完整冻结复放和1M非固定网格不在本单；全量未绿则PR保持draft。
+
+### 最终门状态
+
+收尾一次：8682 passed / 1987 failed / 0 errors，EXIT=1；最新main同命令10646 passed，EXIT=0。故本单引入失败1987，目标未完成，PR98继续draft。停止文件及1987条候选归因均已落/tmp/warmup-b2，保持残余红而非xfail。
