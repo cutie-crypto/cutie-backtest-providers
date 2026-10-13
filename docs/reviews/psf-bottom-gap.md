@@ -49,3 +49,8 @@ q17b_39bc346_off_sha256.json · head_shoulders.gap · 1 / 0 · 54
 
 - 阶段收口定向：`cd backtesting-py; python3 -m pytest -q tests/test_psf_bottom_gap.py tests/test_q17b_patconf_guards.py tests/test_short_pat1.py` → 285 passed，EXIT=0；编译及 git diff --check EXIT=0。
 - 曾从仓库根跑相同文件路径造成 Q42-C2 node-id 注册口径错位（4个其他模板红）；切回要求的 backtesting-py cwd 后以上门通过，未修改其他模板或金样。
+
+## PSF-P2b-3 接续
+
+- 统领 /tmp/orch-out/impl-psf-gap-ok.md 已批四个 gap 各 1→0 笔、另50场景零变化，允许全量通过后脱 draft。
+- 普通 merge 接 origin/impl/psf-p2 @3121709；唯一冲突在 test_q17b_patconf_guards.py 原 overshoot 块，保留本单已批的0笔及 skipped_entries 精确断言；父线其余代码、健康门与文档保留。
