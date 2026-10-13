@@ -23,6 +23,17 @@ POST /cutie/backtest      # Bearer auth. JSON body. Returns backtest result.
 
 See the Cutie Feature 37 W3.8 Provider Bridge IMPL in `cutie-docs` for the full schema specification. The provider source in this repository is a reference implementation of that contract.
 
+### Backtesting.py scheduling
+
+After authentication and JSON decoding, `/cutie/backtest` runs its synchronous
+runner in an AnyIO worker thread. A process-local `CapacityLimiter(1)` keeps
+backtests serial, including data fetching, calculation and result generation;
+waiting requests yield to `/health`. Existing results and exception responses
+are preserved. The limiter is per process; this does not enable multiple
+uvicorn workers or parallel backtest computation. A client timeout or disconnect
+does not stop CPU work already running in the provider thread; queued and running
+work remains bounded by the same limiter.
+
 ### Single-position template leverage
 
 The single-position `backtesting.py` templates that use the fixed-risk overlay
