@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import pytest
 from backtesting import Backtest
+from fastapi.testclient import TestClient
+from _complete_seed_fixture import complete_seed
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as p
@@ -47,7 +49,19 @@ def frame(direction, last_close):
 
 def run(monkeypatch, tmp_path, direction, layer, data, **risk):
     params = dict(lookback=5, exit_lookback=5, direction=direction, risk_layer_enabled=layer, **risk)
-    return p6.post(monkeypatch, tmp_path, 'breakout', params, data, market='futures')
+    # Declared flat prehistory for the channel fixture; keep the stopped P6
+    # cold-history helper unchanged. Signal/fill/settlement assertions stay exact.
+    monkeypatch.setattr(p, 'AUTH_TOKEN', '')
+    monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: data.copy())
+    monkeypatch.setattr(p, '_fetch_template_warmup', complete_seed)
+    monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
+    request = dict(run_id='p6', provider_tool_id=PREFIX + 'breakout',
+                   provider_params=params, symbol='BTCUSDT', market='futures',
+                   timeframe='1h', start_at=int(data.index[0].timestamp()),
+                   end_at=int(data.index[-1].timestamp()) + 3600,
+                   initial_capital='10000', fee_bps='0', slippage_bps='0')
+    return TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json()
 
 
 def only_trade(body):

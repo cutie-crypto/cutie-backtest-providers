@@ -65,9 +65,7 @@ def post(monkeypatch, tmp_path, name, params=None, data=None, side='long', capit
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: data.copy())
-    # WARMUP-B-2 partial: red_streak_rsi keeps its old cold fixture and remains red;
-    # do not silently mask that pending adaptation with xfail or a fabricated seed.
-    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a, **k: complete_seed(*a, **k) if name != 'red_streak_rsi' else data.iloc[:0].copy())
+    monkeypatch.setattr(p, '_fetch_template_warmup', complete_seed)
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     request = dict(run_id='10b2d', provider_tool_id='local.backtesting_py.' + name,
                    provider_params={**base, **(params or {})}, symbol='BTCUSDT', market=market,

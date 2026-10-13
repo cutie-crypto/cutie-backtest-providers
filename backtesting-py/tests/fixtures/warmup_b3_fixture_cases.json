@@ -1,0 +1,1462 @@
+{
+  "baseline_sha": "678b4e1",
+  "candidate_base": "2840fa9",
+  "cases": [
+    {
+      "name": "adx_di_cross",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "adx_di_cross",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "bearish_doji_reversal",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "bearish_doji_reversal",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "bearish_doji_reversal",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "bearish_doji_reversal",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "bearish_engulfing",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "bearish_engulfing",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "bearish_engulfing",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "bearish_engulfing",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "bias_reversion",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "bias_reversion",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "bollinger_breakout",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "bollinger_reversal",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "bollinger_squeeze_breakout",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "breakout",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "breakout",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "breakout",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "bullish_doji_reversal",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "bullish_doji_reversal",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "bullish_doji_reversal",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "bullish_doji_reversal",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "bullish_engulfing",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "bullish_engulfing",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "bullish_engulfing",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "bullish_engulfing",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "cci_rsi",
+      "params": {
+        "direction": "both"
+      },
+      "warm": true
+    },
+    {
+      "name": "cci_rsi",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "cci_rsi",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "cci_rsi",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "both"
+      },
+      "warm": false
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "both"
+      },
+      "warm": true
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "dca",
+      "params": {
+        "amount": 100,
+        "interval": "daily",
+        "profit_target_pct": 5
+      },
+      "warm": true
+    },
+    {
+      "name": "ema_cross",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "ema_pullback",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "ema_pullback",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "ema_pullback",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "evening_star",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "evening_star",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "evening_star",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "evening_star",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "grid",
+      "params": {
+        "lower_price": 80,
+        "upper_price": 140,
+        "grid_count": 10,
+        "amount_per_grid": 100
+      },
+      "warm": true
+    },
+    {
+      "name": "hammer_pin_bar",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "hammer_pin_bar",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "hammer_pin_bar",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "hammer_pin_bar",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "inside_bar_breakout",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "inside_bar_breakout",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "inside_bar_breakout",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "inside_bar_breakout",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "keltner_breakout",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "macd",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "macd_above_zero",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "macd_bearish_divergence",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "macd_bearish_divergence",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "macd_bearish_divergence",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "macd_bearish_divergence",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "morning_star",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "morning_star",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "morning_star",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "morning_star",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "parabolic_sar",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "red_streak_rsi",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "red_streak_rsi",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "roc",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "rsi_reversal",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "rsi_scale_in_out",
+      "params": {
+        "rsi_period": 5,
+        "oversold": 40,
+        "overbought": 60,
+        "buy_notional": 100,
+        "sell_notional": 100
+      },
+      "warm": true
+    },
+    {
+      "name": "shooting_star",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "shooting_star",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "shooting_star",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "shooting_star",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "stoch_oversold_cross",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "supertrend",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "three_black_crows",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "three_black_crows",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "three_black_crows",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "three_black_crows",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "three_white_soldiers",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "three_white_soldiers",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "three_white_soldiers",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "three_white_soldiers",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "both"
+      },
+      "warm": false
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "both"
+      },
+      "warm": true
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {},
+      "warm": false
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "volume_breakout",
+      "params": {},
+      "warm": true
+    },
+    {
+      "name": "vwap_reversion",
+      "params": {},
+      "warm": true
+    }
+  ],
+  "financial_fingerprints": [
+    {
+      "name": "calendar_schedule",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "e9c5555f0b9810e677e77c40fc61ef80c384a7db9b436469533e0d4d6d10a2c6"
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "e9c5555f0b9810e677e77c40fc61ef80c384a7db9b436469533e0d4d6d10a2c6"
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "e9c5555f0b9810e677e77c40fc61ef80c384a7db9b436469533e0d4d6d10a2c6"
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "e9c5555f0b9810e677e77c40fc61ef80c384a7db9b436469533e0d4d6d10a2c6"
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "365ce205c9cf2ffef83b8f21933b2964bbd626df28f9ee215a4a1ad8d83ab59a"
+    },
+    {
+      "name": "calendar_schedule",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "365ce205c9cf2ffef83b8f21933b2964bbd626df28f9ee215a4a1ad8d83ab59a"
+    },
+    {
+      "name": "red_streak_rsi",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "0415f3707b8574d21ba21d2547915c8918ddab83e8df9760e74d1477d692422b",
+      "report_sha256": "38587f7e81ebc762175a420ae79689e60363c9e7164418acc9f935c5190ff374"
+    },
+    {
+      "name": "red_streak_rsi",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "0415f3707b8574d21ba21d2547915c8918ddab83e8df9760e74d1477d692422b",
+      "report_sha256": "38587f7e81ebc762175a420ae79689e60363c9e7164418acc9f935c5190ff374"
+    },
+    {
+      "name": "bullish_engulfing",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "c7074c57d6034eb09b01a6560c8dda0c42b2fd1411ababc0b6ad2bcf0473ada3",
+      "report_sha256": "7c0b164bc4808ed57417c693541b42f352cf211a21ee20c84cf09436440299f9"
+    },
+    {
+      "name": "bullish_engulfing",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "c7074c57d6034eb09b01a6560c8dda0c42b2fd1411ababc0b6ad2bcf0473ada3",
+      "report_sha256": "7c0b164bc4808ed57417c693541b42f352cf211a21ee20c84cf09436440299f9"
+    },
+    {
+      "name": "bullish_engulfing",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "c7074c57d6034eb09b01a6560c8dda0c42b2fd1411ababc0b6ad2bcf0473ada3",
+      "report_sha256": "7c0b164bc4808ed57417c693541b42f352cf211a21ee20c84cf09436440299f9"
+    },
+    {
+      "name": "bullish_engulfing",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "c7074c57d6034eb09b01a6560c8dda0c42b2fd1411ababc0b6ad2bcf0473ada3",
+      "report_sha256": "7c0b164bc4808ed57417c693541b42f352cf211a21ee20c84cf09436440299f9"
+    },
+    {
+      "name": "hammer_pin_bar",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "00cea5aa0e4243836bee3d9d671a3e203051dd89acf0c17af903d0d475479c9f",
+      "report_sha256": "5798daf8331bad58ebb7037efdc8009c9a6befbf26a7961bfc1a3b1f94126bff"
+    },
+    {
+      "name": "hammer_pin_bar",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "00cea5aa0e4243836bee3d9d671a3e203051dd89acf0c17af903d0d475479c9f",
+      "report_sha256": "5798daf8331bad58ebb7037efdc8009c9a6befbf26a7961bfc1a3b1f94126bff"
+    },
+    {
+      "name": "hammer_pin_bar",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "00cea5aa0e4243836bee3d9d671a3e203051dd89acf0c17af903d0d475479c9f",
+      "report_sha256": "5798daf8331bad58ebb7037efdc8009c9a6befbf26a7961bfc1a3b1f94126bff"
+    },
+    {
+      "name": "hammer_pin_bar",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "00cea5aa0e4243836bee3d9d671a3e203051dd89acf0c17af903d0d475479c9f",
+      "report_sha256": "5798daf8331bad58ebb7037efdc8009c9a6befbf26a7961bfc1a3b1f94126bff"
+    },
+    {
+      "name": "bearish_engulfing",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "870f7743c7c74c6e35acaa30b909c1bedeb851d4fc60e33ca3cb922db62ed295"
+    },
+    {
+      "name": "bearish_engulfing",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "870f7743c7c74c6e35acaa30b909c1bedeb851d4fc60e33ca3cb922db62ed295"
+    },
+    {
+      "name": "bearish_engulfing",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "870f7743c7c74c6e35acaa30b909c1bedeb851d4fc60e33ca3cb922db62ed295"
+    },
+    {
+      "name": "bearish_engulfing",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "870f7743c7c74c6e35acaa30b909c1bedeb851d4fc60e33ca3cb922db62ed295"
+    },
+    {
+      "name": "shooting_star",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "3a3da23201e8fac0bcd7da8f65f32d007a65962ac0d7392c0f4fb44f583caeb9"
+    },
+    {
+      "name": "shooting_star",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "3a3da23201e8fac0bcd7da8f65f32d007a65962ac0d7392c0f4fb44f583caeb9"
+    },
+    {
+      "name": "shooting_star",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "3a3da23201e8fac0bcd7da8f65f32d007a65962ac0d7392c0f4fb44f583caeb9"
+    },
+    {
+      "name": "shooting_star",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "3a3da23201e8fac0bcd7da8f65f32d007a65962ac0d7392c0f4fb44f583caeb9"
+    },
+    {
+      "name": "evening_star",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "33101c80bfb1d236e586f6a24a81e080f4a935b42acebc394271ec104a18bab0"
+    },
+    {
+      "name": "evening_star",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "33101c80bfb1d236e586f6a24a81e080f4a935b42acebc394271ec104a18bab0"
+    },
+    {
+      "name": "evening_star",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "33101c80bfb1d236e586f6a24a81e080f4a935b42acebc394271ec104a18bab0"
+    },
+    {
+      "name": "evening_star",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "33101c80bfb1d236e586f6a24a81e080f4a935b42acebc394271ec104a18bab0"
+    },
+    {
+      "name": "morning_star",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "d2387a82b2121dcead817059d1ea82919b90f5b5f423d37b6d193ecf585ababa",
+      "report_sha256": "fd7e30e272a0e00093fbcea3eabde213ea5f4ca4065d937ed07562028c68ad75"
+    },
+    {
+      "name": "morning_star",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "d2387a82b2121dcead817059d1ea82919b90f5b5f423d37b6d193ecf585ababa",
+      "report_sha256": "fd7e30e272a0e00093fbcea3eabde213ea5f4ca4065d937ed07562028c68ad75"
+    },
+    {
+      "name": "morning_star",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "d2387a82b2121dcead817059d1ea82919b90f5b5f423d37b6d193ecf585ababa",
+      "report_sha256": "fd7e30e272a0e00093fbcea3eabde213ea5f4ca4065d937ed07562028c68ad75"
+    },
+    {
+      "name": "morning_star",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "d2387a82b2121dcead817059d1ea82919b90f5b5f423d37b6d193ecf585ababa",
+      "report_sha256": "fd7e30e272a0e00093fbcea3eabde213ea5f4ca4065d937ed07562028c68ad75"
+    },
+    {
+      "name": "three_black_crows",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "1caa4de54b3c79ea4d524bc99b781a29b6baf74738d66dcb44722d0f6f13d415"
+    },
+    {
+      "name": "three_black_crows",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "1caa4de54b3c79ea4d524bc99b781a29b6baf74738d66dcb44722d0f6f13d415"
+    },
+    {
+      "name": "three_black_crows",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "1caa4de54b3c79ea4d524bc99b781a29b6baf74738d66dcb44722d0f6f13d415"
+    },
+    {
+      "name": "three_black_crows",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "1caa4de54b3c79ea4d524bc99b781a29b6baf74738d66dcb44722d0f6f13d415"
+    },
+    {
+      "name": "bearish_doji_reversal",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "1b9b09dae8cc0a69de6c2a73f48876eae5bf6d53d0580b7d25a3d3a32c774319",
+      "report_sha256": "2d49bf1f0f0d5b397bfa13d0572bf75faacc8b7073c1f883bcee14caeae7da83"
+    },
+    {
+      "name": "bearish_doji_reversal",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "1b9b09dae8cc0a69de6c2a73f48876eae5bf6d53d0580b7d25a3d3a32c774319",
+      "report_sha256": "2d49bf1f0f0d5b397bfa13d0572bf75faacc8b7073c1f883bcee14caeae7da83"
+    },
+    {
+      "name": "bearish_doji_reversal",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "1b9b09dae8cc0a69de6c2a73f48876eae5bf6d53d0580b7d25a3d3a32c774319",
+      "report_sha256": "2d49bf1f0f0d5b397bfa13d0572bf75faacc8b7073c1f883bcee14caeae7da83"
+    },
+    {
+      "name": "bearish_doji_reversal",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "1b9b09dae8cc0a69de6c2a73f48876eae5bf6d53d0580b7d25a3d3a32c774319",
+      "report_sha256": "2d49bf1f0f0d5b397bfa13d0572bf75faacc8b7073c1f883bcee14caeae7da83"
+    },
+    {
+      "name": "three_white_soldiers",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "42bf3d05dbd7315b5a6da13d1376e474a4c77d9fbaf147d1c08341ee0da92105",
+      "report_sha256": "aa7ca8dcf9b15e76765f5005492eb30b6c20c1da9ddf6e01bfcce8e1f15d68ff"
+    },
+    {
+      "name": "three_white_soldiers",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "42bf3d05dbd7315b5a6da13d1376e474a4c77d9fbaf147d1c08341ee0da92105",
+      "report_sha256": "aa7ca8dcf9b15e76765f5005492eb30b6c20c1da9ddf6e01bfcce8e1f15d68ff"
+    },
+    {
+      "name": "three_white_soldiers",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "42bf3d05dbd7315b5a6da13d1376e474a4c77d9fbaf147d1c08341ee0da92105",
+      "report_sha256": "aa7ca8dcf9b15e76765f5005492eb30b6c20c1da9ddf6e01bfcce8e1f15d68ff"
+    },
+    {
+      "name": "three_white_soldiers",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "42bf3d05dbd7315b5a6da13d1376e474a4c77d9fbaf147d1c08341ee0da92105",
+      "report_sha256": "aa7ca8dcf9b15e76765f5005492eb30b6c20c1da9ddf6e01bfcce8e1f15d68ff"
+    },
+    {
+      "name": "bullish_doji_reversal",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "929993c37b580f5b0223aba95d84711d0ab3b7b66c3756d706c0100476557249",
+      "report_sha256": "ee31affbafcd7dce31c7571200a9605660076e2513db7c188791084ab7cac9ae"
+    },
+    {
+      "name": "bullish_doji_reversal",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "929993c37b580f5b0223aba95d84711d0ab3b7b66c3756d706c0100476557249",
+      "report_sha256": "ee31affbafcd7dce31c7571200a9605660076e2513db7c188791084ab7cac9ae"
+    },
+    {
+      "name": "bullish_doji_reversal",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "929993c37b580f5b0223aba95d84711d0ab3b7b66c3756d706c0100476557249",
+      "report_sha256": "ee31affbafcd7dce31c7571200a9605660076e2513db7c188791084ab7cac9ae"
+    },
+    {
+      "name": "bullish_doji_reversal",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "929993c37b580f5b0223aba95d84711d0ab3b7b66c3756d706c0100476557249",
+      "report_sha256": "ee31affbafcd7dce31c7571200a9605660076e2513db7c188791084ab7cac9ae"
+    },
+    {
+      "name": "inside_bar_breakout",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "c0e7367d19f7d0ebf0bfbe18a51f6f96e8bdd43e249c758a1aff916e517394d9",
+      "report_sha256": "79710bdc6b87b0f16b604fa1674220400352e084665512610ac008d7a91cf0cb"
+    },
+    {
+      "name": "inside_bar_breakout",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "c0e7367d19f7d0ebf0bfbe18a51f6f96e8bdd43e249c758a1aff916e517394d9",
+      "report_sha256": "79710bdc6b87b0f16b604fa1674220400352e084665512610ac008d7a91cf0cb"
+    },
+    {
+      "name": "inside_bar_breakout",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "c0e7367d19f7d0ebf0bfbe18a51f6f96e8bdd43e249c758a1aff916e517394d9",
+      "report_sha256": "79710bdc6b87b0f16b604fa1674220400352e084665512610ac008d7a91cf0cb"
+    },
+    {
+      "name": "inside_bar_breakout",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "c0e7367d19f7d0ebf0bfbe18a51f6f96e8bdd43e249c758a1aff916e517394d9",
+      "report_sha256": "79710bdc6b87b0f16b604fa1674220400352e084665512610ac008d7a91cf0cb"
+    },
+    {
+      "name": "macd_bearish_divergence",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "6df895b7b7d6311db70d63dcee51f5694f3a0fa5ed849d31014bdda6db247857"
+    },
+    {
+      "name": "macd_bearish_divergence",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "6df895b7b7d6311db70d63dcee51f5694f3a0fa5ed849d31014bdda6db247857"
+    },
+    {
+      "name": "macd_bearish_divergence",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "6df895b7b7d6311db70d63dcee51f5694f3a0fa5ed849d31014bdda6db247857"
+    },
+    {
+      "name": "macd_bearish_divergence",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "6df895b7b7d6311db70d63dcee51f5694f3a0fa5ed849d31014bdda6db247857"
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "4ed02f9d8a2958bd588d153d77efbdb6e582969039ad0c240d811ec05dd00815",
+      "report_sha256": "5f2cf16a7a5ce2597b6496603b0ffd0b496e4cea9fb7698faeb0068e48f6066e"
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "4ed02f9d8a2958bd588d153d77efbdb6e582969039ad0c240d811ec05dd00815",
+      "report_sha256": "5f2cf16a7a5ce2597b6496603b0ffd0b496e4cea9fb7698faeb0068e48f6066e"
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "c01afe206fc87b74711b26262133bbadbdbeef5a75155f56522998aa1d7042cd"
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "c01afe206fc87b74711b26262133bbadbdbeef5a75155f56522998aa1d7042cd"
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "4ed02f9d8a2958bd588d153d77efbdb6e582969039ad0c240d811ec05dd00815",
+      "report_sha256": "5f2cf16a7a5ce2597b6496603b0ffd0b496e4cea9fb7698faeb0068e48f6066e"
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "4ed02f9d8a2958bd588d153d77efbdb6e582969039ad0c240d811ec05dd00815",
+      "report_sha256": "5f2cf16a7a5ce2597b6496603b0ffd0b496e4cea9fb7698faeb0068e48f6066e"
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "both"
+      },
+      "warm": false,
+      "financial_sha256": "4ed02f9d8a2958bd588d153d77efbdb6e582969039ad0c240d811ec05dd00815",
+      "report_sha256": "5f2cf16a7a5ce2597b6496603b0ffd0b496e4cea9fb7698faeb0068e48f6066e"
+    },
+    {
+      "name": "cme_weekend_gap",
+      "params": {
+        "direction": "both"
+      },
+      "warm": true,
+      "financial_sha256": "4ed02f9d8a2958bd588d153d77efbdb6e582969039ad0c240d811ec05dd00815",
+      "report_sha256": "5f2cf16a7a5ce2597b6496603b0ffd0b496e4cea9fb7698faeb0068e48f6066e"
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "59e43fc3f38a39d1cc7926e8df1f8319aa3825d9fe38b17520bc44a8004c70df",
+      "report_sha256": "944ddd1b111c3bcd9b37336a4f18657e9128378f8ae007f3cb45d5e2feed2c73"
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "59e43fc3f38a39d1cc7926e8df1f8319aa3825d9fe38b17520bc44a8004c70df",
+      "report_sha256": "944ddd1b111c3bcd9b37336a4f18657e9128378f8ae007f3cb45d5e2feed2c73"
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "long"
+      },
+      "warm": false,
+      "financial_sha256": "59e43fc3f38a39d1cc7926e8df1f8319aa3825d9fe38b17520bc44a8004c70df",
+      "report_sha256": "944ddd1b111c3bcd9b37336a4f18657e9128378f8ae007f3cb45d5e2feed2c73"
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "59e43fc3f38a39d1cc7926e8df1f8319aa3825d9fe38b17520bc44a8004c70df",
+      "report_sha256": "944ddd1b111c3bcd9b37336a4f18657e9128378f8ae007f3cb45d5e2feed2c73"
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "short"
+      },
+      "warm": false,
+      "financial_sha256": "59e43fc3f38a39d1cc7926e8df1f8319aa3825d9fe38b17520bc44a8004c70df",
+      "report_sha256": "944ddd1b111c3bcd9b37336a4f18657e9128378f8ae007f3cb45d5e2feed2c73"
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "59e43fc3f38a39d1cc7926e8df1f8319aa3825d9fe38b17520bc44a8004c70df",
+      "report_sha256": "944ddd1b111c3bcd9b37336a4f18657e9128378f8ae007f3cb45d5e2feed2c73"
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "both"
+      },
+      "warm": false,
+      "financial_sha256": "59e43fc3f38a39d1cc7926e8df1f8319aa3825d9fe38b17520bc44a8004c70df",
+      "report_sha256": "944ddd1b111c3bcd9b37336a4f18657e9128378f8ae007f3cb45d5e2feed2c73"
+    },
+    {
+      "name": "us_open_momentum",
+      "params": {
+        "direction": "both"
+      },
+      "warm": true,
+      "financial_sha256": "59e43fc3f38a39d1cc7926e8df1f8319aa3825d9fe38b17520bc44a8004c70df",
+      "report_sha256": "944ddd1b111c3bcd9b37336a4f18657e9128378f8ae007f3cb45d5e2feed2c73"
+    },
+    {
+      "name": "stoch_oversold_cross",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "2e6109778e8defdbc687698c49fee0f551c055e3caf13b3157ef779487428029",
+      "report_sha256": "c91a04978ee15987187cd527d9db51503bea8f09991c81c0293dfb2d32038c01"
+    },
+    {
+      "name": "bollinger_squeeze_breakout",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "4515283db0b49fdef022273dcdf058d321fe6c13db6c09a55ea16417b94abf4f",
+      "report_sha256": "d752ac58c03a8e7b98308c179d7420c0136eba31daed979a20cba22e361b7ad2"
+    },
+    {
+      "name": "adx_di_cross",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "db2ee4b7657374f4538aa4537f7928eeb2349cc022f744ea1061a845ad2c838a",
+      "report_sha256": "0a2a3c453f2a0da195b49394a5e0dd48d44ad3e4c5ef1e0339663aa44595fbef"
+    },
+    {
+      "name": "adx_di_cross",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "db2ee4b7657374f4538aa4537f7928eeb2349cc022f744ea1061a845ad2c838a",
+      "report_sha256": "0a2a3c453f2a0da195b49394a5e0dd48d44ad3e4c5ef1e0339663aa44595fbef"
+    },
+    {
+      "name": "macd_above_zero",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "663576307f921a02da099ef2abbf75dd2c6f3b2776f8c55d5238c2105858171f"
+    },
+    {
+      "name": "bias_reversion",
+      "params": {},
+      "warm": false,
+      "financial_sha256": "60e6a2c9e63de1cadbdd2eafbfeb9d027165b9bc8c60fa33224e5508e53ed06e",
+      "report_sha256": "5ac76ba97f29650c6d11e8a8d94fe49f290f65dd42d331dd14f715efe640fe58"
+    },
+    {
+      "name": "bias_reversion",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "60e6a2c9e63de1cadbdd2eafbfeb9d027165b9bc8c60fa33224e5508e53ed06e",
+      "report_sha256": "5ac76ba97f29650c6d11e8a8d94fe49f290f65dd42d331dd14f715efe640fe58"
+    },
+    {
+      "name": "ema_cross",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "81e9f296fcedb686ee154be1e2200d1a962f6c2026743c25f96c0e5fd8b97982",
+      "report_sha256": "ec19120f265ab6c0bacfb265e78526f8b679cf9a2ca0223213bee61352f81aff"
+    },
+    {
+      "name": "rsi_reversal",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "96064f5450d5cecded118d36335736fdad6f36c773a734bfad95111dc949d286",
+      "report_sha256": "2550cf32d6b9c4a29371c3859c002f1b73d5961a0c7c4c5ccce28afd87639e9a"
+    },
+    {
+      "name": "bollinger_reversal",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "e6375bb1ed1ee3f3c0bd5577c357568a41879bb89b40f4f66507a617a69e4489",
+      "report_sha256": "c0b22784aee8a8904c53a06305bd11b92457386bba7bfbf30c4d399df49def99"
+    },
+    {
+      "name": "bollinger_breakout",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "892dc8741afcebbbc84720b47ccb292d852d89a9c8cf58c3e7f9208f286dae73",
+      "report_sha256": "9f107d2c1f277409521f46edb4641c66fd3ecbd961b89e9a283056e2c95b7dc2"
+    },
+    {
+      "name": "keltner_breakout",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "f16f6299bad4073defe6b72c4e23c86158b9c1d4fa1a2358589d0ad87f022d5d",
+      "report_sha256": "95fd79e49699d848dec584a26888d8fa4a18982874240f4b7847b7908732a3f0"
+    },
+    {
+      "name": "breakout",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "ed28d22e6771d11cd704ec2ad4231416156d8f3b9c05599fabc38c4992099274",
+      "report_sha256": "a135332486a362a9c1b4811312d0b05ad034e28e30e0c0c4e668a4e6271201da"
+    },
+    {
+      "name": "breakout",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "ed28d22e6771d11cd704ec2ad4231416156d8f3b9c05599fabc38c4992099274",
+      "report_sha256": "a135332486a362a9c1b4811312d0b05ad034e28e30e0c0c4e668a4e6271201da"
+    },
+    {
+      "name": "breakout",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "6a5ea5cbee289639d88609d647dfb12df771bf6e6ac01cce4f6f328e143346c2",
+      "report_sha256": "401f30d8ceea9541605df74075688091888cbadda3709200af33d4ac40b496e2"
+    },
+    {
+      "name": "volume_breakout",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00",
+      "report_sha256": "01566e3be7e3e961812f546eb1847a0c089329e8c5f47179336b9b53ec2606c6"
+    },
+    {
+      "name": "macd",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "66af6589b1f8f21ad5c856985cb361798809b4c1fbab2c37896915876fffbd44",
+      "report_sha256": "8176c5797f7e57320e039be645f13a4ec72b7e6db7e41da2ed30cd61dae6761c"
+    },
+    {
+      "name": "cci_rsi",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "7d6ffe7bd70a6276bf3d500ab1882027a2ce71ba392ce3db6d28ab85e9713dfb",
+      "report_sha256": "08fbc0009241c0e1adcf81a1e7fbf1a7d65b83fd00508ed5b90d48f3a3096aa5"
+    },
+    {
+      "name": "cci_rsi",
+      "params": {
+        "direction": "both"
+      },
+      "warm": true,
+      "financial_sha256": "7d6ffe7bd70a6276bf3d500ab1882027a2ce71ba392ce3db6d28ab85e9713dfb",
+      "report_sha256": "08fbc0009241c0e1adcf81a1e7fbf1a7d65b83fd00508ed5b90d48f3a3096aa5"
+    },
+    {
+      "name": "cci_rsi",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "b8c9da8a134d1b09ae4b3bd7796bb33e05c95e64e50b4e18b921e6cafb1c9e24",
+      "report_sha256": "ccbfea0e859412a71bd0e9e1ae2ce0e5a146fe1abed84e4bcff16d05f1c1ae42"
+    },
+    {
+      "name": "cci_rsi",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "1f9c23c5a6965d668ac6252e9e30cadea9b925e3897ba9b687281e44eeaca7e3",
+      "report_sha256": "c61054367e6fda227b25074691df86bad93bf6ed2c7b650fd86a81df5726174f"
+    },
+    {
+      "name": "roc",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "fc72db9bdd67a00b59303ec0c2668b7f1d1af209e8ae82df8e2a458eeee7e17b",
+      "report_sha256": "f16117e071be77be51f9dbf58bfb32f33e69a8474f6dfb234674c063e696df56"
+    },
+    {
+      "name": "supertrend",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "3829c67d19689b311bf0ce89d9c079d16cd50f795809a7be0f76a3ddd3e0b2d1",
+      "report_sha256": "844dd9f8546f2f8c53db208e893ac88c70fbf60f2eb63a34e48b361b058388fd"
+    },
+    {
+      "name": "ema_pullback",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "da7ee0ed2240f85ea232c00fabb2bd8327c51d3f19338614e3727849183837b2",
+      "report_sha256": "1a9ffa8eab8f8747d68e797d695b261322dd20a0cd83398a21818444a16816a4"
+    },
+    {
+      "name": "ema_pullback",
+      "params": {
+        "direction": "long"
+      },
+      "warm": true,
+      "financial_sha256": "da7ee0ed2240f85ea232c00fabb2bd8327c51d3f19338614e3727849183837b2",
+      "report_sha256": "1a9ffa8eab8f8747d68e797d695b261322dd20a0cd83398a21818444a16816a4"
+    },
+    {
+      "name": "ema_pullback",
+      "params": {
+        "direction": "short"
+      },
+      "warm": true,
+      "financial_sha256": "382af95faf07bd68de1bedab3c0e069d39565c31df33686f847a538f914e4864",
+      "report_sha256": "d75c6f23ca104f6ef5c0f455c18cb1160a44b7b3231e383773ecfd208a8dbdf0"
+    },
+    {
+      "name": "parabolic_sar",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "26f00013872b8f5503b5ea4d3633debdf3739b664db39f5edfc7d5a40420dc51",
+      "report_sha256": "fb5e45ae1ae7261af6ecda3119dc0100740a4013c47c0c8da6687b160e3ec139"
+    },
+    {
+      "name": "vwap_reversion",
+      "params": {},
+      "warm": true,
+      "financial_sha256": "2b046081d7ff0b3ddb095d28911fa1543a30d00da580e4be5dc9145acbd48235",
+      "report_sha256": "38efe8760fe8945c263332e677aef81e0b42d6d4fb27205e9f4373420ad3d0fa"
+    },
+    {
+      "name": "rsi_scale_in_out",
+      "params": {
+        "rsi_period": 5,
+        "oversold": 40,
+        "overbought": 60,
+        "buy_notional": 100,
+        "sell_notional": 100
+      },
+      "warm": true,
+      "financial_sha256": "bf2c49aa98bc5d4a831aebc995c9aa9e61747974d325bda3cee132b9692d7b71",
+      "report_sha256": "b118cbb3e9f3653087f33f179c2175c2d45c7115089561be25cca27b32d9a2c7"
+    },
+    {
+      "name": "grid",
+      "params": {
+        "lower_price": 80,
+        "upper_price": 140,
+        "grid_count": 10,
+        "amount_per_grid": 100
+      },
+      "warm": true,
+      "financial_sha256": "98ee191b9c58ecbe40ab988b81fc20c2cfb23f1b34c48a3f71d01a948c056004",
+      "report_sha256": "5aa2f34617119f0ee667fabc136f6f5d7915aa50f3690dd82b3861bc69e49b5f"
+    },
+    {
+      "name": "dca",
+      "params": {
+        "amount": 100,
+        "interval": "daily",
+        "profit_target_pct": 5
+      },
+      "warm": true,
+      "financial_sha256": "0a404a1cee5b0fc9804921e16b65d4ecbe287e131d21c0a3600c8fe886d0f27b",
+      "report_sha256": "62bc93d6766bafc71f99d80c9e89077b28149e6f860c0fe3e4bb6a40279107c4"
+    }
+  ]
+}

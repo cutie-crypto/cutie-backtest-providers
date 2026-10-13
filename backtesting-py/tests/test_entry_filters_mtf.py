@@ -204,7 +204,7 @@ def test_explicit_default_timeframe_preserves_frozen_off_bytes(case,warm,monkeyp
     monkeypatch.setenv('CUTIE_BACKTEST_CHAN_DEBUG', '1')  # CHANSLIM: frozen bytes predate the slim chan evidence
     name,values=single.CASES[case]
     monkeypatch.setattr(p.HigherTimeframeContext,'build',lambda *args:pytest.fail('off state fetched coarse'))
-    assert single.capture.snapshot(name,{**values,'filter_timeframe':''},warm)==single.BASELINE['cases'][case+'/'+str(int(warm))]
+    assert single.capture.snapshot(name,{**values,'filter_timeframe':''},warm,complete=True)==single.BASELINE['cases'][case+'/'+str(int(warm))]
 
 
 def test_off_nondefault_timeframe_rejected_before_fetch(monkeypatch):

@@ -139,3 +139,96 @@ NONE 不成立,我有 5 条发现。以下只依据所给的 diff 和契约。�
 ### 最终门状态
 
 收尾一次：8682 passed / 1987 failed / 0 errors，EXIT=1；最新main同命令10646 passed，EXIT=0。故本单引入失败1987，目标未完成，PR98继续draft。停止文件及1987条候选归因均已落/tmp/warmup-b2，保持残余红而非xfail。
+
+
+## WARMUP-B-3 增量只读审查（2026-10-13）
+
+实际 modelUsage: claude-sonnet-5-5；effort=high；is_error=false；一轮，未运行测试、未写文件、未起子agent。
+
+# WARMUP-B-3 增量只读审查
+
+我只读了你贴的 diff 和 evidence，没有写文件、跑测试，也没有起子 agent。pin7e 的 `p6.post`、`complete_seed` 和各 importer 没法看到，相关结论标了"需核对"。
+
+**总体判断：没有发现适配直接掩盖交易变化的证据，但有 3 处中等风险**，建议在全量前补上。
+
+## 发现
+
+**1. 中｜`capture_warmup_b3_disclosure.py` 的 `raw_report`/`assumptions` 整体重捕，金融指纹管不到**
+- 金融 guard 只覆盖 `trades/equity_curve/metrics/data_manifest`。`raw_report` 里还有 `legacy_metrics`、`provider_summary`、`skipped_entries` 和模板诊断。这些全被新哈希覆盖后冻结。
+- 触发路径：`warmup_b3_disclosure.json` 里 `macd_bullish_divergence/0` 与 `/1` 的 raw_report 哈希不同（`57b9d1…` 对 `f78900…`），`rsi_bullish_divergence`、`rsi_bearish_divergence` 同样不同。`macd_bullish_divergence` 的金融指纹是零交易（`30b5e3…`）。
+- 这说明扩展预热会改变 raw_report 的信号级内容，而交易仍为零。这类变化会被重捕静默吸收，以后无法再发现。
+- 建议：在 capture 里用 eligible 开/关各跑一次，对 `assumptions` 和 `raw_report` 做字段级 diff。只允许 `indicator_warmup_bars`、`warmup_manifest*` 这类预热披露键不同，否则 `assert`。
+
+**2. 中｜capture 脚本的 `single` 段没有冻结哈希比对，也没有 audit 条目**
+- `disclosure-audit.json` 只有 `filters/*` 和 `ledger/*`，没有 `single/*`。
+- `single` 只受 `checked_response` 的 4 字段金融指纹约束。result.v2/engine 哈希要等以后跑测试才比对。
+- 这样"原 engine/result/v2 哈希不改"对 `single` 只是事后由测试兜底，不是 capture 时的拦截。
+- 建议：对 `time.BASELINE['single'][name][warm]` 做与 filters 段相同的"除三键外全等"断言，并写进 audit。
+
+**3. 中｜共享模块 `capture_time_layer_11e8cfb.response()` 的作用域串漏**
+- allowlist 命中 `(name, core_params, warm)` 就对所有 import 它的文件生效，不限于 time/entry。
+- 如果 mtf、sizingd、plow、isolated 或 patconf2b1 系列也走 `capture.response('breakout', {...}, True)` 这类调用，它们会静默改用合成历史。这与"不碰其余 22/188/177"冲突。
+- 你给的 mtf 135/95、sizingd 31 没有 2840fa9 对照。
+- 建议：grep 该模块的 importer。逐文件对比候选与 2840fa9 的失败用例 ID 集合，不要只比计数。
+
+**4. 中低｜allowlist 里 39/145 的金融 guard 没有区分力，绿数偏乐观**
+- 这 39 个 case 的指纹都是零交易 `30b5e3…`：
+  - `calendar_schedule`×6
+  - `bearish_engulfing`、`shooting_star`、`evening_star`、`three_black_crows`、`macd_bearish_divergence`、`macd_bullish_divergence` 各 4
+  - `fibonacci_retracement`×4
+  - `cme_weekend_gap@long`×2
+  - `macd_above_zero`×1
+  - `volume_breakout`×2
+- 它们变绿只证明预热没引入交易，不证明预热后交易行为正确。
+- 另外，被选中的本来就是"预热对结果没影响"的 case，有变化的 30 个都留红了。所以变绿的数量不能当作 B-2 语义已验证的证据。
+- `extend_seed` 在 `warm=False` 时用 `main.iloc[0]` 复制出合成历史，带入了首根主数据的价格和成交量。这已在 docstring 声明，但应在报告里写明。
+
+**5. 低中｜`test_short_pat1.py::http` 全局换成 `complete_seed`，审计只比金融字段**
+- `shortpat1-audit.json` 里 index 4–43 和 78–81 是"失败且 `changed: []`"，只证明交易字段为空，没比 `error_type`/`error_message`。
+- 旧路径是预热不足被拒绝。如果这些用例断言某个拒绝码，换成完整播种后原因可能变了，或者变成成功。
+- 另外 66–77 这 12 个仍红，需要确认失败原因与 2840fa9 一致，不是新原因。time 审计有 old/new_error 对比，shortpat1 没有。
+
+**6. 低中（需核对）｜`test_pin7e_final_close.py::run` 复制了 `p6.post` 主体**
+- `_10b2d_cases.post` 的 provider_params 是 `{**base, **params}`。如果 `p6.post` 也有 `base`、fee、leverage 或默认 risk 字段，新 `run` 全部丢了，只剩 `params`。
+- 另外 `run_id='p6'` 和 request 其余字段也要逐项对照。
+- 否则"信号/成交/结算断言精确"建立在不同默认参数上。请 diff `p6.post` 与新 `run`，并确认 87/109 的失败集合相对 2840fa9 只减不增。
+
+**7. 低｜eligible 的前缀剥离假设过宽**
+- `time_`/`filter_` 前缀键被整体当作惰性，只检查了 `time_layer_enabled` 和 `filter_layer_enabled` 两个开关。
+- 如果存在不受这两个开关门控的 `time_*` 参数（例如时间止损类），会被误判为 eligible。
+- 运行期有 BASELINE 哈希兜底，但 allowlist 证据会误导。
+- 建议显式列出惰性键，或加单测：剥离前后金融哈希相等。
+
+**8. 低｜capture 脚本的自举和健壮性**
+- `test_entry_filters` 和 `test_time_layer_compatibility` 在 import 时读取 `warmup_b3_disclosure.json`，而 capture 脚本顶部 import 它们并回写该文件。JSON 缺失时无法从干净树重录。
+- `changed` 只遍历 `actual` 的键，字段被丢掉不会报。
+- `warmup(*args)` 用 `args[3]/[5]/[6]` 位置取参，provider 若改成关键字调用会 IndexError。这只影响 eligible 路径，不会掩盖问题。
+
+**9. 低｜frozen 金样边界缺机械守卫**
+- 从 diff 看，两份 red_streak golden 只增加了 `indicator_warmup_bars:282` 和 `warmup_manifest*`，`result_hash` 与交易字段没变，和你的声明一致。
+- 但 `protected-goldens.json` 只是一次性 sha 快照，测试里没有 pin。
+- 它也没列 time/entry 的 BASELINE JSON 本体。`git status` 显示这些文件未改，但证据里没钉住。
+
+## 已核对、未发现问题的部分
+- allowlist 共 145 项，与 `time-audit.json` 里 `safe:true` 的 case 逐项一致，没有把 `safe:false` 的 case（chan_3buy/1、ema_cross/0、bollinger_squeeze/0 等）放进去。
+- `time-audit.json` 里 `changed:["error"]` 的 case，old_error 和 new_error 文本相同。被排除是保守处理，不构成漏洞。
+- `protected-goldens.json` 共 52 项，等于 51 个 B-2 金样加 warmup demo，与你的口径一致。
+- `_10b2d_cases.post` 去掉 red_streak 特例后，其余 10b2d 金样字节不变，是合理的。
+- 没有看到 xfail 或放松交易判据的改动。
+
+## 结论
+没有 Critical/High。建议先处理 1、2、3，补上 6 的对照，再跑一次全量。变异/还原证据尚未提供，我也没有运行任何验证。
+
+### 作者处置（收尾全量前）
+
+- 中1成立：新增对 assumptions/raw_report 的字段投影哈希，只允许 indicator_warmup_bars、warmup_manifest/hash 与 EMA warmup 披露改变；42组出现信号坐标、诊断或legacy_metrics变化的候选停止适配，allowlist由145收窄到103，保留原断言/失败。金融字段仍四项全等。
+- 中2：single捕获现在写audit项，执行完整金融与非预热报告哈希守卫，并钉原min_bars。single原历史数据不存在统一engine哈希，不编造该证据。
+- 中3成立：完整播种改为 complete=True 显式启用，只在entry/mtf关态测试和time关态/ledger测试调用；共享capture默认维持原路径。BASELINE deepcopy后覆盖，避免修改被其它套件引用的原字典。importer清单在/tmp/warmup-b3。
+- 中低4：103仅为金融/非披露报告不变的旧夹具适配，零交易样本只证明不产生新交易，不宣称新版指标/生产读取验收；cold seed复制首根主窗OHLCV，明确为合成测试历史。
+- 低中5：shortpat1直接http的26成功响应金融字段全等；旧主基线与候选44个失败响应逐项核验错误字段，12条共享capture未适配保留；最终与B-2失败nodeid对照另列。
+- 低中6排除：亲读P6.post，无base或隐式费用/leverage参数；新pin run保留同一run_id/provider/request全部字段，只换已审计的flat seed；P6文件字节不改。101成功回包金融字段全等，失败集合收尾核对。
+- 低7：惰性键改为注册的time/filter schema键，且必须等于各自default，不再任意剥离前缀；启用层或其它参数不命中allowlist。
+- 低8：捕获声明从已提交完整夹具树运行；实际/预期键并集比对，禁止静默丢键。参数签名变动会显式失败，不隐藏。
+- 低9：51个B-2金样逐字节守卫与原time/entry JSON未编辑取证；新red_streak两金样通过现成canonical捕获，金融字段变化0。
+
+返修仅核受影响范围；未另跑第二轮外部review，不把作者核验记成Sonnet复审。最终全量、失败集合归因见B-3 verification文档和/tmp/warmup-b3。

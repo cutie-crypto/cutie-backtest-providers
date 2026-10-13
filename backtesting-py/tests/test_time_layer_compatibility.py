@@ -93,6 +93,16 @@ EVENT0 = {'event_window'}
 UNLOCK39 = {'token_unlock_event'}  # C39 +1; own clock/off-state checks below
 LEGACY_MIXINS = {name: cls for name, cls in MIXINS.items() if name not in F1_CASES | F2_CASES | SHORT_PAT4 | EVENT0 | OI_CASES | ETF38 | UNLOCK39 | EXNF52}
 
+# WARMUP-B-3: update only captured warmup/report disclosure, retaining the
+# immutable trade, equity, result.v2 and minimum-window fingerprints.
+WARMUP_B3 = json.loads((Path(__file__).parent / 'fixtures/warmup_b3_disclosure.json').read_text())
+BASELINE = copy.deepcopy(BASELINE)
+for name, cases in WARMUP_B3['single'].items():
+    for warm, metadata in cases.items():
+        BASELINE['single'][name][warm].update(metadata)
+for name, metadata in WARMUP_B3['ledger'].items():
+    BASELINE['ledger'][name].update(metadata)
+
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')
 @pytest.mark.parametrize('name', compat.PARAMS)
@@ -108,7 +118,7 @@ def test_disabled_matches_immutable_single_fingerprints(monkeypatch, name, risk_
 
 @pytest.mark.parametrize('name', capture.LEDGER_PARAMS)
 def test_ledger_unchanged(name):
-    assert capture.ledger_fingerprint(name) == BASELINE['ledger'][name]
+    assert capture.ledger_fingerprint(name, complete=True) == BASELINE['ledger'][name]
 
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')
@@ -124,7 +134,7 @@ def test_disabled_response_and_start_unchanged(monkeypatch, name, warm):
     def forbidden(*args, **kwargs):
         raise AssertionError('disabled layer must not construct a TimeContext')
     monkeypatch.setattr(provider.TimeContext, 'build', forbidden)
-    body = capture.response(compat.tool_name(name), {**params, **DEFAULTS}, warm)
+    body = capture.response(compat.tool_name(name), {**params, **DEFAULTS}, warm, complete=True)
     assert 'time_layer' not in body['assumptions']
     assert 'time_layer' not in body['raw_report']
     assert all(not any(key.startswith('time_') for key in trade) for trade in body['trades'])
