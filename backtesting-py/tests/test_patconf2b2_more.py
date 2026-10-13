@@ -173,10 +173,11 @@ def test_rsi_bullish_divergence_hand_computed(monkeypatch, tmp_path):
     set_bar(data, 27, 80, 81, 79, 80)
     assert signal_of(monkeypatch, tmp_path, 'rsi_bullish_divergence', data)[1].stop == 77.922
     trades, body = hand_trades(monkeypatch, tmp_path, 'rsi_bullish_divergence', data)
-    assert trades[0] == (26, 'long', '110', 27, '80')
+    assert trades[0] == (26, 'long', '110', 26, '77.922')
     entry = body['raw_report']['divergence']['entries'][0]
     # target frozen at the fill: 110 + 2 * (110 - 77.922) = 174.156
     assert (entry['entry_bar'], entry['frozen_stop'], round(entry['frozen_target'], 6)) == (26, 77.922, 174.156)
+
 
 
 def test_chan_3sell_hand_computed(monkeypatch, tmp_path):
@@ -188,10 +189,11 @@ def test_chan_3sell_hand_computed(monkeypatch, tmp_path):
     set_bar(data, 16, 127, 128, 126, 127)
     assert signal_of(monkeypatch, tmp_path, 'chan_3sell', data)[1].stop == 126.12599999999999
     trades, body = hand_trades(monkeypatch, tmp_path, 'chan_3sell', data)
-    assert trades == [(14, 'short', '110', 16, '127')]
+    assert trades == [(14, 'short', '110', 15, '126.12599999999999')]
     entry = body['raw_report']['chan']['entries'][0]
     assert (entry['entry_bar'], round(entry['frozen_stop'], 6), round(entry['frozen_target'], 6)) == (
         14, 126.126, 77.748)
+
 
 
 def test_fibonacci_retracement_hand_computed(monkeypatch, tmp_path):
@@ -210,7 +212,8 @@ def test_fibonacci_retracement_hand_computed(monkeypatch, tmp_path):
     assert (wave['signal_index'], wave['frozen_stop'], wave['frozen_target']) == (
         9, wave['stop_price'], wave['target_price'])
     assert float(wave['stop_price']) == 104.17572
-    assert trades == [(10, 'long', '109', 12, '120.5')]
+    assert trades == [(10, 'long', '109', 11, '120')]
+
 
 
 # --- fibonacci: the confirming bar only fills the wave that is still the active one ----------------------
@@ -269,8 +272,9 @@ def test_fibonacci_confirmation_discards_a_wave_already_used(monkeypatch, tmp_pa
     wave = body['raw_report']['fibonacci_retracement']['waves'][0]
     assert wave['used'] is True and not wave['invalid'] and wave['signal_index'] == 10
     assert [bar for bar, _ in orders] == [10]
-    assert [(bar_of(data, t['opened_at']), bar_of(data, t['closed_at'])) for t in body['trades']] == [(11, 12)]
+    assert [(bar_of(data, t['opened_at']), bar_of(data, t['closed_at'])) for t in body['trades']] == [(11, 11)]
     assert counts['registered'] == 2 and counts['submitted'] == 1 and counts['discarded']['template_gate'] == 1
+
 
 
 # --- template gates and risk states judged at k ---------------------------------------------------------

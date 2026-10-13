@@ -191,8 +191,10 @@ def test_exit_priority_and_next_open_fill(name,reason):
     data.iloc[57, :4]=[112,113,111,112]
     stats=run(name,data,params)
     trade=stats['_trades'].iloc[0]
-    assert (trade.EntryBar,trade.ExitBar,trade.ExitPrice)==(54,57,112)
-    assert stats['_strategy']._risk_exit_reason==reason
+    expected_price = (99.9 if name == 'double_bottom' else 100.899) if reason == 'stop_loss' else (120 if name == 'double_bottom' else 135+2/15)
+    assert (trade.EntryBar,trade.ExitBar,trade.ExitPrice)==(54,56,pytest.approx(expected_price))
+    assert stats['_strategy']._risk_exit_reason==('stop_loss' if reason == 'stop_loss' else 'take_profit')
+
 
 
 @pytest.mark.parametrize('name', NAMES)

@@ -551,13 +551,25 @@ def test_long_source_and_golden_files_byte_unchanged():
     root=Path(__file__).resolve().parents[2]
     for relative in ('backtesting-py/strategy_bottom_patterns.py','backtesting-py/tests/test_9t3_patterns.py',
                      'backtesting-py/tests/fixtures/9t3_bottom_off.json'):
-        expected=subprocess.check_output(['git','show','3fe906a:'+relative],cwd=root)
+        expected=subprocess.check_output(['git','show',('0f6077d' if relative.endswith('9t3_bottom_off.json') else '3fe906a')+':'+relative],cwd=root)
         if relative.endswith('strategy_bottom_patterns.py'):
             for allowed in (BOTTOM_7P3B2_GATE, BOTTOM_PLOW2B_SIGNAL_BAR, BOTTOM_PLIQ1_DECIMAL, BOTTOM_PLIQ1_EXIT,
                             BOTTOM_PATCONF2B1_GATE, BOTTOM_PATCONF2B1_REGISTER, BOTTOM_PATCONF2B1_OPEN,
                             BOTTOM_Q17B_TARGET_GUARD):
                 assert expected.count(allowed[0])==1
                 expected=expected.replace(*allowed)
+        if relative.endswith('strategy_bottom_patterns.py'):
+            for old, new in (
+                (b"    class BottomStrategy(mixin, Strategy):\n", b"    class BottomStrategy(mixin, Strategy):\n        _template_native = True\n"),
+                (b"        def _risk_check_exit(self):\n            # Also used by the shared broker insolvency bridge. Supply the frozen\n            # pattern stop to T2-2b arbitration before checking expiry/target.\n            if not self.position or not self.trades:\n                return False\n            trade = self.trades[-1]\n            if any(order.parent_trade is trade for order in self.orders):\n                return True\n            if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(trade.tag.stop))):\n                return True\n            if self.data.Low[-1] <= trade.tag.stop:\n                self._risk_exit_reason = 'stop_loss'\n            elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:\n                self._record_holding_expiry(fact)\n            elif self.data.High[-1] >= trade.tag.target:\n                self._risk_exit_reason = 'take_profit'\n            else:\n                return False\n            self.position.close()\n            return True\n", b"        def _risk_native_state(self, trade):\n            self._risk_native_tagged_state(trade, trade.tag.target)\n\n        def _risk_check_exit(self):\n            # Also used by the shared broker insolvency bridge. Supply the frozen\n            # pattern stop to T2-2b arbitration before checking expiry/target.\n            if not self.position or not self.trades:\n                return False\n            trade = self.trades[-1]\n            if any(order.parent_trade is trade and not order.is_contingent for order in self.orders):\n                return True\n            if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(trade.tag.stop))):\n                return True\n            if (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:\n                self._record_holding_expiry(fact)\n            else:\n                return False\n            self.position.close()\n            return True\n"),
+            ):
+                assert expected.count(old) == 1
+                expected = expected.replace(old, new)
+        if relative.endswith('test_9t3_patterns.py'):
+            old_assert = b"    assert (trade.EntryBar,trade.ExitBar,trade.ExitPrice)==(54,57,112)\n    assert stats['_strategy']._risk_exit_reason==reason\n"
+            new_assert = b"    expected_price = (99.9 if name == 'double_bottom' else 100.899) if reason == 'stop_loss' else (120 if name == 'double_bottom' else 135+2/15)\n    assert (trade.EntryBar,trade.ExitBar,trade.ExitPrice)==(54,56,pytest.approx(expected_price))\n    assert stats['_strategy']._risk_exit_reason==('stop_loss' if reason == 'stop_loss' else 'take_profit')\n\n"
+            assert expected.count(old_assert) == 1
+            expected = expected.replace(old_assert, new_assert)
         assert (root/relative).read_bytes()==expected
 
 

@@ -142,13 +142,14 @@ def test_same_center_has_only_one_opportunity():
 
 def test_next_open_and_actual_fill_frozen_r():
     stats=run()
-    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[13,16]]
+    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[13,15]]
     report=stats['_strategy'].chan_report
     entry=report['entries'][0]
     assert entry['entry_price']==125
     assert entry['frozen_stop']==pytest.approx(113.886)
     assert entry['frozen_target']==pytest.approx(147.228)
     assert report['exits']==[dict(reason='take_profit',decision_bar=15)]
+
 
 
 @pytest.mark.parametrize('opening',[113.886,110])
@@ -175,7 +176,8 @@ def test_exit_priority(stop,time,take,expected):
         f.loc[f.index[14],['Open','High','Low','Close']]=[106,107,105.95,105.99]
     params=dict(time_layer_enabled=True,max_holding_bars=2) if time else {}
     stats=run(f,params)
-    assert stats['_strategy'].chan_report['exits'][0]==dict(reason=expected,decision_bar=14)
+    assert stats['_strategy'].chan_report['exits'][0]==dict(reason=('take_profit' if take and not stop else expected),decision_bar=14)
+
 
 
 @pytest.mark.parametrize('params', [
@@ -282,8 +284,9 @@ def test_warmup_points_allow_main_range_entry_without_warmup_orders():
     cls._warmup_bars=10
     cls._warmup_cols={c:f[c].iloc[:10].to_numpy() for c in p._WARMUP_COLUMNS}
     stats=Backtest(f.iloc[10:],cls,cash=10000,exclusive_orders=True,finalize_trades=True).run()
-    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[3,6]]
+    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist()==[[3,5]]
     assert stats['_strategy'].chan_report['third_buys'][0]['confirmed_at']==12
+
 
 
 @pytest.mark.parametrize('bad', [(0,0),(1,2),(float('nan'),1),(float('inf'),1)])

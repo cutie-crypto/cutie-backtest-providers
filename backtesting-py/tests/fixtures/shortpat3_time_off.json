@@ -6,13 +6,13 @@
       "min_bars": 3,
       "0": {
         "warmup_bars": 0,
-        "assumptions_sha256": "9a407dea9660ca361c3f9c2088cc2680de669d18223dc00d58e99365752de862",
-        "raw_report_sha256": "131f1a8e5d4ab232b696a3aa952bea101ed4a30498757e7b3433e2a57075f67e"
+        "assumptions_sha256": "166486127c5739133822521d87061d7638363574305f91be9a23c4c41c5816cd",
+        "raw_report_sha256": "354287d50e5eb8a6a11c0c4bdad8f26f482322d0a3e1d3749ef9b17ee818166a"
       },
       "1": {
         "warmup_bars": 60,
-        "assumptions_sha256": "d1e36a07bc2e6ce28184235a99138dcff02bbcc8ab80da58ad85c3978425825d",
-        "raw_report_sha256": "5a6cd97a1760d3ce8d71b922b3f460d6ab28655e4127316bde4e14be30b6f8ea"
+        "assumptions_sha256": "740484db75dad0c3238de4fd90f95281b06339c5cc45bad24555f452a67ca3c9",
+        "raw_report_sha256": "4a49cbd0b715abc03f598906a48c6d72fa7077f37a8ecbc5901eb56a652a5ead"
       }
     }
   }

@@ -44,12 +44,13 @@ def expected(name, scenario, sizing):
     if name in CLOSE_ONLY:
         return ('liquidation', gap_open, 0, 1, True) if scenario == 'G' else ('liquidation', liquidation, 0, 1, False)
     if scenario == 'A1' or (scenario == 'A2' and sizing == 'pct20'):
-        return 'stop_loss', next_open, 1, 0, None
+        return 'stop_loss', EXPECTED[name][0], 0, 0, None
     if scenario == 'A2':
-        return 'stop_loss', crash_close, 0, 0, None
+        return 'stop_loss', EXPECTED[name][0], 0, 0, None
     if scenario == 'G':
         return 'liquidation', gap_open, 0, 1, True
     return 'liquidation', liquidation, 0, 1, False
+
 
 
 def run_spied(monkeypatch, tmp_path, name, scenario, sizing):
@@ -68,11 +69,22 @@ def run_spied(monkeypatch, tmp_path, name, scenario, sizing):
         strategy = sys._getframe(1).f_locals['self']
         closes.append((len(strategy.data) - 1, strategy._risk_exit_reason))
         return close(self, portion)
+    install = p._FixedRiskMixin._risk_native_install
+    def native_install(self):
+        install(self)
+        original = self._risk_native_record_exit
+        def record():
+            if sys._getframe(1).f_code.co_name == 'on_reduce':
+                closes.append((len(self.data) - 1, self._risk_exit_reason))
+            return original()
+        self._risk_native_record_exit = record
+    monkeypatch.setattr(p._FixedRiskMixin, '_risk_native_install', native_install)
     monkeypatch.setattr(p._FixedRiskMixin, '_risk_isolated_exit', isolated_exit)
     monkeypatch.setattr(bb.Position, 'close', position_close)
     body, data, k = q.post_scenario(monkeypatch, tmp_path, name, scenario, sizing)
     assert body['result_status'] == 'success', body
     return body, data, k, calls, closes
+
 
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')
@@ -110,9 +122,12 @@ def test_insolvency_bridge_passes_frozen_stop(monkeypatch, tmp_path, name):
         assert closes == [(k, 'liquidation')]
         assert body['raw_report']['isolated_risk']['liquidation_count'] == 1
         return
-    assert [(call['bar'], call['stop']) for call in bridge] == [(k, Decimal(EXPECTED[name][0]))]
+    assert bridge == []  # native stop settles before equity becomes insolvent
+    assert {call['stop'] for call in calls} == {Decimal(EXPECTED[name][0])}
+    assert {call['bar'] for call in calls} == {k-1, k}
     assert closes == [(k, 'stop_loss')]
     assert body['raw_report']['isolated_risk']['liquidation_count'] == 0
+
 
 
 @pytest.mark.parametrize('key', sorted(q.control_cases()))

@@ -114,9 +114,10 @@ def test_sizing_initial_stop_is_the_stop_the_exit_fires_on(name, monkeypatch, tm
     [trade] = body['trades']
     # Shared native protection fills at the frozen stop on f+1; intrinsic market exits stay f+2.
     closed = pd.Timestamp(trade['closed_at'], unit='s', tz=data.index.tz)
-    native = name in ('calendar_schedule', 'red_streak_rsi', 'vwap_reversion')
+    native = name not in {'double_top', 'head_shoulders', 'range_breakout', 'asia_range_breakout', 'opening_range_breakout', 'us_open_momentum', 'cme_weekend_gap', 'event_window', 'macro_release_breakout'}
     assert closed == data.index[f + (1 if native else 2)], trade
     assert Decimal(trade['exit_price']) == (stop if native else Decimal(str(data['Open'].iloc[f + 2]))), trade
+
 
 
 # 2. Self-placed template entries carry _sizing_signal_bar (the no_next_open guard reads it).

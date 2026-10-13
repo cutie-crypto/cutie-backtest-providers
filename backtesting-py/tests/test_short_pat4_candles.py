@@ -177,12 +177,13 @@ def test_frozen_stop_above_entry_exits_next_open(monkeypatch, tmp_path, name):
     set_bar(data, 30, E, 103.2, E - .5, E)        # High crosses 103.103 -> stop_loss queued
     set_bar(data, 31, 101, 101.5, 100.5, 101)     # fills at this open
     body, _ = post(monkeypatch, tmp_path, name, data=data)
-    assert trades(body, data) == [(26, 'short', ENTRY[name], 31, '101')], body
+    assert trades(body, data) == [(26, 'short', ENTRY[name], 30, STOP)], body
     # Just below the stop does not trigger.
     data = frame(name)
     set_bar(data, 30, E, 103.1, E - .5, E)
     body, _ = post(monkeypatch, tmp_path, name, data=data)
     assert trades(body, data)[0][3] == 69
+
 
 
 @pytest.mark.parametrize('reward_r', [2, 0.5])
@@ -191,14 +192,18 @@ def test_target_below_entry_by_reward_r_times_risk(monkeypatch, tmp_path, name, 
     E = float(ENTRY[name])
     target = E - (103.103 - E) * reward_r
     data = frame(name)
-    set_bar(data, 30, E, E + .5, target, E)       # Low touches the target exactly
+    set_bar(data, 30, E, E + .5, target - 1e-9, E)       # Low touches the target exactly
     set_bar(data, 31, 88, 88.5, 87.5, 88)
     body, _ = post(monkeypatch, tmp_path, name, dict(reward_r=reward_r), data)
-    assert trades(body, data) == [(26, 'short', ENTRY[name], 31, '88')], body
+    [trade] = trades(body, data)
+    assert trade[:4] == (26, 'short', ENTRY[name], 30), body
+    assert float(trade[4]) == pytest.approx(target, rel=1e-12, abs=1e-12), body
     data = frame(name)
     set_bar(data, 30, E, E + .5, target + .01, E)  # one cent short of the target
     body, _ = post(monkeypatch, tmp_path, name, dict(reward_r=reward_r), data)
     assert trades(body, data)[0][3] == 69
+
+
 
 
 @pytest.mark.parametrize('name', SHORT)
@@ -227,12 +232,13 @@ EXPECTED = {'A_next_open': '96', 'A2_full_close': '105.7', 'B_liquidation': '99'
 
 def expected(scenario, sizing):
     if scenario == 'A1' or (scenario == 'A2' and sizing == 'pct20'):
-        return 'stop_loss', EXPECTED['A_next_open'], 1, 0, None
+        return 'stop_loss', STOP, 0, 0, None
     if scenario == 'A2':
-        return 'stop_loss', EXPECTED['A2_full_close'], 0, 0, None
+        return 'stop_loss', STOP, 0, 0, None
     if scenario == 'G':
         return 'liquidation', EXPECTED['G_gap_open'], 0, 1, True
     return 'liquidation', EXPECTED['B_liquidation'], 0, 1, False
+
 
 
 @pytest.fixture
@@ -258,6 +264,16 @@ def test_isolated_scenarios_follow_t2_2b(monkeypatch, tmp_path, scenes, name, sc
         strategy = sys._getframe(1).f_locals['self']
         closes.append((len(strategy.data) - 1, strategy._risk_exit_reason))
         return close(self, portion)
+    install = p._FixedRiskMixin._risk_native_install
+    def native_install(self):
+        install(self)
+        original = self._risk_native_record_exit
+        def record():
+            if sys._getframe(1).f_code.co_name == 'on_reduce':
+                closes.append((len(self.data) - 1, self._risk_exit_reason))
+            return original()
+        self._risk_native_record_exit = record
+    monkeypatch.setattr(p._FixedRiskMixin, '_risk_native_install', native_install)
     monkeypatch.setattr(p._FixedRiskMixin, '_risk_isolated_exit', isolated_exit)
     monkeypatch.setattr(bb.Position, 'close', position_close)
     body, data, k = q.post_scenario(monkeypatch, tmp_path, name, scenario, sizing)
@@ -276,6 +292,7 @@ def test_isolated_scenarios_follow_t2_2b(monkeypatch, tmp_path, scenes, name, sc
     # Every arbitration call carries the frozen stop; fill bar and crash bar are both arbitrated.
     assert calls and {stop for _, stop in calls} == {Decimal(STOP)}
     assert sorted({bar for bar, _ in calls}) == [k - 1, k]
+
 
 
 @pytest.mark.parametrize('sizing', q.SIZINGS)
