@@ -29,7 +29,7 @@ def cases():
     return result
 
 
-def snapshot(name, params, warm):
+def snapshot(name, params, warm, *, complete=False):
     full = capture.template_frame(name)
     prefix, data = full.iloc[:60], full.iloc[60:].copy()
     built = provider.TOOL_SPECS['local.backtesting_py.' + name]['build'](params)
@@ -42,7 +42,7 @@ def snapshot(name, params, warm):
                      finalize_trades=True).run()
     def rows(frame):
         return [[compat_encode(v) for v in row] for row in frame.itertuples(index=False, name=None)]
-    body = capture.response(name, params, warm)
+    body = capture.response(name, params, warm, complete=complete)
     return dict(min_bars=built['min_bars'],
         engine_trades=capture.digest([list(stats['_trades'].columns), rows(stats['_trades'])]),
         engine_equity=capture.digest(rows(stats['_equity_curve'])),

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as p
+from _complete_seed_fixture import complete_seed
 import test_9t4_divergence as div
 import test_9t5_fibonacci as fib
 import test_f5_vwap_reversion as vwap
@@ -55,7 +56,7 @@ def post(monkeypatch, tmp_path, name, params=None, data=None, capital='10000', f
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', fetch or (lambda *a: data.copy()))
-    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a: data.iloc[:0].copy())
+    monkeypatch.setattr(p, '_fetch_template_warmup', complete_seed)
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     request = dict(run_id='10b2a', provider_tool_id='local.backtesting_py.' + name,
                    provider_params={**base, **(params or {})}, symbol='BTCUSDT', market=market_for(params),

@@ -311,13 +311,13 @@ def test_time_gate_entry_and_unrestricted_exit(name):
 def test_http_skip_assumptions_and_frozen_v2_keys(monkeypatch,tmp_path,name):
     data = frame(name)
     data.iloc[26, :4] = [96.8,110,96.8,106]
-    skipped = http(monkeypatch,tmp_path,name,data)
+    skipped = http(monkeypatch,tmp_path,name,data,complete=True)
     assert not skipped['trades'] and skipped['raw_report']['candle_pattern']['skipped_entry_count'] == 1
     assert 'next bar open' in skipped['assumptions']['pattern_execution']
-    body = http(monkeypatch,tmp_path,name,compatibility_frame(name))
+    body = http(monkeypatch,tmp_path,name,compatibility_frame(name),complete=True)
     assert len(body['trades']) == 1
     from test_time_layer_compatibility import capture
-    old = capture.response('bullish_engulfing',{})
+    old = capture.response('bullish_engulfing',{},complete=True)
     for key in ('metrics','data_manifest'):
         assert set(body[key]) == set(old[key])
     assert set(body['trades'][0]) == set(old['trades'][0])
@@ -331,7 +331,7 @@ def test_frozen_off_http_bytes(name,warm,disabled):
     expected = compat.PATTERN2_BASELINE['single'][name][str(int(warm))]
     params = {**DEFAULTS,'risk_layer_enabled':False,'atr_stop_multiplier':0,
               'risk_atr_period':0,'take_profit_r':0,'leverage':1} if disabled else {}
-    body = compat.capture.response(name,params,warm)
+    body = compat.capture.response(name,params,warm,complete=True)
     assert len(body['trades']) == expected['trade_count'] == 1
     assert compat.capture.digest(body['trades']) == expected['trades_sha256']
     assert compat.capture.digest(body['equity_curve']) == expected['equity_sha256']

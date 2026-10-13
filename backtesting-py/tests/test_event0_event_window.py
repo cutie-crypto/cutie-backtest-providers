@@ -44,18 +44,23 @@ def prefix(data, bars, drop=None):
     return out.drop(out.index[drop]) if drop is not None else out
 
 
-def post(monkeypatch, tmp_path, params, data=None, market='futures', warmup=None):
+def post(monkeypatch, tmp_path, params, data=None, market='futures', warmup=None, strict_warmup=False):
     data = frame() if data is None else data
     calls = []
+    strict_reader = p._fetch_template_warmup
 
     def fetch_warmup(*args, **kwargs):
         calls.append(args)
+        if strict_warmup:
+            return strict_reader(*args, **kwargs)
         if warmup is None:
             raise AssertionError('event_window fetches no warmup while the filter is off')
         return warmup.copy()
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', Path(tmp_path))
-    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: data.copy())
+    def fetch(*args, **kwargs):
+        return warmup.copy() if strict_warmup and args[-2] < int(data.index[0].timestamp()) else data.copy()
+    monkeypatch.setattr(p, '_fetch_ohlcv', fetch)
     monkeypatch.setattr(p, '_fetch_template_warmup', fetch_warmup)
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     request = dict(run_id='event0', provider_tool_id=TOOL, provider_params=params, symbol='BTCUSDT',
@@ -237,20 +242,22 @@ FILTER = dict(filter_layer_enabled=True, filter_ema_enabled=True, filter_ema_per
 
 def test_entry_filter_blocks_long_and_passes_short(monkeypatch, tmp_path):
     data = falling()
-    long_body = post(monkeypatch, tmp_path, {**GOLDEN_PARAMS, **FILTER}, data=data, warmup=prefix(data, 2))
+    long_body = post(monkeypatch, tmp_path, {**GOLDEN_PARAMS, **FILTER}, data=data, warmup=prefix(data, 20))
     assert long_body['result_status'] == 'success', long_body.get('error_message')
     assert long_body['trades'] == []
     assert [r['status'] for r in events_of(long_body)] == ['blocked_by_time_or_filter'] * 3
     short_body = post(monkeypatch, tmp_path, {**GOLDEN_PARAMS, **FILTER, 'direction': 'short'}, data=data,
-                      warmup=prefix(data, 2))
+                      warmup=prefix(data, 20))
     assert [r['status'] for r in events_of(short_body)] == ['entered', 'skipped_in_position', 'entered']
 
 
 def test_filter_on_gapped_warmup_fails_before_backtest(monkeypatch, tmp_path):
     monkeypatch.setattr(Backtest, 'run', lambda *a, **k: pytest.fail('backtest ran on a gapped filter warmup'))
     data = frame()
-    body = post(monkeypatch, tmp_path, {**GOLDEN_PARAMS, **FILTER}, data=data, warmup=prefix(data, 3, drop=1))
-    assert (body['result_status'], body['error_type']) == ('failed', 'INSUFFICIENT_DATA'), body
+    body = post(monkeypatch, tmp_path, {**GOLDEN_PARAMS, **FILTER}, data=data, warmup=prefix(data, 21, drop=10), strict_warmup=True)
+    assert (body['result_status'], body['error_type']) == ('failed', 'WARMUP_INSUFFICIENT'), body
+    assert body['limitations']['actual_bars'] == 10
+    assert body['limitations']['missing_bars'] == 10
 
 
 def test_risk_sizing_without_stop_is_rejected_before_fetch(monkeypatch, tmp_path):

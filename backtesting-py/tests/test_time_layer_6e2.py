@@ -202,12 +202,15 @@ def test_registered_runner_consumes_calendar(monkeypatch, tmp_path, name, case):
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a: data.copy())
     # Supply a genuine contiguous indicator prefix; calendar never trims OHLCV.
     warm = frame(str(data.index[0]-pd.Timedelta(hours=12)), 48)
-    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a: warm.copy())
+
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     req = dict(run_id='calendar_6e2', provider_tool_id='local.backtesting_py.'+name, provider_params=values,
         symbol='BTCUSDT', market='spot', timeframe='15m', start_at=int(data.index[0].timestamp()),
         end_at=int(data.index[-1].timestamp())+900, initial_capital='10000', fee_bps='0', slippage_bps='0')
-    body = TestClient(p.app).post('/cutie/backtest', json={'backtest': req}).json()
+    from _warmup_b5_fixture import seed_reader, check_financial
+    wire = {'backtest': req}
+    monkeypatch.setattr(p, '_fetch_template_warmup', seed_reader(wire, data, lambda *a: warm.copy()))
+    body = check_financial(wire, data, TestClient(p.app).post('/cutie/backtest', json=wire).json())
     assert body['result_status'] == 'success', body
     if name == 'dca' and calendar == 'us_equity_regular':
         # DCA daily signals at local midnight; the intersection has no open.

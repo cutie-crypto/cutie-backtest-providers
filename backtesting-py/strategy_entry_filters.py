@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import pandas as pd
 
+from warmup_rules import wilder_bars, WARMUP_RULE_VERSION
 from strategy_time_layer import fixed_timeframe_milliseconds, utc_datetime
 
 FILTER_PARAM_SCHEMA_PROPERTIES = {
@@ -100,6 +101,12 @@ class FilterConfig:
                    3 * self.macd_slow if self.macd_enabled else 0,
                    self.supertrend_atr_period + 1 if self.supertrend_enabled else 0)
 
+    @property
+    def required_warmup(self) -> int:
+        return max(10 * self.ema_period if self.ema_enabled else 0,
+                   10 * max(self.macd_fast, self.macd_slow) if self.macd_enabled else 0,
+                   wilder_bars(self.supertrend_atr_period) if self.supertrend_enabled else 0)
+
     def report(self, direction: str = 'long') -> dict[str, Any]:
         short = _is_short(direction)
         predicates = {}
@@ -119,6 +126,7 @@ class FilterConfig:
                 entry='first_confirming_bar_close_then_next_open', unconfirmed='discard_signal')
         return dict(combine='AND', direction=direction, clock='closed_signal_bar',
                     scope='entry_only', fill='next_bar_open', required_bars=self.required_bars,
+                    required_warmup=self.required_warmup, warmup_rule_version=WARMUP_RULE_VERSION,
                     blocked_signal='discard_without_replay', predicates=predicates)
 
 
@@ -285,9 +293,10 @@ class FilterHistoryError(ValueError):
     ``_gap_details`` keys. Every other failure keeps it None.
     """
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None, *, error_type='INSUFFICIENT_DATA') -> None:
         super().__init__(message)
         self.details = details
+        self.error_type = error_type
 
 
 _HTF_MISSING_MESSAGE = 'Higher-timeframe history has missing or misaligned candles'
@@ -312,6 +321,7 @@ class HigherTimeframeContext:
     report: dict[str, Any]
     # PIN7-F: missing-candle summary (provider assumptions.entry_filter_htf_gaps); None when gap-free.
     gaps: dict[str, Any] | None = None
+    warmup_df: pd.DataFrame | None = None
 
     @classmethod
     def build(cls, config: FilterConfig, primary: str, opens: pd.DatetimeIndex,
@@ -333,18 +343,34 @@ class HigherTimeframeContext:
         step = fixed_timeframe_milliseconds(config.timeframe)
         decisions = opens.as_unit('ns').asi8 // 1000000 + primary_step
         latest_opens = ((decisions - grid_offset_ms) // step) * step + grid_offset_ms - step
-        first = int(latest_opens[0] - (config.required_bars - 1) * step)
+        first = int(latest_opens[0] - config.required_warmup * step)
         last = int(latest_opens[-1])
         if first < 0:
             raise FilterHistoryError('Higher-timeframe history precedes available timestamps')
         try:
             data = fetch(first // 1000, (last + step) // 1000)
         except Exception as exc:
-            raise FilterHistoryError('Higher-timeframe history fetch unavailable') from exc
+            raise FilterHistoryError('历史读取失败，请重试', error_type='WARMUP_FETCH_FAILED') from exc
         expected = pd.to_datetime(np.arange(first, last + step, step, dtype=np.int64), unit='ms', utc=True)
         index = pd.to_datetime(data.index, utc=True)
         data = data.loc[(index >= expected[0]) & (index <= expected[-1])].copy()
         actual = pd.to_datetime(data.index, utc=True)
+        # The recursive prefix is strict even when main-range gaps are tolerated.
+        expected_prefix = pd.to_datetime(np.arange(first, latest_opens[0], step, dtype=np.int64), unit='ms', utc=True)
+        prefix = data.loc[actual < pd.to_datetime(latest_opens[0], unit='ms', utc=True)].copy()
+        prefix_index = pd.to_datetime(prefix.index, utc=True)
+        actual_bars, cursor = 0, int(latest_opens[0])-step
+        valid = np.isfinite(prefix[['Open','High','Low','Close','Volume']].to_numpy(dtype='float64')).all(axis=1)
+        for stamp, finite in reversed(list(zip(prefix_index.as_unit('ns').asi8//1000000, valid))):
+            if stamp != cursor or not finite:
+                break
+            actual_bars += 1
+            cursor -= step
+        if actual_bars < config.required_warmup or not prefix_index.equals(expected_prefix):
+            raise FilterHistoryError('起点前历史不足', error_type='WARMUP_INSUFFICIENT', details=dict(
+                required_bars=config.required_warmup, actual_bars=min(actual_bars,config.required_warmup),
+                missing_bars=max(0,config.required_warmup-actual_bars), suggested_start_at=None,
+                warmup_rule_version=WARMUP_RULE_VERSION))
         if not len(actual):
             # No present candle to anchor a gap after: first_gap_after is None.
             raise FilterHistoryError(_HTF_MISSING_MESSAGE, details=dict(
@@ -389,4 +415,6 @@ class HigherTimeframeContext:
             history_end_at=(last + step) // 1000,
             data_source=data.attrs.get('cutie_data_source'),
             central_market_data_used=data.attrs.get('cutie_central_market_data_used'),
-            market_data_cache_hit=data.attrs.get('cutie_market_data_cache_hit', False)), gaps)
+            market_data_cache_hit=data.attrs.get('cutie_market_data_cache_hit', False),
+            required_warmup=config.required_warmup, warmup_rule_version=WARMUP_RULE_VERSION,
+            warmup_end_at=int(latest_opens[0]//1000)), gaps, prefix)

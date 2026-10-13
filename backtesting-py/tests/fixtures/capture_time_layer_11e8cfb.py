@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as provider
 import test_risk_overlay_compatibility as compat
 from _exit_kinds_strip import without_exit_kinds
+from _complete_seed_fixture import extend_seed
 from backtesting import Backtest
 from canonical_json import canonical_json
 from fastapi.testclient import TestClient
@@ -41,7 +42,7 @@ def request_body(name, params):
         initial_capital='10000', fee_bps='10', slippage_bps='5')}
 
 
-def response(name, params, warm=True):
+def response(name, params, warm=True, *, complete=False):
     if name in ('bullish_engulfing', 'hammer_pin_bar'):
         import pandas as pd
         frozen = json.loads(Path(__file__).with_name('9t1_candle_off.json').read_text())['inputs'][name]
@@ -62,8 +63,23 @@ def response(name, params, warm=True):
         full = template_frame(name)
     def fetch(*args):
         return full.iloc[60:].copy()
-    def warmup(*args):
-        return full.iloc[:60].copy() if warm else full.iloc[:0].copy()
+    audited = json.loads(Path(__file__).with_name('warmup_b3_fixture_cases.json').read_text())['cases']
+    # Off-state flags are inert. Everything else must match an audited request;
+    # changed-trade cases retain the old fixture and its visible failure.
+    inert = {**provider._TIME_PARAM_SCHEMA_PROPERTIES,
+             **provider.FILTER_PARAM_SCHEMA_PROPERTIES}
+    disabled_risk = {'risk_layer_enabled': False, 'atr_stop_multiplier': 0,
+                     'risk_atr_period': 0, 'take_profit_r': 0, 'leverage': 1}
+    core_params = {k: v for k, v in params.items() if k not in inert
+                   and not (k in disabled_risk and type(v) is type(disabled_risk[k])
+                            and v == disabled_risk[k])}
+    defaults_only = all(v == inert[k]['default'] for k, v in params.items() if k in inert)
+    eligible = (complete and defaults_only and not params.get('time_layer_enabled', False)
+                and not params.get('filter_layer_enabled', False)
+                and dict(name=name, params=core_params, warm=warm) in audited)
+    def warmup(*args, **kwargs):
+        seed = full.iloc[:60].copy() if warm else full.iloc[:0].copy()
+        return extend_seed(seed, args[3], args[5], args[6]) if eligible else seed
     with tempfile.TemporaryDirectory(prefix='time-proof-') as reports, \
          patch.object(provider, 'AUTH_TOKEN', ''), \
          patch.object(provider, 'REPORTS_DIR', Path(reports)), \
@@ -81,8 +97,8 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
 
 
-def ledger_fingerprint(name):
-    body = response(name, LEDGER_PARAMS[name])
+def ledger_fingerprint(name, *, complete=False):
+    body = response(name, LEDGER_PARAMS[name], complete=complete)
     return dict(trade_count=len(body['trades']), trades_sha256=digest(body['trades']),
         equity_sha256=digest(body['equity_curve']),
         result_v2_sha256=hashlib.sha256(canonical_json({k: body[k] for k in V2_KEYS}).encode()).hexdigest(),

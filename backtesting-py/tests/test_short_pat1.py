@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
+from _complete_seed_fixture import complete_seed
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as p
@@ -68,7 +69,7 @@ def http(monkeypatch, tmp_path, name, data, params=None, *, fee=0, slip=0):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **kw: data.copy())
-    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a, **kw: data.iloc[:0].copy())
+    monkeypatch.setattr(p, '_fetch_template_warmup', complete_seed)
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **kw: None)
     req=request(name,params or {},data)
     req['backtest'].update(fee_bps=str(fee),slippage_bps=str(slip))

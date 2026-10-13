@@ -37,6 +37,8 @@ import anyio
 import numpy as np
 import pandas as pd
 from canonical_json import canonical_decimal_str, canonical_json_sha256
+from warmup_rules import (WARMUP_RULE_VERSION, SEED_RULE_VERSION, MAX_WARMUP_BARS,
+                          template_required_warmup, wilder_bars)
 from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
@@ -1183,50 +1185,202 @@ def _fetch_ohlcv(exchange_id: str, market: str, symbol: str, timeframe: str,
 
 
 _WARMUP_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
-# 非对齐since会被交易所向上取桶，完整收盘筛选还可能少一根；先对齐再留余量，最终仍tail(bars)。
+# Align to the first main open and request two spare buckets for source clipping.
 _TEMPLATE_WARMUP_FETCH_EXTRA_BARS = 2
+WARMUP_SNAPSHOT_DIR = BASE_DIR / "cache" / "warmup_snapshots"
 
 
-def _fetch_template_warmup(
-    exchange_id: str, market: str, symbol: str, timeframe: str,
-    start_sec: int, bars: int, main_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Best-effort fetch of up to ``bars`` candles strictly before the main range.
+class WarmupHistoryError(Exception):
+    def __init__(self, error_type, details=None):
+        super().__init__(error_type)
+        self.error_type = error_type
+        self.details = details
 
-    内置模板的指标预热段（1008）：与服务端实盘监听 required_warmup_bars 口径对齐，
-    让主区间第一根就有收敛的指标。只做尽力而为——取数失败、新币历史不足、行情缺口
-    都退化成「拿到多少用多少 / 不预热」，绝不让本来能跑的回测因此失败；主区间的取数
-    与错误处理不经过这里。只保留早于主区间第一根的行，防止取数源不按区间裁剪时把
-    主区间数据当成预热。
-    例外（P-LOW1 / P-LOW2a / P-LOW3）：凡开同周期过滤的模板（过滤开启且未设 filter_timeframe），
-    调用方在 run_backtest 里要求非空预热段连续且紧挨主区间，有缺口即 INSUFFICIENT_DATA；主区间缺口
-    在容差（CENTRAL_GAP_TOLERANCE_RATIO）内则过滤掩码在缺口处重新预热，超出则 INSUFFICIENT_DATA。
-    过滤关闭时都不判。本函数本身仍不失败。
-    """
-    empty = pd.DataFrame(columns=list(_WARMUP_COLUMNS), dtype="float64")
+
+def _warmup_end_sec(timestamp, timeframe):
+    step = _timeframe_milliseconds(timeframe) // 1000
+    offset = _timeframe_grid_offset_ms(timeframe) // 1000
+    return -((-(int(timestamp)-offset)) // step) * step + offset
+
+
+def _warmup_shortage(warm, main, bars, timeframe, end_sec, minimum):
+    """Count only the contiguous suffix ending immediately before main[0]."""
+    step = _timeframe_milliseconds(timeframe) * 1000000
+    anchor = pd.Timestamp(main.index[0]).value
+    stamps = warm.index.as_unit('ns').asi8
+    actual, expected = 0, anchor - step
+    for stamp in reversed(stamps):
+        if stamp != expected:
+            break
+        actual += 1
+        expected -= step
+    if actual >= bars:
+        return None
+    hint = None
+    # The suffix plus the main snapshot must remain continuous all the way to
+    # the original end. A partial final window never produces a runnable hint.
+    combined = pd.concat([warm.iloc[-actual:] if actual else warm.iloc[:0], main])
+    values = combined.index.as_unit('ns').asi8
+    proposed = anchor + (bars - actual) * step
+    last_expected = _warmup_end_sec(end_sec, timeframe) * 1000000000 - step
+    if (len(values) and np.isfinite(combined[list(_WARMUP_COLUMNS)].to_numpy()).all()
+            and np.all(np.diff(values) == step) and values[-1] == last_expected
+            and np.count_nonzero(values >= proposed) >= minimum):
+        hint = int(proposed // 1000000000)
+    return dict(required_bars=bars, actual_bars=actual, missing_bars=bars-actual,
+                suggested_start_at=hint, warmup_rule_version=WARMUP_RULE_VERSION)
+
+
+def _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_sec, bars, main_df,
+                           *, end_sec=None, minimum=1):
+    """Fetch exactly R contiguous, finite, same-source candles or reject."""
+    empty = pd.DataFrame(columns=list(_WARMUP_COLUMNS), dtype='float64',
+                         index=pd.DatetimeIndex([]))
     if bars <= 0 or main_df.empty:
         return empty
+    if bars > MAX_WARMUP_BARS:
+        raise ValueError('INVALID_PARAMS:required_warmup exceeds 20000 bars')
     step_sec = max(1, _timeframe_milliseconds(timeframe) // 1000)
-    # WARM-1P-P：start 不在周期边界时，跨 start 的那根（开盘早于 start、收盘晚于 start）既进不了
-    # 主区间（中心行情只给开盘 >= since 的已收盘 K 线），也进不了止于 start 的预热段。
-    # 这里向上取整，取数止于取整后的起点，让它作为预热最后一根进来；start 已对齐时 ceil 等于原值。
-    aligned_start = -((-int(start_sec)) // step_sec) * step_sec
+    aligned_start = _warmup_end_sec(start_sec, timeframe)
     since = max(0, aligned_start - (bars + _TEMPLATE_WARMUP_FETCH_EXTRA_BARS) * step_sec)
     try:
-        warm = _fetch_ohlcv(
-            exchange_id, market, symbol, timeframe,
-            since, aligned_start,
-        )
-        warm = warm.loc[warm.index < main_df.index[0], list(_WARMUP_COLUMNS)].astype("float64")
+        warm = _fetch_ohlcv(exchange_id, market, symbol, timeframe, since, aligned_start)
+    except MarketDataFetchError as exc:
+        if exc.error_type != 'NO_DATA':
+            raise WarmupHistoryError('WARMUP_FETCH_FAILED') from exc
+        warm = empty
+        warm.attrs = main_df.attrs.copy()
+    except Exception as exc:
+        raise WarmupHistoryError('WARMUP_FETCH_FAILED') from exc
+    try:
+        if warm.attrs.get('cutie_data_source', DATA_SOURCE) != main_df.attrs.get('cutie_data_source', DATA_SOURCE):
+            raise WarmupHistoryError('WARMUP_FETCH_FAILED')
+        warm = warm.loc[(warm.index >= pd.to_datetime(since, unit='s')) &
+                        (warm.index < main_df.index[0]), list(_WARMUP_COLUMNS)].astype('float64')
+        if not warm.index.is_unique or not warm.index.is_monotonic_increasing:
+            raise WarmupHistoryError('WARMUP_FETCH_FAILED')
         warm = warm[np.isfinite(warm.to_numpy()).all(axis=1)]
-        return warm.tail(bars)
-    except Exception as e:  # noqa: BLE001 -- warmup must never fail the backtest
-        logger.warning(
-            "template warmup fetch skipped symbol=%s timeframe=%s bars=%s: %s",
-            symbol, timeframe, bars, e,
-        )
-        return empty
+        end_sec = end_sec if end_sec is not None else int(main_df.index[-1].timestamp()) + step_sec
+        details = _warmup_shortage(warm, main_df, bars, timeframe, end_sec, minimum)
+        if details is not None:
+            raise WarmupHistoryError('WARMUP_INSUFFICIENT', details)
+        # Select the declared exact seed only after the complete-prefix gate.
+        return warm.iloc[-bars:].copy()
+    except WarmupHistoryError:
+        raise
+    except Exception as exc:
+        raise WarmupHistoryError('WARMUP_FETCH_FAILED') from exc
 
+
+def _warmup_failure(run_id, exc):
+    return _business_failure(run_id, exc.error_type,
+        ('起点前历史不足' if exc.error_type == 'WARMUP_INSUFFICIENT' else
+         '主区间起点缺少K线' if exc.error_type == 'TIME_DATA_GAP' else '历史读取失败，请重试'),
+        reason=exc.error_type.lower(), details=exc.details)
+
+
+def _warmup_evidence(warm, main, required, symbol, market, timeframe, start_at, exchange_id):
+    """Content-addressed frozen seed, independent of the nine-key main manifest."""
+    import tempfile
+    step = _timeframe_milliseconds(timeframe) // 1000
+    end = _warmup_end_sec(start_at, timeframe)
+    start = end - len(warm) * step
+    if len(warm) != required:
+        raise WarmupHistoryError('WARMUP_INSUFFICIENT', dict(required_bars=required,
+            actual_bars=min(len(warm),required), missing_bars=max(0,required-len(warm)),
+            suggested_start_at=None, warmup_rule_version=WARMUP_RULE_VERSION))
+    rows = _kline_rows_to_canonical(warm, start, end-1)
+    source = _data_manifest_source(market, exchange_id, main)
+    snapshot = dict(source=source, symbol=symbol, market=market, timeframe=timeframe, rows=rows)
+    ref = canonical_json_sha256(snapshot)
+    WARMUP_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    path = WARMUP_SNAPSHOT_DIR / (ref + '.json')
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=WARMUP_SNAPSHOT_DIR, delete=False) as file:
+            temporary = file.name
+            json.dump(snapshot, file, sort_keys=True)
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+    manifest = dict(schema_version='cutie.backtest_warmup.v1',
+        warmup_rule_version=WARMUP_RULE_VERSION, seed_rule_version=SEED_RULE_VERSION,
+        provider_revision=PROVIDER_REVISION, source=source, symbol=symbol, market=market,
+        timeframe=timeframe, start_at=start, end_at=end, required_bars=required,
+        actual_bars=len(warm), checksum=canonical_json_sha256(rows), snapshot_ref=ref)
+    return dict(warmup_manifest=manifest, warmup_manifest_hash=canonical_json_sha256(manifest))
+
+
+def _load_warmup_snapshot(manifest, manifest_hash=None):
+    if manifest_hash is not None and canonical_json_sha256(manifest) != manifest_hash:
+        raise ValueError('warmup manifest checksum mismatch')
+    ref = manifest['snapshot_ref']
+    if not re.fullmatch('[0-9a-f]{64}', ref):
+        raise ValueError('invalid snapshot reference')
+    snapshot = json.loads((WARMUP_SNAPSHOT_DIR / (ref + '.json')).read_text())
+    if (canonical_json_sha256(snapshot) != ref
+            or canonical_json_sha256(snapshot['rows']) != manifest['checksum']):
+        raise ValueError('warmup snapshot checksum mismatch')
+    if any(snapshot[key] != manifest[key] for key in ('source', 'symbol', 'market', 'timeframe')):
+        raise ValueError('warmup snapshot identity mismatch')
+    step = _timeframe_milliseconds(manifest['timeframe']) // 1000
+    if ([row['open_time'] for row in snapshot['rows']] !=
+            list(range(manifest['start_at'], manifest['end_at'], step))
+            or len(snapshot['rows']) != manifest['actual_bars']):
+        raise ValueError('warmup snapshot coverage mismatch')
+    return snapshot['rows']
+
+
+
+def _snapshot_seed(bt_req, key, required, symbol, market, timeframe, start_at, exchange_id, main):
+    manifest = bt_req.get(key)
+    if manifest is None:
+        if bt_req.get(key + '_hash') is not None:
+            raise ValueError('INVALID_PARAMS:snapshot manifest and hash must be supplied together')
+        return None
+    expected_end = _warmup_end_sec(start_at, timeframe)
+    expected = dict(schema_version='cutie.backtest_warmup.v1', warmup_rule_version=WARMUP_RULE_VERSION,
+        seed_rule_version=SEED_RULE_VERSION, provider_revision=PROVIDER_REVISION,
+        source=_data_manifest_source(market, exchange_id, main), symbol=symbol, market=market,
+        timeframe=timeframe, required_bars=required, actual_bars=required,
+        start_at=expected_end-required*(_timeframe_milliseconds(timeframe)//1000), end_at=expected_end)
+    if (not isinstance(manifest, dict) or set(manifest) != set(expected) | {'checksum','snapshot_ref'}
+            or any(manifest.get(k) != v or type(manifest.get(k)) is not type(v) for k,v in expected.items())
+            or not isinstance(bt_req.get(key+'_hash'), str)):
+        raise ValueError('INVALID_PARAMS:snapshot identity, rules or coverage do not match this run')
+    try:
+        rows = _load_warmup_snapshot(manifest, bt_req[key+'_hash'])
+    except OSError as exc:
+        raise WarmupHistoryError('WARMUP_FETCH_FAILED') from exc
+    seed = pd.DataFrame([[row[c] for c in ('open','high','low','close','volume')] for row in rows],
+        columns=list(_WARMUP_COLUMNS), index=pd.to_datetime([row['open_time'] for row in rows], unit='s'), dtype='float64')
+    seed.attrs = main.attrs.copy()
+    return seed
+
+
+def _resolve_template_seed(bt_req, exchange_id, market, symbol, timeframe, start_at,
+                           required, main, end_at, minimum, *, dynamic_start=False):
+    # Leading main gaps are not a warmup shortage, and must not generate a hint.
+    expected = _warmup_end_sec(start_at, timeframe)
+    if int(main.index[0].timestamp()) != expected:
+        raise WarmupHistoryError('TIME_DATA_GAP')
+    if bt_req.get('warmup_manifest') is not None and bt_req.get('provider_params', {}).get('filter_timeframe'):
+        raise ValueError('INVALID_PARAMS:higher-timeframe frozen replay is not yet supported')
+    seed = _snapshot_seed(bt_req, 'warmup_manifest', required, symbol, bt_req.get('market', market), timeframe,
+                          start_at, exchange_id, main)
+    if seed is not None:
+        return seed
+    if required == 0:
+        # No historical seed is needed; do not call a history reader.
+        return main.iloc[:0].copy()
+    try:
+        return _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at,
+            required, main, end_sec=end_at, minimum=minimum)
+    except WarmupHistoryError as exc:
+        if dynamic_start and exc.details:
+            exc.details['suggested_start_at'] = None
+        raise
 
 
 def _fetch_strict_time_history(
@@ -3892,7 +4046,7 @@ def _build_ema_cross(params: dict[str, Any], *, initial_capital: float = 10000.0
         "executed_name": f"EMA Cross ({ema_fast}/{ema_slow})",
         "min_bars": min_bars,
         "ema_warmup_requested_bars": ema_warmup_requested_bars,
-        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
+        "ema_warmup_target_bars": ema_warmup_requested_bars,
         "trade_on_close": bool(risk),
     }
 
@@ -4994,7 +5148,7 @@ def _build_ema_rsi_pullback(params: dict[str, Any], *, initial_capital: float = 
         ),
         "min_bars": min_bars,
         "ema_warmup_requested_bars": ema_warmup_requested_bars,
-        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
+        "ema_warmup_target_bars": ema_warmup_requested_bars,
     }
 
 
@@ -5442,7 +5596,7 @@ def _build_ema_trend_rsi(params: dict[str, Any], *, initial_capital: float = 100
         ),
         "min_bars": min_bars,
         "ema_warmup_requested_bars": ema_warmup_requested_bars,
-        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
+        "ema_warmup_target_bars": ema_warmup_requested_bars,
     }
 
 
@@ -5531,7 +5685,7 @@ def _build_ema_pullback(params: dict[str, Any], *, initial_capital: float = 1000
         "executed_name": f"EMA Pullback ({ema_fast}/{ema_slow}, tolerance={tolerance:g}%)" + (" Short" if direction == "short" else ""),
         "min_bars": min_bars,
         "ema_warmup_requested_bars": ema_warmup_requested_bars,
-        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
+        "ema_warmup_target_bars": ema_warmup_requested_bars,
     }
 
 
@@ -6226,7 +6380,7 @@ def _build_bias_reversion(params: dict[str, Any], *, initial_capital: float = 10
         "executed_name": f"BIAS Reversion ({period}/-{entry:g}%)",
         "min_bars": min_bars,
         "ema_warmup_requested_bars": ema_warmup_requested_bars,
-        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
+        "ema_warmup_target_bars": ema_warmup_requested_bars,
     }
 
 
@@ -6294,7 +6448,7 @@ def _build_ema_triple_alignment(params: dict[str, Any], *, initial_capital: floa
         "executed_name": f"EMA Triple Alignment ({short}/{mid}/{long})",
         "min_bars": min_bars,
         "ema_warmup_requested_bars": ema_warmup_requested_bars,
-        "ema_warmup_target_bars": min(ema_warmup_requested_bars, MAX_EMA_WARMUP_BARS),
+        "ema_warmup_target_bars": ema_warmup_requested_bars,
     }
 
 
@@ -8787,6 +8941,25 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 TOOL_SPECS[ROTATION_TOOL_ID] = ROTATION_TOOL_SPEC
 TOOL_SPECS[BTC_DOMINANCE_TOOL_ID] = BTC_DOMINANCE_TOOL_SPEC
 
+def _with_warmup_budget(name, spec):
+    build = spec['build']
+    @functools.wraps(build)
+    def configured(params, **kwargs):
+        built = build(params, **kwargs)
+        required = template_required_warmup(name, params, built, spec['param_schema_properties'])
+        if required > MAX_WARMUP_BARS:
+            raise ValueError('INVALID_PARAMS:required_warmup exceeds 20000 bars')
+        built['required_warmup'] = required
+        built['warmup_rule_version'] = WARMUP_RULE_VERSION
+        return built
+    return configured
+
+
+for _warmup_tool_id, _warmup_spec in TOOL_SPECS.items():
+    if 'build' in _warmup_spec and _warmup_spec.get('runner') not in ('kernel_v3', ROTATION_RUNNER):
+        _warmup_spec['build'] = _with_warmup_budget(_warmup_tool_id.removeprefix('local.backtesting_py.'), _warmup_spec)
+
+
 # A6 二层：固定止损/止盈/仓位对全部 13 个内置模板统一生效，直接合并进每个工具的
 # param_schema_properties（而不是逐个手写 13 遍），新工具接入 TOOL_SPECS 时自动带上。
 # runner=kernel_v3 的组合 tool 不合并：组合风险参数走 basket_stop_loss_pct 等（SPEC
@@ -9837,19 +10010,18 @@ def _run_scale_in_out_backtest(
             time_context = TimeContext.build(config["time_config"], timeframe, df.index)
         except TimeDataGapError as e:
             return _business_failure(run_id, "TIME_DATA_GAP", str(e), reason="time_data_gap")
-    warmup_df = _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at, min_bars, df)
+    try:
+        required_warmup = built['required_warmup']
+        warmup_df = _resolve_template_seed(body['backtest'], exchange_id, market, symbol, timeframe,
+            start_at, required_warmup, df, end_at, min_bars)
+        warmup_evidence = _warmup_evidence(warmup_df, df, required_warmup, symbol, market, timeframe, start_at, exchange_id)
+    except WarmupHistoryError as exc:
+        return _warmup_failure(run_id, exc)
+    except ValueError:
+        return _validation_failure('INVALID_PARAMS', '预热快照与本次输入不一致')
+    except Exception:
+        return _business_failure(run_id, 'ENGINE_ERROR', '预热旁证保存失败', reason='warmup_evidence_failed')
     indicator_warmup_bars = len(warmup_df)
-    if indicator_warmup_bars < min_bars:
-        return _business_failure(
-            run_id,
-            "INSUFFICIENT_DATA",
-            (
-                f"Indicator warmup unavailable: got {indicator_warmup_bars} of {min_bars} "
-                f"candles before start_at for {executed_name}; this template does not run "
-                "without a full warmup"
-            ),
-            reason="indicator_warmup_unavailable",
-        )
 
     try:
         bars = [
@@ -10039,6 +10211,7 @@ def _run_scale_in_out_backtest(
                 "sell_fills": ledger.sell_fills,
                 "skipped_buys_insufficient_cash": ledger.skipped_buys_insufficient_cash,
                 "indicator_warmup_bars": indicator_warmup_bars,
+                **warmup_evidence,
                 "real_market_data": True,
                 "no_live_trading": True,
                 **template_assumptions,
@@ -11236,26 +11409,42 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
                 _supertrend_arrays, _timeframe_grid_offset_ms(filter_config.timeframe),
                 direction=strategy_class._filter_direction, gap_tolerance_ratio=CENTRAL_GAP_TOLERANCE_RATIO)
         except FilterHistoryError as e:
+            if e.error_type in ('WARMUP_INSUFFICIENT', 'WARMUP_FETCH_FAILED'):
+                return _warmup_failure(run_id, WarmupHistoryError(e.error_type, e.details))
             return _business_failure(run_id, "INSUFFICIENT_DATA", str(e), reason="filter_history_insufficient",
                                      **({"details": e.details} if e.details is not None else {}))
         entry_filter_htf_gaps = strategy_class._filter_context.gaps
+        if (strategy_class._filter_context.warmup_df.attrs.get('cutie_data_source', DATA_SOURCE)
+                != df.attrs.get('cutie_data_source', DATA_SOURCE)):
+            return _warmup_failure(run_id, WarmupHistoryError('WARMUP_FETCH_FAILED'))
 
-    # start_at 之前按 max(模板 EMA 目标, min_bars) 取指标预热；min_bars 仍只约束最少可算/主区间长度，
-    # 但取数至少要盖住它：RSI 周期大于 10×EMA 慢线时，只按 EMA 目标取数会把首批入场交给 min_bars 守卫后移。
-    # built["strategy"] 每次请求现建，挂类属性不跨请求串味；df 本身不动。
     risk = getattr(strategy_class, "_risk", {})
     strategy_class._risk_timeframe_ns = _timeframe_milliseconds(timeframe) * 1000000
-    risk_warmup = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
-    filter_warmup = filter_config.required_bars if filter_config is not None and not filter_config.timeframe else 0
+    risk_period = int(risk.get("risk_atr_period", 0)) if risk.get("risk_layer_enabled") else 0
+    risk_warmup = wilder_bars(risk_period) if risk_period else 0
+    filter_warmup = filter_config.required_warmup if filter_config is not None and not filter_config.timeframe else 0
     vwap_warmup = int((utc_datetime(df.index[0]) - utc_datetime(df.index[0]).replace(
         hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000 // vwap_step_ms) if is_vwap else 0
-    # F1/F2 and P-EVENT0 have no indicators of their own: only an enabled same-timeframe filter fetches
-    # its required_bars prefix; off-state (and filter_timeframe) stays empty.
-    warmup_df = ((_fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at, filter_warmup, df)
-                  if filter_warmup else pd.DataFrame(columns=list(_WARMUP_COLUMNS)))
-                 if range_config is not None or calendar_config is not None or event_window_config is not None or token_unlock_config is not None or macro_config is not None or top_lsr_config is not None or etf_flow_config is not None or exchange_netflow_config is not None else
-                 _fetch_template_warmup(exchange_id, source_market, symbol, timeframe, start_at,
-                                        max(built.get("ema_warmup_target_bars", min_bars), min_bars, risk_warmup, filter_warmup, vwap_warmup, built.get("warmup_bars", 0)), df))
+    required_warmup = max(built['required_warmup'], risk_warmup, filter_warmup, vwap_warmup)
+    if required_warmup > MAX_WARMUP_BARS:
+        return _validation_failure('INVALID_PARAMS', 'required_warmup exceeds 20000 bars')
+    try:
+        warmup_df = _resolve_template_seed(bt_req, exchange_id, source_market, symbol, timeframe,
+            start_at, required_warmup, df, end_at, min_bars, dynamic_start=is_vwap)
+        warmup_evidence = _warmup_evidence(warmup_df, df, required_warmup, symbol, market, timeframe, start_at, exchange_id)
+        if filter_config is not None and filter_config.timeframe:
+            context = strategy_class._filter_context
+            evidence = _warmup_evidence(context.warmup_df, context.warmup_df,
+                filter_config.required_warmup, symbol, market, filter_config.timeframe,
+                context.report['warmup_end_at'], exchange_id)
+            warmup_evidence['entry_filter_warmup_manifest'] = evidence['warmup_manifest']
+            warmup_evidence['entry_filter_warmup_manifest_hash'] = evidence['warmup_manifest_hash']
+    except WarmupHistoryError as exc:
+        return _warmup_failure(run_id, exc)
+    except ValueError:
+        return _validation_failure('INVALID_PARAMS', '预热快照与本次输入不一致')
+    except Exception:
+        return _business_failure(run_id, 'ENGINE_ERROR', '预热旁证保存失败', reason='warmup_evidence_failed')
     # Any template with a same-timeframe entry filter on (P-LOW2a; F1/F2 since P-LOW1; main range
     # since P-LOW3): the warmup prefix is concatenated in front of the main range for the filter mask,
     # so a non-empty prefix must be gap-free and end one bar before the main range -- a hole would
@@ -11313,8 +11502,6 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
     if "ema_warmup_requested_bars" in built:
         requested = built["ema_warmup_requested_bars"]
         target = built["ema_warmup_target_bars"]
-        # 回测参考读数允许封顶/不足，首段指标可能未收敛；实盘是钱路径，
-        # 超 20000 根拒绝布防（fail-closed），此处不改变实盘或结果 v2 契约。
         ema_warmup_report = {"ema_warmup": {
             "requested_bars": requested,
             "target_bars": target,
@@ -11324,11 +11511,6 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
         }}
         ema_warmup_assumptions = {"ema_warmup":
             f"EMA 预热取 10×最长周期（目标 {target} 根，实得 {indicator_warmup_bars} 根）"}
-        if ema_warmup_report["ema_warmup"]["truncated"]:
-            ema_warmup_assumptions["ema_warmup"] += (
-                f"回测已把预热截到 20000 根；实盘自动信号要求 10×最长周期 ≤ 20000 根，"
-                f"本参数（需 {requested} 根）无法布防自动信号，请调小慢线周期"
-            )
     if indicator_warmup_bars:
         strategy_class._warmup_bars = indicator_warmup_bars
         strategy_class._warmup_cols = {
@@ -11586,6 +11768,7 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
                      "qty_step_source": "provider_parameter_not_exchange_verified"}} if sizing_enabled else {}),
                 "indicator_warmup_bars": indicator_warmup_bars,
                 **ema_warmup_assumptions,
+                **warmup_evidence,
                 **({"entry_filter_main_gaps": entry_filter_main_gaps} if entry_filter_main_gaps else {}),
                 **({"entry_filter_htf_gaps": entry_filter_htf_gaps} if entry_filter_htf_gaps else {}),
                 **({"pattern_confirm": _pattern_confirm_assumptions(stats["_strategy"], effective_tool_id)}

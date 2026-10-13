@@ -1,0 +1,242 @@
+[
+  {
+    "file": "backtesting-py/tests/fixtures/7p3b2_off_c72c4a1.json",
+    "differing_paths": [
+      "/cases/asia_range_breakout/default",
+      "/cases/calendar_schedule/default",
+      "/cases/calendar_schedule/entry_gate",
+      "/cases/calendar_schedule/first_bar",
+      "/cases/double_bottom/default",
+      "/cases/double_bottom/warm40",
+      "/cases/inverse_head_shoulders/default",
+      "/cases/inverse_head_shoulders/warm40",
+      "/cases/opening_range_breakout/both",
+      "/cases/opening_range_breakout/default"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/fixtures/patconf1_5ddd8eb.json",
+    "differing_paths": [
+      "/cases/off/asia_range_breakout",
+      "/cases/off/bearish_doji_reversal",
+      "/cases/off/bullish_doji_reversal",
+      "/cases/off/calendar_schedule",
+      "/cases/off/chan_3buy",
+      "/cases/off/chan_3sell",
+      "/cases/off/fibonacci_retracement",
+      "/cases/off/macd_bearish_divergence",
+      "/cases/off/macd_bullish_divergence",
+      "/cases/off/opening_range_breakout",
+      "/cases/off/rsi_bearish_divergence",
+      "/cases/off/rsi_bullish_divergence",
+      "/cases/on/bearish_doji_reversal",
+      "/cases/on/bullish_doji_reversal",
+      "/cases/on/chan_3buy",
+      "/cases/on/chan_3sell",
+      "/cases/on/fibonacci_retracement",
+      "/cases/on/macd_bearish_divergence",
+      "/cases/on/macd_bullish_divergence",
+      "/cases/on/rsi_bearish_divergence",
+      "/cases/on/rsi_bullish_divergence",
+      "/cases/traded/asia_range_breakout",
+      "/cases/traded/calendar_schedule",
+      "/cases/traded/chan_3buy",
+      "/cases/traded/chan_3sell",
+      "/cases/traded/fibonacci_retracement",
+      "/cases/traded/macd_bearish_divergence",
+      "/cases/traded/macd_bullish_divergence",
+      "/cases/traded/opening_range_breakout",
+      "/cases/traded/rsi_bearish_divergence",
+      "/cases/traded/rsi_bullish_divergence"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2a/fibonacci_retracement.default.json",
+    "differing_paths": [
+      "/assumptions/fibonacci_retracement/default_trigger",
+      "/assumptions/fibonacci_retracement/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/equity_curve",
+      "/metrics/max_drawdown",
+      "/metrics/total_return",
+      "/raw_report/fibonacci_retracement/exit_decisions",
+      "/raw_report/fibonacci_retracement/waves",
+      "/raw_report/legacy_metrics/max_drawdown_pct",
+      "/raw_report/legacy_metrics/total_return_pct",
+      "/raw_report/legacy_metrics/win_rate_pct",
+      "/raw_report/provider_summary",
+      "/result_hash",
+      "/trades"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2a/fibonacci_retracement.user_stop3.json",
+    "differing_paths": [
+      "/assumptions/fibonacci_retracement/default_trigger",
+      "/assumptions/fibonacci_retracement/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/fibonacci_retracement/waves"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2a/macd_bullish_divergence.compare_hist.json",
+    "differing_paths": [
+      "/assumptions/divergence_execution/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/divergence/setups"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2a/macd_bullish_divergence.default.json",
+    "differing_paths": [
+      "/assumptions/divergence_execution/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/divergence/setups"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2a/rsi_bullish_divergence.default.json",
+    "differing_paths": [
+      "/assumptions/divergence_execution/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/divergence/setups"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2a/rsi_bullish_divergence.leverage2.json",
+    "differing_paths": [
+      "/assumptions/divergence_execution/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/divergence/setups"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2b/chan_3buy.bi_old.json",
+    "differing_paths": [
+      "/assumptions/chan_execution/priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/chan/fractals",
+      "/raw_report/chan/merged_bars",
+      "/raw_report/chan/merges",
+      "/raw_report/chan/rejected_strokes",
+      "/raw_report/chan/strokes"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2b/chan_3buy.default.json",
+    "differing_paths": [
+      "/assumptions/chan_execution/priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/equity_curve",
+      "/metrics/total_return",
+      "/raw_report/chan/centers",
+      "/raw_report/chan/fractals",
+      "/raw_report/chan/merged_bars",
+      "/raw_report/chan/merges",
+      "/raw_report/chan/strokes",
+      "/raw_report/chan/third_buys",
+      "/raw_report/legacy_metrics/total_return_pct",
+      "/raw_report/provider_summary",
+      "/result_hash",
+      "/trades"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2b/chan_3sell.default.json",
+    "differing_paths": [
+      "/assumptions/chan_execution/priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/equity_curve",
+      "/metrics/total_return",
+      "/raw_report/chan/centers",
+      "/raw_report/chan/fractals",
+      "/raw_report/chan/merged_bars",
+      "/raw_report/chan/merges",
+      "/raw_report/chan/strokes",
+      "/raw_report/chan/third_sells",
+      "/raw_report/legacy_metrics/total_return_pct",
+      "/raw_report/provider_summary",
+      "/result_hash",
+      "/trades"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2b/chan_3sell.leverage3.json",
+    "differing_paths": [
+      "/assumptions/chan_execution/priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/equity_curve",
+      "/metrics/total_return",
+      "/raw_report/chan/centers",
+      "/raw_report/chan/fractals",
+      "/raw_report/chan/merged_bars",
+      "/raw_report/chan/merges",
+      "/raw_report/chan/strokes",
+      "/raw_report/chan/third_sells",
+      "/raw_report/legacy_metrics/total_return_pct",
+      "/raw_report/provider_summary",
+      "/result_hash",
+      "/trades"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2b/macd_bearish_divergence.compare_hist.json",
+    "differing_paths": [
+      "/assumptions/divergence_execution/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/divergence/setups"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2b/macd_bearish_divergence.default.json",
+    "differing_paths": [
+      "/assumptions/divergence_execution/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/divergence/setups"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2b/rsi_bearish_divergence.default.json",
+    "differing_paths": [
+      "/assumptions/divergence_execution/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/divergence/setups"
+    ]
+  },
+  {
+    "file": "backtesting-py/tests/golden_10b2b/rsi_bearish_divergence.leverage2.json",
+    "differing_paths": [
+      "/assumptions/divergence_execution/same_bar_priority",
+      "/assumptions/indicator_warmup_bars",
+      "/assumptions/warmup_manifest",
+      "/assumptions/warmup_manifest_hash",
+      "/raw_report/divergence/setups"
+    ]
+  }
+]

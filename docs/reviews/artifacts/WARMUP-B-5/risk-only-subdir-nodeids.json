@@ -1,0 +1,14 @@
+[
+  "tests/test_10b2d_sizing_range_calendar.py::test_omitted_sizing_keys_match_1f5b8dc_bytes[calendar_schedule-default]",
+  "tests/test_7p3b_pattern_range_filter.py::test_7p3b2_off_state_byte_identical_to_main[False-calendar_schedule/default]",
+  "tests/test_7p3b_pattern_range_filter.py::test_7p3b2_off_state_byte_identical_to_main[False-calendar_schedule/entry_gate]",
+  "tests/test_7p3b_pattern_range_filter.py::test_7p3b2_off_state_byte_identical_to_main[False-calendar_schedule/first_bar]",
+  "tests/test_7p3b_pattern_range_filter.py::test_7p3b2_off_state_byte_identical_to_main[True-calendar_schedule/default]",
+  "tests/test_7p3b_pattern_range_filter.py::test_7p3b2_off_state_byte_identical_to_main[True-calendar_schedule/entry_gate]",
+  "tests/test_7p3b_pattern_range_filter.py::test_7p3b2_off_state_byte_identical_to_main[True-calendar_schedule/first_bar]",
+  "tests/test_patconf1_pattern_confirm.py::test_omitted_keys_byte_identical_to_5ddd8eb[off/calendar_schedule]",
+  "tests/test_patconf1_pattern_confirm.py::test_omitted_keys_byte_identical_to_5ddd8eb[traded/calendar_schedule]",
+  "tests/test_plow1.py::test_f12_off_state_byte_identical_to_golden[calendar_schedule/default]",
+  "tests/test_plow1.py::test_f12_off_state_byte_identical_to_golden[calendar_schedule/entry_gate]",
+  "tests/test_plow1.py::test_f12_off_state_byte_identical_to_golden[calendar_schedule/first_bar]"
+]

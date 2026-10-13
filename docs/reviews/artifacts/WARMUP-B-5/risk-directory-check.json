@@ -1,0 +1,12 @@
+{
+  "root": {
+    "exit": 1,
+    "summary": "23 failed, 12 passed, 3 warnings in 9.47s",
+    "failed": 23
+  },
+  "subdir": {
+    "exit": 1,
+    "summary": "35 failed, 3 warnings in 11.22s",
+    "failed": 35
+  }
+}

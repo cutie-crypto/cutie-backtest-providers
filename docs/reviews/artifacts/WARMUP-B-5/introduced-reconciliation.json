@@ -1,0 +1,8 @@
+{
+  "baseline_sha": "f933b65",
+  "candidate_nodes": 114,
+  "baseline_failed_count": 114,
+  "baseline_exit": 1,
+  "not_reproduced_on_baseline": [],
+  "summary": "114 failed, 2 warnings in 32.08s"
+}

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as provider
 from canonical_json import canonical_json
+from _complete_seed_fixture import complete_seed
 from strategy_time_layer import TimeConfig, TimeContext
 from test_time_layer import DEFAULTS
 
@@ -60,14 +61,24 @@ def request(name, params, data):
         initial_capital='10000', fee_bps='0', slippage_bps='0')}
 
 
-def http(monkeypatch, tmp_path, name, data, params=None):
+def http(monkeypatch, tmp_path, name, data, params=None, *, complete=False):
     monkeypatch.setattr(provider, 'AUTH_TOKEN', '')
     monkeypatch.setattr(provider, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(provider, '_fetch_ohlcv', lambda *a: data.copy())
-    monkeypatch.setattr(provider, '_fetch_template_warmup', lambda *a: data.iloc[:0].copy())
+    monkeypatch.setattr(provider, '_fetch_template_warmup', complete_seed if complete else lambda *a: data.iloc[:0].copy())
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **kw: None)
-    body = TestClient(provider.app).post('/cutie/backtest', json=request(name, params or {}, data)).json()
+    req = request(name, params or {}, data)
+    body = TestClient(provider.app).post('/cutie/backtest', json=req).json()
     assert body['result_status'] == 'success', body
+    if complete:
+        import json
+        digest = lambda v: hashlib.sha256(json.dumps(v, sort_keys=True,
+            separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+        frozen = json.loads((Path(__file__).parent / 'fixtures/warmup_b4_candle_financial.json').read_text())
+        expected = [r['financial_sha256'] for r in frozen['rows']
+                    if r['request_sha256'] == digest(req)
+                    and r['main_manifest_sha256'] == digest(body['data_manifest'])]
+        assert digest({k: body[k] for k in ('trades', 'equity_curve', 'metrics', 'data_manifest')}) in expected, (name, 'financial fields changed; stop')
     return body
 
 
@@ -201,12 +212,12 @@ def test_invalid_params_before_fetch(monkeypatch, name, params):
 def test_http_report_and_frozen_v2_keys(monkeypatch, tmp_path, name):
     data = frame(name)
     data.iloc[26, :4] = [96.8, 110, 96.8, 106]
-    body = http(monkeypatch, tmp_path, name, data)
+    body = http(monkeypatch, tmp_path, name, data, complete=True)
     assert not body['trades']
     assert body['raw_report']['candle_pattern']['skipped_entry_count'] == 1
     assert 'next bar open' in body['assumptions']['pattern_execution']
     assert set(body['metrics']) == {'total_return', 'max_drawdown', 'trade_count'}
-    normal = http(monkeypatch, tmp_path, name, compatibility_frame(name))
+    normal = http(monkeypatch, tmp_path, name, compatibility_frame(name), complete=True)
     assert len(normal['trades']) == 1
     # Compare canonical result.v2 against the same existing serializer, not a new contract.
     result = run(name, compatibility_frame(name), finalize=True)
@@ -288,7 +299,7 @@ def test_frozen_off_http_bytes(name, warm, disabled):
     expected = time_compat.PATTERN_BASELINE['single'][name][str(int(warm))]
     params = {**DEFAULTS, 'risk_layer_enabled': False, 'atr_stop_multiplier': 0,
               'risk_atr_period': 0, 'take_profit_r': 0} if disabled else {}
-    body = capture.response(name, params, warm)
+    body = capture.response(name, params, warm, complete=True)
     assert len(body['trades']) == expected['trade_count'] == 1
     assert capture.digest(body['trades']) == expected['trades_sha256']
     assert capture.digest(body['equity_curve']) == expected['equity_sha256']

@@ -47,6 +47,10 @@ assert set(ARM_EMA_BASELINE['entry_filters']) == {
     'ema_rsi_pullback', 'bias_reversion', 'ema_pullback', 'ema_pullback@long',
     'ema_pullback@short') for warm in (0, 1)}
 BASELINE['cases'].update(ARM_EMA_BASELINE['entry_filters'])
+# WARMUP-B-3: recaptured metadata only; all original engine/result hashes remain.
+WARMUP_B3 = json.loads((Path(__file__).parent / 'fixtures/warmup_b3_disclosure.json').read_text())
+for case, metadata in WARMUP_B3['filters'].items():
+    BASELINE['cases'][case].update(metadata)
 SINGLE_NAMES = sorted({name for name, _ in CASES.values()})
 EXCLUDED = [key.removeprefix('local.backtesting_py.') for key, value in p.TOOL_SPECS.items()
             if value.get('runner') in ('kernel_v3', p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, p.ROTATION_RUNNER)
@@ -241,7 +245,7 @@ def test_runtime_disabled_fingerprints(case, warm, explicit, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail('disabled filters performed indicator work')
     monkeypatch.setattr(p, 'entry_mask', forbidden)
-    assert capture.snapshot(name, values, warm) == BASELINE['cases'][case+'/'+str(int(warm))]
+    assert capture.snapshot(name, values, warm, complete=True) == BASELINE['cases'][case+'/'+str(int(warm))]
 
 
 def test_unwired_list_names_registered_tools_without_filter_keys():

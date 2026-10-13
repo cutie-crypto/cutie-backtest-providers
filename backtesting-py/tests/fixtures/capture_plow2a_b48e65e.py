@@ -63,7 +63,7 @@ def prefix(kind, freq='1h'):
     return full.drop(full.index[GAP_AT])
 
 
-def post(monkeypatch, tmp_path, tool, params, kind, source=None):
+def post(monkeypatch, tmp_path, tool, params, kind, source=None, *, complete=False):
     """POST one futures run; `_fetch_template_warmup` returns the tail(bars) of the chosen prefix."""
     freq = TIMEFRAME.get(tool, '1h')
     timeframe = {'1h': '1h', '30min': '30m'}[freq]
@@ -79,13 +79,21 @@ def post(monkeypatch, tmp_path, tool, params, kind, source=None):
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda ex, mk, sym, tf, since, until:
                         (data if tf == timeframe else source).copy())
-    monkeypatch.setattr(p, '_fetch_template_warmup', warmup)
+
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **kw: None)
     request = dict(run_id='plow2a', provider_tool_id='local.backtesting_py.' + tool, provider_params=params,
                    symbol='BTCUSDT', market='futures', timeframe=timeframe, start_at=int(data.index[0].timestamp()),
                    end_at=int((data.index[-1] + pd.Timedelta(freq)).timestamp()), initial_capital='10000', fee_bps='0',
                    slippage_bps='0')
-    return TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json(), calls
+    wire = {'backtest': request}
+    if complete:
+        from _warmup_b5_fixture import seed_reader, check_financial
+        warmup = seed_reader(wire, data, warmup)
+    monkeypatch.setattr(p, '_fetch_template_warmup', warmup)
+    body = TestClient(p.app).post('/cutie/backtest', json=wire).json()
+    if complete:
+        check_financial(wire, data, body)
+    return body, calls
 
 
 def cases():

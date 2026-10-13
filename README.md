@@ -82,34 +82,59 @@ flag and trade count use each entry's frozen initial stop, including equality;
 subsequent stop ratchets do not increase this count. These nodes appear only for
 futures L>1. Funding, MMR>0, and exchange-specific liquidation rules are excluded.
 
-### EMA indicator warmup
+### Versioned template warmup
 
-`ema_cross` fetches up to `min(10 × max(ema_fast, ema_slow), 20000)`
-closed candles before the main range through the existing OHLCV cache/fetch path.
-Its minimum calculable/main-range bars remain `max(ema_fast, ema_slow) + 1`.
-Warmup stays best-effort: short or unavailable history does not fail the backtest.
-`raw_report.ema_warmup` records the uncapped `requested_bars`, capped
-`target_bars`, `actual_bars`, `truncated`, and `tenfold_reached`. Per the
-commander's 2026-10-13 ruling, `target_bars` retains the EMA-only tenfold target
-(with the existing 20000-bar cap); `min_bars` never raises this report target.
-`actual_bars` records the actual fetched prefix and may exceed `target_bars`.
-`tenfold_reached` is exactly `actual_bars >= target_bars`: false for short
-history below target, true when a `min_bars` floor raises actual above target,
-and true when the capped target is met even if `truncated` is true.
-`assumptions.ema_warmup` discloses the capped target and actual count.
-Result.v2 gains no fields.
-Backtests provide reference readings and may have unconverged opening indicators;
-live EMA arming instead rejects requests above 20000 bars because it manages money.
-`ema_triple_alignment`, `ema_trend_rsi`, `ema_rsi_pullback`, `bias_reversion`,
-and `ema_pullback` use the same tenfold, capped, best-effort path. The longest
-EMA period determines the tenfold request; RSI periods do not contribute to it.
-Each template retains its original `min_bars` and entry/exit rules. The shared
-fetch takes `max(tenfold target, min_bars)`, so when `rsi_period + 1` exceeds
-`10 × ema_slow` — reachable under the public schema only for `ema_trend_rsi` —
-the prefix still covers `min_bars` and the minimum-bars guard no longer delays
-the first eligible main-range entry; `actual_bars` may then exceed the reported
-tenfold `target_bars`. Warmup candles seed indicators only and never generate
-trades or equity points. Other templates retain their existing warmup depth.
+New legacy-template runs use `template-warmup.v1` and
+`adjacent-first-observation.v1`. `min_bars` remains the minimum calculable/main
+window; `required_warmup` is a separate complete pre-start seed budget. A zero
+seed budget records an empty seed manifest without reading historical candles. The six
+EMA families retain 10 × longest EMA period. Keltner EMA, volume `exit_ema`,
+MACD DIF and filter EMAs use the same 10× rule. MACD DEA adds its signal EMA
+stage depth. Wilder recurrences use their actual alpha (`1/N`), a seed residual
+budget of `1e-9`, and an explicit first observation; cascades split the residual
+budget and sum stage depths. RSI additionally needs its first close delta.
+Supertrend uses its Wilder ATR budget. These are seed budgets, not a guarantee
+that threshold decisions or path-dependent Supertrend bands match infinite
+history. Rolling lookbacks and dedicated time/series histories retain their
+own windows. Requests requiring more than 20000 seed bars are `INVALID_PARAMS`;
+there is no cap or shortened successful run.
+
+`WARMUP_INSUFFICIENT` refuses a run before engine execution. Its `limitations`
+carry `required_bars`, `actual_bars`, `missing_bars`, `suggested_start_at` and
+`warmup_rule_version`. Actual counts only the finite contiguous suffix before
+the first main candle. A proposed Unix-second start is emitted only when the
+same-source, already-read snapshot proves the complete seed, seam and remaining
+main interval through the original end, including `min_bars`; otherwise it is
+null. VWAP start-dependent budgets conservatively omit unproved hints.
+`WARMUP_FETCH_FAILED` separates source/read errors from true missing
+history and contains neither missing-bar counts nor proposed starts. No raw
+exception is shown to users. Higher-timeframe filters also require a complete
+recursive prefix, independently of their existing main-gap tolerance policy.
+
+Successful runs place the independently versioned fourteen-key
+`cutie.backtest_warmup.v1` manifest and its canonical SHA256 in
+`assumptions.warmup_manifest` / `warmup_manifest_hash`. It binds the rule and
+seed versions, provider revision, source, instrument, timeframe, precise
+half-open start/end, required/actual counts, complete canonical OHLCV checksum
+and content-addressed frozen `snapshot_ref`. Frozen seed rows are saved atomically
+under `cache/warmup_snapshots/<snapshot_ref>.json`; `_load_warmup_snapshot`
+verifies identity, checksum and exact coverage before replay. The provider accepts
+optional `backtest.warmup_manifest` and `warmup_manifest_hash` together to execute
+with the frozen seed; identity, rule, revision and required span must match the
+current pinned run. This request extension is provider-local; platform forwarding
+is pending. Higher-timeframe frozen replay is explicitly refused until the full
+auxiliary input can be restored. Keep these files
+with the run evidence; they are not the disposable OHLCV cache. Higher-timeframe
+seeds use separate `entry_filter_warmup_manifest` / hash assumptions. Neither the
+frozen nine-key `data_manifest` nor result.v2's five keys changes. The existing
+EMA report still reports the EMA-only 10× target; actual may exceed it when
+another recurrence needs a deeper seed. Warmup never generates trades or equity
+points. Old runs stay anchored to their original provider revision and recorded
+seed; replaying an old short snapshot as a new run now refuses it.
+
+`tests/fixtures/warmup_b_demo_v1.json` freezes thirteen new complete-history
+demos with exact trades and hashes; fixture revision is a deterministic test
+identity, not a deployed provider revision.
 
 ### Closed higher-timeframe entry filters
 
@@ -123,7 +148,8 @@ at or before the primary signal candle's close. Entries still fill at the next
 primary open; exit rules are unchanged.
 
 Higher-timeframe history is fetched once for the complete run plus indicator
-warmup. Missing candles or unavailable history return `INSUFFICIENT_DATA`.
+warmup. Short recursive prefixes return `WARMUP_INSUFFICIENT`; read errors return
+`WARMUP_FETCH_FAILED`. Main-range gaps retain the documented tolerance policy.
 Disabled filters preserve existing result bytes, and a non-default
 `filter_timeframe` while disabled is rejected before fetching market data.
 Short entries (the five short-only templates and `direction=short` requests) use

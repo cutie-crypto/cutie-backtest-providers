@@ -1,0 +1,353 @@
+{
+  "baseline_sha": "678b4e1",
+  "rows": [
+    {
+      "request_sha256": "fccb5ee262a65010d3f4fae66e601575d6c61b3f6e279af9ad7cf6f0f4004075",
+      "main_manifest_sha256": "7e4b12f08d28c4d3472712d7d93fe8da0822b4e83e3867c66a376524a5c77cb4",
+      "financial_sha256": "0d807ef5b4d0ea0f971dcebdfa5956dffc2372786f6fbb1297f2efc1b1c6a398",
+      "tool": "local.backtesting_py.ema_cross"
+    },
+    {
+      "request_sha256": "fccb5ee262a65010d3f4fae66e601575d6c61b3f6e279af9ad7cf6f0f4004075",
+      "main_manifest_sha256": "58719a116cd3d3a59017e51a82698d36caa581033bb23377521e64cfed1f8fed",
+      "financial_sha256": "a0051cfcf4d477a2542b114915d8f8843f27f7c232b5fc84491f6d8b0bc00d21",
+      "tool": "local.backtesting_py.ema_cross"
+    },
+    {
+      "request_sha256": "865d603a2fda6f0b47291c2bc2395d73f7f5c87f573697c6fde10860154c255d",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "2a9d2beba3e0fa0f80b4f7d3ef008d7b335723b342ceb539dda244b343269d62",
+      "tool": "local.backtesting_py.adx_di_cross"
+    },
+    {
+      "request_sha256": "90e02dbfd520ce027765aa1dbbe7a42a411fd0cec661025a7f590432beb447c2",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "032eef4f1af6bb7c8b0ecc7bd2099f9010b83e186eb4f7f2a33863a020320925",
+      "tool": "local.backtesting_py.bearish_doji_reversal"
+    },
+    {
+      "request_sha256": "2cd97c20db95a8b3e0fefd0cafd495791a70399ba5ac680ef0ba2c134c5d22c2",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.bearish_engulfing"
+    },
+    {
+      "request_sha256": "454db175700d21c16f05d9937acbbbaa8c74f4cb8dd385cb9749c985118ceee0",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.bias_reversion"
+    },
+    {
+      "request_sha256": "25d915ddd4151e04b020b4392a13e82bf749af78479ae0e3b40f4e506ccb5f6a",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "41180a8d7e3b0abb907454e0eb9d499748229c5dd7f3039698e5da5acfc497c0",
+      "tool": "local.backtesting_py.bollinger_breakout"
+    },
+    {
+      "request_sha256": "f6fd66a5343cf97252cc34eda981380950501d7200006f67f6fcbd62eee8d196",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "02e68659bb63f0fde24bb0e8fd2b753b214004a3bb2b5e4e3df04cb2d3cb61ca",
+      "tool": "local.backtesting_py.bollinger_reversal"
+    },
+    {
+      "request_sha256": "03aab8a77c1bab95590820b717b22a91996813aa941ecc23c1cd017f1d2a8c5f",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "07c8a2cacbfc1fb1aa71ca9e632c72d06e0e671b8fbf12f126cd621f8dbfdd4f",
+      "tool": "local.backtesting_py.bollinger_squeeze_breakout"
+    },
+    {
+      "request_sha256": "bcaf31ebf501384d9c8d3de12ca179ffae91eeb524c55354c3546f7237f1549a",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "7cd0d8440f1e1c5ddbeb5bc343708f1a0be7d01ee78e0b53f51b8b233bfcfaaf",
+      "tool": "local.backtesting_py.breakout"
+    },
+    {
+      "request_sha256": "06e5c4b268fc507e4ac2d767c8491372df10f6a5cd3cd9ae03591531ae907617",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "799b4a078c82964ae846c01b9dda5dfd58485817c968dbcc0cd51b7c24a2b88a",
+      "tool": "local.backtesting_py.bullish_doji_reversal"
+    },
+    {
+      "request_sha256": "6493381accd4dc03bbc8c52c92098a19f1900ab2e28f2fa1969ac2d9cdfb339b",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.bullish_engulfing"
+    },
+    {
+      "request_sha256": "166b2cf3b3bd7db8130c52825b47562e0283614a9446595cff181acfac89f694",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.cci_rsi"
+    },
+    {
+      "request_sha256": "09dd13fa4c120c1393dc87fd7886ef83c9fa3a284b4a55ffb700a93d7d4993fd",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.cme_weekend_gap"
+    },
+    {
+      "request_sha256": "3320ca0e9eef60edab1ebaf3ce91b3e7dc4a659c54258674ad8b8c7e1dec2753",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.double_bottom"
+    },
+    {
+      "request_sha256": "2e790c12b7088d49e3bc3618b38684d8567beca70a55f650fe7c76a8cf4bedea",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.double_top"
+    },
+    {
+      "request_sha256": "b9b6f230ac9a9c1e6fcce8c2ad915998c9d5823122c718608be86c69b294e6bf",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "b4e144916a804858c2b47fda0502efabcb25efc4323316b28a18dd0071d5ac43",
+      "tool": "local.backtesting_py.ema_cross"
+    },
+    {
+      "request_sha256": "4524c43d81b20a367cfa29639d71488c63ba51c7398798bf42a9457f55c4715f",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "2d45cbef86dee8230fc3fcb868652335f750bfbde7620065acc8d2dd1df925f0",
+      "tool": "local.backtesting_py.ema_pullback"
+    },
+    {
+      "request_sha256": "8ab156b0b9e25387237c6b75519a91d76c3e8adfdbdf50a50455dc0347b8d4fd",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "d44698cd866476cea037a13bc9084d834534b212ea058152694ee15f908f92d4",
+      "tool": "local.backtesting_py.ema_trend_rsi"
+    },
+    {
+      "request_sha256": "253da958daaa9091a9c0db0d31900bde912388d2c15f5d25eef9713191176383",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "90a755aeec241486d058f23558841f59ffaa186e2bda3f3c5460ecd39cc10346",
+      "tool": "local.backtesting_py.ema_triple_alignment"
+    },
+    {
+      "request_sha256": "2f1b9f026c94474b2449c879e8dec901a6ed6e4d497ad2b3d0fe676597593425",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.evening_star"
+    },
+    {
+      "request_sha256": "d04472ba51ab263961209e900bf641421dbdab20fe52e11f081c465d3f2e9cd0",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.event_window"
+    },
+    {
+      "request_sha256": "4f6dde779b52a349510ac01fe66352e745a735ac070dd019b909884b0f7caf73",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.fibonacci_retracement"
+    },
+    {
+      "request_sha256": "58afa8279ad6142bc7777f2b744e7ddef95c36006e341df440dc57fb5964d9ec",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.hammer_pin_bar"
+    },
+    {
+      "request_sha256": "9a268c97a31ea0515bcbdf7b8e0d3075a452111af1e98221a60b26c6a395e18a",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.head_shoulders"
+    },
+    {
+      "request_sha256": "e8e25da456c3d11d2fa764e7d45e9209b34e929a6c67db93c967ac2f3bdd2cd8",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "9e0ce1489021030670fca3af17aaadac5f0ee9905f5f36ff203f282eb4ab7308",
+      "tool": "local.backtesting_py.ichimoku_cloud_breakout"
+    },
+    {
+      "request_sha256": "9e4abded862dcec1687bf14427d615e610c8cce20819881ffa4eea06a23ee53e",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.inside_bar_breakout"
+    },
+    {
+      "request_sha256": "a25e0ac09caedf67c3eb7d78ba1f603f018a25f1c24f3a191e775c2ccf8ec3ab",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.inverse_head_shoulders"
+    },
+    {
+      "request_sha256": "bee3f1c9fee6d5b8a7d74b7ba085d2320c984ae5c770f73247e7d3dcf6fae19f",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "fefd0e9b964f95a5c30d83c6f2024040ee4822a99627cdfb9abd811dfd7d7925",
+      "tool": "local.backtesting_py.keltner_breakout"
+    },
+    {
+      "request_sha256": "9c03ac74fdd5e60c3ee31d0bcd1bc94091d9708c6f2b2ab8944d1b9d442dcfdb",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "b5bd0413cd0df4032c6ee4767b069813b2a67c91af40c58d3d963e1e765ffe78",
+      "tool": "local.backtesting_py.macd"
+    },
+    {
+      "request_sha256": "3064b84d5d04cb0efa87d91d1dfbc78bb6da6ba8231c2f10395d8d406606fde6",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "b5bd0413cd0df4032c6ee4767b069813b2a67c91af40c58d3d963e1e765ffe78",
+      "tool": "local.backtesting_py.macd_above_zero"
+    },
+    {
+      "request_sha256": "e476bee1e7ff5f435dc0c267d9cbab1edc938591f5981b2d4a48f2753a4b5351",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.macd_bearish_divergence"
+    },
+    {
+      "request_sha256": "7ef334f5f60e66cf8ecec4e0350673a4bac18e0e8601a26ad1db308afe146724",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.macd_bullish_divergence"
+    },
+    {
+      "request_sha256": "f8c1e24043532280c8455d0c95b2a2189b83b47682eaba7a3a03c9dcc76218ba",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.morning_star"
+    },
+    {
+      "request_sha256": "fbe26378404f4e30cd5b48669b75f221e1bc7b37df70b607fa25e537b1214302",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "a30f44276b34f9d04e11f1f2746c4eccc511767879b09ec5e3ddd3fefedf58cf",
+      "tool": "local.backtesting_py.parabolic_sar"
+    },
+    {
+      "request_sha256": "8227c5e872546c8fdaff64fe02597bad70fed326f3f151ee5c34a33b98e5078d",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.red_streak_rsi"
+    },
+    {
+      "request_sha256": "451f485b4fa91cbadb5b5eb81715da4d01dd77ad6bd82a36771cda275bcb667b",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "cccacc7c5020901afad3ef4751c6525f286ab3194faa2ccd616f6b73c3fec652",
+      "tool": "local.backtesting_py.roc"
+    },
+    {
+      "request_sha256": "48f1b8c1293d5aa8b4ac2662a634b170f564d6be8a208da8fe939c307b43c2a9",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.rsi_bearish_divergence"
+    },
+    {
+      "request_sha256": "748c91c86054ef0ec309300d4ecceab82f634408e6d200ecc62035d95a382c90",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "0c7853172d7b73a019e36a4acd92189d2ccaa3a84264478105e34deaf5b897e1",
+      "tool": "local.backtesting_py.rsi_bullish_divergence"
+    },
+    {
+      "request_sha256": "ebe23344e3e9ee7b6c4f94d595cf8c5ca2b9894bc6fb64826a584bb9770727e3",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.rsi_reversal"
+    },
+    {
+      "request_sha256": "ec298c32318cf42814b08af1d8d3c083048bdb13a9d9b0d994ffef3ee41fb4bc",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.shooting_star"
+    },
+    {
+      "request_sha256": "f54ce506d6d2659bca3a08a46c8fbc10569a4a7396de104f09cbff7a08ca27e3",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.stoch_oversold_cross"
+    },
+    {
+      "request_sha256": "b23ded585f42d7f773576e556a998d7181d6996849dca66406783095727f7dce",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "48cc76a92ba752f23014a6b79dd12bfa19462b1bfe2b8b06cd526d05282f0df2",
+      "tool": "local.backtesting_py.supertrend"
+    },
+    {
+      "request_sha256": "027160690065b8f59fb49b243e0b40471231f5e053e8b2d86d3f65885e2d77a0",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.three_black_crows"
+    },
+    {
+      "request_sha256": "d9c0169f5ea05a4e5e5d6a4630094bdd10b644ab0b77d864cec9ad663f18e820",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.three_white_soldiers"
+    },
+    {
+      "request_sha256": "683a44abe8a3305268a3d522f8766e33d6b4a4e125eb05d1c8d3419e61eeade5",
+      "main_manifest_sha256": "6af92c71bc0305e2980518992b1932eb1f20ebac3c0d2343d4643f1763858755",
+      "financial_sha256": "bd8e3e24496b8b9d96e59207fec366ce2ea5f80b07ea9ac456827a67f6323243",
+      "tool": "local.backtesting_py.us_open_momentum"
+    },
+    {
+      "request_sha256": "a0a3404bd136d1cb270d2e473704bdcdfb9a9f7839a76dd99256727003a5da8d",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.volume_breakout"
+    },
+    {
+      "request_sha256": "5512edb998947cd88129f08d31f179f4da5a1d045742f588c37ab0fa9e1e9e98",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "80516e92d4217ed70139c3b535e69c7a533dbc8641de11834942afb53a1f4229",
+      "tool": "local.backtesting_py.vwap_reversion"
+    },
+    {
+      "request_sha256": "9003e20671ae97345c5e44a82ba7c66743f837c0f1b6a7249ce3e96d868785fd",
+      "main_manifest_sha256": "11d4b115de6beef63c2e510d4c406a7887d808fae1b744a1d735ff3248c12b13",
+      "financial_sha256": "81bfdc9ffcec21ba857fc0c779cc85765be5d791903ea3210d46e98f0cf942dc",
+      "tool": "local.backtesting_py.asia_range_breakout"
+    },
+    {
+      "request_sha256": "1e4f37f0513bdb921ee003aa8cb69e66b696b46bc1e55483628b723ea9ddf5d4",
+      "main_manifest_sha256": "02bcb23e5fed5457142b93131fab067bd03d7182821e2c1cbf98ee1cf2bbef55",
+      "financial_sha256": "62de84a21cc763488a7d90d668e06ae3a98342298063d8ae439d0cc113b4b4f3",
+      "tool": "local.backtesting_py.calendar_schedule"
+    },
+    {
+      "request_sha256": "48393e7fad879d7db7d74e432aba9f35e9e04e9131c4344fe73c35cb12f1b357",
+      "main_manifest_sha256": "fde52f0fc8864fb617a01cb7ccecfe32d62da41a16a9563d22d2f887ef9ef6ae",
+      "financial_sha256": "d06b9452352246fcf0a2984551e7dcd1513d384f9c7c461f5b7f596c4f1167ec",
+      "tool": "local.backtesting_py.opening_range_breakout"
+    },
+    {
+      "request_sha256": "8ce48cc8e7c6a10467df9ab4d981d8dfb6e1fb55f0670134fbbb3e89570da939",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "41180a8d7e3b0abb907454e0eb9d499748229c5dd7f3039698e5da5acfc497c0",
+      "tool": "local.backtesting_py.bollinger_breakout"
+    },
+    {
+      "request_sha256": "c82d8ec17ad826cabefc969829515edb72db668c74aae42d421f68900e659ae3",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.bullish_engulfing"
+    },
+    {
+      "request_sha256": "9d81c2d17827f5f2765303b4e5821731cbbda7af540dcf2400578998829392d0",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "bd4de6d62cdf7cba18a770bcf2122e302e0c2ef516e55ca703034938864eb31c",
+      "tool": "local.backtesting_py.double_bottom"
+    },
+    {
+      "request_sha256": "e2b51c8943b89d27c8de2cb5f771e16bb99322851b26aa43bafd0487157d16b7",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "b4e144916a804858c2b47fda0502efabcb25efc4323316b28a18dd0071d5ac43",
+      "tool": "local.backtesting_py.ema_cross"
+    },
+    {
+      "request_sha256": "01043573976447f771d3088ad3e27ccf562f83afa1e9097bd7742749986f8627",
+      "main_manifest_sha256": "e123e84ece6ed361dd2ce0112991aa58fabb2673de5accb1ff907490b0317f30",
+      "financial_sha256": "d2adcf028db924a06c6b6809a6efc6c8be694fc5f2766b98c3e83e10bff5a858",
+      "tool": "local.backtesting_py.rsi_reversal"
+    },
+    {
+      "request_sha256": "b9b6f230ac9a9c1e6fcce8c2ad915998c9d5823122c718608be86c69b294e6bf",
+      "main_manifest_sha256": "2d85b0ab44055979d99c2cbdb388845b91ff2b5badb36692fcb26ab8186a037d",
+      "financial_sha256": "3872abcac4313d2bbd3f0ea9688f11c738dd2306b9f5c97632a5d7b3380c2819",
+      "tool": "local.backtesting_py.ema_cross"
+    },
+    {
+      "request_sha256": "b9b6f230ac9a9c1e6fcce8c2ad915998c9d5823122c718608be86c69b294e6bf",
+      "main_manifest_sha256": "41cfff3c05b17596fbe285e4f6b255994d20d4cab6dc47d75af369bbed8d1b04",
+      "financial_sha256": "f0cbe89a7208dd936be450aa7aad230860663f600507f86bf7ebae7ea9ffbb1a",
+      "tool": "local.backtesting_py.ema_cross"
+    }
+  ]
+}
