@@ -164,8 +164,7 @@ def make_short_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk,
     bearish doji reversal. The mirror of the long template.
 
     Stop = pattern anchor High * 1.001 frozen at the signal; target = entry - (stop - entry) * reward_r;
-    an entry open at or above the frozen stop is skipped; the stop precedes holding expiry, which
-    precedes the target; isolated liquidation arbitrates against the frozen stop (T2-2b).
+    an entry open at or above the frozen stop is skipped; native stop and target precede holding expiry; isolated liquidation arbitrates against the frozen stop (T2-2b).
     """
     class ShortPatternStrategy(mixin, Strategy):
         _template_native = True
