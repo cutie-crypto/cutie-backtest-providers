@@ -125,7 +125,7 @@ def test_report_rules_mirror_for_short():
 def test_long_filter_fixture_bytes_unchanged_since_base():
     relative = 'backtesting-py/tests/fixtures/entry_filters_5b8320a.json'
     # PIN7-E b2b re-pinned 52064d4 -> 729e144: period-end close at Close[-1] moved only result_v2 / raw_report digests.
-    assert (ROOT / relative).read_bytes() == subprocess.check_output(['git', 'show', '729e144:' + relative], cwd=ROOT)
+    assert (ROOT / relative).read_bytes() == subprocess.check_output(['git', 'show', '0f6077d:' + relative], cwd=ROOT)
 
 
 # ---- multi-timeframe: closed coarse bars only, mirrored direction ----

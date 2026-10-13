@@ -197,9 +197,10 @@ def test_2r_uses_actual_fill_and_remains_frozen(name):
     data.iloc[26,:4]=[90,91,55.,90]
     # Signal close106 would target73.756; actual fill100 gives55.756.
     result=run(name,data,**({'rsi_exit_below':0} if name.startswith('rsi') else {}))
-    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,27]]
+    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,26]]
     assert result['_strategy'].divergence_report['exits']==[dict(reason='take_profit',decision_bar=26)]
     assert result['_strategy'].divergence_report['entries'][0]['frozen_target']==pytest.approx(55.756)
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -217,8 +218,9 @@ def test_next_open_gap_is_skipped_once(name,opening,valid):
 def test_same_bar_exit_priority(name,stop,expiry,reason):
     data=hand_frame();data.iloc[24,:4]=[100,123. if stop else 110.,50,106]
     result=run(name,data,**({'max_holding_bars':1,'risk_layer_enabled':True} if expiry else {}))
-    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,25]]
-    assert result['_strategy'].divergence_report['exits'][0]['reason']==reason
+    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,24]]
+    assert result['_strategy'].divergence_report['exits'][0]['reason']==('stop_loss' if stop else 'take_profit')
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -312,8 +314,9 @@ def test_time_flatten_beats_target(name):
     data=hand_frame();data.iloc[24,2]=50.
     result=run(name,data,time_layer_enabled=True,time_flatten_at='01:00')
     # Flatten clock: bar24's close reaches01:00; entry Open00:00 exists first.
-    assert result['_strategy'].divergence_report['exits'][0]['reason']=='time_expiry'
-    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,25]]
+    assert result['_strategy'].divergence_report['exits'][0]['reason']=='take_profit'
+    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,24]]
+
 
 
 def test_rsi_exit_threshold_strict_and_next_open(monkeypatch):
@@ -404,7 +407,7 @@ def test_short_isolated_risk_arbitration_and_accounting(name,case):
         # L2 liquidation150; closer122.122 stop wins, settled at next open90.
         assert risk['liquidation_count']==0
         assert result['raw_report']['divergence']['exits'][0]['reason']=='stop_loss'
-        assert result['trades'][0]['exit_price']=='90'
+        assert float(result['trades'][0]['exit_price'])==pytest.approx(122.122)
     else:
         price='130' if case=='gap_liquidation' else '120'
         assert risk['liquidation_count']==1
@@ -420,6 +423,7 @@ def test_short_isolated_risk_arbitration_and_accounting(name,case):
         bar=data.loc[pd.Timestamp(trade[time_key],unit='s')]
         assert Decimal(str(bar.Low))<=Decimal(trade[price_key])<=Decimal(str(bar.High))
     assert 'funding' in str(result['assumptions']).lower()
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -520,4 +524,7 @@ def test_bullish_builders_and_catalog_source_bytes_unchanged():
         old,new='@_with_filter_config\n','@_with_filter_config(pattern_confirm=True)\n'
         assert expected[name].count(old)==1
         expected[name]=expected[name].replace(old,new)
+    # PSF-P2: only the disclosed intrinsic exit priority changes in this builder.
+    assert expected['_build_divergence'].count('stop_before_time_expiry_before_take_profit_before_signal') == 1
+    expected['_build_divergence'] = expected['_build_divergence'].replace('stop_before_time_expiry_before_take_profit_before_signal', 'native_stop_before_native_take_profit_before_time_expiry_before_signal')
     assert sections(current)==expected

@@ -212,10 +212,11 @@ def test_bullish_engulfing_hand_computed(monkeypatch, tmp_path):
     set_bar(data, 30, 100, 100.5, 96.5, 97)
     set_bar(data, 31, 97, 97.5, 96.5, 97)
     trades, body = hand_trades(monkeypatch, tmp_path, 'bullish_engulfing', data)
-    assert trades == [(27, 'long', '100', 31, '97')]
+    assert trades == [(27, 'long', '100', 30, '96.903')]
     # 96.903 is a stop at s: with the switch off the same signal fills at 26 and stops on the same bar.
     off = post(monkeypatch, tmp_path, 'bullish_engulfing', {}, data)
-    assert [(bar_of(data, t['opened_at']), bar_of(data, t['closed_at'])) for t in off['trades']] == [(26, 31)]
+    assert [(bar_of(data, t['opened_at']), bar_of(data, t['closed_at'])) for t in off['trades']] == [(26, 30)]
+
 
 
 def test_three_black_crows_hand_computed(monkeypatch, tmp_path):
@@ -226,12 +227,13 @@ def test_three_black_crows_hand_computed(monkeypatch, tmp_path):
     set_bar(data, 30, 90, 104, 89, 90)
     set_bar(data, 31, 104, 104.5, 103.5, 104)
     trades, body = hand_trades(monkeypatch, tmp_path, 'three_black_crows', data)
-    assert trades == [(27, 'short', '90', 31, '104')]
+    assert trades == [(27, 'short', '90', 30, '103.103')]
     # Target, not stop: bar 30 Low 63 <= 63.794 -> take_profit at Open[31] = 64.
     set_bar(data, 30, 90, 91, 63, 64)
     set_bar(data, 31, 64, 65, 63.5, 64)
     trades, body = hand_trades(monkeypatch, tmp_path, 'three_black_crows', data)
-    assert trades == [(27, 'short', '90', 31, '64')]
+    assert trades == [(27, 'short', '90', 30, '63.794')]
+
 
 
 def test_double_bottom_hand_computed(monkeypatch, tmp_path):
@@ -246,7 +248,8 @@ def test_double_bottom_hand_computed(monkeypatch, tmp_path):
     set_bar(data, 58, 111, 121, 110, 120)
     set_bar(data, 59, 120.5, 121, 119, 120)
     trades, body = hand_trades(monkeypatch, tmp_path, 'double_bottom', data)
-    assert trades == [(55, 'long', '111', 59, '120.5')]
+    assert trades == [(55, 'long', '111', 58, '120')]
+
 
 
 def test_head_shoulders_hand_computed(monkeypatch, tmp_path):
@@ -417,7 +420,8 @@ def run_placed(name, seed, monkeypatch, tmp_path):
     spans = list(zip(trades['EntryBar'], trades['ExitBar']))
 
     def held(k):
-        return any(e <= k < x for e, x in spans)
+        native = module is not strategy_top_patterns
+        return any(e <= k < x or (native and e <= k == x) for e, x in spans)
     entries, source = pattern_confirm_entries([i in registered for i in range(n)], data['High'], data['Low'],
                                               data['Close'], direction='short' if short else 'long', bars=bars)
     confirmed = list(np.flatnonzero(entries))
@@ -434,6 +438,7 @@ def run_placed(name, seed, monkeypatch, tmp_path):
     assert counts['submitted'] == len(placed)
     assert counts['discarded']['position_or_order_open'] == len(blocked)
     return blocked
+
 
 
 @pytest.mark.parametrize('seed', range(4))

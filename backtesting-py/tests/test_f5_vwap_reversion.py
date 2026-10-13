@@ -62,10 +62,11 @@ def test_two_day_hand_vwap_and_next_open_fills():
     stats=run({'risk_layer_enabled':False})
     np.testing.assert_allclose(stats['_strategy']._f5_vwap, [np.nan,100,95.5,95.5,200,195,196,196,300],equal_nan=True)
     trades=stats['_trades']
-    assert trades[['EntryBar','ExitBar']].values.tolist()==[[3,4],[6,7]]
-    assert trades[['EntryPrice','ExitPrice']].values.tolist()==[[94,200],[190,199]]
+    assert trades[['EntryBar','ExitBar']].values.tolist()==[[3,3],[6,7]]
+    assert trades[['EntryPrice','ExitPrice']].values.tolist()==[[94,92.12],[190,199]]
     assert (trades.Size>0).all()
-    assert stats['_strategy']._f5_expiries==[dict(decision_at=1767312000,reason='utc_day_end')]
+    assert stats['_strategy']._f5_expiries==[]  # native stop on the UTC boundary precedes expiry
+
 
 
 def test_close_price_source_independent_hand_values():

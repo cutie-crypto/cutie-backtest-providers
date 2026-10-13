@@ -2,38 +2,38 @@
   "cases": {
     "chan_3buy": {
       "futures": {
-        "assumptions": "3b7e37af09e4ff397e22f43cfef143f0569c255f58b0943b62b31927128c735a",
-        "raw_report": "d450760cf719685672d2779452816d7e054a30a2b397447a5022afae9b0b6503",
-        "v2": "42406ea64747d1288eba41dc4a1390080ae2fcf81412209239adc34c72f1005c"
+        "v2": "bdc7b6fc0baf825093fce9e65b24315ad772eb8eb78e15d15b68b5ce84a2769a",
+        "assumptions": "5374974f4aa568aa4d01018e93edb0905b78c5101a42102d4e688a88027fb84c",
+        "raw_report": "dbad5a863e174831f643c5143e11111090d05e77583cc2aa823d9047bde11666"
       },
       "spot": {
-        "assumptions": "4d04be40afc18c9d96f1c51c94fa7bff48f9faaddf994dde8486ec25186a6688",
-        "raw_report": "d80eeb676b0af56f8731647246b501c6b216a418358cd3ba045e5497368909c2",
-        "v2": "4d7bb773cd93a28ba66e496b5459a59eb17fb274f3b5ea7baf0ba788ce037a8c"
+        "v2": "eb4babf6dd756b01ab1dae2553599c7ff698ba9eec04cde0cc9e415f62ebfc38",
+        "assumptions": "c5d9d206898f33fad395b5fe383776f334c688e583ed3681d93ccc7148149e28",
+        "raw_report": "b9bab6bcaa7d9f93f2df1e02254563618ea4383c6bed117523c956a18f837701"
       }
     },
     "macd_bullish_divergence": {
       "futures": {
-        "assumptions": "1f8e3d7d6687f5af4cc01ceae4301cc88dd87ed3faf93015daf77534e1c39fbd",
-        "raw_report": "d3f51f9eec6a3151bbfaf33a25af07cb21749b2464a35ecdce9fa78bffb83cd6",
-        "v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea"
+        "v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
+        "assumptions": "c676988dadcd57ac5ef6c61ee7a235ec044e39a7a7d6eee857e424c0a1d88238",
+        "raw_report": "d3f51f9eec6a3151bbfaf33a25af07cb21749b2464a35ecdce9fa78bffb83cd6"
       },
       "spot": {
-        "assumptions": "860f56f9f62e75f2c1252613c61207320544bf6776e24552e20a3709cdf31b2c",
-        "raw_report": "677d8a544880cd25ec29fc0dc0fda08847c672bde93bddb749413b42f9b469cc",
-        "v2": "4545dd76b0e145e0cbc2a77c20767de6262fef95dcb2426ea4a697e1bb6864ea"
+        "v2": "4545dd76b0e145e0cbc2a77c20767de6262fef95dcb2426ea4a697e1bb6864ea",
+        "assumptions": "2c1c34dcec70bc0e518fd89666d6ea2043a210175e458a4dc3e1496b167508ae",
+        "raw_report": "677d8a544880cd25ec29fc0dc0fda08847c672bde93bddb749413b42f9b469cc"
       }
     },
     "rsi_bullish_divergence": {
       "futures": {
-        "assumptions": "cc7a97423c44a1fd637bbc212e088a1912234974265c9759bd9a6cd7d6b9c865",
-        "raw_report": "c6d9f1b9218af3ed561e2ad0ab88f4ef0be68ff1344cff63a054bf7f32f9b8f7",
-        "v2": "1c3eeab8e7c5e95582bbf3c0cc96273acc1a2cf4a4cc907fe74ed8da0f444f64"
+        "v2": "1c3eeab8e7c5e95582bbf3c0cc96273acc1a2cf4a4cc907fe74ed8da0f444f64",
+        "assumptions": "794ab4e6608431b8690409d930a2742807f2b75ecdac88d1f68c130ca3553526",
+        "raw_report": "c6d9f1b9218af3ed561e2ad0ab88f4ef0be68ff1344cff63a054bf7f32f9b8f7"
       },
       "spot": {
-        "assumptions": "a157530b50232d5b3a582f3e2a20dfda40640d6bcd8cb3daf6ecd702bd42e534",
-        "raw_report": "aef26dae6d1bb9850c99f4fd438211d5f1c709100de19de40feb9ae873cbd428",
-        "v2": "ace635e5db981a25db9d4f6310e82f9412f95d6553c6385146a33cca6d21ec9a"
+        "v2": "ace635e5db981a25db9d4f6310e82f9412f95d6553c6385146a33cca6d21ec9a",
+        "assumptions": "8aa656fe3f9b2044be0d80517c71049b127a882477d37e19f2185bbeaefc7434",
+        "raw_report": "aef26dae6d1bb9850c99f4fd438211d5f1c709100de19de40feb9ae873cbd428"
       }
     }
   },

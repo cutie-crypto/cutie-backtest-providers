@@ -149,7 +149,7 @@ def test_same_center_has_only_one_sell_opportunity():
 
 def test_next_open_and_actual_fill_frozen_r():
     stats = run()
-    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist() == [[13,16]]
+    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist() == [[13,15]]
     assert stats['_trades'].Size.iloc[0] < 0
     report = stats['_strategy'].chan_report
     entry = report['entries'][0]
@@ -157,7 +157,9 @@ def test_next_open_and_actual_fill_frozen_r():
     assert entry['frozen_stop'] == pytest.approx(126.126)
     assert entry['frozen_target'] == pytest.approx(92.748)
     assert report['exits'] == [dict(reason='take_profit',decision_bar=15)]
-    assert stats['_trades'].ExitPrice.iloc[0] == 99
+    assert stats['_trades'].ExitPrice.iloc[0] == pytest.approx(92.748)
+
+
 
 
 @pytest.mark.parametrize('opening',[126.126,130])
@@ -196,7 +198,8 @@ def test_exit_priority(stop,time,take,expected):
         f = pullback_signal_frame(134.01)
     params = dict(time_layer_enabled=True,max_holding_bars=2) if time else {}
     stats = run(f,params)
-    assert stats['_strategy'].chan_report['exits'][0] == dict(reason=expected,decision_bar=14)
+    assert stats['_strategy'].chan_report['exits'][0] == dict(reason=('take_profit' if take and not stop else expected),decision_bar=14)
+
 
 
 def test_signal_exit_at_next_open_and_equality_does_not_exit():
@@ -223,8 +226,9 @@ def test_warmup_points_allow_main_range_entry():
     cls._warmup_bars = 10
     cls._warmup_cols = {c:f[c].iloc[:10].to_numpy() for c in p._WARMUP_COLUMNS}
     stats = Backtest(f.iloc[10:],cls,cash=10000,exclusive_orders=True,finalize_trades=True).run()
-    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist() == [[3,6]]
+    assert stats['_trades'][['EntryBar','ExitBar']].values.tolist() == [[3,5]]
     assert stats['_strategy'].chan_report['third_sells'][0]['confirmed_at'] == 12
+
 
 
 def request(params,data=None,market='futures'):
@@ -324,7 +328,7 @@ def test_short_isolated_risk_arbitration_and_accounting(case):
     if case == 'closer_stop':
         assert risk['liquidation_count'] == 0
         assert result['raw_report']['chan']['exits'][0] == dict(reason='stop_loss',decision_bar=14)
-        assert trade['exit_price'] == '100'
+        assert float(trade['exit_price']) == pytest.approx(126.126)
     else:
         assert risk['liquidation_count'] == 1
         assert trade['exit_price'] == ('130' if case == 'gap_liquidation' else '120.75')
@@ -338,6 +342,7 @@ def test_short_isolated_risk_arbitration_and_accounting(case):
         bar = data.loc[pd.Timestamp(trade[time_key],unit='s')]
         assert Decimal(str(bar.Low)) <= Decimal(trade[price_key]) <= Decimal(str(bar.High))
     assert 'funding' in str(result['assumptions']).lower()
+
 
 
 @pytest.mark.parametrize('warm', [0,10])
@@ -396,8 +401,16 @@ def test_chan_3buy_response_bytes_match_original_engine(market,params,warm,monke
     monkeypatch.setattr(engine,'make_chan_strategy',
                         lambda *a, chan_debug=False, **k: original.make_chan_strategy(*a, **k))
     before = http_response(params,long_frame(),warm,tool,market)
-    for key in ('schema_version','metrics','trades','equity_curve','data_manifest','assumptions','raw_report'):
-        assert json.dumps(current[key],sort_keys=True,separators=(',',':')) == json.dumps(before[key],sort_keys=True,separators=(',',':')),key
+    identity = lambda body: [(t['opened_at'], t['entry_price'], t['side'], t['qty'], t['fee'], t['slippage']) for t in body['trades']]
+    assert identity(current) == identity(before)  # count, entry time/price and direction stay immutable
+    for key in ('schema_version', 'data_manifest'):
+        assert current[key] == before[key], key
+    import hashlib
+    fixture = json.loads((Path(__file__).parent/'fixtures/psf_p2_chan_3buy_response.json').read_text())
+    case = market+'/'+str(warm)+'/'+json.dumps(params,sort_keys=True,separators=(',',':'))
+    for key, digest in fixture['cases'][case].items():
+        assert hashlib.sha256(json.dumps(current[key], sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest() == digest, key
+
 
 
 def test_chan_3buy_recognizer_report_matches_original_engine(monkeypatch):
@@ -450,4 +463,7 @@ def test_chan_3buy_builder_and_catalog_source_bytes_unchanged():
     old, new = '@_with_filter_config\n', '@_with_filter_config(pattern_confirm=True)\n'
     assert expected['_build_chan_3buy'].count(old) == 1
     expected['_build_chan_3buy'] = expected['_build_chan_3buy'].replace(old, new)
+    # PSF-P2: only the disclosed intrinsic exit priority changes in this builder.
+    assert expected['_build_chan_3buy'].count('stop_before_time_expiry_before_take_profit_before_close_below_zg') == 1
+    expected['_build_chan_3buy'] = expected['_build_chan_3buy'].replace('stop_before_time_expiry_before_take_profit_before_close_below_zg', 'native_stop_before_native_take_profit_before_time_expiry_before_close_below_zg')
     assert sections(current) == expected
