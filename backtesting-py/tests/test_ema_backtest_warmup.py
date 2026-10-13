@@ -56,7 +56,7 @@ def post(client, params=None, name='ema_cross', start=START, count=21):
     return body
 
 
-@pytest.mark.parametrize('fast,slow,requested,target', [(5,20,200,200),(60,120,1200,1200),(5,3000,30000,20000)])
+@pytest.mark.parametrize('fast,slow,requested,target', [(5,20,200,200),(60,120,1200,1200),(5,300,3000,3000)])
 def test_target_bars_and_original_minimum(fast, slow, requested, target):
     built = provider.TOOL_SPECS[TOOL]['build']({'ema_fast':fast,'ema_slow':slow})
     assert built['ema_warmup_requested_bars'] == requested
@@ -64,7 +64,7 @@ def test_target_bars_and_original_minimum(fast, slow, requested, target):
     assert built['min_bars'] == slow + 1
 
 
-@pytest.mark.parametrize('fast,slow,target', [(5,20,200),(60,120,1200),(5,3000,20000)])
+@pytest.mark.parametrize('fast,slow,target', [(5,20,200),(60,120,1200),(5,300,3000)])
 def test_http_fetch_depth_and_cap(client, monkeypatch, fast, slow, target):
     full = frame([100.]*(target+2), [100.]*(slow+1))
     calls = []
@@ -110,6 +110,7 @@ def test_tenfold_suppresses_seed_cross_at_first_evaluated_bar(client, monkeypatc
     def onefold(params, **kwargs):
         built = original(params, **kwargs)
         built['ema_warmup_target_bars'] = 21
+        built['required_warmup'] = 21
         return built
     monkeypatch.setitem(provider.TOOL_SPECS[TOOL], 'build', onefold)
     old = post(client)
@@ -118,25 +119,25 @@ def test_tenfold_suppresses_seed_cross_at_first_evaluated_bar(client, monkeypatc
     assert old['trades'][0]['closed_at'] == START+3*STEP
 
 
-def test_short_history_succeeds_and_discloses_shortfall(client, monkeypatch):
-    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(frame([100.]*50, [100.]*21)))
-    body = post(client)
-    assert body['raw_report']['ema_warmup'] == dict(requested_bars=200, target_bars=200,
-        actual_bars=50, truncated=False, tenfold_reached=False)
-    assert body['assumptions']['ema_warmup'] == 'EMA 预热取 10×最长周期（目标 200 根，实得 50 根）'
-    assert body['data_manifest']['kline_count'] == 21
+def test_short_history_is_rejected(client, monkeypatch):
+    from test_warmup_explicit import request
+    monkeypatch.setattr(provider,'_fetch_ohlcv',fetcher(frame([100.]*50,[100.]*21)))
+    body=request(client,count=21)
+    assert body['error_type']=='WARMUP_INSUFFICIENT'
+    assert body['limitations']['missing_bars']==150
+    assert body['limitations']['suggested_start_at'] is None
 
 
-def test_fetch_failure_stays_best_effort(client, monkeypatch):
-    good = fetcher(frame([], [100.]*21))
+def test_fetch_failure_has_no_shortage_details(client, monkeypatch):
+    from test_warmup_explicit import request
+    good=fetcher(frame([],[100.]*21))
     def flaky(*args):
-        if args[-2] < START:
-            raise RuntimeError('history unavailable')
+        if args[-2]<START: raise RuntimeError('history unavailable')
         return good(*args)
-    monkeypatch.setattr(provider, '_fetch_ohlcv', flaky)
-    body = post(client)
-    assert body['raw_report']['ema_warmup']['actual_bars'] == 0
-    assert body['raw_report']['ema_warmup']['tenfold_reached'] is False
+    monkeypatch.setattr(provider,'_fetch_ohlcv',flaky)
+    body=request(client,count=21)
+    assert body['error_type']=='WARMUP_FETCH_FAILED'
+    assert 'actual_bars' not in body['limitations']
 
 
 def test_warmup_excludes_main_and_future_rows(monkeypatch):
@@ -153,14 +154,13 @@ def test_warmup_excludes_main_and_future_rows(monkeypatch):
 
 
 @pytest.mark.parametrize('name', ['rsi_reversal','macd','supertrend','ema_cross'])
-def test_routed_result_v2_matches_frozen_bytes(client, monkeypatch, name):
-    full = compat.frame()
-    main = full.iloc[60:]
-    monkeypatch.setattr(provider, '_fetch_ohlcv', fetcher(full))
-    body = post(client, compat.PARAMS[name], name, int(main.index[0].timestamp()), len(main))
-    expected = json.loads(FIXTURE.read_text())
-    encoded = canonical_json({k:body[k] for k in V2_KEYS})
-    assert encoded.encode() == expected['cases'][name].encode()
-    if name != 'ema_cross':
-        assert 'ema_warmup' not in body['raw_report']
-        assert 'ema_warmup' not in body['assumptions']
+def test_old_short_snapshot_is_rejected_by_new_revision(client, monkeypatch, name):
+    from test_warmup_explicit import request
+    full=compat.frame(); main=full.iloc[60:]
+    monkeypatch.setattr(provider,'_fetch_ohlcv',fetcher(full))
+    # request helper's epoch differs from compat's; use the original protocol.
+    res=client.post('/cutie/backtest',json={'backtest':dict(run_id='old-seed',
+        provider_tool_id='local.backtesting_py.'+name,provider_params=compat.PARAMS[name],
+        symbol='BTCUSDT',market='spot',timeframe='1h',start_at=int(main.index[0].timestamp()),
+        end_at=int(main.index[-1].timestamp())+STEP,initial_capital='10000',fee_bps='10',slippage_bps='5')})
+    assert res.json()['error_type']=='WARMUP_INSUFFICIENT'
