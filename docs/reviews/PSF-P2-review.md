@@ -26,7 +26,7 @@ turtle_time_off_4d29dfa.json · long_risk_layer · 4/5（笔4/5） · 16/114,20/
 
 ## 异模型审查
 
-Claude Sonnet5.5独立只读一轮完成，CLI EXIT=0，is_error=false，modelUsage仅claude-sonnet-5-5；只做静态审查。全量将在返修验证后收尾跑一次。
+Claude Sonnet5.5独立只读一轮完成，CLI EXIT=0，is_error=false，modelUsage仅claude-sonnet-5-5；只做静态审查。Closing full run completed after incremental verification; see the final gate below.
 
 
 ### Sonnet original result
@@ -63,3 +63,5 @@ Claude Sonnet5.5独立只读一轮完成，CLI EXIT=0，is_error=false，modelUs
 - Final old next-open-exit mutation: both added tests failed / EXIT=1; cp restore cmp=0, both passed / EXIT=0. Expanded boundary assertions are inside the same two new tests.
 - Post-review replay matches the entire prior approval table and all captured payloads (post-review.json vs final.json). Scalar seeds and HTTP responses were generated, never hand-edited. Source beyond the Turtle mixin and non-Turtle goldens remain identical to 3121709.
 - Sonnet 5.5: one independent static round, 1 Medium and 3 Low resolved; increment read locally, no second review round. Compile and diff-check EXIT=0. No main merge / provider pin / production call. PR101 remains draft until commander approves the 7-case table, ordered after PR96/PR100.
+
+- Original task archived at docs/reviews/PSF-P2/tasks/PSF-P2c.md under the standing orders. The Owner follow-up reaffirmed: first close BOTTOM-GAP on 3121709, then return to this branch created above 3121709; this ordering was followed.
