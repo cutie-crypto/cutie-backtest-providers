@@ -37,6 +37,7 @@ import anyio
 import numpy as np
 import pandas as pd
 from canonical_json import canonical_decimal_str, canonical_json_sha256
+from strategy_liquidation_evidence import compress_hourly_evidence
 from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
@@ -11781,7 +11782,10 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
             events = stats["_strategy"].macro_events
             settle_event_window_exits(events, response_body["trades"], response_body["raw_report"].get("isolated_risk"),
                                       **stats["_strategy"].event_window_log)
-            response_body["raw_report"][macro_config.kind] = macro_report(events)
+            report = macro_report(events)
+            if macro_config.kind == "liquidation_reversal" and macro_config.series_interval == "1h":
+                report = compress_hourly_evidence(report, macro_config)
+            response_body["raw_report"][macro_config.kind] = report
         return _bounded_template_response(run_id, response_body)
 
     except Exception as e:
@@ -12115,6 +12119,7 @@ def _bounded_template_response(run_id, body):
             return _business_failure(
                 run_id, "INVALID_PARAMS",
                 f"Complete {field} evidence exceeds callback limit ({limit} bytes); shorten the backtest range.",
+                reason="report_evidence_too_large", details={"field": field, "limit_bytes": limit},
                 market_data_provenance=(raw_report.get("market_data_provenance")
                                         if isinstance(raw_report, dict) else None),
             )

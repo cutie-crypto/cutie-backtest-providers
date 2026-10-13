@@ -261,8 +261,11 @@ def test_1h_stop_out_does_not_reenter_the_same_hour_value(monkeypatch, tmp_path)
     assert len(body['trades']) == 1
     assert [r['status'] for r in events(body)].count('entered') == 1
     assert next(r for r in events(body) if r['day_utc'] == lr._iso(T0 + 5 * DAY + 23 * 3600))['exit_reason'] == 'stop_loss'
-    # Every judged hour has exactly one record and exactly one verdict.
-    assert len(events(body)) == NDAYS * 24 - 1 and all('status' in r for r in events(body))
+    # Each judged hour has one verdict, carried by a full event or a 24h summary.
+    report = body['raw_report'][KIND]
+    assert report['event_count'] == NDAYS * 24 - 1
+    assert len(events(body)) + sum(s['count'] for s in report['summaries_24h']) == report['event_count']
+    assert all('status' in r for r in events(body))
 
 
 def test_4h_hold_hours_must_be_a_multiple_of_the_candle(monkeypatch, tmp_path):

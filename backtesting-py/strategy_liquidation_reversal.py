@@ -32,6 +32,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 
+from canonical_json import canonical_decimal_str
 from strategy_macro_events import make_macro_strategy
 from strategy_risk_overlay import RiskState
 from strategy_time_layer import utc_datetime
@@ -119,6 +120,7 @@ class LiquidationReversalConfig:
         self.values = values
         self.events = ()  # the base macro engine plans nothing; the subclass plans ``days`` itself
         self.days = ()
+        self.evidence_rows = ()
         self.assumptions = {}
         self.candle_seconds = None
         self.series_step = DAY_SECONDS
@@ -249,6 +251,13 @@ class LiquidationReversalConfig:
         self.days = tuple(days)
         rows = series.get("rows", ())
         used = [row for row in rows if need_first <= row["ts"] <= need_last]
+        # Freeze exactly the validated input range, including percentile warmup. No compression
+        # or event trimming here; the report hash is built only after settlement.
+        if self.series_interval == "1h":
+            self.evidence_rows = tuple(
+                {"ts": ts, "value": canonical_decimal_str(str(by_ts[ts])),
+                 "available_at": ts + self.series_step}
+                for ts in range(need_first, need_last + 1, self.series_step))
         self._assume(used, series, first_day, last_day, need_first, need_last, len(days))
 
     def _assume(self, used, series, first_day, last_day, need_first, need_last, count):
