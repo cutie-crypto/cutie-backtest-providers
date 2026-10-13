@@ -160,6 +160,17 @@ Range-breakout days blocked by a filter record `filter_blocked` and
 `direction=both`, ledger templates and `signal_execution` remain unsupported
 with filters. See the [parameter and verification evidence](backtesting-py/tests/entry_filters_7p2_evidence.md).
 
+### Bottom and top pattern entry target gaps (PSF-BOTTOM-GAP)
+
+For `double_bottom` / `inverse_head_shoulders`, cancel entry when the actual
+next-open price adjusted for engine spread is at or above the frozen measured-move
+target. For `double_top` / `head_shoulders`, cancel when that price is at or below
+the frozen target. Equality is rejected. This applies with pattern confirmation
+both enabled and disabled, before position sizing or any position is opened;
+the signal close is not the entry reference. The existing `bottom_pattern` /
+`top_pattern` reports record the skipped entry, bar indexes, adjusted open and
+frozen target in `skipped_entries` and `skipped_entry_count`.
+
 ### Additional long-only patterns (9-T2)
 
 Four registered ids share the existing candle engine and next-open market fills:
@@ -409,3 +420,22 @@ The registration script installs/runs the validator, executes
 MIT
 
 <!-- 2026-07-20 62-3 §9 受控 revision 迁移演练发版：行为等价 no-op revision（仅本注释行），用于真实跨 revision 迁移的「等价放行」分支 direct 验证。 -->
+
+### Template intrinsic protective fills (PSF-P2 candidate)
+
+Candle patterns, bottom patterns, divergence, Chan, default VWAP reversion,
+default red-streak RSI and intrinsic Fibonacci retracement use broker-native
+SL / single TP. Touches fill on the current bar at the protective price, or the
+open when gapped. Native SL precedes single TP, then holding expiry and signals;
+partial TP retains its market-close path. A protective exit blocks reentry for
+that bar but still advances and consumes pending pattern confirmations.
+Explicit user pricing with the risk layer disabled retains its legacy path.
+The separate PSF-P2c Turtle candidate uses the same native group SL / single TP
+contract. Every unit shares the stop updated by an actual add fill; a queued add
+fills at open before intrabar protection, while a gap through prior protection
+closes the existing group first. Only the protective exit bar blocks reentry;
+the next bar can decide a reverse group. Channel and time exits retain market
+closes at next open. Native SL / TP precede holding expiry and channel decisions.
+Turtle goldens are regenerated with `python3 tests/fixtures/capture_turtle_time_off_4d29dfa.py --record-psf-p2c`
+from `backtesting-py/`; original baseline_sha denotes the seed, while capture_source_sha256 pins the Turtle mixin source (checked by the fixture test).
+This branch is an unmerged draft; it does not establish a deployed provider pin.

@@ -4,13 +4,13 @@
       "min_bars": 3,
       "0": {
         "warmup_bars": 0,
-        "assumptions_sha256": "9bcffbdebd1911a4afbaa54ab2045d350412f2b9d4cf731166b52fdeaca6b186",
-        "raw_report_sha256": "9d81ffbdc0120c4a0439a9147f0caa52d80dee0126b6b6dee0f2ab6ff43e40cb"
+        "assumptions_sha256": "6c373d6895eb5cfaeaad01cf62108eac16be822fdbda35f96c6a4ee612b17c15",
+        "raw_report_sha256": "12fbb8e602c270da82c2289d581e9c7ac02435c6fca9024cafc7f4d4eb76eeaa"
       },
       "1": {
         "warmup_bars": 60,
-        "assumptions_sha256": "e70eddf55db20e0841c20890aade8dd5fc4ff7ad8d289fbc930d7fe13fb0c8e2",
-        "raw_report_sha256": "5768d1706ab39dee2d66fd71b70c49c9c6a79268d13b924bd5a9d705e2d8492b"
+        "assumptions_sha256": "e95911cdd53d3a543062e7c1da21ed42c8b62c7b1a37cab6324187f7bbaf3a89",
+        "raw_report_sha256": "973d93f1e6a002698765784234372212c96a44695eaec78ebe0b2c4ecf9a839d"
       }
     }
   }

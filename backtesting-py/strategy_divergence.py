@@ -87,6 +87,7 @@ def divergence_signals(high, low, close, values, *, kind, n=5, min_gap=5, max_ga
 def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_series, direction="long"):
     short = direction == "short"
     class DivergenceStrategy(mixin, Strategy):
+        _template_native = True
         _risk = risk
         _initial_capital = initial_capital
 
@@ -145,21 +146,31 @@ def make_divergence_strategy(mixin, *, kind, config, risk, initial_capital, rsi_
                             frozen_stop=tag.stop, frozen_target=self._targets[tag]))
             self._broker._process_orders = guarded_process_orders
 
+        def _risk_native_state(self, trade):
+            tag = trade.tag
+            if tag not in self._targets:
+                self._targets[tag] = (trade.entry_price - 2 * (tag.stop - trade.entry_price) if short
+                                      else trade.entry_price + 2 * (trade.entry_price - tag.stop))
+                self.divergence_report['entries'].append(dict(
+                    setup=tag.setup, entry_bar=trade.entry_bar, entry_price=trade.entry_price,
+                    frozen_stop=tag.stop, frozen_target=self._targets[tag]))
+            self._risk_native_tagged_state(trade, self._targets[tag])
+
+        def _risk_native_record_exit(self):
+            self.divergence_report['exits'].append(dict(reason=self._risk_exit_reason,
+                                               decision_bar=len(self.data)-1))
+
         def _risk_check_exit(self):
             trade = self.trades[-1]
-            if any(order.parent_trade is trade for order in self.orders):
+            if any(order.parent_trade is trade and not order.is_contingent for order in self.orders):
                 return True
             tag = trade.tag
             if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(tag.stop))):
                 return True
             index = self._warmup_bars + len(self.data) - 1
-            if self.data.High[-1] >= tag.stop if short else self.data.Low[-1] <= tag.stop:
-                reason = 'stop_loss'
-            elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
+            if (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
                 self._record_holding_expiry(fact)
                 reason = 'time_expiry'
-            elif self.data.Low[-1] <= self._targets[tag] if short else self.data.High[-1] >= self._targets[tag]:
-                reason = 'take_profit'
             elif kind == 'macd' and (self._dif[index-1] <= self._dea[index-1] and self._dif[index] > self._dea[index] if short
                                     else self._dif[index-1] >= self._dea[index-1] and self._dif[index] < self._dea[index]):
                 reason = 'macd_cross_up' if short else 'macd_cross_down'

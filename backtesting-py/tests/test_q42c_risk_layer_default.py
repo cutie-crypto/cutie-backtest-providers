@@ -143,16 +143,18 @@ def test_red_streak_rsi_default_group_runs_unified_layer():
     data.iloc[46, data.columns.get_loc("Low")] = 80.0  # wick through the 3% stop; close stays at 92
     assert streak.run({}, data)["_strategy"]._risk["risk_layer_enabled"] is True
     assert list(streak.run({}, data)["_trades"].ExitBar) == [46]
-    assert list(streak.run(LEGACY, data)["_trades"].ExitBar) == [56]
+    assert list(streak.run(LEGACY, data)["_trades"].ExitBar) == [46]
+
 
 
 def test_vwap_reversion_default_stop_preempts_day_end_flatten():
     new, old = vwap.run(), vwap.run(LEGACY)
     assert _trades(new) == [[3, 3], [6, 7]]
-    assert _trades(old) == [[3, 4], [6, 7]]
+    assert _trades(old) == [[3, 3], [6, 7]]
     # Bar 3's low (88) is through the 2% stop (92.12): the stop decides, so no utc_day_end expiry is recorded.
     assert new["_strategy"]._f5_expiries == []
-    assert old["_strategy"]._f5_expiries == [dict(decision_at=1767312000, reason="utc_day_end")]
+    assert old["_strategy"]._f5_expiries == []
+
 
 
 def test_fibonacci_retracement_user_stop_runs_unified_layer():

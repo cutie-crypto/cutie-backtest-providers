@@ -83,6 +83,7 @@ def bottom_signals(high, low, close, *, kind, n=5, min_gap=10, max_gap=60,
 
 def make_bottom_strategy(mixin, *, kind, risk, initial_capital, config):
     class BottomStrategy(mixin, Strategy):
+        _template_native = True
         _risk = risk
         _initial_capital = initial_capital
 
@@ -109,9 +110,9 @@ def make_bottom_strategy(mixin, *, kind, risk, initial_capital, config):
                                 reason='entry_open_at_or_below_frozen_stop', signal_bar=order.tag.signal_bar,
                                 entry_bar=len(self.data)-1, entry_open=opening, frozen_stop=order.tag.stop))
                             order.cancel()
-                        elif (self._pattern_confirm_queue is not None and
-                              self._broker._adjusted_price(order.size, opening) >= order.tag.target):
-                            # Confirmation carries s's target to k+1; no remaining reward means no entry.
+                        elif (self._broker._adjusted_price(order.size, opening) >= order.tag.target):
+                            # Market entries fill at the adjusted next open, including without confirmation.
+                            # Equality leaves no remaining reward, so cancel before sizing/filling.
                             self.bottom_pattern_report['skipped_entry_count'] += 1
                             self.bottom_pattern_report['skipped_entries'].append(dict(
                                 reason='entry_open_at_or_above_frozen_target', signal_bar=order.tag.signal_bar,
@@ -121,22 +122,21 @@ def make_bottom_strategy(mixin, *, kind, risk, initial_capital, config):
                 process_orders()
             self._broker._process_orders = guarded_process_orders
 
+        def _risk_native_state(self, trade):
+            self._risk_native_tagged_state(trade, trade.tag.target)
+
         def _risk_check_exit(self):
             # Also used by the shared broker insolvency bridge. Supply the frozen
             # pattern stop to T2-2b arbitration before checking expiry/target.
             if not self.position or not self.trades:
                 return False
             trade = self.trades[-1]
-            if any(order.parent_trade is trade for order in self.orders):
+            if any(order.parent_trade is trade and not order.is_contingent for order in self.orders):
                 return True
             if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(trade.tag.stop))):
                 return True
-            if self.data.Low[-1] <= trade.tag.stop:
-                self._risk_exit_reason = 'stop_loss'
-            elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
+            if (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
                 self._record_holding_expiry(fact)
-            elif self.data.High[-1] >= trade.tag.target:
-                self._risk_exit_reason = 'take_profit'
             else:
                 return False
             self.position.close()

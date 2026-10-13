@@ -135,17 +135,19 @@ def test_touch_exit_priority_and_next_open_fill(low,high,holding,reason):
     data=frame()
     data.loc[data.index[9],['Low','High']]=[low,high]
     stats=run(data,dict(risk_layer_enabled=True,max_holding_bars=holding))
-    assert stats['_trades'].ExitBar.tolist()==[10]
-    assert stats['_trades'].ExitPrice.tolist()==[107]
-    assert stats['_strategy']._fib_exits==[dict(decision_index=9,reason=reason)]
+    assert stats['_trades'].ExitBar.tolist()==[9]
+    assert stats['_trades'].ExitPrice.tolist()==[104.17572 if reason == 'stop_loss' else 120]
+    assert stats['_strategy']._fib_exits==[dict(decision_index=9,reason=('stop_loss' if reason == 'stop_loss' else 'take_profit'))]
+
 
 
 def test_intrinsic_defaults_touch_even_with_risk_layer_off():
     data=frame()
     data.loc[data.index[9],'Low']=103
     stats=run(data)
-    assert stats['_trades'].ExitBar.tolist()==[10]
+    assert stats['_trades'].ExitBar.tolist()==[9]
     assert stats['_strategy']._fib_exits[0]['reason']=='stop_loss'
+
 
 
 def test_same_pair_cannot_enter_twice():
@@ -153,8 +155,9 @@ def test_same_pair_cannot_enter_twice():
     data.loc[data.index[9],'High']=121
     stats=run(data)
     assert stats['_trades'].EntryBar.tolist()==[9]
-    assert stats['_trades'].ExitBar.tolist()==[10]
+    assert stats['_trades'].ExitBar.tolist()==[9]
     assert stats['_strategy']._fib_waves[0]['signal_index']==8
+
 
 
 def test_new_confirmed_point_discards_old_pair():
@@ -241,7 +244,7 @@ def test_registered_http_report_and_frozen_result_v2(monkeypatch,tmp_path):
     assert body['result_status']=='success',body
     assert len(body['trades'])==1
     assert body['trades'][0]['opened_at']==int(data.index[9].timestamp())
-    assert body['trades'][0]['closed_at']==int(data.index[10].timestamp())
+    assert body['trades'][0]['closed_at']==int(data.index[9].timestamp())
     assert set(body['metrics'])=={'total_return','max_drawdown','trade_count'}
     assert set(body['trades'][0])=={'seq','opened_at','closed_at','side','qty','entry_price','exit_price','fee','slippage','pnl'}
     assert set(body['equity_curve'][0])=={'ts','equity'}
@@ -249,6 +252,7 @@ def test_registered_http_report_and_frozen_result_v2(monkeypatch,tmp_path):
     assert float(wave['stop_price'])==104.17572
     assert 'fibonacci_retracement' not in body['data_manifest']
     assert 'pattern_confirmation' in body['assumptions']['fibonacci_retracement']
+
 
 
 def test_gap_reason_survives_http(monkeypatch,tmp_path):
@@ -311,10 +315,11 @@ def test_position_keeps_old_target_when_a_new_pair_confirms():
     data.loc[data.index[14],'High']=133
     stats=run(data,dict(fib_target='1.618'))
     assert stats['_trades'].EntryBar.tolist()==[9]
-    assert stats['_trades'].ExitBar.tolist()==[15]
+    assert stats['_trades'].ExitBar.tolist()==[14]
     waves=stats['_strategy']._fib_waves
     assert [(w['low_index'],w['high_index']) for w in waves][:2]==[(2,5),(8,11)]
     assert float(waves[0]['frozen_target'])==132.36
+
 
 
 @pytest.mark.parametrize('params',[dict(atr_stop_multiplier=0),dict(breakeven_stop=False),dict(tp1_r=0)])

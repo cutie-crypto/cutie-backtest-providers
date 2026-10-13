@@ -36,7 +36,7 @@ def frame(fx):
 
 
 def hand(fx):
-    """Independent scalar account, next-open all-or-nothing fills, Wilder recurrence.
+    """Independent scalar account, native group stops, next-open entries, Wilder recurrence.
 
     No provider functions, pandas indicators or engine state are used. The fixture
     stores this calculation for review; the test recalculates rather than trusting it.
@@ -58,6 +58,13 @@ def hand(fx):
                 cash += entry['size']*op
                 trades.append({**entry, 'exit_bar': i, 'exit_price': op})
             held, exit_reason, blocked_bar = [], None, i
+        if pending and held and op <= last-p['stop_atr_multiplier']*n:
+            # Gap through the OLD protection closes before the queued add.
+            groups[-1].update(exit_signal=i, exit_bar=i, reason='stop')
+            for entry in held:
+                cash += entry['size']*op
+                trades.append({**entry, 'exit_bar': i, 'exit_price': op})
+            held, pending, blocked_bar = [], None, i
         if pending:
             size, gid = pending
             if size*op <= cash:
@@ -67,12 +74,19 @@ def hand(fx):
             else:
                 skips += 1
             pending = None
+        # Broker-native group stop: a new add updates every unit on its fill bar.
+        stop = last-p['stop_atr_multiplier']*n if held else None
+        if held and lo <= stop:
+            fill = min(op, stop)
+            groups[-1].update(exit_signal=i, exit_bar=i, reason='stop')
+            for entry in held:
+                cash += entry['size']*fill
+                trades.append({**entry, 'exit_bar': i, 'exit_price': fill})
+            held, pending, blocked_bar = [], None, i
         if i < max(p['entry_period'], p['exit_period'], p['atr_period']) or i == blocked_bar:
             continue
         if held:
-            if lo <= last-p['stop_atr_multiplier']*n:
-                exit_reason = 'stop'
-            elif close < min(fx['lows'][i-p['exit_period']:i]):
+            if close < min(fx['lows'][i-p['exit_period']:i]):
                 exit_reason = 'channel'
             elif len(held) < p['max_units'] and close >= last+p['add_step_atr']*n:
                 pending = q, held[0]['group_id']
@@ -136,7 +150,7 @@ def test_golden_fill_baseline_one_add_per_bar_frozen_n_and_raised_stop():
     assert 17 not in set(first.EntryBar)
     assert len(set(first.EntryBar)) == 4  # huge favorable gaps still add at most one
     assert len(set(first.Size)) == 1  # ATR changes sharply after the first signal
-    assert first.ExitBar.tolist() == [23]*4  # low145 hits raised stop146, not initial97
+    assert first.ExitBar.tolist() == [22]*4  # low145 fills raised stop146 on the touch bar, not initial97
     assert first.Size.tolist() == [117]*4
 
 
@@ -306,14 +320,14 @@ def test_stop_precedes_add_even_if_close_is_favorable():
     stats=run(fx)
     first=stats['_trades'][stats['_trades'].Tag=='turtle-1']
     assert sorted(first.EntryBar.tolist())==[16,18]
-    assert first.ExitBar.tolist()==[19,19]
+    assert first.ExitBar.tolist()==[18,18]
 
 
 def test_exit_fill_bar_cannot_start_another_group():
     fx=fixture()
-    fx['closes'][23]=180;fx['highs'][23]=181  # breakout on the exit-fill bar
+    fx['closes'][22]=180;fx['highs'][22]=181  # breakout on the native stop-fill bar
     stats=run(fx)
-    assert 24 not in set(stats['_trades'].EntryBar)
+    assert 23 not in set(stats['_trades'].EntryBar)
 
 
 def test_atr_is_wilder_first_range_and_causal_with_frozen_group_n():
@@ -386,6 +400,13 @@ def directional_hand(fx):
                 cash += t['size']*(op-t['entry_price'])
                 trades.append({**t, 'exit_bar': i, 'exit_price': op})
             held, reason, blocked = [], None, i
+        prior_stop = last-side*p['stop_atr_multiplier']*n if held else None
+        if pending and held and (op <= prior_stop if side == 1 else op >= prior_stop):
+            groups[-1].update(exit_signal=i, exit_bar=i, reason='stop')
+            for entry in held:
+                cash += entry['size']*(op-entry['entry_price'])
+                trades.append({**entry, 'exit_bar': i, 'exit_price': op})
+            held, pending, blocked = [], None, i
         if pending:
             size, gid = pending
             equity = cash + sum(t['size']*(close-t['entry_price']) for t in held)
@@ -396,13 +417,18 @@ def directional_hand(fx):
             else:
                 skipped += 1
             pending = None
+        stop = last-side*p['stop_atr_multiplier']*n if held else None
+        if held and (lo <= stop if side == 1 else hi >= stop):
+            fill = min(op, stop) if side == 1 else max(op, stop)
+            groups[-1].update(exit_signal=i, exit_bar=i, reason='stop')
+            for entry in held:
+                cash += entry['size']*(fill-entry['entry_price'])
+                trades.append({**entry, 'exit_bar': i, 'exit_price': fill})
+            held, pending, blocked = [], None, i
         if i < max(p['entry_period'], p['exit_period'], p['atr_period']) or i == blocked:
             continue
         if held:
-            stop = last-side*p['stop_atr_multiplier']*n
-            if (lo <= stop if side == 1 else hi >= stop):
-                reason = 'stop'
-            elif (close < min(fx['lows'][i-p['exit_period']:i]) if side == 1
+            if (close < min(fx['lows'][i-p['exit_period']:i]) if side == 1
                   else close > max(fx['highs'][i-p['exit_period']:i])):
                 reason = 'channel'
             elif len(held) < p['max_units'] and side*(close-last) >= p['add_step_atr']*n:
@@ -544,7 +570,7 @@ def test_short_stop_uses_high_not_low():
     fx['highs'][18]=88  # fill70, stop87: Low54 misses while High88 touches
     first=run(fx)['_trades'].query("Tag=='turtle-1'")
     assert sorted(first.EntryBar.tolist())==[16,18]
-    assert first.ExitBar.tolist()==[19,19]
+    assert first.ExitBar.tolist()==[18,18]
     assert fx['lows'][18]<87<=fx['highs'][18]
 
 
@@ -553,7 +579,7 @@ def test_short_add_uses_actual_fill_frozen_n_and_one_per_bar():
     assert first.EntryBar.tolist()==[16,18,19,21]
     assert first.EntryPrice.tolist()==[86,70,52,37]
     assert first.Size.tolist()==[-117]*4
-    assert first.ExitBar.tolist()==[23]*4  # High55 crosses updated stop54
+    assert first.ExitBar.tolist()==[22]*4  # High55 fills updated stop54 on this bar
 
 
 def test_short_exit_channel_excludes_current_high():
@@ -565,13 +591,13 @@ def test_short_exit_channel_excludes_current_high():
     assert fx['highs'][53]<91+2*fx['expected']['groups'][1]['n']
 
 
-def test_both_reverse_signal_on_exit_fill_bar_is_blocked():
+def test_both_reverse_signal_after_native_exit_is_allowed():
     fx=directional_fixture('both');stats=run(fx)
     assert fx['closes'][23]<min(fx['lows'][20:23])
-    assert 24 not in set(stats['_trades'].EntryBar)
+    assert 24 in set(stats['_trades'].EntryBar)
     assert 23 not in set(stats['_trades'].EntryBar)
     assert sorted(stats['_trades'].Tag.unique())==['turtle-1','turtle-2','turtle-3']
-    assert stats['_trades'].query("Tag=='turtle-2'").EntryBar.tolist()==[51]
+    assert stats['_trades'].query("Tag=='turtle-2'").EntryBar.tolist()==[24]
 
 
 def test_both_empty_position_selects_only_one_direction():

@@ -1,0 +1,96 @@
+{
+  "comparison_base": "1e0f285",
+  "capture_sha": "0f6077daefbcd334489bc658bafc618656c57321",
+  "cases": {
+    "spot/0/{}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "5bedd2524c1657cdaee850a568ad0dd3a689a892dbd10dc9c74a8286d9d2de60",
+      "trades": "0a1be1b28091124cfc67d6e733c18a17c021734e76ae9cb56116f3b6af82fb99",
+      "equity_curve": "64bf18846d5866cf08486c7992b0d3b7d16197b87ce661776a3b91cfd9baee8b",
+      "data_manifest": "d19d9ce21ef3d56169704b796637ba6632c2150117d30e0030b855bf8229074f",
+      "assumptions": "c5d9d206898f33fad395b5fe383776f334c688e583ed3681d93ccc7148149e28",
+      "raw_report": "4c0030f89159d71fe626e570bc8b6016352aeec6eef15e942d1a9f02ca9706eb"
+    },
+    "spot/10/{}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "5bedd2524c1657cdaee850a568ad0dd3a689a892dbd10dc9c74a8286d9d2de60",
+      "trades": "0a1be1b28091124cfc67d6e733c18a17c021734e76ae9cb56116f3b6af82fb99",
+      "equity_curve": "35395111ecf9d510876402e75be7ad65070d5c1779388bfcbd1ee0f6904cf1a6",
+      "data_manifest": "7cc7eed146c0cfd98481c03cb8165776e0e0d4d6c430ad4f472f4b8c4706b1e2",
+      "assumptions": "ec8893c36095cd12773d9a07b8b7f15b12ad70bb4a5650296f15facf94376d32",
+      "raw_report": "1a179acbee2263b24417cedc4446094d92086167a1fc980ba4d073f3758a06b9"
+    },
+    "futures/0/{}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "5bedd2524c1657cdaee850a568ad0dd3a689a892dbd10dc9c74a8286d9d2de60",
+      "trades": "0a1be1b28091124cfc67d6e733c18a17c021734e76ae9cb56116f3b6af82fb99",
+      "equity_curve": "64bf18846d5866cf08486c7992b0d3b7d16197b87ce661776a3b91cfd9baee8b",
+      "data_manifest": "a2ec9a59a51c3bec0de3be45b53f44c697395745846e14c19a2b7cc5c4fdd3de",
+      "assumptions": "5374974f4aa568aa4d01018e93edb0905b78c5101a42102d4e688a88027fb84c",
+      "raw_report": "45589ee09cd1599c653d2b5f27aac5d21e95bde1151fc113a701bb8e0184e2d3"
+    },
+    "futures/10/{}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "5bedd2524c1657cdaee850a568ad0dd3a689a892dbd10dc9c74a8286d9d2de60",
+      "trades": "0a1be1b28091124cfc67d6e733c18a17c021734e76ae9cb56116f3b6af82fb99",
+      "equity_curve": "35395111ecf9d510876402e75be7ad65070d5c1779388bfcbd1ee0f6904cf1a6",
+      "data_manifest": "43b099bdb2ff678b1051c09db0d30bf69640234d05d52200205f4214d9b70fae",
+      "assumptions": "ac89a32356a0cb7c3aad526a67c3476abc8a814e8d8b5d7e5eb35a1fa701bd06",
+      "raw_report": "2a621220c99765ad4efb57d93976204ed5e22fd1fb2563313964094cc3f12377"
+    },
+    "futures/0/{\"bi_mode\":\"old\"}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "9dfff84dbdeaad8420e9a6b77832f0e16af431095ea1a7c8903b9b34887cd280",
+      "trades": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "equity_curve": "de654ebdeb0677d614daecfbff2d10cec0692fc638d1e0da6154a77773f21268",
+      "data_manifest": "a2ec9a59a51c3bec0de3be45b53f44c697395745846e14c19a2b7cc5c4fdd3de",
+      "assumptions": "c047e8e3ddfa08efcf011990070cc39040ede068f45ebac463d1bc20b9df89ba",
+      "raw_report": "a79e7c0aea66de9b7e9ad8cd91ad4120199481c6733c4f4cecf7557d2cdd403f"
+    },
+    "futures/10/{\"bi_mode\":\"old\"}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "9dfff84dbdeaad8420e9a6b77832f0e16af431095ea1a7c8903b9b34887cd280",
+      "trades": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "equity_curve": "db6465e7cc8bee0e69ede276ae0be6234b6d38e511d7c441e068938ced7d0b7f",
+      "data_manifest": "43b099bdb2ff678b1051c09db0d30bf69640234d05d52200205f4214d9b70fae",
+      "assumptions": "3323cf003b2ad79384af40d69c626cfac06a545c6c0be1596004f38d1dfb20c0",
+      "raw_report": "e51ac552f102d28abee3d1cfd47d5aa356ad24b91a8c3024523740af64cb3e1a"
+    },
+    "futures/0/{\"leverage\":3,\"position_size_pct\":10}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "f3d5ecca5e7420b0728b2c53f87781b152be8142ff68c1d0a65671aa04a32fef",
+      "trades": "438365dbd075a6e5f0593d4ba281ae101f220f9a92fb9105e4c909a22210c538",
+      "equity_curve": "d2bbf2d907d793154263cc3e54febd415bce944ab73c699dfd765775b373eaea",
+      "data_manifest": "a2ec9a59a51c3bec0de3be45b53f44c697395745846e14c19a2b7cc5c4fdd3de",
+      "assumptions": "6221ee33b9e4bb3d94c2e8bb7011fe367abff0891bfe0bbd4f89a4b266ccab89",
+      "raw_report": "ef2db7699f53ef845f1cd2a78c75ed6079c3fe3ea70b7ce185c5882ad3bede62"
+    },
+    "futures/10/{\"leverage\":3,\"position_size_pct\":10}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "f3d5ecca5e7420b0728b2c53f87781b152be8142ff68c1d0a65671aa04a32fef",
+      "trades": "438365dbd075a6e5f0593d4ba281ae101f220f9a92fb9105e4c909a22210c538",
+      "equity_curve": "4ed5696665acab2bc2b6f30c66fffbd023c9ccc0c9948efc4bce661cc6034242",
+      "data_manifest": "43b099bdb2ff678b1051c09db0d30bf69640234d05d52200205f4214d9b70fae",
+      "assumptions": "60676b905b65094db9e156810ed83af193e7028fd0ea41f7b1dcd4b33e94a587",
+      "raw_report": "07a1569148aa05cc0ba947ac8a68d7fd5ae74a06511037f498ac2d2496798a97"
+    },
+    "spot/0/{\"max_holding_bars\":2,\"time_layer_enabled\":true}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "43262943d70508218b24034c266a395e5670a30573961e6a0ca1e51f6a35be5e",
+      "trades": "de3a48fc45798650fcbb9a25b0a6bdefc11b9706eff10b84c9114f4a1b111999",
+      "equity_curve": "7e26ecc827b52a6dc8d308af63ed084231e0c0ac6d8e8b50a8bac0445a04682c",
+      "data_manifest": "d19d9ce21ef3d56169704b796637ba6632c2150117d30e0030b855bf8229074f",
+      "assumptions": "8b81b94aa0d07d6414539d9b059205f1c7559e6b28602d9f3d44285614259a96",
+      "raw_report": "a2ed2684631f109cd9dafd2a089887abbe03ca1de5d8b0da1080c3b05818bd61"
+    },
+    "spot/10/{\"max_holding_bars\":2,\"time_layer_enabled\":true}": {
+      "schema_version": "9e7289a5678dea7d3c2bf67dcae0bd7090793021cd98917d01e50c2d8842095c",
+      "metrics": "43262943d70508218b24034c266a395e5670a30573961e6a0ca1e51f6a35be5e",
+      "trades": "de3a48fc45798650fcbb9a25b0a6bdefc11b9706eff10b84c9114f4a1b111999",
+      "equity_curve": "e26f6f01e9f27586a3960535b8005779108b91a34ee9b5c8c776afdf4c30c1b9",
+      "data_manifest": "7cc7eed146c0cfd98481c03cb8165776e0e0d4d6c430ad4f472f4b8c4706b1e2",
+      "assumptions": "5dd6d56b293159d9ecf7f0a96cbc7e417c60b1670cecf57298941d71841bbb75",
+      "raw_report": "7cfdc7d543418ad39ffb98c2d9733db879f50f696447a0e858bbd39f08f22b90"
+    }
+  }
+}

@@ -208,9 +208,10 @@ def test_r_target_hand_computed_from_fill(name, r, hit):
     assert len(result['_trades']) == int(hit)
     if hit:
         trade = result['_trades'].iloc[0]
-        assert (trade.ExitBar, trade.ExitPrice) == (28, 112)
+        assert (trade.ExitBar, trade.ExitPrice) == (27, pytest.approx(target))
     else:
         assert result['_strategy'].position
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -222,7 +223,8 @@ def test_buffered_frozen_stop(name, low, hit):
     result = run(name, data)
     assert len(result['_trades']) == int(hit)
     if hit:
-        assert (result['_trades'].iloc[0].ExitBar, result['_trades'].iloc[0].ExitPrice) == (28,101)
+        assert (result['_trades'].iloc[0].ExitBar, result['_trades'].iloc[0].ExitPrice) == (27,pytest.approx(96.903))
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -286,12 +288,13 @@ def test_stop_then_expiry_then_target(name):
     data = frame(name)
     data.iloc[27, :4] = [110,150,96,110]
     stop = run(name,data,dict(risk_layer_enabled=True,max_holding_bars=2))
-    assert stop['_trades'].iloc[0].ExitBar == 28
+    assert stop['_trades'].iloc[0].ExitBar == 27
     assert stop['_strategy']._risk_exit_reason == 'stop_loss'
     data.iloc[27, :4] = [110,150,105,110]
     expiry = run(name,data,dict(risk_layer_enabled=True,max_holding_bars=2))
-    assert expiry['_trades'].iloc[0].ExitBar == 28
-    assert expiry['_strategy']._risk_exit_reason == 'time_expiry'
+    assert expiry['_trades'].iloc[0].ExitBar == 27
+    assert expiry['_strategy']._risk_exit_reason == 'take_profit'
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -299,8 +302,9 @@ def test_time_gate_entry_and_unrestricted_exit(name):
     data = compatibility_frame(name)
     allowed = run(name,data,dict(time_layer_enabled=True,time_session_start='06:00',time_session_end='10:00'))
     denied = run(name,data,dict(time_layer_enabled=True,time_session_start='07:00',time_session_end='10:00'))
-    assert (allowed['_trades'].iloc[0].EntryBar,allowed['_trades'].iloc[0].ExitBar) == (30,34)
+    assert (allowed['_trades'].iloc[0].EntryBar,allowed['_trades'].iloc[0].ExitBar) == (30,33)
     assert denied['_trades'].empty and not denied['_strategy'].position
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -380,7 +384,7 @@ def test_inside_breakout_and_same_bar_inside_rearms_independently_of_filter(tren
     assert bool(result['_strategy']._signals[26]) is (not trend_filter)
     assert bool(result['_strategy']._signals[29]) is True
     assert list(result['_trades'].EntryBar) == ([] if trend_filter else [27])
-    assert list(result['_trades'].ExitBar) == ([] if trend_filter else [28])
+    assert list(result['_trades'].ExitBar) == ([] if trend_filter else [27])
     trade = result['_strategy'].trades[0]
     assert (trade.entry_bar,trade.entry_price)==(30,124)
     assert trade.tag.stop==pytest.approx(95.904)  # new mother25 low96*.999

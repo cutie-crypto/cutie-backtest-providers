@@ -261,6 +261,9 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         data = frame(n=11)
         params = dict(outflow_days=1, inflow_exit_days=1, time_layer_enabled=True, time_weekdays=1)
         tf = '1d'
+    intrinsic = set(PATTERN_BASELINE['single']) | set(PATTERN2_BASELINE['single']) | set(PATTERN3_BASELINE['single']) | set(SHORT_PAT4) | {'chan_3buy', 'chan_3sell'}
+    if name in intrinsic:
+        params['time_session_end'] = '08:00'  # entries07:00; native exits09:00 are outside
     built = provider.TOOL_SPECS['local.backtesting_py.' + compat.tool_name(name)]['build'](params)
     if name in OI_CASES:
         start = int(data.index[0].timestamp())
@@ -290,6 +293,7 @@ def test_each_template_gates_entries_but_allows_outside_exits(name, risk_enabled
         cls = blocked['strategy']
         cls._time_context = TimeContext.build(cls._time_config, tf, data.index)
         assert Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades'].empty
+
 
 
 @pytest.mark.parametrize('side', ['long', 'short'])
