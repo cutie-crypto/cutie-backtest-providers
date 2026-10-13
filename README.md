@@ -404,5 +404,12 @@ open when gapped. Native SL precedes single TP, then holding expiry and signals;
 partial TP retains its market-close path. A protective exit blocks reentry for
 that bar but still advances and consumes pending pattern confirmations.
 Explicit user pricing with the risk layer disabled retains its legacy path.
-Turtle remains on next-open group exits and is outside this candidate.
+The separate PSF-P2c Turtle candidate uses the same native group SL / single TP
+contract. Every unit shares the stop updated by an actual add fill; a queued add
+fills at open before intrabar protection, while a gap through prior protection
+closes the existing group first. Only the protective exit bar blocks reentry;
+the next bar can decide a reverse group. Channel and time exits retain market
+closes at next open. Native SL / TP precede holding expiry and channel decisions.
+Turtle goldens are regenerated with `python3 tests/fixtures/capture_turtle_time_off_4d29dfa.py --record-psf-p2c`
+from `backtesting-py/`; original baseline_sha denotes the seed, while capture_source_sha256 pins the native response implementation.
 This branch is an unmerged draft; it does not establish a deployed provider pin.

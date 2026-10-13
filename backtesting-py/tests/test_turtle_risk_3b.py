@@ -132,12 +132,12 @@ def test_add_does_not_reset_group_expiry_and_due_prevents_add(direction):
     assert stats['_strategy'].snapshots[12]['first']==11
     due = execute(data,{**params,'max_holding_bars':1})
     assert due['_trades'].query("Tag == 'turtle-1'").EntryBar.tolist()==[11]
-    assert due['_strategy'].snapshots[11]['orders']==1
+    assert due['_strategy'].snapshots[11]['orders']==2  # native SL plus queued expiry close; no add
 
 
 @pytest.mark.parametrize('direction',['long','short'])
 @pytest.mark.parametrize('add',[False,True])
-def test_take_profit_scalar_vwap_and_next_open(direction,add):
+def test_take_profit_scalar_vwap_and_same_bar(direction,add):
     data,params = scenario(direction,add)
     if direction=='long':
         data.loc[data.index[12],'High']=110.5
@@ -155,16 +155,16 @@ def test_take_profit_scalar_vwap_and_next_open(direction,add):
     vwap = sum(price*142 for price in entries)/(142*len(entries))
     target = Decimal(str(vwap))*(Decimal('1.05') if direction=='long' else Decimal('.95'))
     assert stats['_strategy'].snapshots[12]['take']==target
-    exit_bar = 14 if add else 13
+    exit_bar = 13 if add else 12
     assert first.ExitBar.tolist()==[exit_bar]*len(entries)
-    assert first.ExitPrice.tolist()==[data.Open.iloc[exit_bar]]*len(entries)
+    assert first.ExitPrice.tolist()==[float(target)]*len(entries)
     assert stats['_strategy']._group_exit_reasons['turtle-1']=='take_profit'
     if add:
         assert stats['_strategy'].snapshots[12]['closing'] is False
-        assert stats['_strategy'].snapshots[13]['closing'] is True
+        assert stats['_strategy'].snapshots[13]['units'] == 0
 
 
-@pytest.mark.parametrize('case,reason',[('stop_expiry','stop'),('expiry_take','time_expiry'),
+@pytest.mark.parametrize('case,reason',[('stop_expiry','stop'),('expiry_take','take_profit'),
                                        ('take_channel','take_profit')])
 @pytest.mark.parametrize('direction',['long','short'])
 def test_exit_arbitration(case,reason,direction):
@@ -186,7 +186,7 @@ def test_exit_arbitration(case,reason,direction):
             data.loc[data.index[12],['Close','High']]=[100,101]
     stats = execute(data,params)
     assert stats['_strategy']._group_exit_reasons['turtle-1']==reason
-    assert stats['_trades'].query("Tag == 'turtle-1'").sort_values('EntryBar').ExitBar.tolist()==[13]
+    assert stats['_trades'].query("Tag == 'turtle-1'").sort_values('EntryBar').ExitBar.tolist()==[12]
 
 
 @pytest.mark.parametrize('direction',['long','short','both'])
