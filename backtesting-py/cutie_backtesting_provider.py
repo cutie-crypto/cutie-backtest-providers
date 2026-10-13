@@ -1371,6 +1371,9 @@ def _resolve_template_seed(bt_req, exchange_id, market, symbol, timeframe, start
                           start_at, exchange_id, main)
     if seed is not None:
         return seed
+    if required == 0:
+        # No historical seed is needed; do not call a history reader.
+        return main.iloc[:0].copy()
     try:
         return _fetch_template_warmup(exchange_id, market, symbol, timeframe, start_at,
             required, main, end_sec=end_at, minimum=minimum)

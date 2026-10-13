@@ -86,7 +86,8 @@ futures L>1. Funding, MMR>0, and exchange-specific liquidation rules are exclude
 
 New legacy-template runs use `template-warmup.v1` and
 `adjacent-first-observation.v1`. `min_bars` remains the minimum calculable/main
-window; `required_warmup` is a separate complete pre-start seed budget. The six
+window; `required_warmup` is a separate complete pre-start seed budget. A zero
+seed budget records an empty seed manifest without reading historical candles. The six
 EMA families retain 10 × longest EMA period. Keltner EMA, volume `exit_ema`,
 MACD DIF and filter EMAs use the same 10× rule. MACD DEA adds its signal EMA
 stage depth. Wilder recurrences use their actual alpha (`1/N`), a seed residual

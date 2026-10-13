@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cutie_backtesting_provider as p
+from _complete_seed_fixture import complete_seed
 import test_f1_range_breakout as f1
 import test_f2_calendar as f2
 import test_f3_us_open as f3
@@ -64,7 +65,9 @@ def post(monkeypatch, tmp_path, name, params=None, data=None, side='long', capit
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: data.copy())
-    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a, **k: data.iloc[:0].copy())
+    # WARMUP-B-2 partial: red_streak_rsi keeps its old cold fixture and remains red;
+    # do not silently mask that pending adaptation with xfail or a fabricated seed.
+    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a, **k: complete_seed(*a, **k) if name != 'red_streak_rsi' else data.iloc[:0].copy())
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     request = dict(run_id='10b2d', provider_tool_id='local.backtesting_py.' + name,
                    provider_params={**base, **(params or {})}, symbol='BTCUSDT', market=market,

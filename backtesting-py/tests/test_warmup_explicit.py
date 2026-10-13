@@ -270,3 +270,41 @@ def test_risk_atr_uses_wilder_budget(client, monkeypatch):
     assert failed['error_type']=='WARMUP_INSUFFICIENT',failed
     assert failed['limitations']['required_bars']==required
     assert failed['limitations']['missing_bars']==1
+
+
+def test_zero_budget_does_not_read_history(client, monkeypatch, tmp_path):
+    import test_event0_event_window as event
+    monkeypatch.setattr(provider, 'WARMUP_SNAPSHOT_DIR', tmp_path / 'snapshots')
+    body = event.post(monkeypatch, tmp_path, event.GOLDEN_PARAMS)
+    assert body['result_status'] == 'success', body
+    assert event.legs(body) == [(4, '104', 7, '107', 'long'), (9, '109', 12, '112', 'long')]
+    manifest = body['assumptions']['warmup_manifest']
+    assert manifest['required_bars'] == manifest['actual_bars'] == 0
+    assert manifest['start_at'] == manifest['end_at'] == event.T0
+    assert provider._load_warmup_snapshot(manifest, body['assumptions']['warmup_manifest_hash']) == []
+
+
+def test_zero_budget_frozen_seed_replays_before_history_shortcut(client, monkeypatch, tmp_path):
+    import test_event0_event_window as event
+    monkeypatch.setattr(provider, 'WARMUP_SNAPSHOT_DIR', tmp_path / 'snapshots')
+    first = event.post(monkeypatch, tmp_path, event.GOLDEN_PARAMS)
+    response = client.post('/cutie/backtest', json={'backtest': dict(run_id='zero-frozen',
+        provider_tool_id=event.TOOL, provider_params=event.GOLDEN_PARAMS,
+        symbol='BTCUSDT', market='futures', timeframe='1h', start_at=event.T0,
+        end_at=event.T0 + 24 * event.H, initial_capital='10000', fee_bps='0', slippage_bps='0',
+        warmup_manifest=first['assumptions']['warmup_manifest'],
+        warmup_manifest_hash=first['assumptions']['warmup_manifest_hash'])})
+    second = response.json()
+    assert second['result_status'] == 'success', second
+    assert second['trades'] == first['trades']
+    assert second['assumptions']['warmup_manifest'] == first['assumptions']['warmup_manifest']
+
+    # Even an empty frozen seed must be authenticated before the zero-budget shortcut.
+    bad = dict(run_id='zero-frozen-tampered', provider_tool_id=event.TOOL,
+        provider_params=event.GOLDEN_PARAMS, symbol='BTCUSDT', market='futures', timeframe='1h',
+        start_at=event.T0, end_at=event.T0 + 24 * event.H, initial_capital='10000',
+        fee_bps='0', slippage_bps='0', warmup_manifest=first['assumptions']['warmup_manifest'],
+        warmup_manifest_hash='0' * 64)
+    rejected = client.post('/cutie/backtest', json={'backtest': bad}).json()
+    assert rejected['result_status'] == 'failed'
+    assert rejected['error_type'] == 'INVALID_PARAMS'

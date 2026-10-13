@@ -1,9 +1,7 @@
-"""1008：内置模板指标预热（start_at 之前取 min_bars 根，只用于算指标）。
+"""Complete, explicit historical seed; shortage and read failures reject the run.
 
-生产实证：BTCUSDT 日线 RSI(14) 30/70，区间开头 43 根因 len(self.data) < min_bars 一律
-不能开仓，11 月的超卖信号被丢掉；服务端实盘监听带预热，回测与实盘口径不一致。
-这里用合成 K 线（不联网）覆盖：有/无预热两条守卫分支、预热取数失败退化、结果只覆盖
-主区间、指标与「完整序列直接算」一致。
+The synthetic source covers every declared budget. Successful runs expose only the
+main interval, and indicators still match an independent full-series calculation.
 """
 from __future__ import annotations
 
@@ -22,7 +20,7 @@ import cutie_backtesting_provider as provider  # noqa: E402
 
 DAY = 86400
 START_AT = 1735689600  # 2025-01-01 00:00 UTC
-WARMUP_COUNT = 120
+WARMUP_COUNT = 6000
 MAIN_COUNT = 80
 END_AT = START_AT + MAIN_COUNT * DAY
 
@@ -78,7 +76,7 @@ def client(monkeypatch, tmp_path):
     return TestClient(provider.app)
 
 
-def _post(client, tool_id: str, params: dict, run_id: str = "warmup_1") -> dict:
+def _post(client, tool_id: str, params: dict, run_id: str = "warmup_1", expected: str = "success") -> dict:
     resp = client.post("/cutie/backtest", json={
         "backtest": {
             "run_id": run_id,
@@ -96,7 +94,7 @@ def _post(client, tool_id: str, params: dict, run_id: str = "warmup_1") -> dict:
     })
     assert resp.status_code == 200
     body = resp.json()
-    assert body["result_status"] == "success", body
+    assert body["result_status"] == expected, body
     return body
 
 
@@ -110,26 +108,24 @@ RSI_TOOL = "local.backtesting_py.rsi_reversal"
 RSI_PARAMS = {"rsi_period": 14, "oversold": 30, "overbought": 70}
 
 
-def test_rsi_with_warmup_trades_in_first_bars_without_warmup_does_not(client, monkeypatch):
+def test_rsi_complete_warmup_trades_early_and_missing_history_rejects(client, monkeypatch):
     full = _full_df()
     calls: list = []
     monkeypatch.setattr(provider, "_fetch_ohlcv", _range_fetch(full, calls))
     warm = _post(client, RSI_TOOL, RSI_PARAMS)
-
-    min_bars = 3 * 14 + 1
-    assert warm["assumptions"]["indicator_warmup_bars"] == min_bars
-    # 预热段单独取，取数留两根余量；实际指标仍只使用最后min_bars根。
-    assert (START_AT - (min_bars + provider._TEMPLATE_WARMUP_FETCH_EXTRA_BARS) * DAY, START_AT) in calls
-    assert warm["trades"], "主区间开头 RSI<30，有预热时应在第一段就开仓"
-    first_open = _to_epoch(warm["trades"][0]["opened_at"])
-    assert START_AT <= first_open < START_AT + 6 * DAY
-
-    # 新币：start_at 之前没有任何 K 线 -> 守卫退回旧行为，前 43 根不能交易
+    required = provider.TOOL_SPECS[RSI_TOOL]["build"](RSI_PARAMS)["required_warmup"]
+    assert required > 3 * 14 + 1
+    assert warm["assumptions"]["indicator_warmup_bars"] == required
+    assert (START_AT - (required + provider._TEMPLATE_WARMUP_FETCH_EXTRA_BARS) * DAY, START_AT) in calls
+    assert warm["trades"]
+    assert START_AT <= _to_epoch(warm["trades"][0]["opened_at"]) < START_AT + 6 * DAY
     main_only = full.loc[full.index >= pd.to_datetime(START_AT * 1000, unit="ms")]
     monkeypatch.setattr(provider, "_fetch_ohlcv", _range_fetch(main_only))
-    cold = _post(client, RSI_TOOL, RSI_PARAMS)
-    assert cold["assumptions"]["indicator_warmup_bars"] == 0
-    assert cold["trades"] == []
+    cold = _post(client, RSI_TOOL, RSI_PARAMS, expected="failed")
+    assert cold["error_type"] == "WARMUP_INSUFFICIENT"
+    assert cold["limitations"]["actual_bars"] == 0
+    assert cold["limitations"]["missing_bars"] == required
+    assert "trades" not in cold
 
 
 def _comparable(body: dict) -> dict:
@@ -142,32 +138,27 @@ def _comparable(body: dict) -> dict:
     }
 
 
-def test_warmup_fetch_failure_degrades_to_no_warmup(client, monkeypatch):
-    full = _full_df()
-    main_only = full.loc[full.index >= pd.to_datetime(START_AT * 1000, unit="ms")]
-    monkeypatch.setattr(provider, "_fetch_ohlcv", _range_fetch(main_only))
-    baseline = _post(client, RSI_TOOL, RSI_PARAMS)
-
-    good = _range_fetch(full)
-
+def test_warmup_fetch_failure_rejects_without_shortage_hint(client, monkeypatch):
+    good = _range_fetch(_full_df())
     def flaky(exchange, market, symbol, timeframe, start, end):
         if start < START_AT:
             raise RuntimeError("RATE_LIMITED: central market data gap")
         return good(exchange, market, symbol, timeframe, start, end)
-
     monkeypatch.setattr(provider, "_fetch_ohlcv", flaky)
-    degraded = _post(client, RSI_TOOL, RSI_PARAMS)
-    assert degraded["assumptions"]["indicator_warmup_bars"] == 0
-    assert _comparable(degraded) == _comparable(baseline)
+    failed = _post(client, RSI_TOOL, RSI_PARAMS, expected="failed")
+    assert failed["error_type"] == "WARMUP_FETCH_FAILED"
+    assert not {"missing_bars", "actual_bars", "suggested_start_at"} & failed["limitations"].keys()
+    assert "trades" not in failed
 
 
 def test_range_ignoring_fetch_never_reuses_main_rows_as_warmup(client, monkeypatch):
     full = _full_df()
     main_only = full.loc[full.index >= pd.to_datetime(START_AT * 1000, unit="ms")].copy()
     monkeypatch.setattr(provider, "_fetch_ohlcv", lambda *a, **kw: main_only)
-    body = _post(client, RSI_TOOL, RSI_PARAMS)
-    assert body["assumptions"]["indicator_warmup_bars"] == 0
-    assert body["trades"] == []
+    body = _post(client, RSI_TOOL, RSI_PARAMS, expected="failed")
+    assert body["error_type"] == "WARMUP_INSUFFICIENT"
+    assert body["limitations"]["actual_bars"] == 0
+    assert "trades" not in body
 
 
 @pytest.mark.parametrize(
@@ -204,8 +195,8 @@ def test_warmup_results_cover_main_range_only(client, monkeypatch, tool_id, para
     body = _post(client, tool_id, params)
 
     built = provider.TOOL_SPECS[tool_id]["build"](params)
-    target = built.get("ema_warmup_target_bars", built["min_bars"])
-    assert body["assumptions"]["indicator_warmup_bars"] == min(target, WARMUP_COUNT)
+    target = built["required_warmup"]
+    assert body["assumptions"]["indicator_warmup_bars"] == target
     for trade in body["trades"]:
         assert _to_epoch(trade["opened_at"]) >= START_AT
         assert _to_epoch(trade["closed_at"]) <= END_AT
@@ -276,7 +267,7 @@ def _fetch_daily_warmup_at_exchange_boundaries(monkeypatch, start_sec):
 
     monkeypatch.setattr(provider, "_fetch_ohlcv", closed_fetch)
     first = pd.to_datetime(((start_sec + DAY - 1) // DAY) * DAY, unit="s")
-    main_df = full.loc[full.index >= first]
+    main_df = fetch("binance", "spot", "BTCUSDT", "1d", int(first.timestamp()), END_AT)
     warm = provider._fetch_template_warmup("binance", "spot", "BTCUSDT", "1d", start_sec, 43, main_df)
     return warm, main_df, calls
 
@@ -299,5 +290,8 @@ def test_aligned_daily_start_keeps_exact_warmup_count(monkeypatch):
 def test_warmup_since_is_no_later_than_aligned_bucket_minus_requested_bars(monkeypatch, offset):
     """取数起点必须不晚于对齐桶减43周期，不能仅靠tail裁剪补根数。"""
     _, _, calls = _fetch_daily_warmup_at_exchange_boundaries(monkeypatch, START_AT + offset)
-    assert len(calls) == 1
-    assert calls[0][0] <= START_AT - 43 * DAY
+    aligned_start = ((START_AT + offset + DAY - 1) // DAY) * DAY
+    history_calls = [call for call in calls if call[1] <= aligned_start]
+    assert len(history_calls) == 1
+    assert history_calls[0][0] <= START_AT - 43 * DAY
+    assert [call for call in calls if call[0] >= aligned_start] == [(aligned_start, END_AT)]
