@@ -261,6 +261,7 @@ def test_every_registered_single_template_consumes_holding_bars(name):
     if name == 'chan_3buy':
         from test_9t6_chan_3buy import frame as chan_frame
         data = chan_frame()
+        params['max_holding_bars'] = 2  # close14 expires before the native target on15
     tf = '1h'
     if name == 'us_open_momentum':
         data.index = pd.date_range('2026-01-01', periods=len(data), freq='15min')
@@ -280,6 +281,7 @@ def test_every_registered_single_template_consumes_holding_bars(name):
     trades = Backtest(data, cls, cash=100000, exclusive_orders=True, finalize_trades=True).run()['_trades']
     assert len(trades) and reasons, name
     assert all(trades.ExitBar-trades.EntryBar <= 3), name
+
 
 
 def test_enabled_without_expiry_has_no_holding_assumptions():

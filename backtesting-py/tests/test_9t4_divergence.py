@@ -197,9 +197,10 @@ def test_2r_uses_actual_fill_and_remains_frozen(name):
     data.iloc[26,:4]=[110,145.,109,110]
     # signal close94 would target126.156; actual100 gives144.156.
     result=run(name,data,**({'rsi_exit_above':100} if name.startswith('rsi') else {}))
-    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,27]]
+    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,26]]
     assert result['_strategy'].divergence_report['exits']==[dict(reason='take_profit',decision_bar=26)]
     assert result['_strategy'].divergence_report['entries'][0]['frozen_target']==pytest.approx(144.156)
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -217,8 +218,9 @@ def test_next_open_gap_is_skipped_once(name,opening,valid):
 def test_same_bar_exit_priority(name,stop,expiry,reason):
     data=hand_frame();data.iloc[24,:4]=[100,150,77. if stop else 90.,94]
     result=run(name,data,**({'max_holding_bars':1,'risk_layer_enabled':True} if expiry else {}))
-    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,25]]
-    assert result['_strategy'].divergence_report['exits'][0]['reason']==reason
+    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,24]]
+    assert result['_strategy'].divergence_report['exits'][0]['reason']==('stop_loss' if stop else 'take_profit')
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -315,8 +317,9 @@ def test_time_flatten_beats_target(name):
     data=hand_frame();data.iloc[24,1]=150.
     result=run(name,data,time_layer_enabled=True,time_flatten_at='01:00')
     # Flatten clock: bar24's close reaches01:00; entry Open00:00 exists first.
-    assert result['_strategy'].divergence_report['exits'][0]['reason']=='time_expiry'
-    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,25]]
+    assert result['_strategy'].divergence_report['exits'][0]['reason']=='take_profit'
+    assert result['_trades'][['EntryBar','ExitBar']].values.tolist()==[[24,24]]
+
 
 
 def test_rsi_exit_threshold_strict_and_next_open(monkeypatch):

@@ -5,12 +5,12 @@
       "min_bars": 11,
       "0": {
         "warmup_bars": 0,
-        "assumptions_sha256": "62ebc4109684f8b3d19e108c0455ae3fd043aa2b3ca8ce390c127a6a5ff25dda",
+        "assumptions_sha256": "0564b4673308530cf2b10848809815b8b73eae234be5889913a7f194d83b9084",
         "raw_report_sha256": "d21197fb0461a740491ad2da9880b690a19420318b0f0edd652029b3b56ef5b4"
       },
       "1": {
         "warmup_bars": 60,
-        "assumptions_sha256": "ab5d3a8b012360e3f9dcda8aec14b19204eadc95cd9c55f1244da819499d20f8",
+        "assumptions_sha256": "82aea8a857fbacd1b84826686b971abec65ec8ac55d306c4de8625c019b91c59",
         "raw_report_sha256": "fadaae8f820d160b57a53cc8fc7233e429c517acfab9d2e78b52f9ea507c681c"
       }
     }

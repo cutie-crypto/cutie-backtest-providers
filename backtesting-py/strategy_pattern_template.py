@@ -12,6 +12,7 @@ import pandas as pd
 from backtesting import Strategy
 
 from strategy_candle_patterns import candle_geometry, candle_patterns
+from strategy_risk_overlay import RiskState
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class PatternEntry:
 def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initial_capital,
                           breakout_window=3, trend_filter=False, rsi_series=None):
     class LongPatternStrategy(mixin, Strategy):
+        _template_native = True
         _risk = risk
         _initial_capital = initial_capital
 
@@ -99,29 +101,29 @@ def make_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk, initi
             # Per-backtest instance only; other templates retain their exact broker.
             self._broker._process_orders = guarded_process_orders
 
+        def _risk_native_state(self, trade):
+            if getattr(self, "_risk_trade", None) is not trade:
+                self._risk_trade = trade
+                stop = Decimal(str(trade.tag.stop))
+                entry = Decimal(str(trade.entry_price))
+                distance = abs(entry - stop)
+                target = entry + distance * Decimal(str(reward_r))
+                self._risk_state = RiskState(entry, stop, target, distance, "long",
+                                             original_units=abs(trade.size))
+
         def _risk_check_exit(self):
-            # Also used by the shared broker insolvency bridge. Supply the frozen
-            # pattern stop to T2-2b arbitration before checking expiry/target.
             if not self.position or not self.trades:
                 return False
             trade = self.trades[-1]
-            if any(order.parent_trade is trade for order in self.orders):
+            if any(order.parent_trade is trade and not order.is_contingent for order in self.orders):
                 return True
-            stop = trade.tag.stop
-            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(Decimal(str(stop))):
+            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(Decimal(str(trade.tag.stop))):
                 return True
-            target = trade.entry_price + (trade.entry_price - stop) * reward_r
-            # A trigger queues a market close; the engine fills at the next Open.
-            if self.data.Low[-1] <= stop:
-                self._risk_exit_reason = "stop_loss"
-            elif (self._time_config is not None or self._risk.get("max_holding_bars")) and (fact := self._holding_expiry()).due:
+            if (self._time_config is not None or self._risk.get("max_holding_bars")) and (fact := self._holding_expiry()).due:
                 self._record_holding_expiry(fact)
-            elif self.data.High[-1] >= target:
-                self._risk_exit_reason = "take_profit"
-            else:
-                return False
-            self.position.close()
-            return True
+                self.position.close()
+                return True
+            return False
 
         def next(self):
             if self.position:
@@ -162,10 +164,10 @@ def make_short_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk,
     bearish doji reversal. The mirror of the long template.
 
     Stop = pattern anchor High * 1.001 frozen at the signal; target = entry - (stop - entry) * reward_r;
-    an entry open at or above the frozen stop is skipped; the stop precedes holding expiry, which
-    precedes the target; isolated liquidation arbitrates against the frozen stop (T2-2b).
+    an entry open at or above the frozen stop is skipped; native stop and target precede holding expiry; isolated liquidation arbitrates against the frozen stop (T2-2b).
     """
     class ShortPatternStrategy(mixin, Strategy):
+        _template_native = True
         _risk = risk
         _initial_capital = initial_capital
 
@@ -225,29 +227,29 @@ def make_short_pattern_strategy(mixin, *, kind, position_filter, reward_r, risk,
 
             self._broker._process_orders = guarded_process_orders
 
+        def _risk_native_state(self, trade):
+            if getattr(self, "_risk_trade", None) is not trade:
+                self._risk_trade = trade
+                stop = Decimal(str(trade.tag.stop))
+                entry = Decimal(str(trade.entry_price))
+                distance = abs(entry - stop)
+                target = entry - distance * Decimal(str(reward_r))
+                self._risk_state = RiskState(entry, stop, target, distance, "short",
+                                             original_units=abs(trade.size))
+
         def _risk_check_exit(self):
-            # Also used by the shared broker insolvency bridge. Supply the frozen
-            # pattern stop to T2-2b arbitration before checking expiry/target.
             if not self.position or not self.trades:
                 return False
             trade = self.trades[-1]
-            if any(order.parent_trade is trade for order in self.orders):
+            if any(order.parent_trade is trade and not order.is_contingent for order in self.orders):
                 return True
-            stop = trade.tag.stop
-            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(Decimal(str(stop))):
+            if self._risk.get("leverage", 1) > 1 and self._risk_isolated_exit(Decimal(str(trade.tag.stop))):
                 return True
-            target = trade.entry_price - (stop - trade.entry_price) * reward_r
-            # A trigger queues a market close; the engine fills at the next Open.
-            if self.data.High[-1] >= stop:
-                self._risk_exit_reason = "stop_loss"
-            elif (self._time_config is not None or self._risk.get("max_holding_bars")) and (fact := self._holding_expiry()).due:
+            if (self._time_config is not None or self._risk.get("max_holding_bars")) and (fact := self._holding_expiry()).due:
                 self._record_holding_expiry(fact)
-            elif self.data.Low[-1] <= target:
-                self._risk_exit_reason = "take_profit"
-            else:
-                return False
-            self.position.close()
-            return True
+                self.position.close()
+                return True
+            return False
 
         def next(self):
             if self.position:

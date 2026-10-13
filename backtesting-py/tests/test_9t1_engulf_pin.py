@@ -125,10 +125,11 @@ def test_r_target_from_actual_entry(name, r, hit):
     assert len(trades) == int(hit)
     if hit:
         assert trades.iloc[0].EntryBar == 26
-        assert trades.iloc[0].ExitBar == 28
-        assert trades.iloc[0].ExitPrice == 112  # market fill, never target
+        assert trades.iloc[0].ExitBar == 27
+        assert trades.iloc[0].ExitPrice == pytest.approx(target)  # native TP fills the trigger
     else:
         assert result['_strategy'].position
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -140,8 +141,9 @@ def test_buffered_frozen_stop(name, low, hit):
     result = run(name, data)
     assert len(result['_trades']) == int(hit)
     if hit:
-        assert result['_trades'].iloc[0].ExitBar == 28
-        assert result['_trades'].iloc[0].ExitPrice == 101
+        assert result['_trades'].iloc[0].ExitBar == 27
+        assert result['_trades'].iloc[0].ExitPrice == pytest.approx(96.903)
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -155,10 +157,11 @@ def test_gap_skips_before_building_position(name, opening, skip):
     assert len(result['_trades']) == int(not skip)
     if not skip:
         assert result['_trades'].iloc[0].EntryBar == 26
-        assert result['_trades'].iloc[0].ExitBar == 27  # tiny risk makes this bar hit 2R
+        assert result['_trades'].iloc[0].ExitBar == 26  # native TP can fill on the entry bar
     if skip:
         assert report['skipped_entries'] == [dict(reason='entry_open_at_or_below_frozen_stop',
             signal_bar=25, entry_bar=26, entry_open=opening, frozen_stop=pytest.approx(96.903))]
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -222,8 +225,9 @@ def test_time_decorator_gates_real_entries(name):
     allowed = run(name, data, dict(time_layer_enabled=True, time_session_start='06:00', time_session_end='10:00'))
     denied = run(name, data, dict(time_layer_enabled=True, time_session_start='07:00', time_session_end='10:00'))
     assert allowed['_trades'].iloc[0].EntryBar == 30
-    assert allowed['_trades'].iloc[0].ExitBar == 34
+    assert allowed['_trades'].iloc[0].ExitBar == 33
     assert denied['_trades'].empty and not denied['_strategy'].position
+
 
 
 @pytest.mark.parametrize('name', NAMES)
@@ -266,12 +270,13 @@ def test_stop_priority_and_holding_expiry(name):
     data = frame(name)
     data.iloc[27, :4] = [110, 130, 96, 110]  # both frozen levels touched
     result = run(name, data)
-    assert result['_trades'].iloc[0].ExitBar == 28
+    assert result['_trades'].iloc[0].ExitBar == 27
     assert result['_strategy']._risk_exit_reason == 'stop_loss'
     expiry = run(name, compatibility_frame(name),
                  dict(risk_layer_enabled=True, max_holding_bars=1))
     assert expiry['_trades'].iloc[0].ExitBar == 31
     assert expiry['_strategy']._risk_exit_reason == 'time_expiry'
+
 
 
 @pytest.mark.parametrize('name', NAMES)

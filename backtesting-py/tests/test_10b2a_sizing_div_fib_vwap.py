@@ -81,7 +81,7 @@ def doubled(name):
 COMPOUND = {
     'macd_bullish_divergence': ('doubled', ['10000.0000', '10045.2900'], ['4.529', '4.549']),
     'rsi_bullish_divergence': ('doubled', ['10000.0000', '10045.2900'], ['4.529', '4.549']),
-    'fibonacci_retracement': ('doubled', ['10000.0000', '9958.5440'], ['20.728', '20.642']),
+    'fibonacci_retracement': ('doubled', ['10000.0000', '10228.0080'], ['20.728', '21.201']),
     'vwap_reversion': ('single', ['10000.0000', '9900.00064'], ['34.722', '26.052']),
 }
 

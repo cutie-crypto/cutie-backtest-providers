@@ -14,14 +14,14 @@
     },
     "bullish_doji_reversal": {
       "futures": {
+        "v2": "3a7ce35c8d144899be61c5b6344017b0dfcd0f9af5d7bf8de4cc0ca73748880f",
         "assumptions": "6c7b90bea763803d3901497484bbdc6ee66abae2526bbb9da193506e7f9c075b",
-        "raw_report": "94a99adfb36539f49744d4368d464644ce4370f4f9cc95f906e552175cfe108f",
-        "v2": "750f36f0644803be8738c19ee4645e29d20d85452821ce455df058d8e8cd08a0"
+        "raw_report": "5ff0edc8ca0b47c94f8a7970ae67e9697c6d41b8205dd49ec59626417f9852a3"
       },
       "spot": {
+        "v2": "8168c0f0b3abc201dd91b91ba84a73a26f6a9bac05378c6d0f47792b4509adb3",
         "assumptions": "cd8e593407d398502d5660112a32b2a322858f7d635355a0a1b67544035c3398",
-        "raw_report": "13a8e8afa6fa17e53fbeba93f6ff90fa76517ae24189fee72fdd2810718a086f",
-        "v2": "694ab5f09d53f5dec78404b9400cdcf51ba10e3f8f49966d2d72f57f44b77f37"
+        "raw_report": "298682cb8ff1379c907ca05b74ae2de0961824084081b625fe8f60734cdaf64f"
       }
     },
     "bullish_engulfing": {
