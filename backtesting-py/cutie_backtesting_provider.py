@@ -4401,6 +4401,64 @@ class _TurtleGroupMixin(_TimeLayerMixin):
         self._group_take = None
         self._group_exit_reasons = {}
         self._group_n_stop = {}
+        self._turtle_native_install()
+
+    def _turtle_native_install(self) -> None:
+        broker = self._broker
+        process, reduced = broker._process_orders, broker._reduce_trade
+        self._turtle_closed_bar = -1
+
+        def on_reduce(trade, price, size, time_index):
+            order = _filled_parent_order(broker.orders, trade, self.data)
+            if order is not None and order in (trade._sl_order, trade._tp_order):
+                reason = "stop" if order is trade._sl_order else "take_profit"
+                _mark_exit_kind(self, "stop_loss" if reason == "stop" else "take_profit")
+                self._group_exit_reasons[self._group_id] = reason
+                self._closing_group = True
+                self._turtle_closed_bar = len(self.data) - 1
+                if self._pending_unit is not None and self._pending_unit in self.orders:
+                    self._pending_unit.cancel()
+                    self._pending_unit = None
+            reduced(trade, price, size, time_index)
+
+        def protect():
+            final = self.__dict__.get("_total_bars")
+            if final is not None and len(self.data) >= final:
+                for trade in self.trades:
+                    trade.sl = trade.tp = None
+                return
+            # All stops go ahead of every target in the group order queue.
+            for trade in self.trades:
+                trade.tp = float(self._group_take) if self._group_take is not None else None
+            for trade in self.trades:
+                # A nonpositive long stop cannot trigger on positive market prices.
+                trade.sl = self._group_stop if self._group_stop > 0 else None
+
+        def protected_process():
+            final = self.__dict__.get("_total_bars")
+            if final is not None and len(self.data) >= final:
+                protect()
+            pending = self._pending_unit
+            if pending is not None and pending in self.orders and self.trades and not self._closing_group:
+                opening = self.data.Open[-1]
+                stop_gap = opening <= self._group_stop if self._group_side == 1 else opening >= self._group_stop
+                take_gap = self._group_take is not None and (
+                    Decimal(str(opening)) >= self._group_take if self._group_side == 1
+                    else Decimal(str(opening)) <= self._group_take)
+                if not stop_gap and not take_gap:
+                    # The queued add fills at open before intrabar protection.
+                    # An opening gap through existing protection still closes first.
+                    for trade in self.trades:
+                        trade.sl = trade.tp = None
+            process()
+            pending = self._pending_unit
+            if pending is not None and pending not in self.orders:
+                self._turtle_sync()
+                if self.trades:
+                    protect()
+                    process()  # The actual add fill updates the whole group's stop on this bar.
+
+        broker._reduce_trade, broker._process_orders = on_reduce, protected_process
 
     def _turtle_sync(self) -> bool:
         # Called after broker.next(): a queued market order has either filled or
@@ -4443,14 +4501,11 @@ class _TurtleGroupMixin(_TimeLayerMixin):
         self._closing_group = True
 
     def _turtle_next(self) -> None:
-        if self._turtle_sync() or self._closing_group or self._pending_unit is not None:
+        synced = self._turtle_sync()
+        if synced or self._turtle_closed_bar == len(self.data) - 1 or self._closing_group or self._pending_unit is not None:
             return
         price = self.data.Close[-1]
         if self.position:
-            if (self.data.Low[-1] <= self._group_stop if self._group_side == 1
-                    else self.data.High[-1] >= self._group_stop):
-                self._turtle_close("stop")
-                return
             time_enabled = self._time_config is not None
             if self._turtle_risk.get("risk_layer_enabled") or time_enabled:
                 first = self.trades[0]
@@ -4463,12 +4518,6 @@ class _TurtleGroupMixin(_TimeLayerMixin):
                     if due.flatten_delay_bars is not None:
                         self._time_context.flatten_delays.append(due.flatten_delay_bars)
                     self._turtle_close("time_expiry")
-                    return
-                if self._group_take is not None and (
-                    Decimal(str(self.data.High[-1])) >= self._group_take if self._group_side == 1
-                    else Decimal(str(self.data.Low[-1])) <= self._group_take
-                ):
-                    self._turtle_close("take_profit")
                     return
             if (price < self.exit_low[-1] if self._group_side == 1
                     else price > self.exit_high[-1]):

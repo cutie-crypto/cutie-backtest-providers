@@ -58,11 +58,13 @@ def run(data, params, finalize=True):
     return stats['_strategy'], cls, trades
 
 
-# ---- off state: complete responses byte-identical to 4d29dfa ----
+# ---- off state: PSF-P2c native responses from the original 4d29dfa market seed ----
 
 def test_baseline_fixture_is_pinned_to_4d29dfa():
     assert BASELINE['baseline_sha'] == capture.BASELINE_SHA
     assert set(BASELINE['responses']) == set(capture.CASES)
+    import hashlib, inspect
+    assert BASELINE['capture_source_sha256'] == hashlib.sha256(inspect.getsource(p._TurtleGroupMixin).encode()).hexdigest()
 
 
 @pytest.mark.parametrize('case', sorted(capture.CASES))
@@ -213,7 +215,7 @@ def test_same_bar_group_stop_beats_time_expiry():
     # Holding due at bar 12 (decision 13:00, 120 min after the 11:00 fill) and bar 12 breaks the stop.
     strategy, _, trades = run(data, {'max_units': 1, 'time_layer_enabled': True,
                                      'time_max_holding_minutes': 120}, finalize=False)
-    assert list(trades.ExitBar) == [13]
+    assert list(trades.ExitBar) == [12]
     assert strategy._group_exit_reasons == {'turtle-1': 'stop'}
     _, _, no_stop = run(frame(rows[:12] + [[103.5, 104, 103, 103.5]] + [FLAT] * 3),
                         {'max_units': 1, 'time_layer_enabled': True, 'time_max_holding_minutes': 120},
