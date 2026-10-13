@@ -18,16 +18,17 @@ def main_digest(main):
 
 @lru_cache(maxsize=1)
 def cases():
-    return json.loads((Path(__file__).parent / 'fixtures/warmup_b5_financial.json').read_text())['cases']
+    return json.loads((Path(__file__).parent / 'fixtures/warmup_b5_financial.json').read_text())
 
 
-def matches(request, main):
-    return [row for row in cases() if digest(row['request']) == digest(request)
+def matches(request, main, key='cases'):
+    return [row for row in cases()[key] if digest(row['request']) == digest(request)
             and row['main_sha256'] == main_digest(main)]
 
 
 def seed_reader(request, main, old_reader):
     audited = bool(matches(request, main))
+    assert audited or matches(request, main, 'stopped_requests'), 'unaudited request/main; stop'
     def read(*args, **kwargs):
         seed = old_reader(*args)
         return extend_seed(seed, args[3], args[5], args[6]) if audited else seed
@@ -36,6 +37,7 @@ def seed_reader(request, main, old_reader):
 
 def check_financial(request, main, body):
     rows = matches(request, main)
+    assert rows or matches(request, main, 'stopped_requests'), 'unaudited request/main; stop'
     if rows:
         assert body['result_status'] == 'success', body
         actual = digest({key: body[key] for key in

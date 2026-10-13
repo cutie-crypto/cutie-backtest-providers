@@ -1127,5 +1127,28 @@
       "main_sha256": "8958aece75218152ea7a4d570039bfb64816c72c37e48ea23c1375a7247af674",
       "financial_sha256": "c31ff321cbf1d029cc2fac0338bce1e137b03c3afd4f17f2d9ad6416894a5414"
     }
+  ],
+  "stopped_requests": [
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.ema_rsi_pullback",
+          "provider_params": {
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba"
+    }
   ]
 }
