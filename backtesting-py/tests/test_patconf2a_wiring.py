@@ -64,7 +64,7 @@ def test_wired_templates_are_exactly_the_whitelist():
 @pytest.mark.parametrize('tool', sorted(WIRED))
 def test_switch_on_registers_signals_on_the_golden_frame(tool, monkeypatch, tmp_path):
     params = {**cap.params_for(tool), **GOLDEN_PARAMS.get(tool, {}), **LAYER}
-    body, _ = cap.post(monkeypatch, tmp_path, tool, params, 'contiguous')
+    body, _ = cap.post(monkeypatch, tmp_path, tool, params, 'contiguous', complete=True)
     assert body['result_status'] == 'success', body
     filters = body['raw_report']['entry_filters']
     assert filters['predicates'] == {'pattern_confirm': FilterConfig.parse(LAYER).report()['predicates']['pattern_confirm']}
@@ -79,7 +79,7 @@ def test_switch_on_registers_signals_on_the_golden_frame(tool, monkeypatch, tmp_
 
 def test_volume_breakout_golden_defaults_have_no_signal_to_register(monkeypatch, tmp_path):
     body, _ = cap.post(monkeypatch, tmp_path, 'volume_breakout', {**cap.params_for('volume_breakout'), **LAYER},
-                       'contiguous')
+                       'contiguous', complete=True)
     assert body['assumptions']['pattern_confirm']['registered'] == 0 and body['trades'] == []
 
 
@@ -170,14 +170,18 @@ def post_frame(monkeypatch, tmp_path, tool, params, data, prefix):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *args: data.copy())
-    monkeypatch.setattr(p, '_fetch_template_warmup',
-                        lambda *args: prefix.tail(args[5]).copy() if args[5] > 0 else prefix.iloc[:0].copy())
+
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **kw: None)
     request = dict(run_id='patconf2a', provider_tool_id=PREFIX + tool, provider_params=params, symbol='BTCUSDT',
                    market='futures', timeframe='1h', start_at=int(data.index[0].timestamp()),
                    end_at=int((data.index[-1] + pd.Timedelta('1h')).timestamp()), initial_capital='10000',
                    fee_bps='0', slippage_bps='0')
-    return TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json()
+    from _warmup_b5_fixture import seed_reader, check_financial
+    wire = {'backtest': request}
+    old = lambda *args: prefix.tail(args[5]).copy() if args[5] > 0 else prefix.iloc[:0].copy()
+    monkeypatch.setattr(p, '_fetch_template_warmup', seed_reader(wire, data, old))
+    body = TestClient(p.app).post('/cutie/backtest', json=wire).json()
+    return check_financial(wire, data, body)
 
 
 def http_frames(after=(103,) * 6):

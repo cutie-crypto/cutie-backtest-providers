@@ -1,0 +1,1131 @@
+{
+  "provider_source": "678b4e1",
+  "runtime_modules": "0da4fc7",
+  "cases": [
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.adx_di_cross",
+          "provider_params": {
+            "adx_period": 7,
+            "adx_threshold": 15,
+            "adx_exit": 10,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "2a740669e8612f415dff0da8298551988d82106239dafa5d8f480a8fcfbb61ce"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.bias_reversion",
+          "provider_params": {
+            "ema_period": 10,
+            "bias_entry_pct": 1,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "73c5c7707cc9041de0a8e4e1d394f7f1b48beac627cd58199a417150206caf18"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.bollinger_breakout",
+          "provider_params": {
+            "bb_period": 10,
+            "bb_std": 1,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "154f91f406902759c4451ad8232fd67974d26aadefe513ac75f8bdd7b7afabbb"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.bollinger_reversal",
+          "provider_params": {
+            "bb_period": 10,
+            "bb_std": 1,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "d99174d91a8c09cdb052f03661b7ae2bc92fd33432992f13025973b3604511cf"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.bollinger_squeeze_breakout",
+          "provider_params": {
+            "bb_period": 20,
+            "bb_std": 1,
+            "bandwidth_lookback": 50,
+            "squeeze_pct": 40,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "8418d732d1851953995ce9e58ffce8d78fe01164aa63b309c51d1ed7b1c89158"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.breakout",
+          "provider_params": {
+            "lookback": 5,
+            "exit_lookback": 3,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "cced250b2289e2cb08222bfcd39098cc7a60debeaa9523d741e7ce39d8f878a8"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.cci_rsi",
+          "provider_params": {
+            "cci_period": 5,
+            "rsi_period": 5,
+            "cci_oversold": -50,
+            "cci_overbought": 50,
+            "rsi_oversold": 40,
+            "rsi_overbought": 60,
+            "direction": "long",
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "ema_fast": 5,
+            "ema_slow": 20,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "f637fc34e1077612633bb20ec04b5072ba1d41fde4e80a965d8e41c4d5d12695"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.ema_pullback",
+          "provider_params": {
+            "ema_fast": 5,
+            "ema_slow": 30,
+            "pullback_tolerance_pct": 1,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "73c4c694a1f208619657e7dd071c2702170107513e5fa371521ade54ced0dc13"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.ema_trend_rsi",
+          "provider_params": {
+            "ema_fast": 5,
+            "ema_slow": 20,
+            "rsi_period": 5,
+            "rsi_entry_below": 60,
+            "rsi_exit_above": 70,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.ema_triple_alignment",
+          "provider_params": {
+            "ema_short": 5,
+            "ema_mid": 20,
+            "ema_long": 60,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "fe63c143c69e74207f319cfa49566c43fba8750267e24928f910946e59c88181"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.ichimoku_cloud_breakout",
+          "provider_params": {
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "3199eb9e0632f30c50beabf69f3970ca01bc2237e60adfa2b19fd00af56a67a3"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.keltner_breakout",
+          "provider_params": {
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "e0d9ddf0e6d0f076c0e8693499d6c84682b8f1d86833c77a48d714981e395594"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.macd",
+          "provider_params": {
+            "fast": 5,
+            "slow": 15,
+            "signal": 3,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "a3c5296d8f89065e6fcded15b3ffb64d06a70b04219a39877396c13942a5dae9"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.macd_above_zero",
+          "provider_params": {
+            "fast": 5,
+            "slow": 15,
+            "signal": 3,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "862d65547b7035df0d40a531e2080e99966fffa544fb340cc2451ebf621c295c"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.parabolic_sar",
+          "provider_params": {
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "6bdb15668195a20c9fdf3dd22c81e35c2c144488c8b246ed3b079e6872b527f3"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.roc",
+          "provider_params": {
+            "roc_period": 5,
+            "entry_threshold": 1,
+            "exit_threshold": 0,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "6301ff512fb07daeed5f426461e90c62c7fc24311363535dcf2c430cdd7111eb"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.rsi_reversal",
+          "provider_params": {
+            "rsi_period": 5,
+            "oversold": 40,
+            "overbought": 60,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "73398818aa2443eba69580b7f1ac0005847f91365573d26a211fcac2fae5fda9"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.stoch_oversold_cross",
+          "provider_params": {
+            "stoch_period": 14,
+            "stoch_smooth": 3,
+            "stoch_d": 3,
+            "oversold": 30,
+            "overbought": 70,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.supertrend",
+          "provider_params": {
+            "atr_period": 5,
+            "multiplier": 1,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "2ff75b66fccb31e96852dcc439bb128a48a943a142af71463f2f9241613ed1f0"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.volume_breakout",
+          "provider_params": {
+            "lookback": 10,
+            "volume_avg_period": 5,
+            "volume_multiple": 1.2,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "7df6fd37dacee26daee801c6b416ddbde6f8a7a7b15e3d05b3e4a0bd37c55ffa"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.volume_breakout",
+          "provider_params": {
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "30b5e3069c8e179686d184a086bd67b99849d8c71361758744f9bf7af6aaeb00"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "plow2a",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "ema_fast": 5,
+            "ema_slow": 20
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767441600,
+          "end_at": 1768737600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "f1436231123e224a5da3bf50c48131335330f8a5c1a566290275e42b7bd5b2ba",
+      "financial_sha256": "128a686298f793b617d2fa42f9a463ff42d70567f72c3240745e3b66b59a3ae2"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "patconf2a",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "ema_fast": 2,
+            "ema_slow": 3,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true,
+            "time_layer_enabled": true,
+            "time_session_start": "11:30",
+            "time_session_end": "12:30"
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767225600,
+          "end_at": 1767290400,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "0ab654d1e37d11285e97c926c23ceb613fa8a172fa4bc1a380c20f8b4e0f7f8f",
+      "financial_sha256": "296ad9cf094d7063a726910cbd3d6da2f467197d326acfbdb6a381c5f6488570"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "patconf2a",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "ema_fast": 2,
+            "ema_slow": 3,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true,
+            "time_layer_enabled": true,
+            "time_session_start": "11:30",
+            "time_session_end": "13:30"
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767225600,
+          "end_at": 1767290400,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "0ab654d1e37d11285e97c926c23ceb613fa8a172fa4bc1a380c20f8b4e0f7f8f",
+      "financial_sha256": "4f7d3b52460e38f4a924856d7d4e6d13bea3a491e4e33d1e74a2b1f5ca3d14f0"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "patconf2a",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "ema_fast": 2,
+            "ema_slow": 3,
+            "time_layer_enabled": true,
+            "time_session_start": "11:30",
+            "time_session_end": "12:30"
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767225600,
+          "end_at": 1767290400,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "0ab654d1e37d11285e97c926c23ceb613fa8a172fa4bc1a380c20f8b4e0f7f8f",
+      "financial_sha256": "74b619e25e7812e81cf5880dceda0b4fb1d7039385b545aa399e88a17c1c1f44"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "patconf2a",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "ema_fast": 2,
+            "ema_slow": 3,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767225600,
+          "end_at": 1767272400,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "800f8f150db24c00a312357509b8fa4a851e23c717f03a2ac72d7b4782cd0ba6",
+      "financial_sha256": "5b6a8820a6fef04b607dca0c071f13d03ada3ff6d97ffb18b000a64032dfe232"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "patconf2a",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "ema_fast": 2,
+            "ema_slow": 3,
+            "filter_layer_enabled": true,
+            "filter_pattern_confirm_enabled": true,
+            "time_layer_enabled": true,
+            "time_session_start": "11:30",
+            "time_session_end": "13:30"
+          },
+          "symbol": "BTCUSDT",
+          "market": "futures",
+          "timeframe": "1h",
+          "start_at": 1767225600,
+          "end_at": 1767272400,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "800f8f150db24c00a312357509b8fa4a851e23c717f03a2ac72d7b4782cd0ba6",
+      "financial_sha256": "5b6a8820a6fef04b607dca0c071f13d03ada3ff6d97ffb18b000a64032dfe232"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "time_layer_enabled": true,
+            "time_calendar": "us_equity_regular",
+            "time_timezone": "America/New_York",
+            "ema_fast": 2,
+            "ema_slow": 3
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1767384000,
+          "end_at": 1767654000,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "7ebabe43f28f030c5388b3199a48eb29be3d21256d1c531f49fc0bafb672af6c",
+      "financial_sha256": "7c52142fd5c3504d14743015ba2650414450283a5216092123ae8d66e95013a0"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "time_layer_enabled": true,
+            "time_calendar": "us_equity_regular",
+            "time_timezone": "America/New_York",
+            "ema_fast": 2,
+            "ema_slow": 3
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1772949600,
+          "end_at": 1773084600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "b7d449c6ac2cd232424b079b621a2a397ef98b5269134e7e2ce85fe4012bfc6e",
+      "financial_sha256": "f5e0016386d946831efaaf9c237348d8e67721ffa67d19d6fa67373a26aa42e2"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "time_layer_enabled": true,
+            "time_calendar": "cme_btc_regular",
+            "time_timezone": "America/Chicago",
+            "ema_fast": 2,
+            "ema_slow": 3
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1767906000,
+          "end_at": 1767942000,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "90884e761fba8b245ece23b69477b2ff8be69c6efe6930ea7206095814e2210c",
+      "financial_sha256": "13611465298fa775700c82c06386465d8533459c530e5f087fe13e7a3dd5767b"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.ema_cross",
+          "provider_params": {
+            "time_layer_enabled": true,
+            "time_calendar": "cme_btc_regular",
+            "time_timezone": "America/Chicago",
+            "ema_fast": 2,
+            "ema_slow": 3
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1772830800,
+          "end_at": 1773037800,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "8958aece75218152ea7a4d570039bfb64816c72c37e48ea23c1375a7247af674",
+      "financial_sha256": "d1780b2160034cc75853550cfbcc44eae4c2bcc5948b5ffca1f94281f4fa4834"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.rsi_scale_in_out",
+          "provider_params": {
+            "rsi_period": 5,
+            "oversold": 40,
+            "overbought": 60,
+            "buy_notional": 100,
+            "sell_notional": 100,
+            "time_layer_enabled": true,
+            "time_calendar": "us_equity_regular",
+            "time_timezone": "America/New_York"
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1767384000,
+          "end_at": 1767654000,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "7ebabe43f28f030c5388b3199a48eb29be3d21256d1c531f49fc0bafb672af6c",
+      "financial_sha256": "84d31e1cdbd566945d4cf5b484bab5508a584fb1a1ac538ecdd34c4173e9abb1"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.rsi_scale_in_out",
+          "provider_params": {
+            "rsi_period": 5,
+            "oversold": 40,
+            "overbought": 60,
+            "buy_notional": 100,
+            "sell_notional": 100,
+            "time_layer_enabled": true,
+            "time_calendar": "us_equity_regular",
+            "time_timezone": "America/New_York"
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1772949600,
+          "end_at": 1773084600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "b7d449c6ac2cd232424b079b621a2a397ef98b5269134e7e2ce85fe4012bfc6e",
+      "financial_sha256": "2f3efab377c7cfb675f75798c325901796584a4538d824352d6e021f299df828"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.rsi_scale_in_out",
+          "provider_params": {
+            "rsi_period": 5,
+            "oversold": 40,
+            "overbought": 60,
+            "buy_notional": 100,
+            "sell_notional": 100,
+            "time_layer_enabled": true,
+            "time_calendar": "cme_btc_regular",
+            "time_timezone": "America/Chicago"
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1767906000,
+          "end_at": 1767942000,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "90884e761fba8b245ece23b69477b2ff8be69c6efe6930ea7206095814e2210c",
+      "financial_sha256": "b051a688d015413fa2cd2304a447e59cc47e2ec424ca13287c04cf590bcc95a2"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.rsi_scale_in_out",
+          "provider_params": {
+            "rsi_period": 5,
+            "oversold": 40,
+            "overbought": 60,
+            "buy_notional": 100,
+            "sell_notional": 100,
+            "time_layer_enabled": true,
+            "time_calendar": "cme_btc_regular",
+            "time_timezone": "America/Chicago"
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1772830800,
+          "end_at": 1773037800,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "8958aece75218152ea7a4d570039bfb64816c72c37e48ea23c1375a7247af674",
+      "financial_sha256": "3152db5bd4e3d1cf1b7f71af2983d01bb405ee846caa5aa1dee438ef27c4704c"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.grid",
+          "provider_params": {
+            "lower_price": 80,
+            "upper_price": 140,
+            "grid_count": 10,
+            "amount_per_grid": 100,
+            "time_layer_enabled": true,
+            "time_calendar": "us_equity_regular",
+            "time_timezone": "America/New_York"
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1767384000,
+          "end_at": 1767654000,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "7ebabe43f28f030c5388b3199a48eb29be3d21256d1c531f49fc0bafb672af6c",
+      "financial_sha256": "b6b378eb1bc6c1e1906dbe57eab3047d262f38024f2a85c47b15b0a6b41a8c1d"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.grid",
+          "provider_params": {
+            "lower_price": 80,
+            "upper_price": 140,
+            "grid_count": 10,
+            "amount_per_grid": 100,
+            "time_layer_enabled": true,
+            "time_calendar": "us_equity_regular",
+            "time_timezone": "America/New_York"
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1772949600,
+          "end_at": 1773084600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "b7d449c6ac2cd232424b079b621a2a397ef98b5269134e7e2ce85fe4012bfc6e",
+      "financial_sha256": "11ebaa87dc143873cdd3e2f011084fb97298586ba0566de8cbe4eb69d76fd950"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.grid",
+          "provider_params": {
+            "lower_price": 80,
+            "upper_price": 140,
+            "grid_count": 10,
+            "amount_per_grid": 100,
+            "time_layer_enabled": true,
+            "time_calendar": "cme_btc_regular",
+            "time_timezone": "America/Chicago"
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1767906000,
+          "end_at": 1767942000,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "90884e761fba8b245ece23b69477b2ff8be69c6efe6930ea7206095814e2210c",
+      "financial_sha256": "7b0a2741a9c40626d2616c2a811fb04254f45d22280a276604f8533aba014f16"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.grid",
+          "provider_params": {
+            "lower_price": 80,
+            "upper_price": 140,
+            "grid_count": 10,
+            "amount_per_grid": 100,
+            "time_layer_enabled": true,
+            "time_calendar": "cme_btc_regular",
+            "time_timezone": "America/Chicago"
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1772830800,
+          "end_at": 1773037800,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "8958aece75218152ea7a4d570039bfb64816c72c37e48ea23c1375a7247af674",
+      "financial_sha256": "786ffa2914917206b2ca7f57e32e654714efb38a1a220ba3fad03479f7ffbcb3"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.dca",
+          "provider_params": {
+            "amount": 100,
+            "interval": "daily",
+            "profit_target_pct": 1,
+            "time_layer_enabled": true,
+            "time_calendar": "us_equity_regular",
+            "time_timezone": "America/New_York",
+            "dip_pct": 1,
+            "max_dip_adds": 10
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1767384000,
+          "end_at": 1767654000,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "7ebabe43f28f030c5388b3199a48eb29be3d21256d1c531f49fc0bafb672af6c",
+      "financial_sha256": "2f231567a2742939426c30742c188ea335335e50be93ebee6982588f9dc2429a"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.dca",
+          "provider_params": {
+            "amount": 100,
+            "interval": "daily",
+            "profit_target_pct": 1,
+            "time_layer_enabled": true,
+            "time_calendar": "us_equity_regular",
+            "time_timezone": "America/New_York",
+            "dip_pct": 1,
+            "max_dip_adds": 10
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1772949600,
+          "end_at": 1773084600,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "b7d449c6ac2cd232424b079b621a2a397ef98b5269134e7e2ce85fe4012bfc6e",
+      "financial_sha256": "632fe4634beb3303b15d2c1581627811066452de55216372159badfdbcc92595"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.dca",
+          "provider_params": {
+            "amount": 100,
+            "interval": "daily",
+            "profit_target_pct": 1,
+            "time_layer_enabled": true,
+            "time_calendar": "cme_btc_regular",
+            "time_timezone": "America/Chicago",
+            "dip_pct": 1,
+            "max_dip_adds": 10
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1767906000,
+          "end_at": 1767942000,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "90884e761fba8b245ece23b69477b2ff8be69c6efe6930ea7206095814e2210c",
+      "financial_sha256": "9368e85a007012c5987b1c4d7a17414d24e6422675dfd0c943a9e86173bc9042"
+    },
+    {
+      "request": {
+        "backtest": {
+          "run_id": "calendar_6e2",
+          "provider_tool_id": "local.backtesting_py.dca",
+          "provider_params": {
+            "amount": 100,
+            "interval": "daily",
+            "profit_target_pct": 1,
+            "time_layer_enabled": true,
+            "time_calendar": "cme_btc_regular",
+            "time_timezone": "America/Chicago",
+            "dip_pct": 1,
+            "max_dip_adds": 10
+          },
+          "symbol": "BTCUSDT",
+          "market": "spot",
+          "timeframe": "15m",
+          "start_at": 1772830800,
+          "end_at": 1773037800,
+          "initial_capital": "10000",
+          "fee_bps": "0",
+          "slippage_bps": "0"
+        }
+      },
+      "main_sha256": "8958aece75218152ea7a4d570039bfb64816c72c37e48ea23c1375a7247af674",
+      "financial_sha256": "c31ff321cbf1d029cc2fac0338bce1e137b03c3afd4f17f2d9ad6416894a5414"
+    }
+  ]
+}
