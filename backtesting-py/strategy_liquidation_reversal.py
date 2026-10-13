@@ -20,6 +20,10 @@ next candle open -- a gap therefore also fills at the open): stop_loss_pct, then
 take_profit_pct. Time expiry: the first candle close at or after entry open + ``hold_hours`` (= the N-th
 candle with N = hold_hours * 3600 / candle seconds) queues the close, which fills at the next open.
 
+For 1h candles, hour H is available at H+1 and judged once on the H+1 candle;
+percentile mode reads lookback_days * 24 preceding hours, and the drop compares the
+H and H-1 candle closes. 4h and 1d candles retain the daily rules above.
+
 This module only plans the days, validates the series (fail-closed) and holds the strategy; it never
 touches the network itself.
 """
@@ -117,6 +121,8 @@ class LiquidationReversalConfig:
         self.days = ()
         self.assumptions = {}
         self.candle_seconds = None
+        self.series_step = DAY_SECONDS
+        self.series_interval = CENTRAL_INTERVAL
 
     @classmethod
     def parse(cls, params):
@@ -161,6 +167,8 @@ class LiquidationReversalConfig:
             raise ValueError(
                 f"INVALID_PARAMS:hold_hours must be a multiple of the candle length ({seconds // 3600}h for {timeframe})")
         self.candle_seconds = seconds
+        self.series_step = 3600 if timeframe == "1h" else DAY_SECONDS
+        self.series_interval = "1h" if timeframe == "1h" else CENTRAL_INTERVAL
 
     @property
     def hold_bars(self):
@@ -178,9 +186,21 @@ class LiquidationReversalConfig:
         last = ((end_at - 1) // DAY_SECONDS) * DAY_SECONDS - DAY_SECONDS
         return (first, last) if first <= last else None
 
+    def judged_periods(self, start_at, end_at):
+        if self.series_interval != "1h":
+            return self.judged_days(start_at, end_at)
+        first = start_at // self.series_step * self.series_step
+        last = (end_at - 1) // self.series_step * self.series_step - self.series_step
+        return (first, last) if first <= last else None
+
+    @property
+    def lookback_bars(self):
+        return self.lookback * (24 if self.series_interval == "1h" else 1)
+
     def required_range(self, first_day, last_day):
         """(first, last) series timestamps the run reads: look-back before the first day, last judged day."""
-        return first_day - self.lookback * DAY_SECONDS, last_day
+        bars = max(1, self.lookback_bars) if self.series_interval == "1h" else self.lookback
+        return first_day - bars * self.series_step, last_day
 
     def history_unavailable(self, need_first):
         return need_first < EARLIEST_TS
@@ -203,9 +223,12 @@ class LiquidationReversalConfig:
                 raise LiquiditySeriesError(
                     GAP_REASON, f"liquidation row for {utc_date(row.get('ts', 0))} is unreadable",
                     {**self.gap_details(need_first, need_last), "missing_date": utc_date(row.get("ts", 0))})
+            if self.series_interval == "1h" and row["ts"] in by_ts:
+                raise LiquiditySeriesError(GAP_REASON, "liquidation series contains duplicate timestamps",
+                                           self.gap_details(need_first, need_last))
             by_ts[row["ts"]] = value
         days = []
-        for ts in range(need_first, need_last + 1, DAY_SECONDS):
+        for ts in range(need_first, need_last + 1, self.series_step):
             if ts not in by_ts:
                 raise LiquiditySeriesError(
                     GAP_REASON,
@@ -213,15 +236,16 @@ class LiquidationReversalConfig:
                     "partial series",
                     {**self.gap_details(need_first, need_last), "missing_date": utc_date(ts)})
         mode = self.values["threshold_mode"]
-        for day in range(first_day, last_day + 1, DAY_SECONDS):
+        for day in range(first_day, last_day + 1, self.series_step):
             if mode == "percentile":
-                window = [by_ts[day - k * DAY_SECONDS] for k in range(self.lookback, 0, -1)]
+                window = [by_ts[day - k * self.series_step] for k in range(self.lookback_bars, 0, -1)]
                 threshold = percentile_linear(window, self.values["percentile"])
             else:
                 threshold = Decimal(str(self.values["fixed_threshold_usd"]))
             days.append(dict(
                 day=day, value=by_ts[day], threshold=threshold,
-                ts_utc=_iso(day + DAY_SECONDS), label=f"liquidation_long_{utc_date(day)}"))
+                ts_utc=_iso(day + self.series_step),
+                label=f"liquidation_long_{_iso(day) if self.series_interval == '1h' else utc_date(day)}"))
         self.days = tuple(days)
         rows = series.get("rows", ())
         used = [row for row in rows if need_first <= row["ts"] <= need_last]
@@ -233,7 +257,7 @@ class LiquidationReversalConfig:
             symbol=series.get("central_symbol"),
             exchange=CENTRAL_EXCHANGE,
             metric=CENTRAL_METRIC,
-            interval=CENTRAL_INTERVAL,
+            interval=self.series_interval,
             unit="usd",
             first_ts=used[0]["ts"],
             last_ts=used[-1]["ts"],
@@ -242,8 +266,10 @@ class LiquidationReversalConfig:
             count=len(used),
             revision=used[0]["revision"] if used else None,
             earliest_available_date=utc_date(EARLIEST_TS),
-            available_at_rule=f"available_at = ts + {DAY_SECONDS}s; day D is judged once, at the close of the "
-                              "first candle of D+1, and fills at the next candle open",
+            available_at_rule=("available_at = ts + 3600s; hour H is judged once on the H+1 candle close; "
+                               "fills at the next candle open" if self.series_interval == "1h" else
+                               f"available_at = ts + {DAY_SECONDS}s; day D is judged once, at the close of the "
+                               "first candle of D+1, and fills at the next candle open"),
             gap_policy="fail_closed",
             lookback_days=self.lookback,
             judged_days=dict(count=count, first_date=utc_date(first_day), last_date=utc_date(last_day)),
@@ -254,7 +280,7 @@ class LiquidationReversalConfig:
         """Window with no judged day: nothing fetched, no days."""
         self._common_assumptions()
         self.assumptions[ASSUMPTION_KEY] = dict(
-            exchange=CENTRAL_EXCHANGE, metric=CENTRAL_METRIC, interval=CENTRAL_INTERVAL, unit="usd", count=0,
+            exchange=CENTRAL_EXCHANGE, metric=CENTRAL_METRIC, interval=self.series_interval, unit="usd", count=0,
             earliest_available_date=utc_date(EARLIEST_TS), gap_policy="fail_closed",
             judged_days=dict(count=0))
 
@@ -287,6 +313,16 @@ class LiquidationReversalConfig:
             entry_thresholds=[],
         )
 
+        if self.series_interval == "1h":
+            self.assumptions.update(
+                lookback_bars=self.lookback_bars,
+                threshold_rule="p = linear-interpolation percentile of the preceding lookback_days * 24 hours; "
+                               "hour H excluded; fixed mode p = fixed_threshold_usd; entry needs value(H) >= p",
+                drop_rule="close of hour H / close of hour H-1 - 1 <= -min_drop_pct%; no prior candle -> no signal",
+                timing="hour H is judged once on the H+1 candle close; market buy at the next open; only when flat",
+                daily_granularity="hourly liquidation series",
+                data_source="central_metrics:coinglass_aggregated_liquidation_long_1h")
+
 
 def schema():
     return deepcopy(SCHEMA)
@@ -300,7 +336,7 @@ def make_liquidation_strategy(mixin, config, risk, initial_capital):
             super().init()
             self._day_close = {}  # day start (unix s) -> (bar index of the day's last candle, close)
             for index, opened in enumerate(self._opens):
-                self._day_close[int(opened.timestamp()) // DAY_SECONDS * DAY_SECONDS] = (
+                self._day_close[int(opened.timestamp()) // config.series_step * config.series_step] = (
                     index, float(self.data.Close[index]))
             self._liq_by_bar = {}
             self._liq_entries = []
@@ -312,13 +348,13 @@ def make_liquidation_strategy(mixin, config, risk, initial_capital):
                               liquidation_long=_dec(item["value"]), threshold=_dec(item["threshold"]),
                               threshold_mode=config.values["threshold_mode"])
                 self.macro_events.append(record)
-                available = datetime.fromtimestamp(item["day"] + DAY_SECONDS, timezone.utc)
+                available = datetime.fromtimestamp(item["day"] + config.series_step, timezone.utc)
                 decision = bisect_left(self._opens, available)
                 if decision >= len(self._opens):
                     self._skip(record, "event_after_data_end", "skipped_out_of_range")
                     self._count(record)
                     continue
-                if self._opens[decision] >= available + timedelta(days=1):
+                if self._opens[decision] >= available + timedelta(seconds=config.series_step):
                     self._skip(record, "event_in_data_gap", "skipped_out_of_range")
                     self._count(record)
                     continue
@@ -353,7 +389,7 @@ def make_liquidation_strategy(mixin, config, risk, initial_capital):
             self._liq_counts[key] = self._liq_counts.get(key, 0) + 1
 
         def _drop_pct(self, day, bar):
-            today, before = self._day_close.get(day), self._day_close.get(day - DAY_SECONDS)
+            today, before = self._day_close.get(day), self._day_close.get(day - config.series_step)
             if today is None or before is None or today[0] >= bar or before[0] >= bar:
                 return None
             if before[1] <= 0:

@@ -1,5 +1,8 @@
 """S3: Binance top-trader long/short ratio reversal (spot, long only, daily series).
 
+For 1h candles the same ACCOUNT family is read at interval 1h: hour H is available at H+1;
+4h and 1d candles retain the daily rules below.
+
 The ratio comes from the central ``/metrics`` daily series (symbol = base coin, exchange ``Binance``,
 metric ``top_long_short_ratio``, interval ``1d``). The series is the Binance top-trader ACCOUNT ratio,
 independent of which exchange the candles come from.
@@ -62,7 +65,7 @@ def need_range(open_times, bar_seconds):
     """[first, last] day-series ts the decisions on bars opening at ``open_times`` (unix s) consume."""
     first_close = open_times[0] + bar_seconds
     last_close = open_times[-1] + bar_seconds
-    step = SERIES_STEP_SECONDS
+    step = 3600 if bar_seconds == 3600 else SERIES_STEP_SECONDS
     return (first_close // step) * step - step, (last_close // step) * step - step
 
 
@@ -98,15 +101,20 @@ class TopLongShortReversalConfig:
         """Bind the fetched, fail-closed validated series (rows: ``_fetch_metric_series`` output)."""
         self.rows = tuple(sorted(rows, key=lambda row: row["ts"]))
         self.bar_seconds = bar_seconds
+        hourly = bar_seconds == 3600
+        step = 3600 if hourly else SERIES_STEP_SECONDS
+        if hourly:
+            self.signal_block["judgement_rule"] = "each hourly value is judged once, at the first bar close where it is readable"
         first, last = self.rows[0], self.rows[-1]
         self.series_block.update(
-            symbol=symbol, exchange=CENTRAL_EXCHANGE, metric=CENTRAL_METRIC, interval=CENTRAL_INTERVAL,
+            symbol=symbol, exchange=CENTRAL_EXCHANGE, metric=CENTRAL_METRIC, interval="1h" if hourly else CENTRAL_INTERVAL,
             first_ts=first["ts"], last_ts=last["ts"],
             first_date=utc_date(first["ts"]), last_date=utc_date(last["ts"]),
             count=len(self.rows), revision=first["revision"],
             earliest_available_date=utc_date(TOP_LSR_EARLIEST_TS),
-            available_at_rule=f"available_at = ts + {SERIES_STEP_SECONDS}s; a bar-close decision reads the newest "
-                              "row with available_at <= bar close, so day D first trades at the D+1 open",
+            available_at_rule=("available_at = ts + 3600s; hour H first trades at the H+1 open" if hourly else
+                               f"available_at = ts + {step}s; a bar-close decision reads the newest "
+                               "row with available_at <= bar close, so day D first trades at the D+1 open"),
             gap_policy="fail_closed")
 
 

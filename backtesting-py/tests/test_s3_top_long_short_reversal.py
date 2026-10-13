@@ -40,9 +40,10 @@ def flat_frame(bars, freq):
 
 
 def install(monkeypatch, tmp_path, values, data, *, drop=(), min_day=-3, max_day=40, fail=None,
-            ohlcv_calls=None, chunk_calls=None, origin=T0):
+            ohlcv_calls=None, chunk_calls=None, origin=T0, hourly=False):
     """values: {day index: ratio string}; every other day in [min_day, max_day] holds FILLER."""
-    store = {origin + k * DAY: values.get(k, FILLER) for k in range(min_day, max_day + 1) if k not in drop}
+    step = 3600 if hourly else DAY
+    store = {origin + k * step: values.get(k, FILLER) for k in range(min_day, max_day + 1) if k not in drop}
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
 
@@ -57,7 +58,7 @@ def install(monkeypatch, tmp_path, values, data, *, drop=(), min_day=-3, max_day
                                     start_at=start_at, end_at=end_at))
         if fail:
             raise fail
-        if (symbol, exchange, metric, interval) != LABELS:
+        if (symbol, exchange, metric, interval) != (*LABELS[:3], "1h" if hourly else "1d"):
             return []
         return [{'ts': ts, 'value': v} for ts, v in sorted(store.items()) if start_at <= ts <= end_at]
 
@@ -99,7 +100,7 @@ def decisions(body):
 def assert_no_lookahead(body, bar_seconds):
     """Every judged value was fully published (ts + 1 day) at the close of the bar that judged it."""
     for record in decisions(body):
-        assert record['value_ts'] + DAY <= record['decision_bar_open'] + bar_seconds
+        assert record['value_ts'] + (3600 if bar_seconds == 3600 else DAY) <= record['decision_bar_open'] + bar_seconds
 
 
 # ------------------------------------------------------------------ hand-computed 1d scenario
@@ -166,16 +167,16 @@ def test_value_is_not_readable_before_the_next_day(monkeypatch, tmp_path):
     assert_no_lookahead(body, DAY)
 
 
-def test_hourly_value_published_at_midnight(monkeypatch, tmp_path):
-    # Day 1 = 0.65 is published at day 2 00:00 = the close of bar 47; the fill is bar 48's open (not bar 24).
-    install(monkeypatch, tmp_path, {1: '0.65'}, flat_frame(96, 'h'))
+def test_hourly_value_published_at_next_hour(monkeypatch, tmp_path):
+    # Hour 47 = 0.65 is published at hour 48; fills at bar 48 open, never earlier.
+    install(monkeypatch, tmp_path, {47: '0.65'}, flat_frame(96, 'h'), hourly=True, max_day=96)
     body = post(timeframe='1h', bars=96)
     assert body['result_status'] == 'success', body
     assert [leg[:2] for leg in legs(body, 3600)] == [(48, '100')]
     assert_no_lookahead(body, 3600)
 
 
-# ------------------------------------------------------------------ 1h: one judgement per daily value
+# ------------------------------------------------------------------ 1h: one judgement per hourly value
 
 def hourly_stop_frame():
     data = flat_frame(120, 'h')
@@ -184,24 +185,24 @@ def hourly_stop_frame():
     return data
 
 
-def test_hourly_judges_each_value_once_and_stop_blocks_same_day_reentry(monkeypatch, tmp_path):
-    # Day 1 = 0.65 -> buy at bar 48 (day 2 00:00). Bar 50 low touches the stop -> sell at the stop (97) on bar 50.
-    # Bars 51..71 still read day 1's value (<= threshold) but it was judged once: no re-entry that day.
-    # Day 2 = 0.60 is published at bar 71's close -> buy at bar 72. Day 3 = 1.10 -> sell at bar 96.
-    install(monkeypatch, tmp_path, {1: '0.65', 2: '0.60', 3: '1.10'}, hourly_stop_frame())
+def test_hourly_judges_each_value_once_and_stop_consumes_current_hour(monkeypatch, tmp_path):
+    # Hour 47 enters at bar 48. Bar 50 stops out and consumes its own hourly value.
+    # Later hours are above the entry threshold until hour 71; hour 95 exits the second trade.
+    install(monkeypatch, tmp_path, {47: '0.65', 71: '0.60', 95: '1.10'}, hourly_stop_frame(),
+            hourly=True, max_day=120)
     body = post(timeframe='1h', bars=120)
     assert body['result_status'] == 'success', body
     assert legs(body, 3600) == [(48, '100', 50, '97'), (72, '95', 96, '95')]
     counts = body['raw_report'][KEY]['counts']
-    # judged values: days -1..4 (bar 1 reads day -1; bar 119 reads day 4) -> 6, each exactly once
-    assert counts['judged_values'] == 6 and counts['entry_signals'] == 2
+    # Bars 1..119 each read a new hourly value; stop bar 50 consumes its value before normal judgement.
+    assert counts['judged_values'] == 118 and counts['entry_signals'] == 2
     assert counts['stop_loss_exits'] == 1 and counts['exit_signals_in_band'] == 1
     assert_no_lookahead(body, 3600)
 
 
 def test_hourly_first_value_is_judged_once(monkeypatch, tmp_path):
-    # Day -1 (readable already at bar 0/1) holds the trigger: judged once at bar 1 close -> fill at bar 2.
-    install(monkeypatch, tmp_path, {-1: '0.60'}, flat_frame(30, 'h'))
+    # Hour 1 holds the trigger: readable at bar 1 close, filled at hour 2.
+    install(monkeypatch, tmp_path, {1: '0.60'}, flat_frame(30, 'h'), hourly=True, max_day=30)
     body = post(timeframe='1h', bars=30)
     assert [leg[:2] for leg in legs(body, 3600)] == [(2, '100')]
     assert body['raw_report'][KEY]['counts']['entry_signals'] == 1
