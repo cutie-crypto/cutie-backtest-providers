@@ -278,3 +278,44 @@ NONE 不成立,我有 5 条发现。以下只依据所给的 diff 和契约。�
 ### WARMUP-B-4 作者收尾（非第二轮review）
 
 全量检查点238ed39为9106/1563 EXIT=1，对B3+96/-96；35条表面新增在原5d27d91同目录全部复现失败，实际代码新增0。原177簇6条间接转绿已恢复原夹具路径，最终plow单文件104/21 EXIT=1；未再次全量，最终SHA不具有同版全量结果。51原金样变化0。PR98保持draft，目录口径和同版门待后续任务，未放行。
+
+
+## WARMUP-B-5 - opencode DeepSeek 4.1 Flash
+
+Owner 1013新令覆盖原Sonnet要求；实际export核实providerID=opencode-go, modelID=deepseek-v4.1-flash，一轮只读；未用工具、未运行测试。审查仅收到测试增量、新helper全文、金融表结构及2条样本，并未亲读44条整表或完整51份冻结金样，不夸大覆盖。
+
+只读审查完成（未使用工具改动、未运行命令）。
+
+## 总判断
+增量是**纯附加/可选门控**，默认路径（`complete=False`、未命中审计表）与旧行为逐字节等价；三处断言意图未被改写。没有发现会静默放过金融变化的硬阻断缺陷，但**金融冻结守卫存在已知覆盖盲区**，且分支尚非全绿（238 passed / 6 failed），因此**不建议在失败清零、且 16 个金样冲突帧未确认前合入**。
+
+## 断言意图
+- `test_patconf2a_wiring.py:50` 仅新增 `complete=True`；`body` 形状与 `(body, calls)` 返回契约不变，后续 `result_status`/`predicates` 断言原样。
+- `test_patconf2a_wiring.py:67-72` `post_frame`：删掉的 lambda 原样保留为 `old`（`:69`），返回改为 `check_financial(...)`，而 `check_financial` 恒 `return body`，故返回类型不变。
+- `test_time_layer_6e2.py:91-94`：`warm.copy()` 逻辑原样包进 `seed_reader`，`body` 赋值语义不变。
+未改断言。
+
+## 停件排除
+是。表内 44 条均为“有效节点”，`ema_rsi_pullback`、缠论、金融 stop1、原 4 个 `test_none` 都不在表里 → `matches()` 落空 → `check_financial` 只 `return body`、不校验。即这些节点**其金融输出未冻结**，是有意排除，但属覆盖缺口（见下）。
+
+## 金融守卫是否会漏过变化
+核心守卫有效：命中行会比对 `trades/equity_curve/metrics/data_manifest` 的 sha256 并 `stop`（helper `check_financial`，信内 136-143；表 `financial_sha256` 样本 170/194）。但有三个可能“漏过”：
+1. **静默跳过**：`matches` 同时要求 `request` 摘要**与** `main_sha256` 完全一致（helper 123-125）。任一测试的请求参数或主帧发生变化（如改 `GOLDEN_PARAMS`，或 16 个保留原字节的金样冲突恰好涉及所用主帧），守卫会**无声失配**而非报错，审计形同撤销。属非阻断但需在合并前确认 16 冲突不触及这些主帧。
+2. **字段集固定**：只覆盖 4 个键（helper 140-141）。上游若新增/改动其它金融相关字段（如 `raw_report` 内数值）不会被捕获。
+3. **被排除节点不设防**：见上。
+
+## 旧 mock 关键字兼容
+兼容。`post(..., *, complete=False)`（`capture_plow2a_b48e65e.py:13`）为关键字限定且默认假，旧位置调用 `('contiguous')` 不受影响；`source=None` 语义不变。
+
+## 共享 helper 默认调用
+不受影响。`seed_reader` 非命中时 `return seed`（helper 132），与旧 patch 等价；`_complete_seed_fixture.extend_seed` 仅在 `audited` 为真时求值，故未命中行不会触发 `args[3]/args[5]/args[6]` 的索引风险。唯一残余风险：`extend_seed(seed, args[3], args[5], args[6])` 依赖 `_fetch_template_warmup` 至少 7 个**位置**参数且 `old_reader(*args)` 丢弃 kwargs——现有各 lambda 均用位置 `args[5]`，与之一致，但建议确认调用点 arity。
+
+## 阻断/非阻断
+- 阻断：无（就本 diff 语义而言）。
+- 非阻断但须处理：① 6 项失败未清零、`volume_breakout` optin 补丁待下轮确认；② 上条“静默跳过”盲区与 16 冲突帧确认；③ 被排除节点的金融未冻结需显式记录为已知缺口；④ 4 键字段集偏窄。
+
+结论：可继续迭代，**暂不合入**，待失败清零 + 冲突帧/主帧 sha 核对 + 缺口书面记录。
+
+### 作者闭环
+
+未匹配请求/主行情静默跳过已在373ee40收紧：只准审计完整匹配或显式金融停止请求，其余立即assert拒绝；改变主行情首条Open已直接验证拒绝。kwargs由新wrapper吸收，旧mock仍只收位置参数；生产调用7个位置参数已亲读。volume_breakout漏接optin已补，最终两文件239passed/5failed EXIT1。主行情没有被修改，金样冲突来自上游止损成交/报告语义，原字节保持不变。raw_report诊断不在四金融字段hash内，原断言继续约束其意图，未更新非预热诊断金样。金融停止件不做适配，不把它们记成通过。作者小范围返修核验不是第二轮异模型审查；保持draft，不合main、不pin。
