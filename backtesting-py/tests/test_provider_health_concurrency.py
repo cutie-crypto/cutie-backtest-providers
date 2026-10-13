@@ -30,37 +30,51 @@ def client():
         raise_app_exceptions=False), base_url='http://provider')
 
 
-def test_health_200_under_100ms_during_cpu_backtest(setup, monkeypatch):
-    started, finished = threading.Event(), threading.Event()
+@pytest.mark.parametrize('cpu_busy', [True, False], ids=['cpu', 'held_worker'])
+def test_health_answers_before_backtest_is_released(setup, monkeypatch, cpu_busy):
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
 
     def heavy(*args, **kwargs):
         started.set()
-        until = time.perf_counter() + 0.5
-        while time.perf_counter() < until:
-            sum(range(1000))
-        finished.set()
+        try:
+            if cpu_busy:
+                # Keep real Python CPU contention, but let the test decide when work
+                # ends. The deadline only bounds a broken event-loop implementation.
+                deadline = time.perf_counter() + 5
+                while not release.is_set() and time.perf_counter() < deadline:
+                    sum(range(1000))
+            else:
+                release.wait(5)
+        finally:
+            finished.set()
         raise RuntimeError('controlled CPU failure')
 
     monkeypatch.setitem(p.TOOL_SPECS[TOOL], 'build', heavy)
 
+    async def wait_started():
+        while not started.is_set():
+            await asyncio.sleep(0.001)
+
     async def scenario():
         async with client() as c:
-            assert (await c.get('/health')).status_code == 200  # warm dependency imports
+            assert (await c.get('/health')).status_code == 200
             task = asyncio.create_task(c.post('/cutie/backtest', json=payload()))
             try:
-                while not started.is_set():
-                    await asyncio.sleep(0.001)
+                await asyncio.wait_for(wait_started(), timeout=5)
                 assert not finished.is_set(), 'CPU work blocked the HTTP event loop'
                 before = time.perf_counter()
-                response = await c.get('/health')
+                response = await asyncio.wait_for(c.get('/health'), timeout=5)
                 elapsed = time.perf_counter() - before
                 assert response.status_code == 200
                 assert response.json()['ok'] is True
-                assert elapsed < 0.1, elapsed
-                assert not finished.is_set(), 'health only answered after CPU work ended'
+                # Completion must happen while the worker is still held. If health
+                # waits for CPU work or its limiter, the watchdog ends the worker
+                # first and this assertion fails, regardless of machine speed.
+                assert not finished.is_set(), 'health waited for backtest completion'
                 print(f'HEALTH_LATENCY_MS={elapsed * 1000:.2f}')
             finally:
-                await task
+                release.set()
+                await asyncio.wait_for(task, timeout=5)
 
     asyncio.run(scenario())
 
