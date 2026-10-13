@@ -90,12 +90,16 @@ def test_group_stop_fills_all_units_on_touch_bar_and_updates_after_add():
         previous = close
     stop = fx['opens'][22] - 2 * n
     assert stop == 147.421875
+    assert tuple(fx[k][22] for k in ('opens', 'highs', 'lows', 'closes')) == (164, 166, 145, 155)
+    assert fx['lows'][22] <= stop < fx['opens'][22] <= fx['highs'][22]
     stats = Backtest(frame(fx), provider._build_turtle({**fx['params'], 'risk_layer_enabled': True,
                      'max_holding_bars': 3, 'take_profit_pct': 5})['strategy'],
                      cash=fx['cash'], exclusive_orders=False, finalize_trades=False).run()
     third = stats['_trades'].query("Tag == 'turtle-3'")
     assert third.EntryBar.tolist() == third.ExitBar.tolist() == [22]
+    assert third.EntryPrice.tolist() == [164]
     assert third.ExitPrice.tolist() == [stop]
+    assert (third.PnL < 0).all()
 
 
 def test_next_bar_after_group_protective_exit_accepts_reverse_signal():

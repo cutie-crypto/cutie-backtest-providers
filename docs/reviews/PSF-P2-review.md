@@ -65,3 +65,43 @@ Claude Sonnet5.5独立只读一轮完成，CLI EXIT=0，is_error=false，modelUs
 - Sonnet 5.5: one independent static round, 1 Medium and 3 Low resolved; increment read locally, no second review round. Compile and diff-check EXIT=0. No main merge / provider pin / production call. PR101 remains draft until commander approves the 7-case table, ordered after PR96/PR100.
 
 - Original task archived at docs/reviews/PSF-P2/tasks/PSF-P2c.md under the standing orders. The Owner follow-up reaffirmed: first close BOTTOM-GAP on 3121709, then return to this branch created above 3121709; this ordering was followed.
+
+
+## Approved close: main base and fixture causality
+
+- Commander approved all 7 Turtle golden cases; conditional close requires both group replacement chain and bar22 OHLC/stop proof in fixtures/README.md.
+- Main@0e8b0ce contains PR96 and PR100; ordinary merge into this pushed branch had no conflicts. Relative to this main, non-Turtle runtime and goldens are unchanged. Relative to eea9b81, all Turtle runtime bytes and 4 JSON goldens are identical.
+- Raw bar22 O/H/L/C=164/166/145/155; signal21 Wilder N=8.2890625, stop=164-2*N=147.421875, 145<=stop<164<=166. Existing test additionally verifies raw OHLC, entry164, stop exit147.421875 and negative PnL; both remains bar22 full stop -> bar23 reverse -> bar24 open100 -> old bar51 group replaced.
+- Incremental focused tests: 2 passed / EXIT=0; compile and diff-check EXIT=0. Evidence: /tmp/psf-p2c/approved-close/proof.json, focused.log, review.diff.
+
+### Sonnet 5.5 incremental result (static only)
+
+**结论：静态审查未发现明确阻断问题。两点机理都与我读到的 raw 和金样一致，新增断言也实际检验了 entry 164、exit 147.421875 和亏损。** 我没跑测试、没改文件。`focused.log` 的 passed/EXIT0 我没亲验，不算我的结果。
+
+1. **both 组替换链条：一致。**
+   - turtle-1 四个 unit 的入场价是 114/130/148/163，全部在第 22 根按 146.0 平仓（`turtle_both_golden.json:583-614`）。
+   - 146 等于 163 − 2×8.5，与 README 的“加仓后共享止损更新为 146”对得上。
+   - 第 22 根 low=145（`:309`）触及 146，第 23 根 open=140，第 24 根 open=100.0（`:27`），第 51 根 open=91（`:54`）。
+   - turtle-2 是 signal=23，第 24 根以 100.0 建空，第 54 根平仓（`:616-621`、`:643-651`）。原 51 那组不在 expected 里。
+   - 总计 3 组（turtle-1/2/3）、6 笔，`units_skipped` 为 1。
+   - 对照同夹具 long 金样：第 51 根入场价 109 的 turtle-2 是单独一组，both 里已被 24→54 的空组取代，说法属实。
+2. **long 第 22 根真实同根止损：成立。**
+   - long 金样第 22 根 O/H/L/C 是 164/166/145/155（`turtle_long_golden.json:25`、`:167`、`:309`、`:451`）。
+   - 164 − 147.421875 = 16.578125 = 2×8.2890625，算术自洽。
+   - 145 < 147.421875 < 164 < 166，所以开盘没穿止损，当根低点才触及，不是原价幽灵单。
+   - 新增断言：`test_psf_p2c_turtle_fills.py:93-94` 锁 OHLC 和止损区间，`:100` 断言 entry=164，`:101` 断言 exit=stop，`:102` 断言 PnL<0。`:99` 的列表相等保证 `:102` 不会因为空集合而空过。
+
+**Findings（均为 Low，不阻断）：**
+- **Low，`test_psf_p2c_turtle_fills.py:115-118`：** README 声称“原 51 不再出现、3 组/6 笔”，但该测试只断言 turtle-2 的 `EntryBar==[24]` 以及 `23 not in EntryBar`。它没有直接断言第 22、51 根无入场，也没断言总组数。这部分只靠 JSON 金样兜底，可补一句 `51 not in set(trades.EntryBar)`。
+- **Low，README 第 15 行：** “4→5 组”和 long_risk_layer 的 HTTP 金样在 `turtle_time_off_4d29dfa.json` 的超长行里，我没核对。上面的 164 和 147.421875 是引擎层（无 fee/slippage）的值，HTTP 金样有 10/5bps，成交价可能不同。README 没说明这一点。
+- **未核对：** N=8.2890625 的 Wilder 递推我只核对了算术自洽，没逐根复算。
+
+### Incremental Low findings disposition
+
+- Low group-count / bar51 coverage: the focused reverse test is supplemented by existing test_directional_engine_golden_and_unique_position_direction and test_directional_scalar_golden. They compare total trade count, every entry/exit bar/price and group mapping against the independent scalar fixture; an added bar51 entry or group violates those checks. No redundant assertion-only test was added.
+- Low engine-vs-HTTP distinction: decoded the existing long_risk_layer HTTP golden explicitly, confirmed 5 groups / 5 trades, turtle-3 entry164, exit147.421875, bar22 same-time trade and negative PnL. fees/slippage are separately recorded; the README now distinguishes both checks. Evidence: approved-close/proof.json.
+- The review did not independently recompute Wilder N; the existing test uses only raw OHLC and arithmetic to compute N and the stop before checking the engine. This is local test evidence, not a claim that the reviewer ran it.
+
+### 1013 追加条件核验
+
+ARM-C0-DS 先完成后续接。逐份读取三份自动重算金样的原始第 22 根及 turtle-1 退出价：long/both OHLC=164/166/145/155、SL=146；short=36/55/34/45、SL=54；四个 unit 都在 22 根退出，各止损都落在当根区间内，无阻断条件。README 增补逐份价格表，以及单 TP 当根实现盈亏影响可用权益与后续风险数量重算的机制。运行时代码及金样未再改；这是前述 Sonnet 5.5 review 后的文档增量，按常备令亲读核对，不增加审查轮。最终按任务指定 no:cacheprovider 命令全量，在 REPORT 中登记真实结果。
