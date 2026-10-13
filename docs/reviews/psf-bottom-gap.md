@@ -54,3 +54,5 @@ q17b_39bc346_off_sha256.json · head_shoulders.gap · 1 / 0 · 54
 
 - 统领 /tmp/orch-out/impl-psf-gap-ok.md 已批四个 gap 各 1→0 笔、另50场景零变化，允许全量通过后脱 draft。
 - 普通 merge 接 origin/impl/psf-p2 @3121709；唯一冲突在 test_q17b_patconf_guards.py 原 overshoot 块，保留本单已批的0笔及 skipped_entries 精确断言；父线其余代码、健康门与文档保留。
+
+- 接续收尾唯一一次全量（backtesting-py cwd，python3 -m pytest -q tests）：10683 passed / 0 failed，EXIT=0，284.24s；/tmp/psf-bottom-gap/full.log 与 full.exit。相关生产代码在父线 a440830→3121709 零变化，本单四个 gap 的1→0笔对照表不变，原54场景回包审计沿用；fixture当前全部指纹的差异仍仅这四个键，其余键原样保留（final-scope-audit.json）。
