@@ -218,6 +218,7 @@ def slim_chan_report(report, facts_key):
 def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long', chan_debug=False):
     short = direction == 'short'
     class ChanStrategy(mixin, Strategy):
+        _template_native = True
         _risk = risk
         _initial_capital = initial_capital
 
@@ -271,20 +272,30 @@ def make_chan_strategy(mixin, *, bi_mode, risk, initial_capital, direction='long
                             frozen_stop=tag.stop, frozen_target=self._targets[tag]))
             self._broker._process_orders = guarded_process_orders
 
+        def _risk_native_state(self, trade):
+            tag = trade.tag
+            if tag not in self._targets:
+                self._targets[tag] = (trade.entry_price - 2 * (tag.stop - trade.entry_price) if short
+                                      else trade.entry_price + 2 * (trade.entry_price - tag.stop))
+                self.chan_report['entries'].append(dict(
+                    center=tag.center, entry_bar=trade.entry_bar, entry_price=trade.entry_price,
+                    frozen_stop=tag.stop, frozen_target=self._targets[tag]))
+            self._risk_native_tagged_state(trade, self._targets[tag])
+
+        def _risk_native_record_exit(self):
+            self.chan_report['exits'].append(dict(reason=self._risk_exit_reason,
+                                               decision_bar=len(self.data)-1))
+
         def _risk_check_exit(self):
             trade = self.trades[-1]
-            if any(order.parent_trade is trade for order in self.orders):
+            if any(order.parent_trade is trade and not order.is_contingent for order in self.orders):
                 return True
             tag = trade.tag
             if self._risk.get('leverage', 1) > 1 and self._risk_isolated_exit(Decimal(str(tag.stop))):
                 return True
-            if self.data.High[-1] >= tag.stop if short else self.data.Low[-1] <= tag.stop:
-                reason = 'stop_loss'
-            elif (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
+            if (self._time_config is not None or self._risk.get('max_holding_bars')) and (fact := self._holding_expiry()).due:
                 self._record_holding_expiry(fact)
                 reason = 'time_expiry'
-            elif self.data.Low[-1] <= self._targets[tag] if short else self.data.High[-1] >= self._targets[tag]:
-                reason = 'take_profit'
             elif self.data.Close[-1] > tag.level if short else self.data.Close[-1] < tag.level:
                 reason = 'close_above_zd' if short else 'close_below_zg'
             else:
