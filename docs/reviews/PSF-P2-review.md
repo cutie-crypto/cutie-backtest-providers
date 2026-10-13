@@ -105,3 +105,10 @@ Claude Sonnet5.5独立只读一轮完成，CLI EXIT=0，is_error=false，modelUs
 ### 1013 追加条件核验
 
 ARM-C0-DS 先完成后续接。逐份读取三份自动重算金样的原始第 22 根及 turtle-1 退出价：long/both OHLC=164/166/145/155、SL=146；short=36/55/34/45、SL=54；四个 unit 都在 22 根退出，各止损都落在当根区间内，无阻断条件。README 增补逐份价格表，以及单 TP 当根实现盈亏影响可用权益与后续风险数量重算的机制。运行时代码及金样未再改；这是前述 Sonnet 5.5 review 后的文档增量，按常备令亲读核对，不增加审查轮。最终按任务指定 no:cacheprovider 命令全量，在 REPORT 中登记真实结果。
+
+### 最终主线基线门
+
+- origin/main=0e8b0ce；执行 git rebase origin/main 成功，重放前后文件树相同。保留已发布 tip 的祖先桥接提交用于普通推送，无 force push。
+- 最终测试树 @403333f：python3 -m pytest tests -q -p no:cacheprovider；10685 passed / 165 warnings / 833.89s，EXIT=0。证据 /tmp/psf-p2c/approved-close/full-final.log 与 full-final.exit；新增两条定向 2 passed / EXIT=0。
+- 与 main 相比，_TurtleGroupMixin 之外的运行时逐字相同，非海龟金样无变化；四份海龟 JSON 与统领批准 @eea9b81 完全相同，三份第22根区间核验通过。收尾提交只补此验收记录，测试源码、运行时与 JSON 不再改。
+- PR101 base=main；转 ready 和远程头在 /tmp/psf-p2c/REPORT.md 中按实际核验回填，不合并、不换 pin、不部署。ARM-C0-DS 只读报告已先完成。
