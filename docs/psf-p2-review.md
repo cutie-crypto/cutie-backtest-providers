@@ -24,3 +24,12 @@
 Sonnet 5.5 静态增量 review 未发现新成交逻辑缺陷，指出说明字段误报已修；覆盖缺口仍待做。钱路径统领逐行亲读后合，不合 main、不 pin。
 
 详细增量及逐笔海龟底稿见 TokenBeep docs/reviews/2026-10-13-两线制/PSF-P2-review.md。历史 327aae0 的八族候选报告已由本记录替代。
+
+
+## PSF-P2b-2 续清（2026-10-13）
+
+origin/main 1e0f285，无冲突rebase；基线10645 passed/EXIT0，起始290失败节点无增减。本次只修改测试/捕获，生产代码、海龟与bottom guard不变。原290节点289 passed、1待裁红；完整全量 2 failed, 10678 passed, 164 warnings in 311.01s (0:05:11) / EXIT1，PR #96继续draft，不合main、不pin。
+
+旧target-gap断言保留：entry121/target120，旧exit125/PnL330.576，候选exit121/PnL0；不在本批固化它。另有健康接口100ms门全量测得105.391ms：此前基线及rebase起始全量均绿，基线/候选单文件复验结果见TokenBeep docs，不能据单文件绿抹掉全量红，未修或降阈值。
+
+金样由既有capture/canonical/digest重算，核基线与原文件相等、入场/笔数/方向及首笔Size不变；409次可比交易运行无入场变化，未执行调用不计。审查及审计在TokenBeep impl/psf-p2-docs 的 docs/reviews/2026-10-13-两线制/PSF-P2b-2-verification.md、PSF-P2-review.md末段。公共优先级披露同形待另单核清。
