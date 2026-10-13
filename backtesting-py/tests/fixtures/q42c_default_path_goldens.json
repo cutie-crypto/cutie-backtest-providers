@@ -1,7 +1,7 @@
 {
  "tests/test_10b2a_sizing_div_fib_vwap.py::test_omitted_sizing_keys_match_c72c4a1_bytes[vwap_reversion-default]": [
   {
-   "disclosure_sha256": "74eb5912dca414c551ab544688b7b9123f6705df03c041915f7121ac580d4c8a",
+   "disclosure_sha256": "a7f16e9ae88ac165211922f1458b405b16b620a8bdf9e3de994b71517e9c35b7",
    "exits": [
     [
      "long",
@@ -39,7 +39,7 @@
  ],
  "tests/test_10b2d_sizing_range_calendar.py::test_omitted_sizing_keys_match_1f5b8dc_bytes[red_streak_rsi-default]": [
   {
-   "disclosure_sha256": "de61e7b56761d8a44aac7cb36a270b1217aa986bcf536900548557922d69e062",
+   "disclosure_sha256": "2cbaebee80528d620fae82eca41a6ea4f8d87ec3141cce5c7e5c89464f29f32d",
    "exits": [
     [
      "long",
@@ -137,7 +137,7 @@
  ],
  "tests/test_7p3b_pattern_range_filter.py::test_off_state_byte_identical_to_main[False-default/hand]": [
   {
-   "disclosure_sha256": "684ae2e3d98fff615b71a8a3a869d18ea94440f5d3e257ed28808d64aadb0ceb",
+   "disclosure_sha256": "f4cc62391da4f0e8cbc6b64e41322a333462a7365368a91bfff46f58279ed6e0",
    "exits": [
     [
      "long",
@@ -153,7 +153,7 @@
  ],
  "tests/test_7p3b_pattern_range_filter.py::test_off_state_byte_identical_to_main[False-default/hand_warm20]": [
   {
-   "disclosure_sha256": "830c3123487b6cf45042638f15ea4e20f81559c7cd8ac3307fe29b7bacc3ae4b",
+   "disclosure_sha256": "8911994dfdea2d409897bd842397ce9c8f0658f8970decb14cda64a6d42748f8",
    "exits": [
     [
      "long",
@@ -169,7 +169,7 @@
  ],
  "tests/test_7p3b_pattern_range_filter.py::test_off_state_byte_identical_to_main[False-red3_rsi2/wavy]": [
   {
-   "disclosure_sha256": "8f970c699dfe9ce924f7c309b1ffe5ec3a1a3be0730d66f5a25d9a9d854af33d",
+   "disclosure_sha256": "3efd938a0246bbc582945dc65683f2b5fa8d95702dfc5f534f4b9e8aee370193",
    "exits": [
     [
      "long",
@@ -245,7 +245,7 @@
  ],
  "tests/test_7p3b_pattern_range_filter.py::test_off_state_byte_identical_to_main[False-time_gate/wavy]": [
   {
-   "disclosure_sha256": "489ea1518cc501037c051a388ac98ddc0fa335af94c4a95e338543a3aed0cfca",
+   "disclosure_sha256": "465e5eb5c9953ffeb16967cecda10011310ae4fceee51b086707ffe7da178902",
    "exits": [
     [
      "long",
@@ -303,7 +303,7 @@
  ],
  "tests/test_7p3b_pattern_range_filter.py::test_off_state_byte_identical_to_main[True-default/hand]": [
   {
-   "disclosure_sha256": "684ae2e3d98fff615b71a8a3a869d18ea94440f5d3e257ed28808d64aadb0ceb",
+   "disclosure_sha256": "f4cc62391da4f0e8cbc6b64e41322a333462a7365368a91bfff46f58279ed6e0",
    "exits": [
     [
      "long",
@@ -319,7 +319,7 @@
  ],
  "tests/test_7p3b_pattern_range_filter.py::test_off_state_byte_identical_to_main[True-default/hand_warm20]": [
   {
-   "disclosure_sha256": "830c3123487b6cf45042638f15ea4e20f81559c7cd8ac3307fe29b7bacc3ae4b",
+   "disclosure_sha256": "8911994dfdea2d409897bd842397ce9c8f0658f8970decb14cda64a6d42748f8",
    "exits": [
     [
      "long",
@@ -335,7 +335,7 @@
  ],
  "tests/test_7p3b_pattern_range_filter.py::test_off_state_byte_identical_to_main[True-red3_rsi2/wavy]": [
   {
-   "disclosure_sha256": "8f970c699dfe9ce924f7c309b1ffe5ec3a1a3be0730d66f5a25d9a9d854af33d",
+   "disclosure_sha256": "3efd938a0246bbc582945dc65683f2b5fa8d95702dfc5f534f4b9e8aee370193",
    "exits": [
     [
      "long",
@@ -411,7 +411,7 @@
  ],
  "tests/test_7p3b_pattern_range_filter.py::test_off_state_byte_identical_to_main[True-time_gate/wavy]": [
   {
-   "disclosure_sha256": "489ea1518cc501037c051a388ac98ddc0fa335af94c4a95e338543a3aed0cfca",
+   "disclosure_sha256": "465e5eb5c9953ffeb16967cecda10011310ae4fceee51b086707ffe7da178902",
    "exits": [
     [
      "long",
@@ -469,7 +469,7 @@
  ],
  "tests/test_entry_filters.py::test_runtime_disabled_fingerprints[False-False-red_streak_rsi]": [
   {
-   "disclosure_sha256": "de0be52c425358cfe03968b68951241bec58f2ee684ce3137e4ffa72811a5d2e",
+   "disclosure_sha256": "b4d0ae8740bb7254514a4871f3ee65a1f072b7e1bc07a33e284d74712c1081a0",
    "exits": [
     [
      "long",
@@ -491,7 +491,7 @@
  ],
  "tests/test_entry_filters.py::test_runtime_disabled_fingerprints[False-False-vwap_reversion]": [
   {
-   "disclosure_sha256": "fa49399e7e621c63e1fd2ac9a1bc2a2267992565a8be4804cc41404ea41380b0",
+   "disclosure_sha256": "704a55d8b31c762936cb6d8ad88eff456b58beb80617161aaefbc581dfa3d891",
    "exits": [
     [
      "long",
@@ -759,7 +759,7 @@
  ],
  "tests/test_entry_filters.py::test_runtime_disabled_fingerprints[False-True-red_streak_rsi]": [
   {
-   "disclosure_sha256": "cddc23d4ce6d154d4b030eca8a2ec8b9aaa06c400a18654aaf77e310e22ba9fb",
+   "disclosure_sha256": "da046099b9f5a42e75674148456f05f4395eb2e2c12e65ea46e3e9a5e0734150",
    "exits": [
     [
      "long",
@@ -781,7 +781,7 @@
  ],
  "tests/test_entry_filters.py::test_runtime_disabled_fingerprints[False-True-vwap_reversion]": [
   {
-   "disclosure_sha256": "55d3ddb738d0d7c3afd2e90898739fcbd08327438782bdf10deba30e2a241516",
+   "disclosure_sha256": "d6154824a40feb07841a2d2a9a334eebe8fa4a77bd3261b119fbeee2be27a59e",
    "exits": [
     [
      "long",
@@ -1049,7 +1049,7 @@
  ],
  "tests/test_entry_filters.py::test_runtime_disabled_fingerprints[True-False-red_streak_rsi]": [
   {
-   "disclosure_sha256": "de0be52c425358cfe03968b68951241bec58f2ee684ce3137e4ffa72811a5d2e",
+   "disclosure_sha256": "b4d0ae8740bb7254514a4871f3ee65a1f072b7e1bc07a33e284d74712c1081a0",
    "exits": [
     [
      "long",
@@ -1071,7 +1071,7 @@
  ],
  "tests/test_entry_filters.py::test_runtime_disabled_fingerprints[True-False-vwap_reversion]": [
   {
-   "disclosure_sha256": "fa49399e7e621c63e1fd2ac9a1bc2a2267992565a8be4804cc41404ea41380b0",
+   "disclosure_sha256": "704a55d8b31c762936cb6d8ad88eff456b58beb80617161aaefbc581dfa3d891",
    "exits": [
     [
      "long",
@@ -1339,7 +1339,7 @@
  ],
  "tests/test_entry_filters.py::test_runtime_disabled_fingerprints[True-True-red_streak_rsi]": [
   {
-   "disclosure_sha256": "cddc23d4ce6d154d4b030eca8a2ec8b9aaa06c400a18654aaf77e310e22ba9fb",
+   "disclosure_sha256": "da046099b9f5a42e75674148456f05f4395eb2e2c12e65ea46e3e9a5e0734150",
    "exits": [
     [
      "long",
@@ -1361,7 +1361,7 @@
  ],
  "tests/test_entry_filters.py::test_runtime_disabled_fingerprints[True-True-vwap_reversion]": [
   {
-   "disclosure_sha256": "55d3ddb738d0d7c3afd2e90898739fcbd08327438782bdf10deba30e2a241516",
+   "disclosure_sha256": "d6154824a40feb07841a2d2a9a334eebe8fa4a77bd3261b119fbeee2be27a59e",
    "exits": [
     [
      "long",
@@ -1629,7 +1629,7 @@
  ],
  "tests/test_entry_filters_mtf.py::test_explicit_default_timeframe_preserves_frozen_off_bytes[False-red_streak_rsi]": [
   {
-   "disclosure_sha256": "de0be52c425358cfe03968b68951241bec58f2ee684ce3137e4ffa72811a5d2e",
+   "disclosure_sha256": "b4d0ae8740bb7254514a4871f3ee65a1f072b7e1bc07a33e284d74712c1081a0",
    "exits": [
     [
      "long",
@@ -1651,7 +1651,7 @@
  ],
  "tests/test_entry_filters_mtf.py::test_explicit_default_timeframe_preserves_frozen_off_bytes[False-vwap_reversion]": [
   {
-   "disclosure_sha256": "fa49399e7e621c63e1fd2ac9a1bc2a2267992565a8be4804cc41404ea41380b0",
+   "disclosure_sha256": "704a55d8b31c762936cb6d8ad88eff456b58beb80617161aaefbc581dfa3d891",
    "exits": [
     [
      "long",
@@ -1919,7 +1919,7 @@
  ],
  "tests/test_entry_filters_mtf.py::test_explicit_default_timeframe_preserves_frozen_off_bytes[True-red_streak_rsi]": [
   {
-   "disclosure_sha256": "cddc23d4ce6d154d4b030eca8a2ec8b9aaa06c400a18654aaf77e310e22ba9fb",
+   "disclosure_sha256": "da046099b9f5a42e75674148456f05f4395eb2e2c12e65ea46e3e9a5e0734150",
    "exits": [
     [
      "long",
@@ -1941,7 +1941,7 @@
  ],
  "tests/test_entry_filters_mtf.py::test_explicit_default_timeframe_preserves_frozen_off_bytes[True-vwap_reversion]": [
   {
-   "disclosure_sha256": "55d3ddb738d0d7c3afd2e90898739fcbd08327438782bdf10deba30e2a241516",
+   "disclosure_sha256": "d6154824a40feb07841a2d2a9a334eebe8fa4a77bd3261b119fbeee2be27a59e",
    "exits": [
     [
      "long",
@@ -2218,7 +2218,7 @@
  ],
  "tests/test_isolated_liquidation_arbitration.py::test_runtime_mixin_off_state_bytes[default-red_streak_rsi]": [
   {
-   "disclosure_sha256": "710e9760578d8afc026472f056732580faf2bcb6011f4f124bc3a49a83550252",
+   "disclosure_sha256": "1f418b8f5ed56a07642300c06817e5dc3bbc78a2b96fd3e475375d5946430bb0",
    "exits": [
     [
      "long",
@@ -2240,7 +2240,7 @@
  ],
  "tests/test_isolated_liquidation_arbitration.py::test_runtime_mixin_off_state_bytes[default-vwap_reversion]": [
   {
-   "disclosure_sha256": "bd0032c0857334bec629fa6cce85e721828ed1fbb31168a86d7e376f6c38539c",
+   "disclosure_sha256": "19404e7505011f1572112839c02e5754831ab717b70201467cde4ab59fdf3728",
    "exits": [
     [
      "long",
@@ -2517,7 +2517,7 @@
  ],
  "tests/test_isolated_liquidation_arbitration.py::test_runtime_mixin_off_state_bytes[leverage_one-red_streak_rsi]": [
   {
-   "disclosure_sha256": "710e9760578d8afc026472f056732580faf2bcb6011f4f124bc3a49a83550252",
+   "disclosure_sha256": "1f418b8f5ed56a07642300c06817e5dc3bbc78a2b96fd3e475375d5946430bb0",
    "exits": [
     [
      "long",
@@ -2539,7 +2539,7 @@
  ],
  "tests/test_isolated_liquidation_arbitration.py::test_runtime_mixin_off_state_bytes[leverage_one-vwap_reversion]": [
   {
-   "disclosure_sha256": "bd0032c0857334bec629fa6cce85e721828ed1fbb31168a86d7e376f6c38539c",
+   "disclosure_sha256": "19404e7505011f1572112839c02e5754831ab717b70201467cde4ab59fdf3728",
    "exits": [
     [
      "long",
@@ -2816,7 +2816,7 @@
  ],
  "tests/test_isolated_liquidation_arbitration.py::test_runtime_mixin_off_state_bytes[spot-red_streak_rsi]": [
   {
-   "disclosure_sha256": "80dd0552da1aaff6fad0e0ffb2c6589c26a7fda878f6a4dd35865f3eeeb2cfb2",
+   "disclosure_sha256": "2a2d91f39ac302503231a763f4ff28347611962aefae58c965f37757b7f2c7c7",
    "exits": [
     [
      "long",
@@ -2838,7 +2838,7 @@
  ],
  "tests/test_isolated_liquidation_arbitration.py::test_runtime_mixin_off_state_bytes[spot-vwap_reversion]": [
   {
-   "disclosure_sha256": "d174ace8fcd8da1fafedf14a4ad71a3056ae48d2c94892ef49ce975a2515c7c8",
+   "disclosure_sha256": "27f74262d98c530fcc9b139ffcf665734edde87b49f4e5a090761aa359537e55",
    "exits": [
     [
      "long",
@@ -3122,7 +3122,7 @@
  ],
  "tests/test_patconf1_pattern_confirm.py::test_omitted_keys_byte_identical_to_5ddd8eb[off/red_streak_rsi]": [
   {
-   "disclosure_sha256": "14ea7c4cfa8009d4049f0ef9a70b26b725559b37d3f4c1fd13a4b9f8504b0955",
+   "disclosure_sha256": "3005f814c7b15e589a5d2dbce0f5f386ae45f826003a96844d643cfe3ce4c2ed",
    "exits": [
     [
      "long",
@@ -3144,7 +3144,7 @@
  ],
  "tests/test_patconf1_pattern_confirm.py::test_omitted_keys_byte_identical_to_5ddd8eb[off/vwap_reversion]": [
   {
-   "disclosure_sha256": "777f70701289c229ad52058f0a45a26077978aae349fb92e2b1e171358f45c8a",
+   "disclosure_sha256": "b1e2f58c68702f894f1403bcbbd7560b86372ed102388ef2f06c5553df828dfc",
    "exits": [
     [
      "long",
@@ -3412,7 +3412,7 @@
  ],
  "tests/test_patconf1_pattern_confirm.py::test_omitted_keys_byte_identical_to_5ddd8eb[on/red_streak_rsi]": [
   {
-   "disclosure_sha256": "c7c6a1a7b6bd747c529768f89d8a6903a5e5eb01cc4597f1e2fe2a4924679454",
+   "disclosure_sha256": "0af9544e3a93292e0275b1a5a1f39d5afa2898463d73411c9c953478aae33716",
    "exits": [],
    "n_trades": 0,
    "sha256": "30bdef8bf1c8157afb3e82d03fbb2db49ec4d08c64a10fb340598c5c45534988",
@@ -3421,7 +3421,7 @@
  ],
  "tests/test_patconf1_pattern_confirm.py::test_omitted_keys_byte_identical_to_5ddd8eb[on/vwap_reversion]": [
   {
-   "disclosure_sha256": "49a9bc737ee4175431befc766f80e5b22b47d56bd9a9a6a3e85545bc92750fd8",
+   "disclosure_sha256": "0b3e7ab91b57f57a9d16d85e2ab16eeb743acd8fa3a31b3232240b9fca02cddc",
    "exits": [
     [
      "long",
@@ -3453,7 +3453,7 @@
  ],
  "tests/test_patconf1_pattern_confirm.py::test_omitted_keys_byte_identical_to_5ddd8eb[traded/red_streak_rsi]": [
   {
-   "disclosure_sha256": "de61e7b56761d8a44aac7cb36a270b1217aa986bcf536900548557922d69e062",
+   "disclosure_sha256": "2cbaebee80528d620fae82eca41a6ea4f8d87ec3141cce5c7e5c89464f29f32d",
    "exits": [
     [
      "long",
@@ -3469,7 +3469,7 @@
  ],
  "tests/test_patconf1_pattern_confirm.py::test_omitted_keys_byte_identical_to_5ddd8eb[traded/vwap_reversion]": [
   {
-   "disclosure_sha256": "74eb5912dca414c551ab544688b7b9123f6705df03c041915f7121ac580d4c8a",
+   "disclosure_sha256": "a7f16e9ae88ac165211922f1458b405b16b620a8bdf9e3de994b71517e9c35b7",
    "exits": [
     [
      "long",
@@ -3491,7 +3491,7 @@
  ],
  "tests/test_pliq1_close_only_stop.py::test_f5_intrabar_liquidation_precedes_close_only_stop": [
   {
-   "disclosure_sha256": "c887073fea53bf29fe550a8f887528be491b83dc9b93b4e2719146d30b53fb9d",
+   "disclosure_sha256": "992fde1743bb55c8d1f0ab600612948c471228ff44337af086d21e818bff4d99",
    "exits": [
     [
      "long",
@@ -3513,7 +3513,7 @@
  ],
  "tests/test_pliq1_close_only_stop.py::test_f6_intrabar_liquidation_precedes_close_only_stop": [
   {
-   "disclosure_sha256": "84edb1d05d4e00cdaceb453a7ce3b1a7c48d86d1840c3b6586e1eedee7d38ea4",
+   "disclosure_sha256": "b41f342f01acf48d5e76e1272363207e6b7e00755e2dfa4b4b7f6f3ddd575050",
    "exits": [
     [
      "long",
@@ -3529,7 +3529,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_insolvency_bridge_passes_frozen_stop[red_streak_rsi]": [
   {
-   "disclosure_sha256": "64ce23f42a159ee2e1081336ca7b07f5db725ee6aaf0044e8a1d587a149c6b11",
+   "disclosure_sha256": "295436952a0c0b8e06c9fb22733caacaa42c3dadccc491eafcfb66d6236ba289",
    "exits": [
     [
      "long",
@@ -3545,7 +3545,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_scenario_matrix_follows_t2_2b[red_streak_rsi-A1-full]": [
   {
-   "disclosure_sha256": "64ce23f42a159ee2e1081336ca7b07f5db725ee6aaf0044e8a1d587a149c6b11",
+   "disclosure_sha256": "295436952a0c0b8e06c9fb22733caacaa42c3dadccc491eafcfb66d6236ba289",
    "exits": [
     [
      "long",
@@ -3561,7 +3561,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_scenario_matrix_follows_t2_2b[red_streak_rsi-A1-pct20]": [
   {
-   "disclosure_sha256": "84edb1d05d4e00cdaceb453a7ce3b1a7c48d86d1840c3b6586e1eedee7d38ea4",
+   "disclosure_sha256": "b41f342f01acf48d5e76e1272363207e6b7e00755e2dfa4b4b7f6f3ddd575050",
    "exits": [
     [
      "long",
@@ -3577,7 +3577,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_scenario_matrix_follows_t2_2b[red_streak_rsi-A2-full]": [
   {
-   "disclosure_sha256": "64ce23f42a159ee2e1081336ca7b07f5db725ee6aaf0044e8a1d587a149c6b11",
+   "disclosure_sha256": "295436952a0c0b8e06c9fb22733caacaa42c3dadccc491eafcfb66d6236ba289",
    "exits": [
     [
      "long",
@@ -3593,7 +3593,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_scenario_matrix_follows_t2_2b[red_streak_rsi-A2-pct20]": [
   {
-   "disclosure_sha256": "84edb1d05d4e00cdaceb453a7ce3b1a7c48d86d1840c3b6586e1eedee7d38ea4",
+   "disclosure_sha256": "b41f342f01acf48d5e76e1272363207e6b7e00755e2dfa4b4b7f6f3ddd575050",
    "exits": [
     [
      "long",
@@ -3609,7 +3609,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_scenario_matrix_follows_t2_2b[red_streak_rsi-G-full]": [
   {
-   "disclosure_sha256": "699de99a8a23f6dfa95ba25d8e960470facc296633a8ab64b7ed1047bfaedcbb",
+   "disclosure_sha256": "c9f6fe921192ec7ffbeb95b5adc9227fca486673e36b991e88b48fa94c4706ff",
    "exits": [
     [
      "long",
@@ -3625,7 +3625,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_scenario_matrix_follows_t2_2b[red_streak_rsi-G-pct20]": [
   {
-   "disclosure_sha256": "edc1ce960b28f9eba9cbc6fd0eff9e8ecf79c6024caace97b40741a46311d2cf",
+   "disclosure_sha256": "747b9a35486cb5af8dabfde69bec631bb171250b68d967ff16b934e6e25f261a",
    "exits": [
     [
      "long",
@@ -3641,7 +3641,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_without_leverage_bytes_match_fac1d60[red_streak_rsi/futures]": [
   {
-   "disclosure_sha256": "889bc142708b1b2f659eeb40c54d9344d2013684b2d373b438b2db5bfb5e3778",
+   "disclosure_sha256": "2b534ea40a737d5fcc497d2907c9236d15e660a963ce802d05ef38a4d5a8c680",
    "exits": [
     [
      "long",
@@ -3657,7 +3657,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_without_leverage_bytes_match_fac1d60[red_streak_rsi/sizing]": [
   {
-   "disclosure_sha256": "b1f5a99c3aedf8945129d8939835922cfb927a9bd4ee6276b846f940634cbbdb",
+   "disclosure_sha256": "4acd20fdf24915fdf86a6afb0453071690e5c860316791071e750a3eccbabff3",
    "exits": [
     [
      "long",
@@ -3673,7 +3673,7 @@
  ],
  "tests/test_pliq1_pattern_liquidation.py::test_without_leverage_bytes_match_fac1d60[red_streak_rsi/spot]": [
   {
-   "disclosure_sha256": "de61e7b56761d8a44aac7cb36a270b1217aa986bcf536900548557922d69e062",
+   "disclosure_sha256": "2cbaebee80528d620fae82eca41a6ea4f8d87ec3141cce5c7e5c89464f29f32d",
    "exits": [
     [
      "long",
@@ -3730,7 +3730,7 @@
  ],
  "tests/test_plow2a_filter_warmup_gap.py::test_filter_off_gapped_warmup_byte_identical_to_base[red_streak_rsi]": [
   {
-   "disclosure_sha256": "14ea7c4cfa8009d4049f0ef9a70b26b725559b37d3f4c1fd13a4b9f8504b0955",
+   "disclosure_sha256": "3005f814c7b15e589a5d2dbce0f5f386ae45f826003a96844d643cfe3ce4c2ed",
    "exits": [
     [
      "long",
@@ -3752,7 +3752,7 @@
  ],
  "tests/test_plow2a_filter_warmup_gap.py::test_filter_off_gapped_warmup_byte_identical_to_base[vwap_reversion]": [
   {
-   "disclosure_sha256": "82262cf41b46169671bdf16d0fbcca56bb3394d7a1c5689462cb9dfea9b16216",
+   "disclosure_sha256": "617330fbdc1b186e28e8c5fd6ca93937dc72c9de25ddfbb0377febac642d8166",
    "exits": [
     [
      "long",
@@ -4020,7 +4020,7 @@
  ],
  "tests/test_plow2a_filter_warmup_gap.py::test_filter_on_contiguous_warmup_byte_identical_to_base[red_streak_rsi]": [
   {
-   "disclosure_sha256": "c7c6a1a7b6bd747c529768f89d8a6903a5e5eb01cc4597f1e2fe2a4924679454",
+   "disclosure_sha256": "0af9544e3a93292e0275b1a5a1f39d5afa2898463d73411c9c953478aae33716",
    "exits": [],
    "n_trades": 0,
    "sha256": "30bdef8bf1c8157afb3e82d03fbb2db49ec4d08c64a10fb340598c5c45534988",
@@ -4029,7 +4029,7 @@
  ],
  "tests/test_plow2a_filter_warmup_gap.py::test_filter_on_contiguous_warmup_byte_identical_to_base[vwap_reversion]": [
   {
-   "disclosure_sha256": "49a9bc737ee4175431befc766f80e5b22b47d56bd9a9a6a3e85545bc92750fd8",
+   "disclosure_sha256": "0b3e7ab91b57f57a9d16d85e2ab16eeb743acd8fa3a31b3232240b9fca02cddc",
    "exits": [
     [
      "long",
@@ -4045,7 +4045,7 @@
  ],
  "tests/test_q17b_patconf_guards.py::test_off_gap_response_bytes_match_pin3[red_streak_rsi]": [
   {
-   "disclosure_sha256": "de61e7b56761d8a44aac7cb36a270b1217aa986bcf536900548557922d69e062",
+   "disclosure_sha256": "2cbaebee80528d620fae82eca41a6ea4f8d87ec3141cce5c7e5c89464f29f32d",
    "exits": [
     [
      "long",
@@ -4059,7 +4059,7 @@
    "status": "success"
   },
   {
-   "disclosure_sha256": "7ad062a57391335bf7072101caad2ef0da77f414ea39b38fc97498219207fa87",
+   "disclosure_sha256": "39da75f44b0241f677d4e02b6fa03f6bba78d3b41874dd64221868dcb10373ec",
    "exits": [
     [
      "long",
@@ -4075,7 +4075,7 @@
  ],
  "tests/test_q17b_patconf_guards.py::test_off_gap_response_bytes_match_pin3[vwap_reversion]": [
   {
-   "disclosure_sha256": "74eb5912dca414c551ab544688b7b9123f6705df03c041915f7121ac580d4c8a",
+   "disclosure_sha256": "a7f16e9ae88ac165211922f1458b405b16b620a8bdf9e3de994b71517e9c35b7",
    "exits": [
     [
      "long",
@@ -4095,7 +4095,7 @@
    "status": "success"
   },
   {
-   "disclosure_sha256": "80317afa319309319e0833a74d6d457aa74ad3c32700bc3df56032d5c93a2821",
+   "disclosure_sha256": "a692d0b6ca697c408f7fb14ded5777abc656eb9971cdd507ade5a7030424e9cc",
    "exits": [
     [
      "long",
@@ -4117,7 +4117,7 @@
  ],
  "tests/test_q17b_patconf_guards.py::test_off_response_bytes_match_pin3[False-red_streak_rsi]": [
   {
-   "disclosure_sha256": "de61e7b56761d8a44aac7cb36a270b1217aa986bcf536900548557922d69e062",
+   "disclosure_sha256": "2cbaebee80528d620fae82eca41a6ea4f8d87ec3141cce5c7e5c89464f29f32d",
    "exits": [
     [
      "long",
@@ -4133,7 +4133,7 @@
  ],
  "tests/test_q17b_patconf_guards.py::test_off_response_bytes_match_pin3[False-vwap_reversion]": [
   {
-   "disclosure_sha256": "74eb5912dca414c551ab544688b7b9123f6705df03c041915f7121ac580d4c8a",
+   "disclosure_sha256": "a7f16e9ae88ac165211922f1458b405b16b620a8bdf9e3de994b71517e9c35b7",
    "exits": [
     [
      "long",
@@ -4155,7 +4155,7 @@
  ],
  "tests/test_q17b_patconf_guards.py::test_off_response_bytes_match_pin3[True-red_streak_rsi]": [
   {
-   "disclosure_sha256": "de61e7b56761d8a44aac7cb36a270b1217aa986bcf536900548557922d69e062",
+   "disclosure_sha256": "2cbaebee80528d620fae82eca41a6ea4f8d87ec3141cce5c7e5c89464f29f32d",
    "exits": [
     [
      "long",
@@ -4171,7 +4171,7 @@
  ],
  "tests/test_q17b_patconf_guards.py::test_off_response_bytes_match_pin3[True-vwap_reversion]": [
   {
-   "disclosure_sha256": "74eb5912dca414c551ab544688b7b9123f6705df03c041915f7121ac580d4c8a",
+   "disclosure_sha256": "a7f16e9ae88ac165211922f1458b405b16b620a8bdf9e3de994b71517e9c35b7",
    "exits": [
     [
      "long",
@@ -4193,7 +4193,7 @@
  ],
  "tests/test_time_layer_compatibility.py::test_disabled_response_and_start_unchanged[False-vwap_reversion]": [
   {
-   "disclosure_sha256": "fa49399e7e621c63e1fd2ac9a1bc2a2267992565a8be4804cc41404ea41380b0",
+   "disclosure_sha256": "704a55d8b31c762936cb6d8ad88eff456b58beb80617161aaefbc581dfa3d891",
    "exits": [
     [
      "long",
@@ -4461,7 +4461,7 @@
  ],
  "tests/test_time_layer_compatibility.py::test_disabled_response_and_start_unchanged[True-vwap_reversion]": [
   {
-   "disclosure_sha256": "55d3ddb738d0d7c3afd2e90898739fcbd08327438782bdf10deba30e2a241516",
+   "disclosure_sha256": "d6154824a40feb07841a2d2a9a334eebe8fa4a77bd3261b119fbeee2be27a59e",
    "exits": [
     [
      "long",

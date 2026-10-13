@@ -8,9 +8,8 @@ import test_9t4_divergence as div
 import test_9t6_chan_3buy as chan
 import test_f5_vwap_reversion as f5
 import test_f6_streak_rsi as f6
-import test_turtle_risk_3b as turtle
 
-FAMILIES = ('bottom', 'divergence', 'chan', 'f5', 'f6', 'turtle')
+FAMILIES = ('bottom', 'divergence', 'chan', 'f5', 'f6')
 
 
 def setup(family):
@@ -27,9 +26,7 @@ def setup(family):
         return data, 'vwap_reversion', {'risk_layer_enabled': False}, 3, 94, 92.12, None
     if family == 'f6':
         return f6.frame(), 'red_streak_rsi', {'risk_layer_enabled': False}, 44, 93, 89.24, 94.76
-    data, params = turtle.scenario()
-    # Signal10 Wilder N=3.5, actual fill11=104 => group stop97.
-    return data, 'turtle', {**params, 'take_profit_pct': 10}, 11, 104, 97, 114.4
+
 
 
 @pytest.mark.parametrize('family', FAMILIES)
@@ -44,7 +41,7 @@ def test_remaining_template_protective_fill(family, scenario):
     data.loc[data.index[bar], ['Open', 'High', 'Low', 'Close']] = [price, high, min(price-1, stop-1), price]
     cls = p.TOOL_SPECS['local.backtesting_py.'+name]['build'](params)['strategy']
     stats = Backtest(data, p._final_close_strategy(p._exit_kind_strategy(cls)), cash=10000,
-                     exclusive_orders=name!='turtle', finalize_trades=True).run()
+                     exclusive_orders=True, finalize_trades=True).run()
     trade = stats['_trades'].iloc[0]
     assert (trade.EntryBar, trade.ExitBar) == (entry, bar)
     assert trade.ExitPrice == pytest.approx(price if scenario=='gap' else stop)

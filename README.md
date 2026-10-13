@@ -364,3 +364,15 @@ The registration script installs/runs the validator, executes
 MIT
 
 <!-- 2026-07-20 62-3 §9 受控 revision 迁移演练发版：行为等价 no-op revision（仅本注释行），用于真实跨 revision 迁移的「等价放行」分支 direct 验证。 -->
+
+### Template intrinsic protective fills (PSF-P2 candidate)
+
+Candle patterns, bottom patterns, divergence, Chan, default VWAP reversion,
+default red-streak RSI and intrinsic Fibonacci retracement use broker-native
+SL / single TP. Touches fill on the current bar at the protective price, or the
+open when gapped. Native SL precedes single TP, then holding expiry and signals;
+partial TP retains its market-close path. A protective exit blocks reentry for
+that bar but still advances and consumes pending pattern confirmations.
+Explicit user pricing with the risk layer disabled retains its legacy path.
+Turtle remains on next-open group exits and is outside this candidate.
+This branch is an unmerged draft; it does not establish a deployed provider pin.

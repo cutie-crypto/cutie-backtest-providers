@@ -547,7 +547,7 @@
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
       "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
       "warmup_bars": 0,
-      "assumptions": "1ad656725611cdb56ca867207cad36a234c9cefa81404127c0d17db0031f9cf7",
+      "assumptions": "883a312be54ebafda3d632bd6551848f49f2886bfcbef00de01712c16e8cdf5b",
       "raw_report": "d3f51f9eec6a3151bbfaf33a25af07cb21749b2464a35ecdce9fa78bffb83cd6"
     },
     "macd_bullish_divergence/1": {
@@ -556,7 +556,7 @@
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
       "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
       "warmup_bars": 60,
-      "assumptions": "43e1f13caaa46419e98f1f2e156d39b31ab6747f40e05d7a2848de10b4d2b004",
+      "assumptions": "0ac06e0f6d03147d1f1c92f4ea2187083b6d702bfa2ae9000be52bb031b0a1cb",
       "raw_report": "071c814582aa2fcc4835bee82979166cc55cd7b9912165b8b3d5847860b690cc"
     },
     "macd_bullish_divergence@long/0": {
@@ -565,7 +565,7 @@
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
       "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
       "warmup_bars": 0,
-      "assumptions": "1ad656725611cdb56ca867207cad36a234c9cefa81404127c0d17db0031f9cf7",
+      "assumptions": "883a312be54ebafda3d632bd6551848f49f2886bfcbef00de01712c16e8cdf5b",
       "raw_report": "d3f51f9eec6a3151bbfaf33a25af07cb21749b2464a35ecdce9fa78bffb83cd6"
     },
     "macd_bullish_divergence@long/1": {
@@ -574,80 +574,80 @@
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
       "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
       "warmup_bars": 60,
-      "assumptions": "43e1f13caaa46419e98f1f2e156d39b31ab6747f40e05d7a2848de10b4d2b004",
+      "assumptions": "0ac06e0f6d03147d1f1c92f4ea2187083b6d702bfa2ae9000be52bb031b0a1cb",
       "raw_report": "071c814582aa2fcc4835bee82979166cc55cd7b9912165b8b3d5847860b690cc"
     },
     "rsi_bullish_divergence/0": {
       "min_bars": 58,
-      "engine_trades": "84d3de78dd2b13aa5e3b020ff7609a2b03f76403cdc8eb7016f3d30ffe821d05",
+      "engine_trades": "c0e0b6306c9c8bb3fb4761b1f717f6e49e70c9d85df56d8f70269bed4ff983a9",
       "engine_equity": "d40889445cd3950023d7ab46c3e43ec6a945b3e55d01f509ad79ee6c4b2825e1",
       "result_v2": "8a759015339ef7e598edaec05e7f99458a754e6a2e9a5e79822cc506cbc3f80c",
       "warmup_bars": 0,
-      "assumptions": "77a6c74c99db374ed52af79197017f6aeeb32e2fa11751017505db7cb5b9f336",
+      "assumptions": "bde2e5d7d9b6d27d0418f6b889cd49476003334dbde3703c48338d922a4c5c29",
       "raw_report": "72f24e428b94862ae01c8bdb719c430f08bc5ceb26d3c35fb74eca6a6dde6346"
     },
     "rsi_bullish_divergence/1": {
       "min_bars": 58,
-      "engine_trades": "84d3de78dd2b13aa5e3b020ff7609a2b03f76403cdc8eb7016f3d30ffe821d05",
+      "engine_trades": "c0e0b6306c9c8bb3fb4761b1f717f6e49e70c9d85df56d8f70269bed4ff983a9",
       "engine_equity": "d40889445cd3950023d7ab46c3e43ec6a945b3e55d01f509ad79ee6c4b2825e1",
       "result_v2": "8a759015339ef7e598edaec05e7f99458a754e6a2e9a5e79822cc506cbc3f80c",
       "warmup_bars": 60,
-      "assumptions": "2a8fd878baff3cb7cf26aacf52fdf8566bcea77ba2ab878ac9618f1f3a618b15",
+      "assumptions": "77f9f011ada4b4f47008defab88cb75d57017b244042271b2ed378788c31bdc9",
       "raw_report": "1a7f22e3ef9ed138bc30f760d2ce322d7bba8ed6cde3dffc01109d2faf03e352"
     },
     "rsi_bullish_divergence@long/0": {
       "min_bars": 58,
-      "engine_trades": "84d3de78dd2b13aa5e3b020ff7609a2b03f76403cdc8eb7016f3d30ffe821d05",
+      "engine_trades": "c0e0b6306c9c8bb3fb4761b1f717f6e49e70c9d85df56d8f70269bed4ff983a9",
       "engine_equity": "d40889445cd3950023d7ab46c3e43ec6a945b3e55d01f509ad79ee6c4b2825e1",
       "result_v2": "8a759015339ef7e598edaec05e7f99458a754e6a2e9a5e79822cc506cbc3f80c",
       "warmup_bars": 0,
-      "assumptions": "77a6c74c99db374ed52af79197017f6aeeb32e2fa11751017505db7cb5b9f336",
+      "assumptions": "bde2e5d7d9b6d27d0418f6b889cd49476003334dbde3703c48338d922a4c5c29",
       "raw_report": "72f24e428b94862ae01c8bdb719c430f08bc5ceb26d3c35fb74eca6a6dde6346"
     },
     "rsi_bullish_divergence@long/1": {
       "min_bars": 58,
-      "engine_trades": "84d3de78dd2b13aa5e3b020ff7609a2b03f76403cdc8eb7016f3d30ffe821d05",
+      "engine_trades": "c0e0b6306c9c8bb3fb4761b1f717f6e49e70c9d85df56d8f70269bed4ff983a9",
       "engine_equity": "d40889445cd3950023d7ab46c3e43ec6a945b3e55d01f509ad79ee6c4b2825e1",
       "result_v2": "8a759015339ef7e598edaec05e7f99458a754e6a2e9a5e79822cc506cbc3f80c",
       "warmup_bars": 60,
-      "assumptions": "2a8fd878baff3cb7cf26aacf52fdf8566bcea77ba2ab878ac9618f1f3a618b15",
+      "assumptions": "77f9f011ada4b4f47008defab88cb75d57017b244042271b2ed378788c31bdc9",
       "raw_report": "1a7f22e3ef9ed138bc30f760d2ce322d7bba8ed6cde3dffc01109d2faf03e352"
     },
     "chan_3buy/0": {
       "min_bars": 3,
-      "engine_trades": "f09b951ee4909dfc9752545e599ce461b5ef4a1f6769374477a5253a87ba0b49",
-      "engine_equity": "d6528232a39b9899f919a9b64f404a4f867c55f1947b48f3fcee0ee1dd7efa70",
-      "result_v2": "55ddbd8ca45d8efb080e11f8c48cff141cee7d7495d7d35c730e00028327364b",
+      "engine_trades": "3a24daf69cd09595a4536d67a6ffde90db4faf141b242408c3e1b5c2dc63df87",
+      "engine_equity": "eec79be17dd04ec7cfa506fa8154fd18eca50c0e1aeffd226cdadfe7b255e3a0",
+      "result_v2": "1f2326a2cadc3554e63bcd5772d5c27edd0bdb0bf4203ebfdd336aa6bf0c22be",
       "warmup_bars": 0,
-      "assumptions": "9bcffbdebd1911a4afbaa54ab2045d350412f2b9d4cf731166b52fdeaca6b186",
-      "raw_report": "9d81ffbdc0120c4a0439a9147f0caa52d80dee0126b6b6dee0f2ab6ff43e40cb"
+      "assumptions": "6c373d6895eb5cfaeaad01cf62108eac16be822fdbda35f96c6a4ee612b17c15",
+      "raw_report": "12fbb8e602c270da82c2289d581e9c7ac02435c6fca9024cafc7f4d4eb76eeaa"
     },
     "chan_3buy/1": {
       "min_bars": 3,
-      "engine_trades": "127a7164ad9449642b382ca3147b901ce2ef8e2f631225d0732fbf995ece31c4",
-      "engine_equity": "14796b0e689309228ab579d1bb0571c6584996431edfa56f3e9c82b3f8334420",
-      "result_v2": "1a5df3bd9cbb52da9d7c5a3949ea0aaef8ce199f9a3ea8c9e275d1072b45ad6e",
+      "engine_trades": "6419a2a69e984b6ef64584ca3f3444d1e8efef3b8dcded0e4f2c992c016809b6",
+      "engine_equity": "ba7994675fa5f05a0e3076f4a0bf0d4d26dcd3e553b4622f84d62968d874440a",
+      "result_v2": "26d4a4c09dc7b80e6cd49807606d5d1530d375887f32d0ba39c6a999cc2512c5",
       "warmup_bars": 60,
-      "assumptions": "e70eddf55db20e0841c20890aade8dd5fc4ff7ad8d289fbc930d7fe13fb0c8e2",
-      "raw_report": "5768d1706ab39dee2d66fd71b70c49c9c6a79268d13b924bd5a9d705e2d8492b"
+      "assumptions": "e95911cdd53d3a543062e7c1da21ed42c8b62c7b1a37cab6324187f7bbaf3a89",
+      "raw_report": "973d93f1e6a002698765784234372212c96a44695eaec78ebe0b2c4ecf9a839d"
     },
     "chan_3buy@long/0": {
       "min_bars": 3,
-      "engine_trades": "f09b951ee4909dfc9752545e599ce461b5ef4a1f6769374477a5253a87ba0b49",
-      "engine_equity": "d6528232a39b9899f919a9b64f404a4f867c55f1947b48f3fcee0ee1dd7efa70",
-      "result_v2": "55ddbd8ca45d8efb080e11f8c48cff141cee7d7495d7d35c730e00028327364b",
+      "engine_trades": "3a24daf69cd09595a4536d67a6ffde90db4faf141b242408c3e1b5c2dc63df87",
+      "engine_equity": "eec79be17dd04ec7cfa506fa8154fd18eca50c0e1aeffd226cdadfe7b255e3a0",
+      "result_v2": "1f2326a2cadc3554e63bcd5772d5c27edd0bdb0bf4203ebfdd336aa6bf0c22be",
       "warmup_bars": 0,
-      "assumptions": "9bcffbdebd1911a4afbaa54ab2045d350412f2b9d4cf731166b52fdeaca6b186",
-      "raw_report": "9d81ffbdc0120c4a0439a9147f0caa52d80dee0126b6b6dee0f2ab6ff43e40cb"
+      "assumptions": "6c373d6895eb5cfaeaad01cf62108eac16be822fdbda35f96c6a4ee612b17c15",
+      "raw_report": "12fbb8e602c270da82c2289d581e9c7ac02435c6fca9024cafc7f4d4eb76eeaa"
     },
     "chan_3buy@long/1": {
       "min_bars": 3,
-      "engine_trades": "127a7164ad9449642b382ca3147b901ce2ef8e2f631225d0732fbf995ece31c4",
-      "engine_equity": "14796b0e689309228ab579d1bb0571c6584996431edfa56f3e9c82b3f8334420",
-      "result_v2": "1a5df3bd9cbb52da9d7c5a3949ea0aaef8ce199f9a3ea8c9e275d1072b45ad6e",
+      "engine_trades": "6419a2a69e984b6ef64584ca3f3444d1e8efef3b8dcded0e4f2c992c016809b6",
+      "engine_equity": "ba7994675fa5f05a0e3076f4a0bf0d4d26dcd3e553b4622f84d62968d874440a",
+      "result_v2": "26d4a4c09dc7b80e6cd49807606d5d1530d375887f32d0ba39c6a999cc2512c5",
       "warmup_bars": 60,
-      "assumptions": "e70eddf55db20e0841c20890aade8dd5fc4ff7ad8d289fbc930d7fe13fb0c8e2",
-      "raw_report": "5768d1706ab39dee2d66fd71b70c49c9c6a79268d13b924bd5a9d705e2d8492b"
+      "assumptions": "e95911cdd53d3a543062e7c1da21ed42c8b62c7b1a37cab6324187f7bbaf3a89",
+      "raw_report": "973d93f1e6a002698765784234372212c96a44695eaec78ebe0b2c4ecf9a839d"
     },
     "fibonacci_retracement/0": {
       "min_bars": 11,
@@ -655,7 +655,7 @@
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
       "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
       "warmup_bars": 0,
-      "assumptions": "62ebc4109684f8b3d19e108c0455ae3fd043aa2b3ca8ce390c127a6a5ff25dda",
+      "assumptions": "0564b4673308530cf2b10848809815b8b73eae234be5889913a7f194d83b9084",
       "raw_report": "d21197fb0461a740491ad2da9880b690a19420318b0f0edd652029b3b56ef5b4"
     },
     "fibonacci_retracement/1": {
@@ -664,7 +664,7 @@
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
       "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
       "warmup_bars": 60,
-      "assumptions": "ab5d3a8b012360e3f9dcda8aec14b19204eadc95cd9c55f1244da819499d20f8",
+      "assumptions": "82aea8a857fbacd1b84826686b971abec65ec8ac55d306c4de8625c019b91c59",
       "raw_report": "fadaae8f820d160b57a53cc8fc7233e429c517acfab9d2e78b52f9ea507c681c"
     },
     "fibonacci_retracement@long/0": {
@@ -673,7 +673,7 @@
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
       "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
       "warmup_bars": 0,
-      "assumptions": "62ebc4109684f8b3d19e108c0455ae3fd043aa2b3ca8ce390c127a6a5ff25dda",
+      "assumptions": "0564b4673308530cf2b10848809815b8b73eae234be5889913a7f194d83b9084",
       "raw_report": "d21197fb0461a740491ad2da9880b690a19420318b0f0edd652029b3b56ef5b4"
     },
     "fibonacci_retracement@long/1": {
@@ -682,7 +682,7 @@
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
       "result_v2": "5099d5b40a49ab0eaea4925eb9710b320d01f16a072918f3c3b8df72aaa145ea",
       "warmup_bars": 60,
-      "assumptions": "ab5d3a8b012360e3f9dcda8aec14b19204eadc95cd9c55f1244da819499d20f8",
+      "assumptions": "82aea8a857fbacd1b84826686b971abec65ec8ac55d306c4de8625c019b91c59",
       "raw_report": "fadaae8f820d160b57a53cc8fc7233e429c517acfab9d2e78b52f9ea507c681c"
     },
     "us_open_momentum/0": {
@@ -831,219 +831,219 @@
     },
     "bullish_doji_reversal/0": {
       "min_bars": 22,
-      "engine_trades": "9fad8aea55d56d220d80448bf575e5c4e36d9b788c2b86597da767c614c8e5f5",
-      "engine_equity": "060ea0a4257b483fa3d9013c1141de822018a3939b7bb334997737c2bd512c04",
-      "result_v2": "6faf9274e7041fcda3fec9af7057dc4e0c751bde9580813b73ff64b8931bfdbf",
+      "engine_trades": "fb98fd15646662a8727dbcbf9b0fb7db69b6861533a971686a6706769eff7281",
+      "engine_equity": "fedf9364b112825ec3c36811bba14bdde4143b1e2ab34932c4925bf4b7617e92",
+      "result_v2": "4913b232e67495896900844b56993b4257c6401b0ee5615c00dee67b50c87628",
       "warmup_bars": 0,
       "assumptions": "d10d4cdd49c1b07ba4beea5ed3423bbd1853bb101bfea62aaeeeac87fb12e194",
-      "raw_report": "ddc01860a54f5d0eb788b78f84df59bb87da6e65f323d1ace087d4a6b0201674"
+      "raw_report": "398502cf181953706800e373da269b0b800babe855c240349613a0c48b8f0103"
     },
     "bullish_doji_reversal/1": {
       "min_bars": 22,
-      "engine_trades": "9fad8aea55d56d220d80448bf575e5c4e36d9b788c2b86597da767c614c8e5f5",
-      "engine_equity": "060ea0a4257b483fa3d9013c1141de822018a3939b7bb334997737c2bd512c04",
-      "result_v2": "6faf9274e7041fcda3fec9af7057dc4e0c751bde9580813b73ff64b8931bfdbf",
+      "engine_trades": "fb98fd15646662a8727dbcbf9b0fb7db69b6861533a971686a6706769eff7281",
+      "engine_equity": "fedf9364b112825ec3c36811bba14bdde4143b1e2ab34932c4925bf4b7617e92",
+      "result_v2": "4913b232e67495896900844b56993b4257c6401b0ee5615c00dee67b50c87628",
       "warmup_bars": 60,
       "assumptions": "2a4ab2bb21d13dbb509c33b48cd23ab657e1424f8f0095eeb36536c1cbde5018",
-      "raw_report": "ddc01860a54f5d0eb788b78f84df59bb87da6e65f323d1ace087d4a6b0201674"
+      "raw_report": "398502cf181953706800e373da269b0b800babe855c240349613a0c48b8f0103"
     },
     "bullish_doji_reversal@long/0": {
       "min_bars": 22,
-      "engine_trades": "9fad8aea55d56d220d80448bf575e5c4e36d9b788c2b86597da767c614c8e5f5",
-      "engine_equity": "060ea0a4257b483fa3d9013c1141de822018a3939b7bb334997737c2bd512c04",
-      "result_v2": "6faf9274e7041fcda3fec9af7057dc4e0c751bde9580813b73ff64b8931bfdbf",
+      "engine_trades": "fb98fd15646662a8727dbcbf9b0fb7db69b6861533a971686a6706769eff7281",
+      "engine_equity": "fedf9364b112825ec3c36811bba14bdde4143b1e2ab34932c4925bf4b7617e92",
+      "result_v2": "4913b232e67495896900844b56993b4257c6401b0ee5615c00dee67b50c87628",
       "warmup_bars": 0,
       "assumptions": "d10d4cdd49c1b07ba4beea5ed3423bbd1853bb101bfea62aaeeeac87fb12e194",
-      "raw_report": "ddc01860a54f5d0eb788b78f84df59bb87da6e65f323d1ace087d4a6b0201674"
+      "raw_report": "398502cf181953706800e373da269b0b800babe855c240349613a0c48b8f0103"
     },
     "bullish_doji_reversal@long/1": {
       "min_bars": 22,
-      "engine_trades": "9fad8aea55d56d220d80448bf575e5c4e36d9b788c2b86597da767c614c8e5f5",
-      "engine_equity": "060ea0a4257b483fa3d9013c1141de822018a3939b7bb334997737c2bd512c04",
-      "result_v2": "6faf9274e7041fcda3fec9af7057dc4e0c751bde9580813b73ff64b8931bfdbf",
+      "engine_trades": "fb98fd15646662a8727dbcbf9b0fb7db69b6861533a971686a6706769eff7281",
+      "engine_equity": "fedf9364b112825ec3c36811bba14bdde4143b1e2ab34932c4925bf4b7617e92",
+      "result_v2": "4913b232e67495896900844b56993b4257c6401b0ee5615c00dee67b50c87628",
       "warmup_bars": 60,
       "assumptions": "2a4ab2bb21d13dbb509c33b48cd23ab657e1424f8f0095eeb36536c1cbde5018",
-      "raw_report": "ddc01860a54f5d0eb788b78f84df59bb87da6e65f323d1ace087d4a6b0201674"
+      "raw_report": "398502cf181953706800e373da269b0b800babe855c240349613a0c48b8f0103"
     },
     "bullish_engulfing/0": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "7c8ff29fca827f037f68bcc821ee18e61cb6852576a3a48ed157cb6b0ef7c953",
+      "result_v2": "3ae5ea5c43b3fa86cd9d3c430196cec9c00d957818c43d85f8de89b64e32e9f7",
       "warmup_bars": 0,
       "assumptions": "626e06140d2094e9e2ffc5a7ea2a868cfbc0fafd627a2da35099c6d76f2f7ca1",
-      "raw_report": "ad4016b127991952d5cfee49c74469e067346bcc7636b7acd6210902a08ceca2"
+      "raw_report": "dfbfb117457dd9caadee185d187acf60e029db8de98510b5214438e6a7c79341"
     },
     "bullish_engulfing/1": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "7c8ff29fca827f037f68bcc821ee18e61cb6852576a3a48ed157cb6b0ef7c953",
+      "result_v2": "3ae5ea5c43b3fa86cd9d3c430196cec9c00d957818c43d85f8de89b64e32e9f7",
       "warmup_bars": 60,
       "assumptions": "387c8d5b360b5a0903cd1256de585b814b2c86d4390821f91c7216c08267d8f1",
-      "raw_report": "ad4016b127991952d5cfee49c74469e067346bcc7636b7acd6210902a08ceca2"
+      "raw_report": "dfbfb117457dd9caadee185d187acf60e029db8de98510b5214438e6a7c79341"
     },
     "bullish_engulfing@long/0": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "7c8ff29fca827f037f68bcc821ee18e61cb6852576a3a48ed157cb6b0ef7c953",
+      "result_v2": "3ae5ea5c43b3fa86cd9d3c430196cec9c00d957818c43d85f8de89b64e32e9f7",
       "warmup_bars": 0,
       "assumptions": "626e06140d2094e9e2ffc5a7ea2a868cfbc0fafd627a2da35099c6d76f2f7ca1",
-      "raw_report": "ad4016b127991952d5cfee49c74469e067346bcc7636b7acd6210902a08ceca2"
+      "raw_report": "dfbfb117457dd9caadee185d187acf60e029db8de98510b5214438e6a7c79341"
     },
     "bullish_engulfing@long/1": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "7c8ff29fca827f037f68bcc821ee18e61cb6852576a3a48ed157cb6b0ef7c953",
+      "result_v2": "3ae5ea5c43b3fa86cd9d3c430196cec9c00d957818c43d85f8de89b64e32e9f7",
       "warmup_bars": 60,
       "assumptions": "387c8d5b360b5a0903cd1256de585b814b2c86d4390821f91c7216c08267d8f1",
-      "raw_report": "ad4016b127991952d5cfee49c74469e067346bcc7636b7acd6210902a08ceca2"
+      "raw_report": "dfbfb117457dd9caadee185d187acf60e029db8de98510b5214438e6a7c79341"
     },
     "hammer_pin_bar/0": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "6d4d6461cacd390caf785666f17e396f5b8b590d906ea04324092937942df414",
+      "result_v2": "ab1f0b3b3803db40370149f73d528b14942e987f533aea5370b92cd5b9ef6533",
       "warmup_bars": 0,
       "assumptions": "a03ff5f1f0a4386af0f22e84816e7d315439b800b105b67fac64c26d1dd56029",
-      "raw_report": "d797c013d4bf65942091208974882f0ef570f31c7a697f45f56db026f0725e17"
+      "raw_report": "31d32630950d63c3f178b347254efffc8f8cc6b88a7817a069cd67c8fbc59db3"
     },
     "hammer_pin_bar/1": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "6d4d6461cacd390caf785666f17e396f5b8b590d906ea04324092937942df414",
+      "result_v2": "ab1f0b3b3803db40370149f73d528b14942e987f533aea5370b92cd5b9ef6533",
       "warmup_bars": 60,
       "assumptions": "f4403d147aacf0ac6af4ac44a38e1796fc70c9eaec70958b6e61e6154965de32",
-      "raw_report": "d797c013d4bf65942091208974882f0ef570f31c7a697f45f56db026f0725e17"
+      "raw_report": "31d32630950d63c3f178b347254efffc8f8cc6b88a7817a069cd67c8fbc59db3"
     },
     "hammer_pin_bar@long/0": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "6d4d6461cacd390caf785666f17e396f5b8b590d906ea04324092937942df414",
+      "result_v2": "ab1f0b3b3803db40370149f73d528b14942e987f533aea5370b92cd5b9ef6533",
       "warmup_bars": 0,
       "assumptions": "a03ff5f1f0a4386af0f22e84816e7d315439b800b105b67fac64c26d1dd56029",
-      "raw_report": "d797c013d4bf65942091208974882f0ef570f31c7a697f45f56db026f0725e17"
+      "raw_report": "31d32630950d63c3f178b347254efffc8f8cc6b88a7817a069cd67c8fbc59db3"
     },
     "hammer_pin_bar@long/1": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "6d4d6461cacd390caf785666f17e396f5b8b590d906ea04324092937942df414",
+      "result_v2": "ab1f0b3b3803db40370149f73d528b14942e987f533aea5370b92cd5b9ef6533",
       "warmup_bars": 60,
       "assumptions": "f4403d147aacf0ac6af4ac44a38e1796fc70c9eaec70958b6e61e6154965de32",
-      "raw_report": "d797c013d4bf65942091208974882f0ef570f31c7a697f45f56db026f0725e17"
+      "raw_report": "31d32630950d63c3f178b347254efffc8f8cc6b88a7817a069cd67c8fbc59db3"
     },
     "inside_bar_breakout/0": {
       "min_bars": 3,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "70651aa00aa4efe535a2b359eb6ffce752b9d8aa12d9b7772278ab53f73b2c5f",
+      "result_v2": "f709eaab2cafa2c45f8924117e769f999eea3ba07ca3005f476f02d7e7baac66",
       "warmup_bars": 0,
       "assumptions": "430bf3c4868485bad890d12088030e66c5845ef96e2642d3865b9cbf181e12b7",
-      "raw_report": "d07303df565de190bccf263c94943012cb5eab2ac0096f7863e29cb05c6f8001"
+      "raw_report": "f53cbb63e29c9c470a078b4c3131d9f621ca4f0a52c9deef82336c81a8100a5c"
     },
     "inside_bar_breakout/1": {
       "min_bars": 3,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "70651aa00aa4efe535a2b359eb6ffce752b9d8aa12d9b7772278ab53f73b2c5f",
+      "result_v2": "f709eaab2cafa2c45f8924117e769f999eea3ba07ca3005f476f02d7e7baac66",
       "warmup_bars": 60,
       "assumptions": "388e9b36bfacea96615e28b67e21cda82dea9901174d993850eaa5a74158ed2c",
-      "raw_report": "d07303df565de190bccf263c94943012cb5eab2ac0096f7863e29cb05c6f8001"
+      "raw_report": "f53cbb63e29c9c470a078b4c3131d9f621ca4f0a52c9deef82336c81a8100a5c"
     },
     "inside_bar_breakout@long/0": {
       "min_bars": 3,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "70651aa00aa4efe535a2b359eb6ffce752b9d8aa12d9b7772278ab53f73b2c5f",
+      "result_v2": "f709eaab2cafa2c45f8924117e769f999eea3ba07ca3005f476f02d7e7baac66",
       "warmup_bars": 0,
       "assumptions": "430bf3c4868485bad890d12088030e66c5845ef96e2642d3865b9cbf181e12b7",
-      "raw_report": "d07303df565de190bccf263c94943012cb5eab2ac0096f7863e29cb05c6f8001"
+      "raw_report": "f53cbb63e29c9c470a078b4c3131d9f621ca4f0a52c9deef82336c81a8100a5c"
     },
     "inside_bar_breakout@long/1": {
       "min_bars": 3,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "70651aa00aa4efe535a2b359eb6ffce752b9d8aa12d9b7772278ab53f73b2c5f",
+      "result_v2": "f709eaab2cafa2c45f8924117e769f999eea3ba07ca3005f476f02d7e7baac66",
       "warmup_bars": 60,
       "assumptions": "388e9b36bfacea96615e28b67e21cda82dea9901174d993850eaa5a74158ed2c",
-      "raw_report": "d07303df565de190bccf263c94943012cb5eab2ac0096f7863e29cb05c6f8001"
+      "raw_report": "f53cbb63e29c9c470a078b4c3131d9f621ca4f0a52c9deef82336c81a8100a5c"
     },
     "morning_star/0": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "0e681b3cd1be4074c0551d6af873dca8b4f44becad3c202fe878943ce432361b",
+      "result_v2": "91d54849d6dfe9fc3ecbc1777b91518d0118e1bd09b3a10b6035eca4f95e3572",
       "warmup_bars": 0,
       "assumptions": "37ea9ae68443002cbe2511b7b3aecf0984774c68d49f16c126579bd87ab6f1c3",
-      "raw_report": "662d84e488241c12c061ae30e55bcbcc3f17e6d19ac5a8627ca93d7e52b95ac3"
+      "raw_report": "a86190e618cf8c72fba5d5734bdec19a886e7390809b9fafa41810cec6a89072"
     },
     "morning_star/1": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "0e681b3cd1be4074c0551d6af873dca8b4f44becad3c202fe878943ce432361b",
+      "result_v2": "91d54849d6dfe9fc3ecbc1777b91518d0118e1bd09b3a10b6035eca4f95e3572",
       "warmup_bars": 60,
       "assumptions": "cff832c5435640a4d5ab8ac61b691227ce9ebdffd172ffc5a285eacb7d56ef9d",
-      "raw_report": "662d84e488241c12c061ae30e55bcbcc3f17e6d19ac5a8627ca93d7e52b95ac3"
+      "raw_report": "a86190e618cf8c72fba5d5734bdec19a886e7390809b9fafa41810cec6a89072"
     },
     "morning_star@long/0": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "0e681b3cd1be4074c0551d6af873dca8b4f44becad3c202fe878943ce432361b",
+      "result_v2": "91d54849d6dfe9fc3ecbc1777b91518d0118e1bd09b3a10b6035eca4f95e3572",
       "warmup_bars": 0,
       "assumptions": "37ea9ae68443002cbe2511b7b3aecf0984774c68d49f16c126579bd87ab6f1c3",
-      "raw_report": "662d84e488241c12c061ae30e55bcbcc3f17e6d19ac5a8627ca93d7e52b95ac3"
+      "raw_report": "a86190e618cf8c72fba5d5734bdec19a886e7390809b9fafa41810cec6a89072"
     },
     "morning_star@long/1": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "0e681b3cd1be4074c0551d6af873dca8b4f44becad3c202fe878943ce432361b",
+      "result_v2": "91d54849d6dfe9fc3ecbc1777b91518d0118e1bd09b3a10b6035eca4f95e3572",
       "warmup_bars": 60,
       "assumptions": "cff832c5435640a4d5ab8ac61b691227ce9ebdffd172ffc5a285eacb7d56ef9d",
-      "raw_report": "662d84e488241c12c061ae30e55bcbcc3f17e6d19ac5a8627ca93d7e52b95ac3"
+      "raw_report": "a86190e618cf8c72fba5d5734bdec19a886e7390809b9fafa41810cec6a89072"
     },
     "three_white_soldiers/0": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "764c7a334068581ea5a49a51bbea4ca3509a312494b0af2e36f0c6896699d064",
+      "result_v2": "60cb49d862ffa3850569a7ce036c1a047d186e41dfad711b92679bc4cc6826d5",
       "warmup_bars": 0,
       "assumptions": "3be7151591893a5d10be172185504fbb58fb9d2b5f6b21949d99eeb2690beae1",
-      "raw_report": "7a2ea3478baa734d3f88886469cb56d8cd0530f7c1ddc47f2f194834700190ad"
+      "raw_report": "50eaf8d72b26a3c5bbbb36835b1f6471e7c985cae539a7e46db39a71bc35e1c2"
     },
     "three_white_soldiers/1": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "764c7a334068581ea5a49a51bbea4ca3509a312494b0af2e36f0c6896699d064",
+      "result_v2": "60cb49d862ffa3850569a7ce036c1a047d186e41dfad711b92679bc4cc6826d5",
       "warmup_bars": 60,
       "assumptions": "88ca5e06855a20b5c861450258c2252c2b48503f655907e397266430ca673a6f",
-      "raw_report": "7a2ea3478baa734d3f88886469cb56d8cd0530f7c1ddc47f2f194834700190ad"
+      "raw_report": "50eaf8d72b26a3c5bbbb36835b1f6471e7c985cae539a7e46db39a71bc35e1c2"
     },
     "three_white_soldiers@long/0": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "764c7a334068581ea5a49a51bbea4ca3509a312494b0af2e36f0c6896699d064",
+      "result_v2": "60cb49d862ffa3850569a7ce036c1a047d186e41dfad711b92679bc4cc6826d5",
       "warmup_bars": 0,
       "assumptions": "3be7151591893a5d10be172185504fbb58fb9d2b5f6b21949d99eeb2690beae1",
-      "raw_report": "7a2ea3478baa734d3f88886469cb56d8cd0530f7c1ddc47f2f194834700190ad"
+      "raw_report": "50eaf8d72b26a3c5bbbb36835b1f6471e7c985cae539a7e46db39a71bc35e1c2"
     },
     "three_white_soldiers@long/1": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "764c7a334068581ea5a49a51bbea4ca3509a312494b0af2e36f0c6896699d064",
+      "result_v2": "60cb49d862ffa3850569a7ce036c1a047d186e41dfad711b92679bc4cc6826d5",
       "warmup_bars": 60,
       "assumptions": "88ca5e06855a20b5c861450258c2252c2b48503f655907e397266430ca673a6f",
-      "raw_report": "7a2ea3478baa734d3f88886469cb56d8cd0530f7c1ddc47f2f194834700190ad"
+      "raw_report": "50eaf8d72b26a3c5bbbb36835b1f6471e7c985cae539a7e46db39a71bc35e1c2"
     },
     "red_streak_rsi/0": {
       "min_bars": 43,
@@ -1067,73 +1067,73 @@
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "850d526ae4e2a3cb893b2f6e340027ba69a592fe495b050d754e2c71a9456b03",
+      "result_v2": "34ed3e2205cd198c46b9e9ad3b87813ef0ddd0dd84b69de119a3ba55cfbde621",
       "warmup_bars": 0,
       "assumptions": "8f41778f8b1fc29e6b978f575a67bf09c0af700d29619f5f55fae8bf8244a695",
-      "raw_report": "15dfa3d9ca757286880667427b3427740dcb97887afacbb3fa4aaae0e71649ec"
+      "raw_report": "794f47251aee28e625c4e4487ac5a793f10f6bac8e9eb6d1d2963cf38507f2d9"
     },
     "double_bottom/1": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "850d526ae4e2a3cb893b2f6e340027ba69a592fe495b050d754e2c71a9456b03",
+      "result_v2": "34ed3e2205cd198c46b9e9ad3b87813ef0ddd0dd84b69de119a3ba55cfbde621",
       "warmup_bars": 60,
       "assumptions": "39294d995b831325f54f80138279f624eccbdde16c21ff907626e07b5f886ccd",
-      "raw_report": "a39375c8398d98166a61fa8605530e33eeb956fb07a96ef9807347bbd68acd69"
+      "raw_report": "3ad33dbaadc2cfe8c397e286e70da2c588f0debc52b8c6d8f780cd5bec85a582"
     },
     "double_bottom@long/0": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "850d526ae4e2a3cb893b2f6e340027ba69a592fe495b050d754e2c71a9456b03",
+      "result_v2": "34ed3e2205cd198c46b9e9ad3b87813ef0ddd0dd84b69de119a3ba55cfbde621",
       "warmup_bars": 0,
       "assumptions": "8f41778f8b1fc29e6b978f575a67bf09c0af700d29619f5f55fae8bf8244a695",
-      "raw_report": "15dfa3d9ca757286880667427b3427740dcb97887afacbb3fa4aaae0e71649ec"
+      "raw_report": "794f47251aee28e625c4e4487ac5a793f10f6bac8e9eb6d1d2963cf38507f2d9"
     },
     "double_bottom@long/1": {
       "min_bars": 21,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "850d526ae4e2a3cb893b2f6e340027ba69a592fe495b050d754e2c71a9456b03",
+      "result_v2": "34ed3e2205cd198c46b9e9ad3b87813ef0ddd0dd84b69de119a3ba55cfbde621",
       "warmup_bars": 60,
       "assumptions": "39294d995b831325f54f80138279f624eccbdde16c21ff907626e07b5f886ccd",
-      "raw_report": "a39375c8398d98166a61fa8605530e33eeb956fb07a96ef9807347bbd68acd69"
+      "raw_report": "3ad33dbaadc2cfe8c397e286e70da2c588f0debc52b8c6d8f780cd5bec85a582"
     },
     "inverse_head_shoulders/0": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "d94493a591d1e448a81f3c5c0840bd75d6cc190d7973d0dc933d86c1f76c719b",
+      "result_v2": "0453599680693b6fae01fe8b0b344cf6d782692559ce75b1e1d2c4d0b63994c7",
       "warmup_bars": 0,
       "assumptions": "e2278ffd79f819b4df61051790b57ed91a28b8cc978827760e83b7d148544c4e",
-      "raw_report": "f2b4b71d730849c429a8c498361529da96be9fad2d31a9c217d637fada5ef314"
+      "raw_report": "fe79f9aec727e507d8e66932456fe5c7728bd70bb06331a1caccc078f4986762"
     },
     "inverse_head_shoulders/1": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "d94493a591d1e448a81f3c5c0840bd75d6cc190d7973d0dc933d86c1f76c719b",
+      "result_v2": "0453599680693b6fae01fe8b0b344cf6d782692559ce75b1e1d2c4d0b63994c7",
       "warmup_bars": 60,
       "assumptions": "64c7f44c57f49e546e8cc979675a94cb5ea964df81b7cf881ddb3004aca8c0bf",
-      "raw_report": "6f091764ff54077427856d81326b8a1fe29d04a28c62ddec990f797aab07a8af"
+      "raw_report": "7d1485e5a349346931ba3a40fef60e12af3f1bc3782b30d4ee575b243f48a3a8"
     },
     "inverse_head_shoulders@long/0": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "d94493a591d1e448a81f3c5c0840bd75d6cc190d7973d0dc933d86c1f76c719b",
+      "result_v2": "0453599680693b6fae01fe8b0b344cf6d782692559ce75b1e1d2c4d0b63994c7",
       "warmup_bars": 0,
       "assumptions": "e2278ffd79f819b4df61051790b57ed91a28b8cc978827760e83b7d148544c4e",
-      "raw_report": "f2b4b71d730849c429a8c498361529da96be9fad2d31a9c217d637fada5ef314"
+      "raw_report": "fe79f9aec727e507d8e66932456fe5c7728bd70bb06331a1caccc078f4986762"
     },
     "inverse_head_shoulders@long/1": {
       "min_bars": 23,
       "engine_trades": "ddbfcd2bfc108cb4182321a18f4bf4a583d693b66b1f4c093cb0efa03963f0aa",
       "engine_equity": "20f3a102ace8c987c0e69470fa45befdd6d00c9f2f0998305f65cf3a7fa7c170",
-      "result_v2": "d94493a591d1e448a81f3c5c0840bd75d6cc190d7973d0dc933d86c1f76c719b",
+      "result_v2": "0453599680693b6fae01fe8b0b344cf6d782692559ce75b1e1d2c4d0b63994c7",
       "warmup_bars": 60,
       "assumptions": "64c7f44c57f49e546e8cc979675a94cb5ea964df81b7cf881ddb3004aca8c0bf",
-      "raw_report": "6f091764ff54077427856d81326b8a1fe29d04a28c62ddec990f797aab07a8af"
+      "raw_report": "7d1485e5a349346931ba3a40fef60e12af3f1bc3782b30d4ee575b243f48a3a8"
     }
   }
 }
