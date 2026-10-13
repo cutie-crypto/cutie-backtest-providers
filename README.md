@@ -400,5 +400,5 @@ closes the existing group first. Only the protective exit bar blocks reentry;
 the next bar can decide a reverse group. Channel and time exits retain market
 closes at next open. Native SL / TP precede holding expiry and channel decisions.
 Turtle goldens are regenerated with `python3 tests/fixtures/capture_turtle_time_off_4d29dfa.py --record-psf-p2c`
-from `backtesting-py/`; original baseline_sha denotes the seed, while capture_source_sha256 pins the native response implementation.
+from `backtesting-py/`; original baseline_sha denotes the seed, while capture_source_sha256 pins the Turtle mixin source (checked by the fixture test).
 This branch is an unmerged draft; it does not establish a deployed provider pin.
