@@ -232,3 +232,7 @@ NONE 不成立,我有 5 条发现。以下只依据所给的 diff 和契约。�
 - 低9：51个B-2金样逐字节守卫与原time/entry JSON未编辑取证；新red_streak两金样通过现成canonical捕获，金融字段变化0。
 
 返修仅核受影响范围；未另跑第二轮外部review，不把作者核验记成Sonnet复审。最终全量、失败集合归因见B-3 verification文档和/tmp/warmup-b3。
+
+### WARMUP-B-3 收尾门
+
+9010 passed / 1659 failed / 0 errors，EXIT=1；相对B-2通过+328、失败-328；新增失败/错误0。源码冻结变化0、PR98继续draft。两种重录守卫变异红且未覆写、还原字节一致。该结果为作者验证，不是Sonnet第二轮review。
