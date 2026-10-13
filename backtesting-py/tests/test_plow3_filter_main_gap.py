@@ -36,12 +36,12 @@ def iso(stamp):
     return pd.Timestamp(stamp).tz_localize('UTC').isoformat()
 
 
-def run(monkeypatch, tmp_path, tool, data, warm, **extra):
+def run(monkeypatch, tmp_path, tool, data, warm, *, complete=True, **extra):
     freq = cap.TIMEFRAME.get(tool, '1h')
     # P-EVENT0: event_window needs its inline events (no default list); every other tool adds nothing.
     params = {**cap.params_for(tool), **required_params(tool), **cap.EMA10, **extra}
     return base.post(monkeypatch, tmp_path, tool, params, data, warm, timeframe={'1h': '1h', '30min': '30m'}[freq],
-                     complete=tool not in WARMUP_FINANCIAL_STOP)
+                     complete=complete and tool not in WARMUP_FINANCIAL_STOP)
 
 
 def test_template_table():
@@ -199,7 +199,7 @@ def test_two_gaps_three_missing_beyond_tolerance_details(monkeypatch, tmp_path):
     warm, data = cap.series()
     window = data.iloc[:29]
     gapped = window.drop(window.index[[5, 15, 16]])  # 26 bars, expected 29: 26 < 26.1
-    body = run(monkeypatch, tmp_path, 'inside_bar_breakout', gapped, warm)
+    body = run(monkeypatch, tmp_path, 'inside_bar_breakout', gapped, warm, complete=False)
     assert body['error_type'] == 'INSUFFICIENT_DATA', body
     assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 2, 'missing_bars': 3,
                                    'first_gap_after': iso(window.index[4]), 'first_gap_segment': 'main'}
@@ -217,14 +217,14 @@ def test_exactly_at_tolerance_does_not_fail(monkeypatch, tmp_path):
 
 def test_warmup_inner_gap_segment(monkeypatch, tmp_path):
     full, data = cap.series()
-    body = run(monkeypatch, tmp_path, 'ema_cross', data, full.drop(full.index[-3]))
+    body = run(monkeypatch, tmp_path, 'ema_cross', data, full.drop(full.index[-3]), complete=False)
     assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 1, 'missing_bars': 1,
                                    'first_gap_after': iso(full.index[-4]), 'first_gap_segment': 'warmup'}, body
 
 
 def test_warmup_boundary_segment(monkeypatch, tmp_path):
     full, data = cap.series()
-    body = run(monkeypatch, tmp_path, 'ema_cross', data, full.iloc[:-1])
+    body = run(monkeypatch, tmp_path, 'ema_cross', data, full.iloc[:-1], complete=False)
     assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 1, 'missing_bars': 1,
                                    'first_gap_after': iso(full.index[-2]),
                                    'first_gap_segment': 'warmup_boundary'}, body
@@ -244,7 +244,7 @@ def test_main_subperiod_spacing_counts_both_sides_and_fails(monkeypatch, tmp_pat
     warm, data = cap.series()
     shifted = data.copy()
     shifted.index = _shift(data.index, range(100, 200, 2))  # 50 bars: 50 x 1.5 step + 50 x 0.5 step
-    body = run(monkeypatch, tmp_path, 'ema_cross', shifted, warm)
+    body = run(monkeypatch, tmp_path, 'ema_cross', shifted, warm, complete=False)
     assert (body['error_type'], body['error_message']) == (
         'INSUFFICIENT_DATA', 'Entry filter indicator history has gaps'), body
     assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 100, 'missing_bars': 100,
@@ -266,7 +266,7 @@ def test_warmup_subperiod_spacing_reports_at_least_one_missing_bar(monkeypatch, 
     full, data = cap.series()
     shifted = full.copy()
     shifted.index = _shift(full.index, [len(full) - 3])  # inner: -4 -> -3 is 1.5 step, -3 -> -2 is 0.5 step
-    body = run(monkeypatch, tmp_path, 'ema_cross', data, shifted)
+    body = run(monkeypatch, tmp_path, 'ema_cross', data, shifted, complete=False)
     assert (body['error_type'], body['error_message']) == (
         'INSUFFICIENT_DATA', 'Entry filter indicator history has gaps'), body
     assert body['limitations'] == {'reason': 'filter_history_insufficient', 'gap_count': 2, 'missing_bars': 2,
@@ -277,6 +277,6 @@ def test_warmup_boundary_subperiod_spacing_reports_missing_bars(monkeypatch, tmp
     full, data = cap.series()
     shifted = full.copy()
     shifted.index = _shift(full.index, [len(full) - 1])  # last prefix bar sits 0.5 step before the main range
-    body = run(monkeypatch, tmp_path, 'ema_cross', data, shifted)
+    body = run(monkeypatch, tmp_path, 'ema_cross', data, shifted, complete=False)
     assert body['limitations']['reason'] == 'filter_history_insufficient', body
     assert body['limitations']['missing_bars'] >= 1 and body['limitations']['gap_count'] == 2, body

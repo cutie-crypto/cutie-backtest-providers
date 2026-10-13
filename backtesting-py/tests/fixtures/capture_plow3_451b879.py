@@ -53,7 +53,8 @@ def post(monkeypatch, tmp_path, tool, params, data, warm, source=None, fetch_err
     def warmup(*args, **kwargs):
         seed = warm.tail(args[5]).copy() if args[5] > 0 else warm.iloc[:0].copy()
         return extend_seed(seed, args[3], args[5], args[6]) if complete else seed
-    monkeypatch.setattr(p, '_fetch_template_warmup', warmup)
+    monkeypatch.setattr(p, '_fetch_template_warmup', warmup if complete else
+                        lambda *a: warm.tail(a[5]).copy() if a[5] > 0 else warm.iloc[:0].copy())
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **kw: None)
     step = pd.Timedelta(timeframe.replace('m', 'min') if timeframe.endswith('m') else timeframe)
     request = dict(run_id='plow3', provider_tool_id='local.backtesting_py.' + tool, provider_params=params,
