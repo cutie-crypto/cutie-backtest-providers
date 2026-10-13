@@ -2440,20 +2440,20 @@
       "0": {
         "warmup_bars": 0,
         "assumptions_sha256": "8f41778f8b1fc29e6b978f575a67bf09c0af700d29619f5f55fae8bf8244a695",
-        "raw_report_sha256": "15dfa3d9ca757286880667427b3427740dcb97887afacbb3fa4aaae0e71649ec",
+        "raw_report_sha256": "794f47251aee28e625c4e4487ac5a793f10f6bac8e9eb6d1d2963cf38507f2d9",
         "trade_count": 1,
-        "trades_sha256": "a0904b191de7f0421d1cc78d9bd7efae5ae8f9be0c10d622244b4b7df8355e26",
-        "equity_sha256": "0335e6e7a9833b6780464866c4c9e00d3819c8c9e61fea87dc277a49ec012eb6",
-        "result_v2_sha256": "850d526ae4e2a3cb893b2f6e340027ba69a592fe495b050d754e2c71a9456b03"
+        "trades_sha256": "323adaf591f1c49585903a35a483d07010a20a218f7e155613b7d13a83c2f83d",
+        "equity_sha256": "8e58dc31bf203f1696377b3a6ccf1e7b935df6500b6235fb25039c1dcd2ba711",
+        "result_v2_sha256": "34ed3e2205cd198c46b9e9ad3b87813ef0ddd0dd84b69de119a3ba55cfbde621"
       },
       "1": {
         "warmup_bars": 60,
         "assumptions_sha256": "39294d995b831325f54f80138279f624eccbdde16c21ff907626e07b5f886ccd",
-        "raw_report_sha256": "a39375c8398d98166a61fa8605530e33eeb956fb07a96ef9807347bbd68acd69",
+        "raw_report_sha256": "3ad33dbaadc2cfe8c397e286e70da2c588f0debc52b8c6d8f780cd5bec85a582",
         "trade_count": 1,
-        "trades_sha256": "a0904b191de7f0421d1cc78d9bd7efae5ae8f9be0c10d622244b4b7df8355e26",
-        "equity_sha256": "0335e6e7a9833b6780464866c4c9e00d3819c8c9e61fea87dc277a49ec012eb6",
-        "result_v2_sha256": "850d526ae4e2a3cb893b2f6e340027ba69a592fe495b050d754e2c71a9456b03"
+        "trades_sha256": "323adaf591f1c49585903a35a483d07010a20a218f7e155613b7d13a83c2f83d",
+        "equity_sha256": "8e58dc31bf203f1696377b3a6ccf1e7b935df6500b6235fb25039c1dcd2ba711",
+        "result_v2_sha256": "34ed3e2205cd198c46b9e9ad3b87813ef0ddd0dd84b69de119a3ba55cfbde621"
       }
     },
     "inverse_head_shoulders": {
@@ -2461,20 +2461,20 @@
       "0": {
         "warmup_bars": 0,
         "assumptions_sha256": "e2278ffd79f819b4df61051790b57ed91a28b8cc978827760e83b7d148544c4e",
-        "raw_report_sha256": "f2b4b71d730849c429a8c498361529da96be9fad2d31a9c217d637fada5ef314",
+        "raw_report_sha256": "fe79f9aec727e507d8e66932456fe5c7728bd70bb06331a1caccc078f4986762",
         "trade_count": 1,
-        "trades_sha256": "b474184f1e856b2ea880d54b7c6c00384a54cb7990be34b6ca6e003ba83622d0",
-        "equity_sha256": "0335e6e7a9833b6780464866c4c9e00d3819c8c9e61fea87dc277a49ec012eb6",
-        "result_v2_sha256": "d94493a591d1e448a81f3c5c0840bd75d6cc190d7973d0dc933d86c1f76c719b"
+        "trades_sha256": "15c28e0a2b3872353390837f660938685e7c9b5cc114e43df6034f01f0a3f0aa",
+        "equity_sha256": "653da897bf97b7bf98165e7a937b37e561cea579f28e4dad04a83cafeb467521",
+        "result_v2_sha256": "0453599680693b6fae01fe8b0b344cf6d782692559ce75b1e1d2c4d0b63994c7"
       },
       "1": {
         "warmup_bars": 60,
         "assumptions_sha256": "64c7f44c57f49e546e8cc979675a94cb5ea964df81b7cf881ddb3004aca8c0bf",
-        "raw_report_sha256": "6f091764ff54077427856d81326b8a1fe29d04a28c62ddec990f797aab07a8af",
+        "raw_report_sha256": "7d1485e5a349346931ba3a40fef60e12af3f1bc3782b30d4ee575b243f48a3a8",
         "trade_count": 1,
-        "trades_sha256": "b474184f1e856b2ea880d54b7c6c00384a54cb7990be34b6ca6e003ba83622d0",
-        "equity_sha256": "0335e6e7a9833b6780464866c4c9e00d3819c8c9e61fea87dc277a49ec012eb6",
-        "result_v2_sha256": "d94493a591d1e448a81f3c5c0840bd75d6cc190d7973d0dc933d86c1f76c719b"
+        "trades_sha256": "15c28e0a2b3872353390837f660938685e7c9b5cc114e43df6034f01f0a3f0aa",
+        "equity_sha256": "653da897bf97b7bf98165e7a937b37e561cea579f28e4dad04a83cafeb467521",
+        "result_v2_sha256": "0453599680693b6fae01fe8b0b344cf6d782692559ce75b1e1d2c4d0b63994c7"
       }
     }
   }
