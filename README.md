@@ -37,8 +37,8 @@ work remains bounded by the same limiter.
 The concurrency regression holds a backtest worker until a successful `/health`
 response arrives, covering both Python CPU contention and a held worker. It fails
 if health waits for backtest completion; five-second watchdogs only bound broken
-runs. Health latency is recorded for diagnosis, without treating a single
-100ms wall-clock sample as a portable scheduling guarantee. Imports are warmed
+runs. A loose one-second ceiling catches hangs; latency is printed for diagnosis,
+without treating a single 100ms wall-clock sample as a portable scheduling guarantee. Imports are warmed
 before the measurement; exchange construction and report-directory checks still
 run inside each health request.
 

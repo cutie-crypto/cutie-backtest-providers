@@ -71,6 +71,8 @@ def test_health_answers_before_backtest_is_released(setup, monkeypatch, cpu_busy
                 # waits for CPU work or its limiter, the watchdog ends the worker
                 # first and this assertion fails, regardless of machine speed.
                 assert not finished.is_set(), 'health waited for backtest completion'
+                # Loose ceiling (orch 1013): catches hangs without tracking machine load.
+                assert elapsed < 1.0, elapsed
                 print(f'HEALTH_LATENCY_MS={elapsed * 1000:.2f}')
             finally:
                 release.set()
