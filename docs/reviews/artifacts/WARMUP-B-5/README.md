@@ -1,0 +1,1 @@
+本目录为WARMUP-B-5本地合成夹具证据。任务与验证见上两级目录。full-comparison包含相对pin真实新增失败；introduced-reconciliation只证明相对B4表面新增节点在合并基线已失败，不能替代pin比较。capture脚本须使用f933b65测试和本批脚本，旧provider源为678b4e1、其余运行模块为0da4fc7。没有真实行情/provider部署/Pre/设备验收。
