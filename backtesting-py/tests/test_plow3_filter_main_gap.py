@@ -27,6 +27,9 @@ GOLDEN = json.loads((Path(__file__).parent / 'fixtures/plow3_451b879.json').read
 TOOLS = cap.tools()
 # VWAP has its own grid gate before the filter guard (P-LOW5-VWAP: within tolerance it masks whole UTC days).
 EARLIER_GRID_GATE = {'vwap_reversion'}
+# Old-provider/candidate financial comparison found changed trades in these tools.
+# Keep their original short prefixes and visible failures; never recapture them.
+WARMUP_FINANCIAL_STOP = {'chan_3buy', 'chan_3sell', 'ema_rsi_pullback'}
 
 
 def iso(stamp):
@@ -37,7 +40,8 @@ def run(monkeypatch, tmp_path, tool, data, warm, **extra):
     freq = cap.TIMEFRAME.get(tool, '1h')
     # P-EVENT0: event_window needs its inline events (no default list); every other tool adds nothing.
     params = {**cap.params_for(tool), **required_params(tool), **cap.EMA10, **extra}
-    return base.post(monkeypatch, tmp_path, tool, params, data, warm, timeframe={'1h': '1h', '30min': '30m'}[freq])
+    return base.post(monkeypatch, tmp_path, tool, params, data, warm, timeframe={'1h': '1h', '30min': '30m'}[freq],
+                     complete=tool not in WARMUP_FINANCIAL_STOP)
 
 
 def test_template_table():
@@ -82,7 +86,7 @@ def run_aug31(monkeypatch, tmp_path, gap):
                         for k in range(len(self.data))})
     monkeypatch.setattr(p._FilterLayerMixin, '_filter_init', spy)
     body = base.post(monkeypatch, tmp_path, 'ema_cross',
-                     {**cap.params_for('ema_cross'), **cap.EMA10, 'filter_ema_period': EMA_PERIOD}, data, warm)
+                     {**cap.params_for('ema_cross'), **cap.EMA10, 'filter_ema_period': EMA_PERIOD}, data, warm, complete=True)
     return body, allowed, data
 
 

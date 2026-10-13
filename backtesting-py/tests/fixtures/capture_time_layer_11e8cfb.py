@@ -68,7 +68,11 @@ def response(name, params, warm=True, *, complete=False):
     # changed-trade cases retain the old fixture and its visible failure.
     inert = {**provider._TIME_PARAM_SCHEMA_PROPERTIES,
              **provider.FILTER_PARAM_SCHEMA_PROPERTIES}
-    core_params = {k: v for k, v in params.items() if k not in inert}
+    disabled_risk = {'risk_layer_enabled': False, 'atr_stop_multiplier': 0,
+                     'risk_atr_period': 0, 'take_profit_r': 0, 'leverage': 1}
+    core_params = {k: v for k, v in params.items() if k not in inert
+                   and not (k in disabled_risk and type(v) is type(disabled_risk[k])
+                            and v == disabled_risk[k])}
     defaults_only = all(v == inert[k]['default'] for k, v in params.items() if k in inert)
     eligible = (complete and defaults_only and not params.get('time_layer_enabled', False)
                 and not params.get('filter_layer_enabled', False)

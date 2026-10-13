@@ -236,3 +236,41 @@ NONE 不成立,我有 5 条发现。以下只依据所给的 diff 和契约。�
 ### WARMUP-B-3 收尾门
 
 9010 passed / 1659 failed / 0 errors，EXIT=1；相对B-2通过+328、失败-328；新增失败/错误0。源码冻结变化0、PR98继续draft。两种重录守卫变异红且未覆写、还原字节一致。该结果为作者验证，不是Sonnet第二轮review。
+
+## WARMUP-B-4 — Claude Sonnet 5.5 一轮只读审查
+
+实际 modelUsage: claude-sonnet-5-5；tools为空，无文件写入或子agent。
+
+**结论:不阻断。有 1 条需在合入前闭环,另有 4 条非阻断风险。** 我只读了 diff,没跑任何东西,下面的判断都来自代码本身。
+
+**范围核对**
+- **opt-in:** `post(..., complete=False)`、`response(..., complete=False)`、`http(..., complete=False)` 默认都保持旧行为。plow3 里只有 `complete=tool not in WARMUP_FINANCIAL_STOP` 和 `run_aug31` 显式打开,与描述一致。
+- **旧 mock 关键字兼容:** 新 `warmup(*args, **kwargs)` 和 `complete_seed(..., **kwargs)` 都吃关键字。9t1 里没开 `complete` 的分支仍是原来的 `lambda *a`,行为不变,所以没有新增兼容风险。
+- **金样不动:** diff 没碰任何金样 JSON、断言常量或期望值。`test_frozen_off_http_bytes` 里 trades/equity/metrics 的 sha 断言原样保留,所以 `disabled` 分支仍然有金融把关。
+- **排除项:** 3 个 stop 件(`chan_3buy`、`chan_3sell`、`ema_rsi_pullback`)走 `WARMUP_FINANCIAL_STOP`,继续用旧短前缀,保留可见失败。B3 的 30 金融/42 诊断、patconf2b1、P6、22/187/177 簇这几类,diff 里没出现。
+
+**需合入前闭环**
+1. **9t1/9t2 的 `http(..., complete=True)` 没有金融守卫。**
+   - 位置:`test_9t1_engulf_pin.py` 和 `test_9t2_patterns.py` 的 http 报告测试。
+   - 问题:`complete_seed` 用 `main.iloc[0]` 复制出 `bars` 根平坦前史,这会改变指标种子。plow3 有 `warmup_b4_plow_financial.json` 逐请求核对,这两个文件只靠 `len(trades)==1` 和键集合比较,没有金融比较。
+   - 影响:交易价格、时间、权益变了也不会被发现,违反"禁止改金融结果"。
+   - 你说蜡烛金融对照还在跑,所以可以带条件放行:对照结果出来前,不要把这两个文件记成"金融不变"。
+
+**非阻断风险**
+2. **新金融表是未跟踪文件。** `warmup_b4_plow_financial.json` 目前是 `??`,必须随本批提交,否则 plow3 的 `complete` 路径会 `FileNotFoundError`。另外 `baseline_sha: 678b4e1` 没有任何代码核对,生成脚本或命令也没入库,表的来源无法复现。建议在提交说明里写明生成命令。
+3. **请求哈希只覆盖请求体,不覆盖数据和 warm 内容。** 它匹配的是 symbol、起止时间、params 这些。好在最终比的是金融整体 hash,而且只在 `result_status == 'success'` 时检查,所以放过假匹配的概率很低。
+4. **`expected` 是"任一匹配即过"。**
+   - `ema_cross` 的 `b9b6f230…` 请求在表里有 3 个不同的金融 hash。`fccb5ee…` 也有 3 行,其中前两行重复。
+   - 同一请求对应多个旧值,说明旧侧产出依赖了请求体之外的东西(data/warm 内容)。
+   - 因此守卫对这几条只是"在已知值里",不是精确锁定。建议去重,并注明这几条各对应哪个用例。
+5. **`disabled_risk` 的比较用 `==`,有 bool/int 混同。** `False == 0`、`True == 1`,所以 `leverage: True`、`risk_layer_enabled: 0`、`take_profit_r: 0.0` 也会被当成"关闭"而剥掉。现有调用点用的都是规范值,实际无影响,但建议改成 `type(v) is type(d) and v == d`。
+
+**次要**
+- `extend_seed` 在 `bars <= len(seed)` 时返回 `seed.tail(bars)`,不设 `attrs`,和延长分支的 `main.attrs.copy()` 不一致。当前路径大概率不触发,可以顺手对齐。
+- `complete_seed` 在 `bars == 0` 时会构造出无列的空 DataFrame,不是 `main.iloc[:0]`。`extend_seed` 已处理了这种情况,`complete_seed` 没有,建议同样处理。
+
+**是否阻断:** 否。提交时带上第 2 条的 json,第 1 条待蜡烛金融对照出来后再下"金融不变"的结论。
+
+### 作者闭环（无第二轮review）
+
+蜡烛旧/新16响应金融字段全部一致，并增加旧版678b4e1指纹运行时守卫。plow金融表去重58条、蜡烛13条；按完整请求与主行情manifest摘要一起匹配，避免同请求不同主数据混用。显式关闭风险参数改为类型与值均一致才剥离。两份新金融表随提交；旧金样未改。历史为声明的合成常量前缀，只是本地夹具证据。已有complete_seed的零预算与attrs分支为非本轮变化；严格零预算/真实读历史在test_warmup_explicit.py单独覆盖。生成/审计命令为/tmp/warmup-b4/audit-plow.py old/new与audit-candle.py old/new，旧provider通过git show 678b4e1装载；完整请求及响应留在同目录四份JSON，指纹仅来自旧值且在新值相等时纳入。

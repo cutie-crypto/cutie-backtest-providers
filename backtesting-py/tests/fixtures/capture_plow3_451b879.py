@@ -10,6 +10,7 @@ Run from an export of 451b879: `python3 tests/fixtures/capture_plow3_451b879.py 
 """
 from pathlib import Path
 import json
+import hashlib
 import sys
 import tempfile
 
@@ -25,6 +26,7 @@ import capture_plow2a_b48e65e as cap  # noqa: E402
 import cutie_backtesting_provider as p  # noqa: E402
 import test_risk_overlay_compatibility as compat  # noqa: E402
 from _exit_kinds_strip import without_exit_kinds
+from _complete_seed_fixture import extend_seed
 
 BASELINE_SHA = '451b879'
 GAP_AT = 180  # main-range bar removed for the one-bar gap
@@ -38,7 +40,7 @@ def gapped(freq='1h', drop=(GAP_AT,)):
     return warm, data.drop(data.index[list(drop)])
 
 
-def post(monkeypatch, tmp_path, tool, params, data, warm, source=None, fetch_error=None, timeframe='1h'):
+def post(monkeypatch, tmp_path, tool, params, data, warm, source=None, fetch_error=None, timeframe='1h', *, complete=False):
     """POST one futures run; `_fetch_template_warmup` returns the tail(bars) of `warm`."""
     def fetch(ex, mk, sym, tf, since, until):
         if fetch_error is not None:
@@ -48,15 +50,27 @@ def post(monkeypatch, tmp_path, tool, params, data, warm, source=None, fetch_err
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', fetch)
-    monkeypatch.setattr(p, '_fetch_template_warmup',
-                        lambda *a: warm.tail(a[5]).copy() if a[5] > 0 else warm.iloc[:0].copy())
+    def warmup(*args, **kwargs):
+        seed = warm.tail(args[5]).copy() if args[5] > 0 else warm.iloc[:0].copy()
+        return extend_seed(seed, args[3], args[5], args[6]) if complete else seed
+    monkeypatch.setattr(p, '_fetch_template_warmup', warmup)
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **kw: None)
     step = pd.Timedelta(timeframe.replace('m', 'min') if timeframe.endswith('m') else timeframe)
     request = dict(run_id='plow3', provider_tool_id='local.backtesting_py.' + tool, provider_params=params,
                    symbol='BTCUSDT', market='futures', timeframe=timeframe, start_at=int(data.index[0].timestamp()),
                    end_at=int((data.index[-1] + step).timestamp()), initial_capital='10000', fee_bps='0',
                    slippage_bps='0')
-    return TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json()
+    body = TestClient(p.app).post('/cutie/backtest', json={'backtest': request}).json()
+    if complete and body['result_status'] == 'success':
+        digest = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True,
+            separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+        frozen = json.loads(Path(__file__).with_name('warmup_b4_plow_financial.json').read_text())
+        expected = [r['financial_sha256'] for r in frozen['rows']
+                    if r['request_sha256'] == digest({'backtest': request})
+                    and r['main_manifest_sha256'] == digest(body['data_manifest'])]
+        actual = digest({k: body[k] for k in ('trades', 'equity_curve', 'metrics', 'data_manifest')})
+        assert actual in expected, (tool, 'financial fields changed or unaudited request; stop')
+    return body
 
 
 def dump(body):
