@@ -19,7 +19,7 @@
 | fixtures/{9t1_candle_off.json,9t2_candle_off.json,9t3_bottom_off.json} | 4/4；8/8；4/4 |
 | fixtures/q42c_default_path_goldens.json | 0/0（75 个响应，73 个用例；说明字段变化） |
 
-本地定向 35 passed / EXIT 0；确认队列删除 advance 变异两条红，cp 恢复两条绿。基线全量 10640 passed / EXIT 0；当前全量尚待回填。23 金样文件通过既有 capture 函数 / Q42C_RECORD 重算，入场与笔数不变；仍红的其它捕获和硬编码断言未完成，不能转 ready。
+本地定向 35 passed / EXIT 0；确认队列删除 advance 变异两条红，cp 恢复两条绿。基线全量 10640 passed / EXIT 0；当前全量 290 failed, 10385 passed / EXIT 1；海龟相关失败 0。23 金样文件通过既有 capture 函数 / Q42C_RECORD 重算，入场与笔数不变；仍红的其它捕获和硬编码断言未完成，不能转 ready。
 
 Sonnet 5.5 静态增量 review 未发现新成交逻辑缺陷，指出说明字段误报已修；覆盖缺口仍待做。钱路径统领逐行亲读后合，不合 main、不 pin。
 
