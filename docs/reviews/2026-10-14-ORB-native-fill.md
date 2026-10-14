@@ -30,9 +30,13 @@ PR 写集交叉（实际 PR API 读取，不把 remote branch 最新当 PR）：
 
 中-3 不是本批改写风险模型：range 原有 RiskState 构造逐字移动，原有动态/levels 定价键继续拒绝，本批不扩能力、不改公共状态规则；低-5 尚无已证 reason 污染、低-6 已在 README 注明 generic 与 ORB 例外，不修改公共 mixin。
 
-完整 suite **NOT_RUN**：A 17:18/17:34 明确无窗口，RESULT→客户集成优先，不执行或采样。旧 ORB 字节 fixture 与新 assumptions 存在静态冲突（首审高-1），不能记成真实 full EXIT1。旧 golden/fixture/xfail 保持原字节；A 另定新 pin/新金样依赖及 supersede 方式后才跑全门，本线不实现迁移。完整命令为 `/private/tmp/LONGWIN-4/provider-venv/bin/python -m pytest -q tests`，cwd 本树 `backtesting-py`。
+完整 suite **NOT_RUN**：A 17:18/17:34 明确无窗口，RESULT→客户集成优先，不执行或采样。旧 ORB 字节 fixture 与新 assumptions 存在静态冲突（首审高-1），不能记成真实 full EXIT1。旧 golden/fixture/xfail 保持原字节；C 17:36 双轨裁定允许先规划以不可变候选本地生成新版本，**无需先部署新 pin**，但 C 审方案前不生成。本线只交独立方案、不实现迁移；完整 gate 和算法亲读分开。完整命令为 `/private/tmp/LONGWIN-4/provider-venv/bin/python -m pytest -q tests`，cwd 本树 `backtesting-py`。
 
 最终异家族返修闭环、最终 SHA 与门绑定及 Advisor 亲读：待续记。候选可送 Advisor 亲读成交段，尚非 PR/上线许可。无生产/QA 浏览器/凭据/归档查询。
+
+Asia 隔离补证：long/short × 显式 risk 开关 true/false × stop/stop-gap/both/take/take-gap，20 条真实 engine 均锁原 entry29/exit31/next-open 和原 SL/TP；native 安装一旦调用即失败。F1+新增合计 141 passed / EXIT0，旧 fixture 没有重钉。
+
+84a7692 独立返修闭审：同一实际 DeepSeek/plan/只读 session，EXIT0，算法 PASS 无当前 in-scope bug，完整验收仍 FAIL（NOT_RUN/静态旧金样冲突）。中2/低4修闭；中3认定原有边界非新 bug；低5未证 reason 污染、低6 README 例外已缓解。杠杆 liquidation-before-SL 和杠杆 gap 属仍未单独覆盖的共享分支，明确残留，不用 leverage2 回归宣称全覆盖。原闭审 report 也保留，后续仅补上述 20 条 Asia 测试和落档，成交代码保持 84a 原字节。
 
 ## 独立首审原结论（原 FAIL 保留）
 

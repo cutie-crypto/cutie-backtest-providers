@@ -145,6 +145,37 @@ def test_asia_protective_fill_stays_next_open():
     assert (trade.EntryBar, trade.ExitBar, trade.ExitPrice) == (29, 31, 85)
 
 
+@pytest.mark.parametrize('side', ['long', 'short'])
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('touch', ['stop', 'stop_gap', 'both', 'take', 'take_gap'])
+def test_asia_isolated_from_orb_native_hooks(side, enabled, touch):
+    data = market_frame(count=40, signal=28)
+    rows = {'stop': [112, 113, 89, 112, 1], 'stop_gap': [80, 81, 79, 80, 1],
+            'both': [112, 143, 89, 112, 1], 'take': [112, 143, 111, 112, 1],
+            'take_gap': [150, 151, 149, 150, 1]}
+    data.iloc[30] = rows[touch]
+    data.iloc[31] = [123, 124, 122, 123, 1]
+    if side == 'short':
+        data[['Open', 'High', 'Low', 'Close']] = [
+            [200-o, 200-lo, 200-hi, 200-c]
+            for o, hi, lo, c in data[['Open', 'High', 'Low', 'Close']].to_numpy()
+        ]
+    def no_native(base):
+        class NoNative(base):
+            def _risk_native_install(self):
+                pytest.fail('Asia entered ORB native broker wrapping')
+        return NoNative
+    stats = direct(data, {'direction': side, 'risk_layer_enabled': enabled},
+                   tool='asia_range_breakout', subclass=no_native)
+    assert len(stats['_trades']) == 1
+    trade = stats['_trades'].iloc[0]
+    assert (trade.EntryBar, trade.ExitBar, trade.ExitPrice) == (29, 31, 123 if side == 'long' else 77)
+    daily = next(iter(stats['_strategy'].daily_ranges.values()))
+    assert daily['stop_price'] == (90 if side == 'long' else 110)
+    assert daily['take_price'] == (142 if side == 'long' else 58)
+    assert daily['exit_reason'] == ('take_profit' if touch.startswith('take') else 'stop_loss')
+
+
 def test_orb_http_reports_distinct_protective_and_market_fills(monkeypatch, tmp_path):
     data, _, _, _ = scenario_frame('stop')
     result = http_run(monkeypatch, tmp_path, data)
