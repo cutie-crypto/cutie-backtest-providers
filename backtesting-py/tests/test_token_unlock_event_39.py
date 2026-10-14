@@ -179,3 +179,67 @@ def test_catalog_keeps_existing_order_and_unlock_next_to_event_window():
     assert keys[keys.index('local.backtesting_py.event_window') + 1] == TOOL_ID
     # Keep the existing first tool as well as event_window adjacency.
     assert keys[0] == 'local.backtesting_py.macro_release_breakout'
+
+
+LEGACY_BASE_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT"
+
+
+@pytest.mark.parametrize("configured", [None, LEGACY_BASE_SYMBOLS, "ETHUSDT,BTCUSDT", "PUMPUSDT,ETHUSDT,PUMPUSDT"])
+def test_unlock_catalog_only_adds_pump_to_default_persisted_or_custom_base(monkeypatch, configured):
+    if configured is None:
+        monkeypatch.delenv("CUTIE_BACKTEST_SUPPORTED_SYMBOLS", raising=False)
+    else:
+        monkeypatch.setenv("CUTIE_BACKTEST_SUPPORTED_SYMBOLS", configured)
+    monkeypatch.setattr(p, "AUTH_TOKEN", "")
+    base = p._supported_symbols()
+    before = base.copy()
+    if configured is None or configured == LEGACY_BASE_SYMBOLS:
+        assert base == LEGACY_BASE_SYMBOLS.split(",")
+    body = TestClient(p.app).get("/catalog").json()
+    assert body["schema"] == "cutie.backtest_provider_catalog.v1"
+    tools = {tool["tool_id"]: tool for tool in body["tools"]}
+    unlock = tools[TOOL_ID]
+    assert unlock["supported_symbols"] == list(dict.fromkeys([*base, "PUMPUSDT"]))
+    assert "catalog_extra_symbols" not in unlock
+    assert "catalog_extra_symbols" not in unlock["param_schema"]["properties"]
+    assert "ASTERUSDT" not in unlock["supported_symbols"]
+    assert "ARBUSDT" not in unlock["supported_symbols"]
+    for tool_id, spec in p.TOOL_SPECS.items():
+        if tool_id != TOOL_ID:
+            assert tools[tool_id] == p._catalog_tool(tool_id, spec, base)
+            assert tools[tool_id]["supported_symbols"] in (base, [])
+    assert base == before and p._supported_symbols() == before
+
+
+def pump_real_4h_frame():
+    source = Path(__file__).with_name("fixtures") / "pump_unlock_4h_202607.csv"
+    raw = pd.read_csv(source, header=None)
+    data = raw.iloc[:, 1:6].copy()
+    data.columns = ["Open", "High", "Low", "Close", "Volume"]
+    data.index = pd.to_datetime(raw[0], unit="ms", utc=True).dt.tz_localize(None)
+    assert data.index.equals(pd.date_range("2026-07-10T16:00:00", "2026-07-17T04:00:00", freq="4h"))
+    return data
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_pump_verified_4h_default_event_executes_and_late_known_at_skips(monkeypatch, tmp_path, late):
+    data = pump_real_4h_frame()
+    unlock = {"ts_utc": "2026-07-14T00:00:00Z", "label": "token_unlock",
+              "pct_of_supply": "9.961436381231754307453085137",
+              "known_at_utc": "2026-07-11T00:00:01Z" if late else "2025-07-14T00:00:00Z"}
+    body = post(monkeypatch, tmp_path, {"events": [unlock]}, data=data, tf="4h", symbol="PUMPUSDT")
+    assert body["assumptions"]["indicator_warmup_bars"] == 0
+    assert body["assumptions"]["token_unlock_event"]["schedule_notice"] == (
+        "解锁排期按上市日起视为已公开，改期事件按我方首次抓到时间")
+    if late:
+        assert body["trades"] == []
+        assert report(body)["events"][0]["status"] == "skipped_not_known"
+        return
+    expected = [("2026-07-11", "2026-07-14", "short"), ("2026-07-14", "2026-07-17", "long")]
+    assert len(body["trades"]) == 2
+    for trade, (opened, closed, side) in zip(body["trades"], expected):
+        assert (trade["opened_at"], trade["closed_at"], trade["side"]) == (
+            int(pd.Timestamp(opened, tz="UTC").timestamp()), int(pd.Timestamp(closed, tz="UTC").timestamp()), side)
+        assert float(trade["entry_price"]) == data.loc[opened, "Open"].iloc[0]
+        assert float(trade["exit_price"]) == data.loc[closed, "Open"].iloc[0]
+    assert [leg["exit_reason"] for leg in report(body)["events"][0]["legs"]] == ["unlock_day", "post_days"]
