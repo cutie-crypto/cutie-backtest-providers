@@ -38,9 +38,8 @@ Asia 隔离补证：long/short × 显式 risk 开关 true/false × stop/stop-gap
 
 84a7692 独立返修闭审：同一实际 DeepSeek/plan/只读 session，EXIT0，算法 PASS 无当前 in-scope bug，完整验收仍 FAIL（NOT_RUN/静态旧金样冲突）。中2/低4修闭；中3认定原有边界非新 bug；低5未证 reason 污染、低6 README 例外已缓解。杠杆 liquidation-before-SL 和杠杆 gap 属仍未单独覆盖的共享分支，明确残留，不用 leverage2 回归宣称全覆盖。原闭审 report 也保留，后续仅补上述 20 条 Asia 测试和落档，成交代码保持 84a 原字节。
 
-## 独立首审原结论（原 FAIL 保留）
 
-I'll perform the independent read-only audit. Let me gather all the materials first.
+## Review 1 (9de973c; original FAIL retained)
 
 独立异家族只读审查完成。以下为结论（真实模型：`opencode-go/deepseek-v4.1-flash`；仅读 read/grep，未写文件、未起 agent、未跑 run/测试）。
 
@@ -90,3 +89,59 @@ I'll perform the independent read-only audit. Let me gather all the materials fi
 
 ## 5) 是否满足进入 Advisor 亲读
 满足（限定于成交函数段）：建议 Advisor 亲读 `strategy_range_breakout.py:169-206` + `_risk_native_install/arbitrate`（`cutie_backtesting_provider.py:3523-3588`）+ `_risk_layer_check_exit`（:3603-3648），并核对 `candidate-order-trace.json`（bar11 撤 TP 在 engine_process 前、entry 仅一次、market parent 保留）。**进入亲读 ≠ 完整验收**：全量 suite 与新 pin/金样必须另行放行，本批不得改冻结金样。
+
+## Review 2 (84a7692)
+
+独立异家族只读审查（续）完成。仅 read/grep；未写文件、未起 agent、未跑测试。
+
+## 绑定
+- 真实模型/agent：`opencode-go/deepseek-v4.1-flash` / agent `plan`；实际工具仅 read/grep。
+- 精确 SHA：base `0da4fc7c6114fd25ddb85c6dfa8129a5fbb8a85f` .. HEAD `84a7692087e09528b418d1fd9849089d26d5ebb4`（前审 `9de973c`）。已用**当前工作树内容**核对：`strategy_range_breakout.py:278`（`trigger='protective_intrabar_high_low', entry_trigger='closed_bar_breakout'`）、`README.md:210-231`、`test_orb_native_fill.py:221-255` 与 `full.patch` 一致。
+- `full.patch`（base..84a）仅 5 文件：README、`strategy_range_breakout.py`、`test_f1_range_breakout.py`、`test_orb_native_fill.py`、`docs/reviews/...`。provider/mixin/broker 未改 → 产品算法与 9de 逐字同；9de..84a 增量 = 声明串 + 测试。
+- `pin14-common-function-comparison.json`：`_risk_native_protect`/`_risk_native_state`/`_risk_layer_check_exit` 与 pin14 源哈希相同（`identical_source:true`）；`_risk_native_install` 不同，`pin14-native-install-base-diff.patch` 显示差异仅基线自带的两行 `_pattern_confirm_advance`（ORB 不启用 queue）——与所述一致。
+
+## 算法结论（保留首审口径）
+- **算法段 PASS，无当前可触发 in-scope bug**：价格公式仍为逐字位移；SL→时间→TP→信号优先级成立；到期撤 TP 在 broker process 前；未新增未来 OHLC。84a 未触碰该逻辑。
+- **完整候选验收 FAIL（阻断，维持）**：全量 **NOT_RUN**；`range_assumptions` 对 ORB 的改动使多个**冻结 ORB 字节基线静态冲突**（`golden_10b2d/opening_range_breakout.{default,short}.json`、`fixtures/7p3b2_off_c72c4a1.json:9-10`、`patconf1_5ddd8eb.json:74,121`、`isolated_off_waveb...json`），经 `test_10b2d_sizing_range_calendar.py:39` 等整份 body 比较。我**没有**把它记成真实 full EXIT1——仅静态冲突，需由 A 的新 pin/金样 supersede。
+
+## 中2 / 低4 闭环
+- **中2 已修闭（有边界）**：`test_orb_native_fill.py:221-242` 增 6 条真实 HTTP engine（long/short × `leverage=2`、`position_size_risk_pct=1`+step0.001 出 qty `4.545`、`position_size_notional=1000`）；`:245-255` 增 leveraged period-end 结算。覆盖了 ORB native 下的普通停损成交、定仓与期末结算。**边界**：仍未覆盖「杠杆下 liquidation 先于 SL」及「杠杆+跳空」分支（属共享仲裁，由其它模板覆盖）；不影响本单结论。
+- **低4 已修闭**：`trigger` 改为 `protective_intrabar_high_low` 并新增 `entry_trigger=closed_bar_breakout`（`strategy_range_breakout.py:278`），README `:227-229` 同步，测试 `:158-159` 断言。Asia 默认仍 `trigger='closed_bar_high_low'`（`:273`）不变。
+- 7 红（`review-fix-focused.log`）均为 `KeyError:'exit_kind'`——测试误读 result.v2 trade 字段；改为公共 `raw_report.trade_exit_kinds`（`:237`、`:253-254`）即为**测试协议读法修正，非产品改动**。
+
+## 其他观察（分类）
+- **中3**：说明成立——已核 base range 路径 `_risk_layer_check_exit` 构造 `RiskState(entry,stop,take,|entry-stop|,side)`，`original_units=0`、`stop_state=None`、`levels=()`，本批逐字移动未扩张；`_sizing_states`/isolated stop counter 在原 ORB 路径本就未填。属**已存在的边界**，非新 bug、非本批引入。
+- **低5**：无已证 reason 污染；**原有/未来脆弱点**（新 cycle 不复位），未新增信号分支。
+- **低6**：README 已注明 generic 与 ORB 例外；公共 mixin 未改，**已缓解**。
+- **新观察**：`entry_trigger` 为附加键，不改 Asia 键集；`docs/reviews` 内粘贴了首审的自然语言首句（`I'll perform...`），纯文档整洁度，非产品问题。
+
+## 是否可交 Advisor 亲读
+**可以（限于成交函数段）**：建议亲读 `strategy_range_breakout.py:169-206`、`_risk_native_install/arbitrate`（`cutie_backtesting_provider.py:3523-3588`）、`_risk_layer_check_exit`（:3603-3648），核对 `candidate-order-trace.json`。**完整验收 gate 不关闭**：全量 suite 仍 NOT_RUN，静态金样冲突为硬前置，须由 A 定新 pin/金样后跑全门。
+
+## Final review (0dce159; algorithm PASS / full NOT_RUN)
+
+最后只读绑定核对完成（无写入/无 agent/未跑测试）。
+
+## 绑定
+- 模型/agent：`opencode-go/deepseek-v4.1-flash` / agent `plan`；工具仅 read/grep。
+- 精确 SHA：base `0da4fc7c6114fd25ddb85c6dfa8129a5fbb8a85f` .. 冻结候选 HEAD `0dce1595b3b21b780d9d4accf39509a151777be8`。
+- 增量核对（84a..0dce）：`full.patch` 索引显示仅 `test_orb_native_fill.py`（`9aa7c3d→f0ef069`，文件 286 行）与 `docs/reviews`（`fe1acf8→b13eeb2`）变化；`strategy_range_breakout.py` 仍 `49d4992`、`README.md` 仍 `a199605`、`test_f1` 仍 `8bd197b` 不变。树内 `test_orb_native_fill.py` 确为 286 行且含 `test_asia_isolated_from_orb_native_hooks`（tree:151）、`trigger`/`entry_trigger` 断言（tree:189-190）。→ 成交函数/provider/README 未改，与陈述一致；产品字节自 84a 冻结。
+
+## 逐项最终处置表
+| 项 | 状态 | 依据 / 边界 |
+|---|---|---|
+| 中2 杠杆/sizing 覆盖 | **已修（有明确边界）** | 84a 增 6 条真实 HTTP（long/short×lev2、risk1%+step.001→qty4.545、notional1000）+1 条杠杆期末结算；`test_orb_native_fill.py:221-255`。实际杠杆仲裁路径已走（`_risk_isolated_exit` 返回 False→SL 成交 90/110）。**残留**：杠杆下 liquidation-before-SL 与杠杆+gap 两子分支未单独覆盖（共享仲裁，其它模板覆盖）。 |
+| 中3 state/original_units | **已证无影响（原有边界，非新 bug）** | base range 路径本就 `RiskState(entry,stop,take,|entry-stop|,side)`，`original_units=0`、`stop_state=None`、`levels=()`；本批逐字移动、未扩张能力、未改公共状态/计账。 |
+| 低4 trigger 措辞 | **已修闭** | `trigger='protective_intrabar_high_low'` + `entry_trigger='closed_bar_breakout'`（`strategy_range_breakout.py:278`），README `:227-229` 与测试 `:189-190` 同步；Asia 默认仍 `closed_bar_high_low`（`:273`）不变。 |
+| 低5 reason 生命周期 | **明确残留（未来风险）** | 未见已证污染；未新增信号分支/改公共生命周期。 |
+| 低6 generic docstring | **已缓解** | README 注明 generic `target-before-holding` 与 ORB 例外；未改公共 mixin。 |
+| 高1/完整验收 | **FAIL / NOT_RUN（保留）** | 旧 ORB 冻结字节基线静态不兼容（`golden_10b2d/opening_range_breakout.*`、`fixtures/7p3b2_off...`、`patconf1...`、`isolated_off_waveb...`）；无窗口不跑，**不记成真实 full EXIT1**。 |
+| Asia 隔离（补证） | **已补** | `test_asia_isolated_from_orb_native_hooks`：2×2×5=20 条真实 engine，`_risk_native_install` 一被调用即 `pytest.fail`，锁 entry29/exit31/next-open、SL90/110、TP142/58；未重钉 Asia/非 ORB 金样。我逐例核了 long/short×stop/stop_gap/both/take/take_gap 的触发与 reason（both→stop 优先）。 |
+
+## 结论
+- **算法段：PASS**（84a 起产品逻辑冻结未动；无当前可触发 in-scope 缺陷）。
+- **当前明确残留**：杠杆 liquidation-before-SL、杠杆+gap 子分支未单独覆盖；低5 未证污染但保留为未来风险。
+- **完整验收：FAIL（NOT_RUN + 静态旧金样不兼容）**，与算法亲读门分离；不虚构绿。
+- **可否交 Advisor 亲读：可以**（A 轨，成交段）：`strategy_range_breakout.py:169-206`、`_risk_native_install/arbitrate`（provider:3523-3588）、`_risk_layer_check_exit`（:3603-3648）+ `candidate-order-trace.json`。亲读仅解除算法门，不代全量/金样。
+- **B 轨**：按 C 双轨（`orb-review-golden-two-track-ruling.md`）需先交 ≤30 行新 pin/金样方案（精确候选 ref、受影响金样/nodeid、新保护成交与 assumptions 预期差异、既有生成流程、旧基线保留、全量验证与合并绑定），**C 审前不生成**；本线不改旧 fixtures/goldens、不手编 JSON、不 xfail。
+- 低级别 doc 卫生：`docs/reviews/...md:507` 仍残留一句英文前言（`I'll perform...`），非产品问题。
