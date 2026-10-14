@@ -184,8 +184,13 @@ def test_catalog_keeps_existing_order_and_unlock_next_to_event_window():
 LEGACY_BASE_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT"
 
 
-@pytest.mark.parametrize("configured", [None, LEGACY_BASE_SYMBOLS, "ETHUSDT,BTCUSDT", "PUMPUSDT,ETHUSDT,PUMPUSDT"])
-def test_unlock_catalog_only_adds_pump_to_default_persisted_or_custom_base(monkeypatch, configured):
+@pytest.mark.parametrize("configured, expected_base", [
+    (None, LEGACY_BASE_SYMBOLS.split(",")),
+    (LEGACY_BASE_SYMBOLS, LEGACY_BASE_SYMBOLS.split(",")),
+    ("ETHUSDT,BTCUSDT", ["ETHUSDT", "BTCUSDT"]),
+    ("PUMPUSDT,ETHUSDT,PUMPUSDT", ["PUMPUSDT", "ETHUSDT"]),
+])
+def test_unlock_catalog_only_adds_pump_to_default_persisted_or_custom_base(monkeypatch, configured, expected_base):
     if configured is None:
         monkeypatch.delenv("CUTIE_BACKTEST_SUPPORTED_SYMBOLS", raising=False)
     else:
@@ -198,6 +203,10 @@ def test_unlock_catalog_only_adds_pump_to_default_persisted_or_custom_base(monke
     body = TestClient(p.app).get("/catalog").json()
     assert body["schema"] == "cutie.backtest_provider_catalog.v1"
     tools = {tool["tool_id"]: tool for tool in body["tools"]}
+    # Independent expectations catch pollution or accidental empty scopes even
+    # when the endpoint and the shared catalog builder regress together.
+    for tool_id in ("local.backtesting_py.ema_cross", "local.backtesting_py.macro_release_breakout"):
+        assert tools[tool_id]["supported_symbols"] == expected_base
     unlock = tools[TOOL_ID]
     assert unlock["supported_symbols"] == list(dict.fromkeys([*base, "PUMPUSDT"]))
     assert "catalog_extra_symbols" not in unlock
