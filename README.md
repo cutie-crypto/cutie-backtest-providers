@@ -225,7 +225,8 @@ priority differs from generic PSF-P1's target-before-holding behavior; it does
 not change the generic risk mixin or `asia_range_breakout`.
 
 `assumptions.range_breakout.fill` identifies the native protective path and
-`market_fill` identifies the next-open path. This is a local candidate pending
+`market_fill` identifies the next-open path; `entry_trigger` names the closed-bar
+breakout, while `trigger` explicitly names protective intrabar touches. This is a local candidate pending
 release. The client release note must name the actual deployed version and
 effective time; existing runs and reports are retained without rewriting.
 

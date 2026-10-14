@@ -275,7 +275,8 @@ def range_assumptions(config):
         stop='opposite_frozen_range_side', take='actual_entry_fill_plus_minus_frozen_range_height',
         priority='stop_loss_before_time_expiry_before_take_profit', warmup='strict_prefix_calculation_only')
     if config.profile == 'orb':
-        assumptions.update(trigger='intrabar_high_low', fill='native_protection_stop_limit',
+        assumptions.update(trigger='protective_intrabar_high_low', entry_trigger='closed_bar_breakout',
+            fill='native_protection_stop_limit',
             market_fill='next_bar_open_market',
             note='止损和止盈在触价根按原生保护单成交，跳空沿用风控层开盘取价；'
                  '同根止损优先，其次时间到期，再次止盈。入场、时间到期和模板信号退出仍在下一根开盘成交。',

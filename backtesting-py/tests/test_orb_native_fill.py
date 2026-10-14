@@ -155,6 +155,8 @@ def test_orb_http_reports_distinct_protective_and_market_fills(monkeypatch, tmp_
     assumption = result['assumptions']['range_breakout']
     assert assumption['fill'] == 'native_protection_stop_limit'
     assert assumption['market_fill'] == 'next_bar_open_market'
+    assert assumption['entry_trigger'] == 'closed_bar_breakout'
+    assert assumption['trigger'] == 'protective_intrabar_high_low'
 
 
 @pytest.mark.parametrize('enabled', [False, True])
@@ -214,3 +216,40 @@ def test_orb_due_target_removed_before_real_broker_and_preserves_other_orders(mo
     assert (trade.ExitBar, trade.ExitPrice) == (
         (bar+1, 117) if touch == 'take' else (bar, 80 if touch == 'gap' else 90))
     assert ('broker', bar, None) in events
+
+
+@pytest.mark.parametrize('side', ['long', 'short'])
+@pytest.mark.parametrize('settings,quantity', [
+    ({'leverage': 2}, None),
+    ({'position_size_risk_pct': 1, 'position_size_qty_step': 0.001}, Decimal('4.545')),
+    ({'position_size_notional': 1000}, None),
+])
+def test_orb_native_with_supported_leverage_and_sizing(monkeypatch, tmp_path, side, settings, quantity):
+    data, bar, price, reason = scenario_frame('stop', side)
+    body = http_run(monkeypatch, tmp_path, data, {**settings, 'direction': side})
+    assert body['result_status'] == 'success', body
+    assert len(body['trades']) == 1
+    trade = body['trades'][0]
+    assert trade['opened_at'] == int(data.index[5].timestamp())
+    assert trade['closed_at'] == int(data.index[bar].timestamp())
+    assert float(trade['entry_price']) == (112 if side == 'long' else 88)
+    assert float(trade['exit_price']) == price
+    assert body['raw_report']['trade_exit_kinds'] == [{'seq': 1, 'exit_kind': reason}]
+    if quantity is not None:
+        assert Decimal(str(trade['qty'])) == quantity
+    daily = body['raw_report']['range_breakout_days'][0]
+    assert daily['stop_price'] == (90 if side == 'long' else 110)
+    assert daily['take_price'] == (152 if side == 'long' else 48)
+
+
+def test_orb_leveraged_end_settlement_remains_period_end(monkeypatch, tmp_path):
+    data = market_frame()
+    body = http_run(monkeypatch, tmp_path, data, {'leverage': 2})
+    assert body['result_status'] == 'success', body
+    assert len(body['trades']) == 1
+    trade = body['trades'][0]
+    assert trade['closed_at'] == int(data.index[-1].timestamp())
+    assert float(trade['exit_price']) == data.Close.iloc[-1]
+    assert body['raw_report']['trade_exit_kinds'] == [
+        {'seq': 1, 'exit_kind': 'end_of_data'}]
+    assert body['raw_report']['range_breakout_days'][0]['exit_reason'] == 'engine_finalize_trades_settlement'
