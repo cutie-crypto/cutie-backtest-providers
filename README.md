@@ -207,6 +207,28 @@ Existing sizing, leverage=1 and time gates apply. Fixed `stop_loss_pct` or
 are incompatible with these template-owned exits. Disabled risk/time defaults
 remain valid. All new reporting stays outside the frozen result.v2 key sets.
 
+### Opening range breakout protective fills
+
+`local.backtesting_py.opening_range_breakout` keeps the stop at the opposite
+side of the frozen opening range and the target at actual entry fill plus or
+minus range height times `take_profit_multiple`. Protection uses the same native
+stop/limit broker path as PSF-P1 (pin14 `d7c7467`): the touching bar fills at the
+protection price, with SL gaps taking the worse opening price and TP gaps using
+that broker's opening-price improvement. Entry-bar protection uses the same
+second broker pass after the actual entry fill.
+
+ORB exit priority is stop, time expiry, target, then template signal. On a bar
+whose existing range clock or holding count is due, ORB cancels only its target
+before broker processing and leaves its stop active. Time expiry and market
+signal exits, as well as entries, keep their next-open market fills. This expiry
+priority differs from generic PSF-P1's target-before-holding behavior; it does
+not change the generic risk mixin or `asia_range_breakout`.
+
+`assumptions.range_breakout.fill` identifies the native protective path and
+`market_fill` identifies the next-open path. This is a local candidate pending
+release. The client release note must name the actual deployed version and
+effective time; existing runs and reports are retained without rewriting.
+
 ### Basket ratio MA option
 
 `local.backtesting_py.basket_ratio_sma_cross` accepts optional `ma_type=sma|ema`.

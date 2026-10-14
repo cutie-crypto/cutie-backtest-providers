@@ -27,6 +27,7 @@ class RangeConfig:
     multiple: float
     direction: str
     definition: PeriodDefinition
+    profile: str
 
     @classmethod
     def parse(cls, params, profile):
@@ -63,7 +64,7 @@ class RangeConfig:
         if config.flatten_at or config.flatten_weekdays != 127:
             raise ValueError('INVALID_PARAMS:use flatten_at for the intrinsic range cutoff')
         return cls(start, end, breakout, flatten, float(multiple), direction,
-                   PeriodDefinition(config.timezone_name, reset_at=start))
+                   PeriodDefinition(config.timezone_name, reset_at=start), profile)
 
     def window(self, cycle):
         return range_window(cycle, self.definition, self.start, self.end)
@@ -105,6 +106,7 @@ class RangeConfig:
 def make_strategy(mixin, config, risk, initial_capital):
     class RangeBreakoutStrategy(mixin, Strategy):
         _risk = risk
+        _template_native = config.profile == 'orb'
         _initial_capital = initial_capital
         _range_config = config
         _range_prefix = ()
@@ -164,8 +166,7 @@ def make_strategy(mixin, config, risk, initial_capital):
                 raise SizingRejected('stop_wrong_side_of_fill')
             return stop
 
-        def _risk_layer_check_exit(self):
-            trade = self.trades[-1]
+        def _risk_native_state(self, trade):
             if self._risk_trade is not trade:
                 self._risk_trade = trade
                 frozen = self._entry_range
@@ -181,6 +182,24 @@ def make_strategy(mixin, config, risk, initial_capital):
                 self.daily_ranges[self._entry_day]['entry_price'] = trade.entry_price
                 self.daily_ranges[self._entry_day]['stop_price'] = float(stop)
                 self.daily_ranges[self._entry_day]['take_price'] = float(take)
+            # This callback runs from native broker arbitration before orders.
+            # Suppress only this trade's target once its existing clock is due;
+            # the stop stays live, then next() queues the existing market expiry.
+            if self._template_native and self._holding_expiry().due and trade.tp is not None:
+                trade.tp = None
+
+        def _risk_native_protect(self, trade):
+            super()._risk_native_protect(trade)
+            # on_open installs protection after state; entry-bar expiry therefore
+            # needs the same target suppression before the broker reprocesses.
+            if self._template_native and self._holding_expiry().due and trade.tp is not None:
+                trade.tp = None
+
+        def _risk_native_record_exit(self):
+            self.daily_ranges[self._entry_day]['exit_reason'] = self._risk_exit_reason
+
+        def _risk_layer_check_exit(self):
+            self._risk_native_state(self.trades[-1])
             closed = super()._risk_layer_check_exit()
             if closed and self._risk_exit_reason:
                 self.daily_ranges[self._entry_day]['exit_reason'] = self._risk_exit_reason
@@ -248,10 +267,17 @@ def make_strategy(mixin, config, risk, initial_capital):
 
 
 def range_assumptions(config):
-    return {'range_breakout': dict(timezone=config.definition.timezone_name,
+    assumptions = dict(timezone=config.definition.timezone_name,
         range_start=config.start, range_end=config.end, breakout_start=config.breakout, flatten_at=config.flatten,
         take_profit_multiple=config.multiple, direction=config.direction, max_trades_per_cycle=1,
         trigger='closed_bar_high_low', fill='next_bar_open_market',
         note='止损和止盈触发后下一根开盘市价平仓，不保证按价位成交；截止越界首个收盘决策提交强平。',
         stop='opposite_frozen_range_side', take='actual_entry_fill_plus_minus_frozen_range_height',
-        priority='stop_loss_before_time_expiry_before_take_profit', warmup='strict_prefix_calculation_only')}
+        priority='stop_loss_before_time_expiry_before_take_profit', warmup='strict_prefix_calculation_only')
+    if config.profile == 'orb':
+        assumptions.update(trigger='intrabar_high_low', fill='native_protection_stop_limit',
+            market_fill='next_bar_open_market',
+            note='止损和止盈在触价根按原生保护单成交，跳空沿用风控层开盘取价；'
+                 '同根止损优先，其次时间到期，再次止盈。入场、时间到期和模板信号退出仍在下一根开盘成交。',
+            priority='stop_loss_before_time_expiry_before_take_profit_before_template_signal')
+    return {'range_breakout': assumptions}

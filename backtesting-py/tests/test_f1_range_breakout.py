@@ -1,4 +1,4 @@
-"""Registered F1 HTTP route and real next-open fills on hand-calculated 15m bars."""
+"""Registered F1 route: ORB native protection, Asia and time exits next-open."""
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,7 +82,7 @@ def test_one_trade_per_day_after_exit_and_opposite_breakout():
     data.iloc[8] = [112, 114, 111, 113, 1]
     result = direct(data, {'direction': 'both'})
     assert len(result['_trades']) == 1
-    assert result['_trades'].iloc[0].ExitBar == 7
+    assert result['_trades'].iloc[0].ExitBar == 6
 
 
 @pytest.mark.parametrize('kind,high,low,close,exit_open,expected', [
@@ -96,7 +96,7 @@ def test_exit_prices_and_stop_priority(kind, high, low, close, exit_open, expect
     data.iloc[7] = [exit_open, max(exit_open+1, 113), min(exit_open-1, 111), 112, 1]
     result = direct(data)
     trade = result['_trades'].iloc[0]
-    assert trade.ExitBar == 7 and trade.ExitPrice == exit_open
+    assert trade.ExitBar == 6 and trade.ExitPrice == (152 if expected == 'take_profit' else 90)
     assert list(result['_strategy'].daily_ranges.values())[0]['exit_reason'] == expected
 
 
@@ -129,7 +129,7 @@ def test_stop_uses_entry_frozen_snapshot_after_latest_range_changes():
                         self._snapshots[key] = replace(frozen, high=116, low=105)
         return Drift
     result = direct(data, subclass=drift)
-    assert result['_trades'].iloc[0].ExitBar == 7
+    assert result['_trades'].iloc[0].ExitBar == 6
     assert list(result['_strategy'].daily_ranges.values())[0]['stop_price'] == 90
 
 
@@ -206,7 +206,8 @@ def test_strict_prefix_never_trades_before_start(monkeypatch, tmp_path):
     assert all(t['opened_at'] >= 1767232800 for t in response['trades'])
     daily = response['raw_report']['range_breakout_days'][0]
     assert (daily['high'], daily['low']) == (110, 90)
-    assert response['assumptions']['range_breakout']['fill'] == 'next_bar_open_market'
+    assert response['assumptions']['range_breakout']['fill'] == 'native_protection_stop_limit'
+    assert response['assumptions']['range_breakout']['market_fill'] == 'next_bar_open_market'
     assert set(response['metrics']) == {'total_return', 'max_drawdown', 'trade_count'}
 
 
