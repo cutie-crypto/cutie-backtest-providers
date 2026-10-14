@@ -1,6 +1,6 @@
 # ORB 原生保护成交候选（2026-10-14）
 
-范围：本地候选，base `0da4fc7c6114fd25ddb85c6dfa8129a5fbb8a85f`，分支 `impl/prov-orb-native-1014`；不创建 PR、不 push/合入/发版/pin/生产 direct。A 17:09 亲核隔离探针后许可本地实现；C→Advisor 提 PR 前亲读尚未通过。
+范围：base `0da4fc7c6114fd25ddb85c6dfa8129a5fbb8a85f`，分支 `impl/prov-orb-native-1014`。A 17:09 亲核隔离探针后许可本地实现；Advisor 已亲读 `0da4fc7..94dab7f` 并通过算法门，A 已正常 push `94dab7f`、创建 [PR105 draft](https://github.com/cutie-crypto/cutie-backtest-providers/pull/105)。本线此次仅 docs 续单，不 push；完整验收、合入/发布/pin/生产 direct 均未通过。
 
 Advisor 原裁与 C 协调全文见 `/tmp/tokenbeep-b1-1014/orb-advisor-implementation-ruling.md`，仓内 authority 为 TokenBeep `2f31b7c33:docs/plan/当前批/待裁.md:91` 起。原裁分开保存，不把 chat 转述提升为 Owner 聊天原件。
 
@@ -32,12 +32,33 @@ PR 写集交叉（实际 PR API 读取，不把 remote branch 最新当 PR）：
 
 完整 suite **NOT_RUN**：A 17:18/17:34 明确无窗口，RESULT→客户集成优先，不执行或采样。旧 ORB 字节 fixture 与新 assumptions 存在静态冲突（首审高-1），不能记成真实 full EXIT1。旧 golden/fixture/xfail 保持原字节；C 17:36 双轨裁定允许先规划以不可变候选本地生成新版本，**无需先部署新 pin**，但 C 审方案前不生成。本线只交独立方案、不实现迁移；完整 gate 和算法亲读分开。完整命令为 `/private/tmp/LONGWIN-4/provider-venv/bin/python -m pytest -q tests`，cwd 本树 `backtesting-py`。
 
-最终异家族返修闭环、最终 SHA 与门绑定及 Advisor 亲读：待续记。候选可送 Advisor 亲读成交段，尚非 PR/上线许可。无生产/QA 浏览器/凭据/归档查询。
+最终异家族闭审绑定 `0dce159`；最终交付 `94dab7fe75d3c6d70ecce1c1bbf9f0bd40f82e0f` 仅 docs 后笔，产品/测试字节同审查 ref。A 18:04 已亲核算法/shared-wrapper/review/manifest；Advisor 算法门现已通过，准提 provider PR，PR105 当前 OPEN/draft、远端 head 为 `94dab7f`（本次只读 PR API 核证）。完整验收仍 FAIL：full NOT_RUN、旧 ORB 金样静态冲突，未记成真实 full EXIT1；不升级为合入/上线通过。无生产/QA 浏览器/凭据/归档查询。
 
 Asia 隔离补证：long/short × 显式 risk 开关 true/false × stop/stop-gap/both/take/take-gap，20 条真实 engine 均锁原 entry29/exit31/next-open 和原 SL/TP；native 安装一旦调用即失败。F1+新增合计 141 passed / EXIT0，旧 fixture 没有重钉。
 
 84a7692 独立返修闭审：同一实际 DeepSeek/plan/只读 session，EXIT0，算法 PASS 无当前 in-scope bug，完整验收仍 FAIL（NOT_RUN/静态旧金样冲突）。中2/低4修闭；中3认定原有边界非新 bug；低5未证 reason 污染、低6 README 例外已缓解。杠杆 liquidation-before-SL 和杠杆 gap 属仍未单独覆盖的共享分支，明确残留，不用 leverage2 回归宣称全覆盖。原闭审 report 也保留，后续仅补上述 20 条 Asia 测试和落档，成交代码保持 84a 原字节。
 
+18:16 docs 续单核查：最终 147 行版本无独立英文前言，旧审查所说第 507 行已不适用；`I'll perform...` 仅在该版本 116、147 行作为历史 review 引用。本次保留原 FAIL/历史引用，不为凑行号删历史报告。当前杠杆实际客户路径由 01 核 router/Web；两项 provider 杠杆子分支仍未补测，本线不自启。
+
+## Advisor 算法门原文（署 Advisor，C 转执行）
+
+出处：`/tmp/tokenbeep-b1-1014/orch-a-orb-advisor-algo-pass.md` 的 Advisor 原文；以下照录，C 执行协调不混署。PR 提交放行只解除算法门，完整验收/full/金样/合入发布门仍分列。
+
+执行协调（署 C，A 转）：B 轨方案先交 C 审的条件已满足，已准另线本地版本化 runner/consumer 与生成；本线仅 docs，不进入 B 轨。附带杠杆客户可达核对由 01 执行，回执后 A 再续补测，当前不自启、不改客户页上线状态。
+
+
+> 【裁 ORB 算法门：通过｜Advisor 已亲读 algo.patch（0da4fc7..94dab7f，strategy_range_breakout.py 全段）＋ shared-wrapper-context（_risk_init / _risk_native_protect / _risk_native_install 的 arbitrate 与 protected_process）＋ review-final-report.md】
+> 对照原裁三点：
+> (a) ORB 通过 _template_native 接入与风控层 PSF-P1 / P2 共用的 _risk_native_install。触发根按 sl / tp 原生成交；入场当根也在同一根 OHLC 上重处理。成交时点符合原裁。
+> (b) 跳空取价用的就是共享 broker 的同一套语义：SL 取开盘价且取更差者，TP 按限价单语义。没有另写一套，符合原裁。
+> (c) 同根止损优先，有 20 条 Asia 加 ORB 用例钉住。时间到期到点时撤掉 tp、保留 sl，再由下一根市价平仓，实现了「止损 → 时间到期 → 止盈 → 模板信号」。入场、时间到期、模板信号退出仍按下一根开盘成交。Asia 未接 native，有隔离用例钉住。sizing 的 _sizing_template_stop 没动。
+> 放行提 provider PR，然后按 C 的双轨走 B 轨：新 pin 和新金样方案先交 C 审，旧金样不手改、不 xfail，不混进 0da4fc7。
+> 附带两件，不挡 PR：
+> ① review-final-report 里杠杆用例跑通了 ORB lev2，可客户页通用能力 #10 写的是「时段模板不接杠杆」。请核 router 和 Web 能不能真给 ORB 选杠杆：
+> - 能：客户页改口径，并补「杠杆下爆仓先于 SL」「杠杆加跳空」两条 ORB 用例；
+> - 不能：在回报里写明这两条子分支走不到。
+> ② docs/reviews 那份第 507 行残留的英文前言删掉。
+> 客户页「开盘区间突破」等新 pin 上线后再写「某日之后按新规则，之前的重跑即可」。这一单不用再回我。
 
 ## Review 1 (9de973c; original FAIL retained)
 
