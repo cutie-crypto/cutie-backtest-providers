@@ -345,6 +345,10 @@ def test_catalog_existing_entries_byte_identical():
         # Q46：执行超时由 120000 改为共享常量（对齐 connector 硬上限 300000），是唯一允许的差异；换回基线值后仍须逐字节相同。
         assert entry['execution']['timeout_ms'] == api.EXECUTION_TIMEOUT_MS == 300000, tool_id
         entry['execution']['timeout_ms'] = baseline.EXECUTION_TIMEOUT_MS
+        # LONGWIN-4: ordinary exchange catalog permits 15m annual windows.
+        # Assert the only new declaration, then compare every other byte unchanged.
+        assert entry['execution']['max_bars'] == api.CATALOG_MAX_BARS_EXCHANGE == 35040, tool_id
+        entry['execution']['max_bars'] = baseline.CATALOG_MAX_BARS_EXCHANGE
         new = json.dumps(entry, ensure_ascii=False, separators=(',', ':')).encode()
         assert old == new, tool_id
     # 集成 D：原断言 len == 基线+1 只算轮动；起点 main 32ae030 之后同批合入做空形态一 / 二各 2 个工具，改为逐 id 比对。
