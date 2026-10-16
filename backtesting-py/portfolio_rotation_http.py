@@ -50,7 +50,7 @@ def rotation_catalog(entry):
     # 必须等于运行时实际预算，不能沿用共享的 300s——否则 connector 等 300s、provider 120s 就自行失败。
     entry['execution'].update(timeout_ms=EXECUTION_SECONDS * 1000, max_bars=20000, max_range_days=5000)
     entry['output_schema'] = {'schema_version': 'cutie.backtest_result.v4',
-                              'metrics': ['total_return', 'max_drawdown', 'fill_count'],
+                              'metrics': ['total_return', 'max_drawdown', 'fill_count', 'trade_count'],
                               'artifacts': [], 'series': ['equity_curve', 'btc_benchmark'],
                               'tables': ['fills', 'snapshots', 'input_manifests']}
     entry['report_capabilities'].update(report_url=False, formats=[])

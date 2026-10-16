@@ -99,7 +99,7 @@ def test_three_week_handwritten_cash_nav_fills():
     for i, cash, nav in [(0, '1000', '1000'), (1, '0', '1150'), (8, '20', '1419'), (15, '21', '1469'), (21, '21', '1469')]:
         assert output.result['snapshots'][i]['cash'] == cash
         assert output.result['equity_curve'][i]['equity'] == nav
-    assert output.result['metrics'] == {'total_return': '0.469', 'max_drawdown': '0.00421053', 'fill_count': '8'}
+    assert output.result['metrics'] == {'total_return': '0.469', 'max_drawdown': '0.00421053', 'fill_count': '8', 'trade_count': '4'}
     assert all(p['equity'] == '1000' for p in output.result['btc_benchmark'])
     assert '存在幸存者偏差' in assumptions['coin_pool']
     assert output.result['input_manifests']['metric_series'] is None

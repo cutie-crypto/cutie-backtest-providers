@@ -37,6 +37,7 @@ import anyio
 import numpy as np
 import pandas as pd
 from canonical_json import canonical_decimal_str, canonical_json_sha256
+from strategy_liquidation_evidence import compress_hourly_evidence
 from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
     _TIME_PARAM_SCHEMA_PROPERTIES, utc_datetime, expiry_due,
@@ -8596,16 +8597,15 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     TOP_LSR_TOOL_ID: {
         "name": "Local Spot Top Trader Long/Short Ratio Reversal",
         "description": (
-            "Spot long-only template on the Binance top-trader ACCOUNT long/short ratio (central daily "
-            "series, 1d interval; the series is Binance data whatever exchange the candles come from, and "
-            "the daily basis differs from the original 1-hour definition). When flat and the ratio of the "
-            "previous UTC day is <= long_threshold it buys at the next open; it sells at the next open when "
-            "the ratio is back inside [exit_band_low, exit_band_high] (ratio_back_in_band) or above "
-            "exit_band_high (ratio_above_band), or when the percent stop_loss_pct frozen at the fill is "
-            "touched (candle low; filled at the next open). Each daily value is judged once, the day-D value "
-            "is readable only from D+1 00:00 UTC. No take-profit and no holding limit. One missing day in the "
-            "window fails the run. Series history starts at 2020-05-16 (UTC). Maps to KOL 'top trader "
-            "long/short ratio reversal'"
+            "Spot long-only Binance top-trader ACCOUNT long/short ratio, independent of candle exchange. "
+            "1h candles read central 1h values: hour H is available at H+1. 4h/1d candles read daily "
+            "values: day D is available at D+1 00:00 UTC. Each value is judged once. Flat and ratio <= "
+            "long_threshold buys at the next open; ratio inside [exit_band_low, exit_band_high] or above "
+            "exit_band_high exits at the next open. Percent stop_loss_pct is frozen at actual fill. "
+            "No take-profit or holding limit. Missing, duplicate or null hourly rows fail the run; "
+            "one missing day in the daily window fails the run. No daily fallback for 1h. Daily history "
+            "starts at 2020-05-16 (UTC); hourly history must cover the requested window. "
+            "Maps to KOL 'top trader long/short ratio reversal'"
         ),
         "strategy_family": "mean_reversion",
         "is_default": False,
@@ -8659,15 +8659,16 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     LIQUIDATION_REVERSAL_TOOL_ID: {
         "name": "Local Spot Long-Liquidation Reversal",
         "description": (
-            "Spot long-only template on the aggregated daily long-liquidation volume (USD, whole market, "
-            "central database, from 2020-01-01). Day D's value is available at D+1 00:00 UTC and is judged "
-            "once, at the close of the first D+1 candle: when it is at or above the threshold (percentile of "
-            "the previous lookback_days days with day D excluded, or a fixed USD amount) AND day D fell by "
-            "at least min_drop_pct (last close of D vs last close of D-1), it buys at the next open while "
-            "flat. Exits: stop_loss_pct, hold_hours, take_profit_pct (stop first), detected on candle "
-            "High/Low and filled at the next open. Daily-series definition, not the original hourly one; "
-            "any missing day in the required window fails the run; look-back days before 2020-01-01 are "
-            "refused. Candles 1h/4h/1d only. Maps to KOL '多头爆仓放量后抄底'"
+            "Spot long-only AGGREGATED liquidation_long in USD. 1h candles read hourly values "
+            "available at H+1, judged once at the H+1 candle close, with lookback_days * 24 preceding "
+            "hours (H excluded) and close(H)/close(H-1) drop. Fixed mode still requires one prior hourly row. "
+            "4h/1d retain daily values available at D+1, judged at the first D+1 candle close; percentile "
+            "uses the previous lookback_days days, and drop compares the last D and D-1 closes. "
+            "Entry needs value >= percentile threshold or fixed_threshold_usd AND drop >= min_drop_pct; "
+            "buy at the next open when flat. Exits: stop_loss_pct, hold_hours, take_profit_pct (stop first). "
+            "Missing, duplicate or null hourly rows fail the run; no daily fallback for 1h. Daily history "
+            "before 2020-01-01 is refused; hourly history must cover the full lookback and run window. "
+            "Candles 1h/4h/1d only. Maps to KOL '多头爆仓放量后抄底'"
         ),
         "strategy_family": "mean_reversion",
         "is_default": False,
@@ -11781,7 +11782,10 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
             events = stats["_strategy"].macro_events
             settle_event_window_exits(events, response_body["trades"], response_body["raw_report"].get("isolated_risk"),
                                       **stats["_strategy"].event_window_log)
-            response_body["raw_report"][macro_config.kind] = macro_report(events)
+            report = macro_report(events)
+            if macro_config.kind == "liquidation_reversal" and macro_config.series_interval == "1h":
+                report = compress_hourly_evidence(report, macro_config)
+            response_body["raw_report"][macro_config.kind] = report
         return _bounded_template_response(run_id, response_body)
 
     except Exception as e:
@@ -11964,15 +11968,17 @@ def _bind_top_lsr(run_id, config, symbol, timeframe, df):
         return _external_series_history_failure(run_id, TOP_LSR_SERIES, need_first)
     central_symbol = re.sub(r"(?:USDT|USDC|BUSD)$", "", symbol.upper())
     metric = TOP_LSR_SERIES["metric"]
+    series_interval = "1h" if timeframe == "1h" else TOP_LSR_SERIES["interval"]
+    series_step = 3600 if timeframe == "1h" else top_lsr.SERIES_STEP_SECONDS
     path = f"$.external_series.{metric}"
     try:
         rows = _fetch_metric_series(
             symbol=central_symbol,
             exchange=TOP_LSR_SERIES["exchange"],
             metric=metric,
-            interval=TOP_LSR_SERIES["interval"],
+            interval=series_interval,
             start_at=need_first,
-            end_at=need_last + top_lsr.SERIES_STEP_SECONDS,
+            end_at=need_last + series_step,
             path=path,
             raise_on_transport_error=True,
         )
@@ -12023,7 +12029,7 @@ def _bind_liquidation_reversal(run_id, config, liquidation_symbol, start_at, end
     needed range is refused before any fetch when it starts before LIQUIDATION_EARLIEST_TS (look-back
     included). Returns a failure response, or None when the config is bound.
     """
-    judged = config.judged_days(start_at, end_at)
+    judged = config.judged_periods(start_at, end_at)
     if judged is None:
         config.unbound_assumptions()
         return None
@@ -12048,9 +12054,9 @@ def _bind_liquidation_reversal(run_id, config, liquidation_symbol, start_at, end
             symbol=central_symbol,
             exchange=LIQUIDATION_CENTRAL_EXCHANGE,
             metric=LIQUIDATION_CENTRAL_METRIC,
-            interval=LIQUIDATION_CENTRAL_INTERVAL,
+            interval=config.series_interval,
             start_at=need_first,
-            end_at=need_last + 86400,
+            end_at=need_last + config.series_step,
             path=f"$.liquidation_series.{LIQUIDATION_CENTRAL_METRIC}",
             raise_on_transport_error=True,
         )
@@ -12113,6 +12119,7 @@ def _bounded_template_response(run_id, body):
             return _business_failure(
                 run_id, "INVALID_PARAMS",
                 f"Complete {field} evidence exceeds callback limit ({limit} bytes); shorten the backtest range.",
+                reason="report_evidence_too_large", details={"field": field, "limit_bytes": limit},
                 market_data_provenance=(raw_report.get("market_data_provenance")
                                         if isinstance(raw_report, dict) else None),
             )

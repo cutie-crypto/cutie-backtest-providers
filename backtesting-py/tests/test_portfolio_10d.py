@@ -138,7 +138,7 @@ def test_v4_exact_closed_keysets():
     assert all(set(p) == {'symbol', 'qty', 'close_price'} for s in r['snapshots'] for p in s['positions'])
     assert all(set(x) == {'ts', 'equity'} for x in r['equity_curve'])
     assert all(set(x) == {'ts', 'equity', 'close_price'} for x in r['btc_benchmark'])
-    assert set(r['metrics']) == {'total_return', 'max_drawdown', 'fill_count'}
+    assert set(r['metrics']) == {'total_return', 'max_drawdown', 'fill_count', 'trade_count'}
     assert set(r['input_manifests']) == {'prices', 'metric_series'}
     assert all(set(m) == {'source', 'symbol', 'market', 'timeframe', 'start_at', 'end_at', 'kline_count', 'checksum_algo', 'checksum'}
                for m in r['input_manifests']['prices'])
