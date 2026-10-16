@@ -1,6 +1,7 @@
 """47 固定池现货轮动；独立取数预算、周一决策和 BTC 日收盘风险覆盖。"""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -12,6 +13,8 @@ from fractions import Fraction
 from canonical_json import canonical_json_sha256
 from portfolio_ledger import PortfolioLedger, SpotSpec, decimal_value, timestamp
 from portfolio_runner import DailyBar, run_portfolio
+
+logger = logging.getLogger('cutie_backtesting_provider')
 
 DAY = 86400
 BTC = 'BTCUSDT'
@@ -157,11 +160,24 @@ def fetch_rotation(config, fetcher, *, deadline=None):
         streams = {}
         total = 0
         for symbol, future in futures.items():
+            stage = 'fetch'
             try:
-                rows, source, central, cached = future.result()
+                fetched = future.result()
+                stage = 'unpack'
+                rows, source, central, cached = fetched
             except RotationError:
                 raise
             except Exception as e:
+                try:
+                    logger.warning(
+                        'rotation_stream_failure stage=%s exception_class=%s symbol=%s',
+                        stage, type(e).__name__, symbol,
+                        extra={'event': 'rotation_stream_failure', 'stage': stage,
+                               'exception_class': type(e).__name__, 'symbol': symbol},
+                        exc_info=False, stack_info=False,
+                    )
+                except Exception:
+                    pass  # 诊断失败不能遮住原取数/解包异常或改变既有分类。
                 raise _stream_fetch_error(symbol, e) from e
             meta = (source, central, cached)
             total += len(rows)
