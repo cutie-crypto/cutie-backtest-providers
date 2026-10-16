@@ -82,9 +82,17 @@ def install(monkeypatch, tmp_path, store, frame, *, fail=None, ohlcv_calls=None,
                           start_at=start_at, end_at=end_at))
         if fail:
             raise fail
-        if (symbol, exchange, metric, interval) != LABELS:
+        hourly = interval == '1h'
+        if (symbol, exchange, metric, interval) != (*LABELS[:3], '1h' if hourly else '1d'):
             return []
-        out = [{'ts': ts, 'value': v} for ts, v in sorted(store.items()) if start_at <= ts <= end_at]
+        source = store
+        if hourly:
+            source = {}
+            for ts, value in store.items():
+                day = (ts - T0) // DAY
+                for hour in range(24):
+                    source[ts + hour * 3600] = value if hour == 23 else base_value(day)
+        out = [{'ts': ts, 'value': v} for ts, v in sorted(source.items()) if start_at <= ts <= end_at]
         if returned is not None:
             returned.extend(row['ts'] for row in out)
         return out
@@ -231,19 +239,19 @@ def test_time_expiry_beats_take_profit_in_the_same_candle(monkeypatch, tmp_path)
 
 # ------------------------------------------------------------------ 1h
 
-def test_1h_hold_24_is_24_candles_one_judgement_per_day(monkeypatch, tmp_path):
+def test_1h_hold_24_is_24_candles_one_judgement_per_hour(monkeypatch, tmp_path):
     rows = {5: [100, 100.2, 99.8, 100], 6: [96, 96.2, 95.8, 96], **{d: [96, 96.2, 95.8, 96] for d in range(7, NDAYS)}}
     overrides = {24 * 5 + 23: [100, 100.2, 95.5, 96]}  # day 5's last close 96 vs day 4's 100
     body, _ = run(monkeypatch, tmp_path, dict(SPIKE), rows=rows, timeframe='1h', overrides=overrides)
     entry = 24 * 6 + 1  # decided at the close of day 6's first candle (00:00), bought at 01:00
     assert legs(body, 3600) == [(entry, '96', entry + 24, '96', 'long')]
-    record = event_of(body, 5)
+    record = next(r for r in events(body) if r['day_utc'] == lr._iso(T0 + 5 * DAY + 23 * 3600))
     assert record['decision_bar_utc'] == lr._iso(T0 + 6 * DAY) and record['status'] == 'entered'
     assert body['assumptions'][KIND]['hold_bars'] == 24
     assert body['assumptions'][KIND]['signal_counts']['liquidation_below_threshold'] >= 1
 
 
-def test_1h_stop_out_does_not_reenter_the_same_day_value(monkeypatch, tmp_path):
+def test_1h_stop_out_does_not_reenter_the_same_hour_value(monkeypatch, tmp_path):
     rows = {5: [100, 100.2, 99.8, 100], **{d: [93, 93.2, 92.8, 93] for d in range(6, NDAYS)}}
     entry = 24 * 6 + 1
     overrides = {24 * 5 + 23: [100, 100.2, 95.5, 96], 24 * 6: [96, 96.2, 95.8, 96],
@@ -252,9 +260,12 @@ def test_1h_stop_out_does_not_reenter_the_same_day_value(monkeypatch, tmp_path):
     assert legs(body, 3600) == [(entry, '96', entry + 1, '93', 'long')]
     assert len(body['trades']) == 1
     assert [r['status'] for r in events(body)].count('entered') == 1
-    assert event_of(body, 5)['exit_reason'] == 'stop_loss'
-    # every judged day has exactly one record and exactly one verdict
-    assert len(events(body)) == 12 and all('status' in r for r in events(body))
+    assert next(r for r in events(body) if r['day_utc'] == lr._iso(T0 + 5 * DAY + 23 * 3600))['exit_reason'] == 'stop_loss'
+    # Each judged hour has one verdict, carried by a full event or a 24h summary.
+    report = body['raw_report'][KIND]
+    assert report['event_count'] == NDAYS * 24 - 1
+    assert len(events(body)) + sum(s['count'] for s in report['summaries_24h']) == report['event_count']
+    assert all('status' in r for r in events(body))
 
 
 def test_4h_hold_hours_must_be_a_multiple_of_the_candle(monkeypatch, tmp_path):
@@ -451,8 +462,8 @@ def test_day_value_is_not_readable_before_the_next_day(monkeypatch, tmp_path):
     first_open = body['trades'][0]['opened_at']
     assert first_open >= T0 + 6 * DAY + 3600  # day 5's value (available at day 6 00:00) buys no earlier than 01:00
     # the judgement of day 5 happens at day 6 00:00's close, never inside day 5
-    assert event_of(body, 5)['decision_bar_utc'] == lr._iso(T0 + 6 * DAY)
-    assert max(returned) <= T0 + 12 * DAY
+    assert next(r for r in events(body) if r['day_utc'] == lr._iso(T0 + 5 * DAY + 23 * 3600))['decision_bar_utc'] == lr._iso(T0 + 6 * DAY)
+    assert max(returned) == T0 + (NDAYS * 24 - 2) * 3600
 
 
 # ------------------------------------------------------------------ evidence and catalog

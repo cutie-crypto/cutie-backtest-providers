@@ -122,6 +122,43 @@ the first eligible main-range entry; `actual_bars` may then exceed the reported
 tenfold `target_bars`. Warmup candles seed indicators only and never generate
 trades or equity points. Other templates retain their existing warmup depth.
 
+### Hourly liquidation report evidence
+
+Only `liquidation_reversal` on `1h` uses `raw_report.liquidation_reversal`
+`evidence_version="liquidation_evidence.v2"`, `mode="events_and_24h_summary"`.
+Legacy reports without these fields remain valid, and `4h`/`1d` remain unchanged.
+Compression runs after settled-trade attribution and the missing-outcome guard.
+All attempts, fills (including native exits), rejections, position/time/filter blocks,
+out-of-range and early-end outcomes remain complete in `events`. Only `status=skipped`
+with `liquidation_below_threshold`, `drop_below_min` or `no_prior_day_candle` may be summarized.
+Unknown outcomes stay complete. `skipped_events` projects retained non-entered events;
+legacy `counts` and `skipped_*_count` continue to count the full trace, so they need
+not equal the lengths of the retained arrays.
+
+`summaries_24h` groups ordinary non-trigger records by UTC day (24h), preserving
+source order. Each section has `period_start_utc`, `first_hour_utc`, `last_hour_utc`,
+`count`, `status_counts`, `reason_counts`, and `liquidation_long`/`threshold`/`drop_pct`
+`{count,min,max}` (decimal strings; null extrema when none), plus `sha256` over that
+section's full original records. Retained hours may create gaps within a section.
+`event_count = retained_count + summarized_count`; full `reason_counts` and
+`trace_sha256` cover the original settled event array before compression.
+`hash_schema="canonical_json.v1"` applies to every hash.
+
+`external_series` identifies symbol/exchange/metric/interval and the exact required
+input range (`first_ts`, `last_ts`, `count`, `lookback_bars`). Its `sha256` hashes
+`{symbol,exchange,metric,interval,rows}`, where each ordered row is
+`{ts,value,available_at}`, with canonical decimal-string values and `available_at=ts+3600`.
+The input includes all 720 pre-window hours for default percentile mode; fixed mode
+includes its required prior hour. These hashes support reproducibility but are not
+platform verification and cannot reconstruct omitted rows without frozen inputs.
+No fields in trades, metrics, equity_curve or data_manifest change.
+
+The 1MB raw-report cap and all other callback limits stay fail-closed. Dense full
+events are never silently truncated. A capacity failure retains `INVALID_PARAMS`
+and the original “shorten the backtest range” message, with
+`limitations.reason="report_evidence_too_large"`, `field`, and `limit_bytes`.
+Platform and Web/App error wording are handled separately.
+
 ### Closed higher-timeframe entry filters
 
 Single-position templates support opt-in EMA, MACD zero-axis and Supertrend
