@@ -16,7 +16,7 @@
   ],
   "equity_curve": [{"ts": 1735689600, "equity": "10000"}, {"ts": 1735776000, "equity": "10792"}, {"ts": 1735862400, "equity": "11194.42"}, {"ts": 1735948800, "equity": "9976.01"}],
   "btc_benchmark": [{"ts": 1735689600, "close_price": "100", "equity": "10000"}, {"ts": 1735776000, "close_price": "110", "equity": "11000"}, {"ts": 1735862400, "close_price": "105", "equity": "10500"}, {"ts": 1735948800, "close_price": "120", "equity": "12000"}],
-  "metrics": {"total_return": "-0.002399", "max_drawdown": "0.10884083", "fill_count": "6"},
+  "metrics": {"total_return": "-0.002399", "max_drawdown": "0.10884083", "fill_count": "6", "trade_count": "2"},
   "input_manifests": {
     "prices": [
       {"source": "handwritten.fixture", "symbol": "BTCUSDT", "market": "spot", "timeframe": "1d", "start_at": 1735689600, "end_at": 1735948800, "kline_count": 4, "checksum_algo": "sha256", "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},

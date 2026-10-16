@@ -163,7 +163,8 @@ def assemble_result_v4(*, initial_cash: Decimal, snapshots: Sequence[dict], equi
         b["equity"] = _ratio(initial * Fraction(b["close_price"]), Fraction(bench[0]["close_price"]))
     return {"schema_version": SCHEMA, "fills": events, "snapshots": snaps, "equity_curve": curve, "btc_benchmark": bench,
             "metrics": {"total_return": _ratio(Fraction(curve[-1]["equity"])-initial, initial),
-                        "max_drawdown": _ratio(drawdown), "fill_count": str(len(events))},
+                        "max_drawdown": _ratio(drawdown), "fill_count": str(len(events)),
+                        "trade_count": str(sum(f["side"] == "sell" for f in events))},
             "input_manifests": {"prices": manifests, "metric_series": _metric_reference(metric_series, start, end)}}
 
 
