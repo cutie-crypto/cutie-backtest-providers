@@ -12,7 +12,8 @@ last settlement's own-period row, so it is never even requested.
 
 The trading engine is the Q18 surprise engine (strategy_macro_events): ``actual`` = previous-period rate
 in percent (used as stored, no rescale), ``expected`` = 0, threshold = ``rate_threshold_pct``;
-``rate >= +threshold`` -> short, ``rate <= -threshold`` -> long. This module only plans the events,
+By default ``rate >= +threshold`` -> short, ``rate <= -threshold`` -> long;
+``threshold_inclusive=False`` excludes equality. This module only plans the events,
 validates the series (fail-closed) and reports the evidence; it never touches the network itself.
 """
 from copy import deepcopy
@@ -36,6 +37,7 @@ SERIES_SOURCE = "central_metrics /metrics Binance funding_rate 1h (CoinGlass)"
 SCHEMA = {
     "lead_minutes": {"type": "integer", "default": 30, "minimum": 15, "maximum": 120},
     "hold_minutes": {"type": "integer", "default": 30, "minimum": 15, "maximum": 240},
+    "threshold_inclusive": {"type": "boolean", "default": True},
     "rate_threshold_pct": {"type": "number", "default": 0.05, "minimum": 0.005, "maximum": 1},
     "stop_loss_pct": {"type": "number", "default": 1, "minimum": 0.1, "maximum": 10},
 }
@@ -108,7 +110,11 @@ class FundingReversalConfig:
         hold = _require_integer(params, "hold_minutes")
         threshold = _require_number(params, "rate_threshold_pct")
         stop = _require_number(params, "stop_loss_pct")
+        inclusive = params.get("threshold_inclusive", SCHEMA["threshold_inclusive"]["default"])
+        if type(inclusive) is not bool:
+            raise ValueError("INVALID_PARAMS:threshold_inclusive must be a boolean")
         values = dict(
+            threshold_inclusive=inclusive,
             lead_minutes=lead,
             hold_minutes=hold,
             rate_threshold_pct=threshold,
@@ -219,10 +225,14 @@ class FundingReversalConfig:
             lead_minutes=self.values["lead_minutes"],
             hold_minutes=self.values["hold_minutes"],
             rate_threshold_pct=self.values["rate_threshold_pct"],
+            threshold_inclusive=self.values["threshold_inclusive"],
             stop_loss_pct=self.values["stop_loss_pct"],
             rate_basis=RATE_BASIS,
-            rate_rule="previous-period pre-settlement 1h-close rate (pct) >= +rate_threshold_pct -> short; "
-                      "<= -rate_threshold_pct -> long; in between no trade; boundary values trade",
+            rate_rule=("previous-period pre-settlement 1h-close rate (pct) >= +rate_threshold_pct -> short; "
+                      "<= -rate_threshold_pct -> long; in between no trade; boundary values trade"
+                      if self.values["threshold_inclusive"] else
+                      "previous-period pre-settlement 1h-close rate (pct) > +rate_threshold_pct -> short; "
+                      "< -rate_threshold_pct -> long; in between no trade; boundary values do not trade"),
             judgement=DEVIATION_NOTE,
             deviation_note=DEVIATION_NOTE,
             entry="open of the 15m candle that starts lead_minutes before the settlement "
@@ -265,6 +275,7 @@ class FundingReversalConfig:
             lead_minutes=self.values["lead_minutes"],
             hold_minutes=self.values["hold_minutes"],
             rate_threshold_pct=self.values["rate_threshold_pct"],
+            threshold_inclusive=self.values["threshold_inclusive"],
             stop_loss_pct=self.values["stop_loss_pct"],
             rate_basis=RATE_BASIS,
             judgement=DEVIATION_NOTE,
