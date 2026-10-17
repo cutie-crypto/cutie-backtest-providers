@@ -357,6 +357,19 @@ Configurable via environment (all optional):
 
 backtesting.py-only: `CUTIE_BACKTEST_SUPPORTED_SYMBOLS`
 (`BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,AVAXUSDT,TONUSDT`).
+This is the shared **base** symbol list, including persisted old ten-symbol lists
+and operator custom lists. Only `local.backtesting_py.token_unlock_event` adds
+`PUMPUSDT` to that base (deduplicated, preserving base order); all other tools
+retain their existing scope, including empty basket declarations. The installer
+and persisted environment values do not change. This extra catalog capability
+is internal metadata, not a new HTTP field or user parameter. The unlock tool
+retains futures-only, `1h / 4h / 1d`, fixed 1x leverage, historical `known_at`
+and full-window rejection rules. Its default 4h event regression uses a
+checksummed Binance USD-M July 2026 archive slice (see
+`backtesting-py/tests/fixtures/capture_pump_unlock_4h.py`); the HTTP fetch is
+stubbed but the builder and Backtest engine execute real prices. Other timeframes
+retain the existing synthetic execution tests, without a new full-window claim.
+
 Managed backtesting.py installs may also set `CUTIE_CENTRAL_MARKET_DATA_URL`,
 the independent read-only Bearer credential `CUTIE_CENTRAL_MARKET_DATA_TOKEN`,
 and `CUTIE_CENTRAL_MARKET_DATA_TIMEOUT_SEC` (default `5`, maximum `60`).

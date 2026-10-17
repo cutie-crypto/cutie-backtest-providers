@@ -7719,6 +7719,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": "Inline public unlock schedules: short pre_days before UTC unlock, reverse to long on unlock, close post_days later; fixed 1x USDT perpetual only.",
         "strategy_family": "calendar", "is_default": False,
         "markets": ["futures"], "timeframes": ["1h", "4h", "1d"],
+        "catalog_extra_symbols": ["PUMPUSDT"],
         "build": _build_token_unlock_event, "param_schema_properties": deepcopy(token_unlock.SCHEMA),
     },
     "local.backtesting_py.opening_range_breakout": {
@@ -9086,6 +9087,7 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
     """Build one catalog entry from a tool spec; shared fields kept identical across tools."""
     if spec.get("runner") == ROTATION_RUNNER:
         return rotation_catalog(_catalog_tool(tool_id, {**spec, "runner": None}, supported_symbols))
+    supported_symbols = list(dict.fromkeys([*supported_symbols, *spec.get("catalog_extra_symbols", [])]))
     return {
         "tool_id": tool_id,
         "kind": "external_http",
