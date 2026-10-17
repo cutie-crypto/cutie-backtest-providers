@@ -7,6 +7,7 @@ Every case runs on synthetic bars.
 """
 import sys
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,12 @@ import _pliq1_cases as pliq
 import test_p6_trade_exit_kinds as p6
 import test_f3_us_open as f3
 import test_short_pat4_candles as s4
+
+@pytest.fixture(autouse=True)
+def complete_p6_history(monkeypatch):
+    """Settlement checks need valid prehistory; P6's cold-history baselines keep their own input."""
+    monkeypatch.setattr(p6, 'post', partial(p6.post, complete=True))
+
 
 PREFIX = p6.PREFIX
 N = 60

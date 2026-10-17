@@ -71,7 +71,7 @@ def post(monkeypatch, tmp_path, tool, params, kind, source=None, *, complete=Fal
     warm = prefix(kind, freq)
     calls = []
 
-    def warmup(*args):
+    def warmup(*args, **kwargs):
         calls.append(args[5])
         return warm.tail(args[5]).copy() if args[5] > 0 else warm.iloc[:0].copy()
 

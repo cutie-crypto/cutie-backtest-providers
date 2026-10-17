@@ -5,6 +5,8 @@ from unittest.mock import patch
 import tempfile
 
 import pandas as pd
+from _complete_seed_fixture import complete_seed
+
 import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
@@ -39,7 +41,7 @@ def response(data, values=None, name=NAME, timeframe='15m', market='futures'):
     with tempfile.TemporaryDirectory() as reports, patch.object(p, 'AUTH_TOKEN', ''), \
          patch.object(p, 'REPORTS_DIR', Path(reports)), \
          patch.object(p, '_fetch_ohlcv', return_value=data) as fetch, \
-         patch.object(p, '_fetch_template_warmup', return_value=data.iloc[:0]), \
+         patch.object(p, '_fetch_template_warmup', complete_seed), \
          patch.object(Backtest, 'plot', return_value=None):
         result = TestClient(p.app).post('/cutie/backtest', json=body).json()
         if name == 'cme_weekend_gap':

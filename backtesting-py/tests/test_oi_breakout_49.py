@@ -2,6 +2,8 @@
 import sys
 import json
 from pathlib import Path
+from _complete_seed_fixture import extend_seed
+
 import pandas as pd
 from backtesting import Backtest
 from fastapi.testclient import TestClient
@@ -39,7 +41,7 @@ def install(monkeypatch, tmp_path, data, values=None, *, timeframe='1d', drop=()
     prefix = pd.DataFrame([[100, 101, 99, 100, 1]] * 5, columns=data.columns,
                           index=pd.date_range(pd.to_datetime(start - 5 * step, unit='s'), periods=5,
                                               freq=pd.Timedelta(seconds=step)))
-    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a, **k: prefix.copy() if warm else data.iloc[:0].copy())
+    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a, **k: extend_seed(prefix if warm else data.iloc[:0], a[3], a[5], a[6]))
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     def fetch(**kwargs):
         calls.append(kwargs)

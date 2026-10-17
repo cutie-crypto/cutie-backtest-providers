@@ -7,6 +7,8 @@ import types
 from decimal import Decimal as D
 from pathlib import Path
 import pandas as pd
+from _complete_seed_fixture import complete_seed
+
 import pytest
 from backtesting import Backtest, Strategy
 from fastapi.testclient import TestClient
@@ -213,7 +215,7 @@ def http(monkeypatch,tmp_path,data,params):
     monkeypatch.setattr(p,'AUTH_TOKEN','')
     monkeypatch.setattr(p,'REPORTS_DIR',tmp_path)
     monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a,**k:data.copy())
-    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *a,**k:data.iloc[:0].copy())
+    monkeypatch.setattr(p,'_fetch_template_warmup',complete_seed)
     monkeypatch.setattr(Backtest,'plot',lambda *a,**k:None)
     body=request(params,market='futures')
     body['backtest'].update(start_at=START,end_at=START+len(data)*STEP,initial_capital='1000',fee_bps='10',slippage_bps='5')

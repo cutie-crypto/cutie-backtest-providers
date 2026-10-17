@@ -3,6 +3,8 @@ from pathlib import Path
 import sys
 import numpy as np
 import pandas as pd
+from _complete_seed_fixture import extend_seed
+
 import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
@@ -137,8 +139,10 @@ def http_run(monkeypatch,tmp_path,kind='ema',name='ema_cross',gap=None,enabled=T
     monkeypatch.setattr(p,'AUTH_TOKEN','')
     monkeypatch.setattr(p,'REPORTS_DIR',tmp_path)
     monkeypatch.setattr(p,'_fetch_ohlcv',fetch)
+    # Keep the flat synthetic prefix on the primary 15-minute grid.
     prefix=single.frame([100]*10)
-    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *args:prefix if warm else prefix.iloc[:0])
+    prefix.index=pd.date_range(end=data.index[0]-pd.Timedelta(minutes=15), periods=len(prefix), freq='15min')
+    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *args, **kwargs: extend_seed(prefix if warm else prefix.iloc[:0], args[3], args[5], args[6]))
     monkeypatch.setattr(Backtest,'plot',lambda *args,**kwargs:None)
     body=single.capture.capture.request_body(name,values)
     start=int(data.index[0].timestamp())

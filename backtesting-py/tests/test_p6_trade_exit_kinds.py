@@ -13,6 +13,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from _complete_seed_fixture import extend_seed
+
 import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
@@ -60,14 +62,17 @@ def generic_frame(n=900, freq='1h'):
 
 
 def post(monkeypatch, tmp_path, name, params=None, data=None, market='spot', timeframe='1h', capital='10000',
-         warmup=0):
+         warmup=0, *, complete=False):
     data = generic_frame() if data is None else data
     history, data = data.iloc[:warmup], data.iloc[warmup:]
     step = int((data.index[1] - data.index[0]).total_seconds())
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
     monkeypatch.setattr(p, '_fetch_ohlcv', lambda *a, **k: data.copy())
-    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *a, **k: history.copy())
+    # Only callers exercising successful warm runs opt in; cold-history baselines stay frozen.
+    def seed(*args, **kwargs):
+        return extend_seed(history, args[3], args[5], args[6]) if complete else history.copy()
+    monkeypatch.setattr(p, '_fetch_template_warmup', seed)
     monkeypatch.setattr(Backtest, 'plot', lambda *a, **k: None)
     request = dict(run_id='p6', provider_tool_id=PREFIX + name, provider_params=dict(params or {}),
                    symbol='BTCUSDT', market=market, timeframe=timeframe,

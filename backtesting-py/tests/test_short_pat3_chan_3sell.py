@@ -6,6 +6,8 @@ import json
 import sys
 
 import pandas as pd
+from _complete_seed_fixture import extend_seed
+
 import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
@@ -287,7 +289,7 @@ def http_response(params=None,data=None,warm=0,tool=TOOL,market='futures'):
     with tempfile.TemporaryDirectory(prefix='shortpat3-') as reports, \
          patch.object(p,'AUTH_TOKEN',''), patch.object(p,'REPORTS_DIR',Path(reports)), \
          patch.object(p,'_fetch_ohlcv',lambda *a: main.copy()), \
-         patch.object(p,'_fetch_template_warmup',lambda *a: data.iloc[:warm].copy()), \
+         patch.object(p,'_fetch_template_warmup',lambda *a, **k: extend_seed(data.iloc[:warm].copy(), a[3], a[5], a[6])), \
          patch.object(Backtest,'plot',return_value=None):
         result = TestClient(p.app).post('/cutie/backtest',json=body).json()
     assert result['result_status'] == 'success',result

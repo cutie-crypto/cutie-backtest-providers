@@ -5,6 +5,8 @@ import sys
 
 import numpy as np
 import pandas as pd
+from _complete_seed_fixture import complete_seed, extend_seed
+
 import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
@@ -269,9 +271,9 @@ def test_http_raw_details_and_frozen_result_v2_keys(name,monkeypatch,tmp_path):
     monkeypatch.setattr(p,'REPORTS_DIR',tmp_path)
     monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a:data.copy())
     requested = []
-    def warmup(*args):
+    def warmup(*args, **kwargs):
         requested.append(args[5])
-        return data.iloc[:0].copy()
+        return complete_seed(*args, **kwargs)
     monkeypatch.setattr(p,'_fetch_template_warmup',warmup)
     monkeypatch.setattr(Backtest,'plot',lambda *a,**kw:None)
     result=TestClient(p.app).post('/cutie/backtest',json=request(name,hand_params(name))).json()
@@ -334,7 +336,7 @@ def test_http_off_bytes_and_gap_reason(name,monkeypatch,tmp_path):
     monkeypatch.setattr(p,'AUTH_TOKEN','')
     monkeypatch.setattr(p,'REPORTS_DIR',tmp_path)
     monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a:data.copy())
-    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *a:data.iloc[:0].copy())
+    monkeypatch.setattr(p,'_fetch_template_warmup',complete_seed)
     monkeypatch.setattr(Backtest,'plot',lambda *a,**kw:None)
     client=TestClient(p.app)
     original=client.post('/cutie/backtest',json=request(name,hand_params(name))).json()
@@ -382,7 +384,7 @@ def http_response(name,params=None,data=None,warm=0):
     with tempfile.TemporaryDirectory(prefix='shortpat2-') as reports, \
          patch.object(p,'AUTH_TOKEN',''), patch.object(p,'REPORTS_DIR',Path(reports)), \
          patch.object(p,'_fetch_ohlcv',lambda *a:main.copy()), \
-         patch.object(p,'_fetch_template_warmup',lambda *a:data.iloc[:warm].copy()), \
+         patch.object(p,'_fetch_template_warmup',lambda *a, **k: extend_seed(data.iloc[:warm].copy(), a[3], a[5], a[6])), \
          patch.object(Backtest,'plot',return_value=None):
         result=TestClient(p.app).post('/cutie/backtest',json=request(name,{**hand_params(name),**(params or {})},main)).json()
     assert result['result_status']=='success',result
@@ -470,7 +472,7 @@ def test_bullish_response_bytes_match_original_engine(kind,warm,monkeypatch):
     main=data.iloc[warm:].copy()
     monkeypatch.setattr(p,'AUTH_TOKEN','')
     monkeypatch.setattr(p,'_fetch_ohlcv',lambda *a:main.copy())
-    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *a:data.iloc[:warm].copy())
+    monkeypatch.setattr(p,'_fetch_template_warmup',lambda *a, **k: extend_seed(data.iloc[:warm].copy(), a[3], a[5], a[6]))
     monkeypatch.setattr(Backtest,'plot',lambda *a,**kw:None)
     import tempfile
     with tempfile.TemporaryDirectory(prefix='shortpat2-long-') as reports:

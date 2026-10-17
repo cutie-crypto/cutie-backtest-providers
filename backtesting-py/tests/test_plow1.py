@@ -192,7 +192,7 @@ def flat(close, count, last_open, freq):
 def run_f12(monkeypatch, tmp_path, tool, params, data, timeframe, market, prefix, source=None):
     calls = []
 
-    def warmup(*args):
+    def warmup(*args, **kwargs):
         calls.append(args[5])
         return prefix.copy()
 
