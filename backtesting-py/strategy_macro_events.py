@@ -40,13 +40,15 @@ SCHEMAS = {
                    breakout_window_bars=dict(type='integer', default=12, minimum=1, maximum=96),
                    direction=dict(type='string', default='both', enum=['long', 'short', 'both'])),
     KINDS[1]: dict(events=deepcopy(EVENT_SCHEMA['events']), surprise_threshold=number(0.1, 0),
+                   threshold_inclusive=dict(type='boolean', default=True),
                    direction_map=dict(type='object', additionalProperties=False, required=['below', 'above'],
                                       properties={key: dict(type='string', enum=['long', 'short', 'none'])
                                                   for key in ('below', 'above')},
                                       default=dict(below='long', above='short')),
                    hold_minutes=integer(1440), stop_loss_pct=number(3, 0.01, 99)),
     KINDS[2]: dict(events=deepcopy(EVENT_SCHEMA['events']), lookback_hours=integer(72),
-                   move_threshold_pct=number(5, 0.01), entry_delay_minutes=integer(30, 0),
+                   move_threshold_pct=number(5, 0.01), threshold_inclusive=dict(type='boolean', default=True),
+                   entry_delay_minutes=integer(30, 0),
                    hold_minutes=integer(2880), stop_loss_pct=number(3, 0.01, 99)),
 }
 _surprise_items = SCHEMAS[KINDS[1]]['events']['items']
@@ -95,6 +97,8 @@ class MacroConfig:
             value = params.get(key, deepcopy(spec['default']))
             if spec['type'] == 'integer' and type(value) is not int:
                 raise ValueError(f'INVALID_PARAMS:{key} must be an integer')
+            if spec['type'] == 'boolean' and type(value) is not bool:
+                raise ValueError(f'INVALID_PARAMS:{key} must be a boolean')
             if key == 'direction_map':
                 if (type(value) is not dict or set(value) != {'below', 'above'}
                         or any(v not in ('long', 'short', 'none') for v in value.values())):
@@ -105,6 +109,10 @@ class MacroConfig:
     @property
     def hold_minutes(self):
         return self.values.get('max_hold_minutes', self.values.get('hold_minutes'))
+
+
+def _threshold_not_met(value, threshold, inclusive):
+    return value < threshold if inclusive else value <= threshold
 
 
 def make_macro_strategy(mixin, config, risk, initial_capital):
@@ -275,7 +283,9 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
                 if config.kind in SURPRISE_KINDS:
                     delta = Decimal(str(record['actual'])) - Decimal(str(record['expected']))
                     record['surprise'] = str(delta)
-                    if delta == 0 or abs(delta) < Decimal(str(config.values['surprise_threshold'])):
+                    if delta == 0 or _threshold_not_met(
+                            abs(delta), Decimal(str(config.values['surprise_threshold'])),
+                            config.values['threshold_inclusive']):
                         self._skip(record, 'rate_below_threshold' if config.kind == FUNDING_KIND
                                    else 'surprise_below_threshold')
                         continue
@@ -283,7 +293,8 @@ def make_macro_strategy(mixin, config, risk, initial_capital):
                     delay = 0
                 else:
                     move = Decimal(record['move_pct'])
-                    if abs(move) < Decimal(str(config.values['move_threshold_pct'])):
+                    if _threshold_not_met(abs(move), Decimal(str(config.values['move_threshold_pct'])),
+                                          config.values['threshold_inclusive']):
                         self._skip(record, 'move_below_threshold')
                         continue
                     direction = 'short' if move > 0 else 'long'
@@ -347,7 +358,9 @@ def macro_assumptions(config):
                                        'expires_event_as_breakout_window_expired; independent_of_max_hold_minutes'}
                    if config.kind == KINDS[0] else
                    {'null_values': 'skip_missing_expected_or_actual_before_overlap_check; reported_in_raw_report',
-                    'threshold': 'abs(actual_minus_expected)_gte_threshold; zero_difference_has_no_direction'}
+                    'threshold': ('abs(actual_minus_expected)_'
+                                  + ('gte' if config.values['threshold_inclusive'] else 'gt')
+                                  + '_threshold; zero_difference_has_no_direction')}
                    if config.kind == KINDS[1] else
                    {'cumulative_move': '(last_pre_release_close / first_lookback_open - 1) * 100'}),
                 precision='off_grid_release_or_delay_rounds_up_to_next_open; partial_history_candles_excluded; '
