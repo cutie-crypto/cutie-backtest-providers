@@ -39,6 +39,7 @@ STANDARD_ERROR_CODES = frozenset(
         "SYMBOL_UNSUPPORTED",
         "MARKET_UNSUPPORTED",
         "TIMEFRAME_UNSUPPORTED",
+        "TIME_RANGE_TOO_LONG",
         "NO_DATA",
         "INSUFFICIENT_DATA",
         "RATE_LIMITED",

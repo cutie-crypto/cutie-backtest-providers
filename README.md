@@ -461,3 +461,13 @@ closes at next open. Native SL / TP precede holding expiry and channel decisions
 Turtle goldens are regenerated with `python3 tests/fixtures/capture_turtle_time_off_4d29dfa.py --record-psf-p2c`
 from `backtesting-py/`; original baseline_sha denotes the seed, while capture_source_sha256 pins the Turtle mixin source (checked by the fixture test).
 This branch is an unmerged draft; it does not establish a deployed provider pin.
+
+### 普通交易所模板长窗口（LONGWIN-4）
+
+目录 `execution.max_bars=35040`，普通模板执行时在取数前按
+`min(35040 × interval秒数, 365天)` 检查跨度，15m 一年可受理。
+超限返回 HTTP 200 failed、`TIME_RANGE_TOO_LONG`，limitations 包含
+`reason=time_range_too_long`、`interval`、`max_bars`、整数 `suggested_max_days`。
+中心行情 artifact 仍声明 5000 根；轮动路径保留专用资源闸门。
+connector 长窗预算需 LONGWIN-4 版本（450/520 秒），旧 connector 仍可能在300秒停止等待；
+目录 timeout_ms 仍300000，表示短窗既有预算，不是 provider 的强制终止器。

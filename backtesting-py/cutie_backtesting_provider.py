@@ -190,8 +190,8 @@ CATALOG_TIMEFRAMES_CENTRAL = ["15m", "1h", "4h", "1d", "1w"]
 # 而不是让用户点下去才失败。
 # 中心行情：cutie-server `services/backtest_data_source.py` 的 MAX_TOTAL_BARS 硬限制。
 CATALOG_MAX_BARS_CENTRAL = 5000
-# 交易所公开行情：没有硬限制，取执行超时（EXECUTION_TIMEOUT_MS）下能稳妥拉完并跑完的量。
-CATALOG_MAX_BARS_EXCHANGE = 20000
+# 交易所普通模板：15m 一年 35040 根；执行时与 365 天限窗按 interval 取更严值。
+CATALOG_MAX_BARS_EXCHANGE = 35040
 
 BASE_DIR = Path(__file__).resolve().parent
 REPORTS_DIR = BASE_DIR / "reports"
@@ -1315,7 +1315,21 @@ def _strategy_semantics(
     )
 
 
-def _validation_failure(error_type: str, error_message: str, status_code: int = 200) -> JSONResponse:
+def _exchange_range_failure(timeframe: str, start_at: int, end_at: int) -> Optional[JSONResponse]:
+    step = _timeframe_milliseconds(timeframe) // 1000
+    max_seconds = min(CATALOG_MAX_BARS_EXCHANGE * step, EXECUTION_MAX_RANGE_DAYS * 86400)
+    if end_at - start_at <= max_seconds:
+        return None
+    days = max_seconds // 86400
+    return _validation_failure(
+        "TIME_RANGE_TOO_LONG", f"Time range is too long; shorten to {days} days or less",
+        limitations={"reason": "time_range_too_long", "interval": timeframe,
+                     "max_bars": max_seconds // step, "suggested_max_days": days},
+    )
+
+
+def _validation_failure(error_type: str, error_message: str, status_code: int = 200,
+                        *, limitations: Optional[dict[str, Any]] = None) -> JSONResponse:
     """Early validation failure: provider could not even start a backtest.
 
     IMPL §6.3: failed responses must still satisfy the P0 contract —
@@ -1335,7 +1349,7 @@ def _validation_failure(error_type: str, error_message: str, status_code: int = 
         "error_type": error_type,
         "error_message": error_message,
         "assumptions": {},
-        "limitations": {"reason": "validation_failure"},
+        "limitations": limitations if limitations is not None else {"reason": "validation_failure"},
         "raw_report": {
             "market_data_provenance": {
                 "provider_revision": PROVIDER_REVISION,
@@ -10721,6 +10735,12 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
         return _validation_failure("INVALID_PARAMS", "start_at and end_at must be integers (unix seconds)")
     if start_at >= end_at:
         return _validation_failure("INVALID_PARAMS", "start_at must be before end_at")
+
+    # LONGWIN-4: guard ordinary exchange templates before fetching or allocating
+    # bars. Artifact and rotation paths retain their separate resource contracts.
+    range_failure = _exchange_range_failure(timeframe, start_at, end_at)
+    if range_failure is not None:
+        return range_failure
 
     # --- Parse Decimal fields ---
     try:
