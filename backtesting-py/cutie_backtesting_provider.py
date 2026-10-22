@@ -1283,35 +1283,28 @@ def _extract_requested_strategy_name(body: dict[str, Any]) -> Optional[str]:
 
 
 def _strategy_semantics(
-    body: dict[str, Any],
-    executed_strategy_name: str,
+    body: dict[str, Any], executed_strategy_name: str, *,
+    built=None, tool_id=None, params=None, context=None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    requested_strategy_name = _extract_requested_strategy_name(body)
-    # IMPL §9.4: this provider runs a built-in strategy class (selected by
-    # provider_tool_id), not the Cutie strategy draft itself, so strategy_match
-    # must be provider_strategy_class_not_verified (surrogate backtest).
-    mode = "provider_strategy_class_not_verified"
-    warning = (
-        f"This provider ran its built-in '{executed_strategy_name}' implementation "
-        "with the selected parameters. Cutie did not verify that it fully implements "
-        "the current strategy draft rules."
-    )
+    from strategy_execution_comparison import execution_evidence, UNKNOWN_MODE
+    comparison, parameters = execution_evidence(
+        body=body, built=built, tool_id=tool_id, params=params, context=context)
+    status = comparison["status"]
+    mode = UNKNOWN_MODE if status == "unknown" else status
+    matches = {"match": True, "mismatch": False, "unknown": None}[status]
+    warning = ("Complete closed template rules match the frozen strategy specification; "
+               "this does not establish live execution parity." if status == "match" else
+               "Executed parameters differ from the frozen strategy specification." if status == "mismatch" else
+               f"This provider ran its built-in '{executed_strategy_name}' implementation "
+               "with the selected parameters. Cutie did not verify that it fully implements "
+               "the current strategy draft rules.")
+    names = {"requested_strategy_name": _extract_requested_strategy_name(body),
+             "executed_strategy_name": executed_strategy_name}
     return (
-        {
-            "requested_strategy_name": requested_strategy_name,
-            "executed_strategy_name": executed_strategy_name,
-            "strategy_binding": mode,
-        },
-        {
-            "strategy_match": mode,
-            "matches_current_strategy": False,
-            "strategy_warning": warning,
-        },
-        {
-            "requested_strategy_name": requested_strategy_name,
-            "executed_strategy_name": executed_strategy_name,
-            "strategy_match": mode,
-        },
+        {**names, "strategy_binding": mode},
+        {"strategy_match": mode, "matches_current_strategy": matches, "strategy_warning": warning},
+        {**names, "strategy_match": mode, "matches_current_strategy": matches,
+         "execution_comparison": comparison, "execution_parameters": parameters},
     )
 
 
@@ -9998,7 +9991,11 @@ def _run_scale_in_out_backtest(
             f"return {total_return_pct:.2f}%"
         )
         strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
-            body, executed_name,
+            body, executed_name, built=built,
+            tool_id=_as_dict(body.get("backtest")).get("provider_tool_id") or DEFAULT_TOOL_ID,
+            params=_as_dict(_as_dict(body.get("backtest")).get("provider_params")),
+            context=dict(symbol=symbol, market=market, timeframe=timeframe, start_at=start_at,
+                         end_at=end_at, fee_bps=fee_bps, slippage_bps=slippage_bps),
         )
         # 模板自报的统计（网格成交次数、DCA 平均成本等）排在固定字段之后，可覆盖 position_mode。
         template_assumptions = config["extra_assumptions"](ledger) if "extra_assumptions" in config else {}
@@ -10056,7 +10053,10 @@ def _run_scale_in_out_backtest(
             },
             "raw_report": {
                 "provider_summary": provider_summary,
-                "strategy_semantics": strategy_raw_report,
+                "strategy_semantics": {k: v for k, v in strategy_raw_report.items()
+                                       if k not in ("execution_comparison", "execution_parameters")},
+                "execution_comparison": strategy_raw_report["execution_comparison"],
+                "execution_parameters": strategy_raw_report["execution_parameters"],
                 "legacy_metrics": legacy_metrics,
                 **(dict(time_expiry_fills=ledger.time_expiry_fills) if time_context is not None else {}),
                 "market_data_provenance": {
@@ -11501,8 +11501,9 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
         if market == "futures":
             provider_summary += "; funding rate not included in PnL"
         strategy_assumptions, strategy_limitations, strategy_raw_report = _strategy_semantics(
-            body,
-            executed_name,
+            body, executed_name, built=built, tool_id=effective_tool_id, params=params,
+            context=dict(symbol=symbol, market=market, timeframe=timeframe, start_at=start_at,
+                         end_at=end_at, fee_bps=fee_bps, slippage_bps=slippage_bps),
         )
 
         from strategy_risk_overlay import risk_assumptions
@@ -11755,7 +11756,10 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
                 **({"red_streak_rsi": {"skipped_entries": stats["_strategy"]._f6_skips}}
                    if effective_tool_id == "local.backtesting_py.red_streak_rsi" else {}),
                 "provider_summary": provider_summary,
-                "strategy_semantics": strategy_raw_report,
+                "strategy_semantics": {k: v for k, v in strategy_raw_report.items()
+                                       if k not in ("execution_comparison", "execution_parameters")},
+                "execution_comparison": strategy_raw_report["execution_comparison"],
+                "execution_parameters": strategy_raw_report["execution_parameters"],
                 # 旧版展示性百分比指标（result.v2 迁移前的 metrics 形状），保留兼容旧
                 # 消费方；顶层 metrics 现在是 SPEC §2 冻结的三键结构，见上方 result_v2。
                 "legacy_metrics": legacy_metrics,

@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _q42c_default_path as q42c_default_path  # noqa: E402
 from _q42c_default_path import pytest_runtest_call, pytest_sessionfinish  # noqa: E402,F401  (Q42-C2 plugin hooks)
 
+pytest_plugins = ["_jes21_execution_metadata"]
+
 
 @pytest.fixture
 def legacy_risk_layer_default(request, monkeypatch):
