@@ -461,3 +461,48 @@ closes at next open. Native SL / TP precede holding expiry and channel decisions
 Turtle goldens are regenerated with `python3 tests/fixtures/capture_turtle_time_off_4d29dfa.py --record-psf-p2c`
 from `backtesting-py/`; original baseline_sha denotes the seed, while capture_source_sha256 pins the Turtle mixin source (checked by the fixture test).
 This branch is an unmerged draft; it does not establish a deployed provider pin.
+
+### Template execution comparison (JES21-R3-11c candidate)
+
+Legacy template responses add two open `raw_report` fields, without changing the
+closed result.v2 payload, metrics, trades, or verification status:
+
+- `execution_comparison`: schema `execution_comparison.v1`, overall
+  `status=match|mismatch|unknown`, and items with `path`, `requested`, `executed`,
+  `unit`, `status`, `reason`. Evidence compares frozen `backtest.strategy` with
+  the actual built class/config, never names or caller-provided match flags.
+  A proved difference wins; partial agreement leaves overall status unknown.
+- `execution_parameters`: schema `execution_parameters.v1`, template/tool,
+  actual runner symbol/market/timeframe/range/costs, frozen provider inputs plus
+  observed class defaults, and stop_loss/take_profit/position with
+  `status=known|none|unknown`, source and explicit units where known.
+  `provider_params_status=partial` means unmapped defaults are not asserted;
+  `risk_config` retains the built risk configuration. Overlay fixed percentages
+  are `pct_fraction`; draft `fixed_pct.pct` and Turtle percentages are
+  `pct_percent`; ATR uses `atr_multiple`, R targets `risk_multiple`. Units are
+  never inferred from magnitude. Turtle's native ATR stop remains known even
+  without a `stop_loss_pct` input; unmapped intrinsic stops remain unknown.
+
+Complete matching is deliberately limited to the existing v1 long EMA `trend`
+grammar: one `EMA(N) crosses above EMA(M)` entry, one `opposite cross` exit,
+empty risk rules, explicit instrument/timeframe and stop_loss/take_profit/
+position_sizing (null is permitted), no extra semantic conditions, time/filter
+layers, dynamic risk, conflicting snapshot semantics, or explicitly disabled
+unified risk with legacy close-triggered protection. Other rules and old text remain unknown. Known EMA
+engine-default sizing is reported as `type=engine_default`, not absence of a
+position. None means the actual mapped execution path has no such protective
+leg, never merely an omitted input.
+
+`limitations.matches_current_strategy` maps match to true, mismatch to false,
+unknown to null. `limitations.strategy_match`, `assumptions.strategy_binding`
+and `raw_report.strategy_semantics` agree: match/mismatch, or the historical
+`provider_strategy_class_not_verified` for unknown. Existing clients can ignore
+the open fields. No comparison establishes live parity (`live_execution_parity`
+remains false). Immutable-artifact requests keep their independent hash,
+coverage and execution-evidence contract; they do not inherit legacy template
+match claims. This candidate is not a fleet upgrade or provider pin.
+
+Local checks, from `backtesting-py/`: `python3 -m pytest -q -p no:cacheprovider
+ tests/test_jes21_r3_execution_comparison.py`, then the relevant existing tests
+and serial `python3 -m pytest -q -p no:cacheprovider tests`. Use the connector's
+actual `{schema,backtest,provider}` request envelope for HTTP fixtures.
