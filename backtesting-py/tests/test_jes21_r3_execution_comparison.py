@@ -158,3 +158,22 @@ def test_artifact_without_legacy_build_never_inherits_template_match():
         'strategy_spec': body()['backtest']['strategy']['strategy_spec']}, 'Same name')
     assert limits['matches_current_strategy'] is None
     assert raw['execution_comparison']['status'] == 'unknown'
+
+
+def test_risk_sizing_execution_evidence_is_json_serializable(monkeypatch, tmp_path):
+    request = body()
+    request['backtest']['provider_params'].update(position_size_risk_pct=1, position_size_qty_step=0.001)
+    closes = [100 + (i % 30) for i in range(80)]
+    df = pd.DataFrame(dict(Open=closes, High=[v+1 for v in closes], Low=[v-1 for v in closes], Close=closes, Volume=[1]*80),
+                      index=pd.date_range('2026-01-01', periods=80, freq='h', tz='UTC'))
+    monkeypatch.setattr(p, 'AUTH_TOKEN', '')
+    monkeypatch.setattr(p, 'REPORTS_DIR', tmp_path)
+    monkeypatch.setattr(p, '_fetch_ohlcv', lambda *args: df.copy())
+    monkeypatch.setattr(p, '_fetch_template_warmup', lambda *args: df.iloc[:20].copy())
+    monkeypatch.setattr(Backtest, 'plot', lambda *args, **kwargs: None)
+    response = TestClient(p.app).post('/cutie/backtest', json=request).json()
+    assert response['result_status'] == 'success', response
+    ep = response['raw_report']['execution_parameters']
+    assert ep['risk_config']['position_size_risk_pct'] == '0.01'
+    assert ep['position']['status'] == 'known'
+    assert ep['position']['value'] == '0.01' and ep['position']['unit'] == 'pct_fraction'
