@@ -206,3 +206,15 @@ def test_execution_evidence_canonicalizes_all_nested_decimal_copies():
     json.dumps({'comparison': comparison, 'evidence': evidence}, allow_nan=False)
     assert built['strategy']._risk == original_risk
     assert isinstance(params['diagnostic']['values'][0], Decimal)
+
+
+def test_execution_evidence_canonicalizes_nested_decimal_tuples():
+    params = dict(PARAMS, diagnostic=(Decimal('1.2300'), {'nested': (Decimal('0.0100'), None)}))
+    _, _, raw = semantics(params=params)
+    assert raw['execution_parameters']['provider_params']['diagnostic'] == ['1.23', {'nested': ['0.01', None]}]
+    json.dumps(raw, allow_nan=False)
+
+
+def test_execution_evidence_rejects_sets_instead_of_leaking_them():
+    with pytest.raises(TypeError, match='set'):
+        semantics(params=dict(PARAMS, diagnostic={'unexpected'}))

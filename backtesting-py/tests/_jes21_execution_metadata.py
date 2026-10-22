@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent
 MANIFEST = json.loads((ROOT / 'jes21_r3_compatibility_cases.json').read_text())
 FUNCTIONS = frozenset(MANIFEST['functions'])
 RAW_GOLDENS = frozenset(MANIFEST['raw_goldens'])
+EXPECTED_STATUSES = MANIFEST['expected_status']
 COUNTS = Counter()
 MATCH_PROOFS = []
 CASE_RESULTS = {}
@@ -52,6 +53,7 @@ def project_execution_metadata(body, *, label='', record=False):
     """Validate three-state evidence, then project only the approved metadata.
 
     Legacy responses have no v1 comparison and retain ALL their existing keys.
+    Recorded fixture states are checked before projecting their metadata.
     A separate diff guard forbids widening this projection to business fields.
     """
     before = deepcopy(body)
@@ -65,6 +67,11 @@ def project_execution_metadata(body, *, label='', record=False):
     status = comparison.get('status')
     if comparison.get('schema') != 'execution_comparison.v1' or status not in ('match', 'mismatch', 'unknown'):
         raise MetadataProjectionError('invalid execution comparison: ' + label)
+    if label not in EXPECTED_STATUSES:
+        raise MetadataProjectionError('missing expected status: ' + label)
+    expected = EXPECTED_STATUSES[label]
+    if status != expected:
+        raise MetadataProjectionError(f'execution status changed: {label}: expected {expected}, got {status}')
     flag = {'match': True, 'mismatch': False, 'unknown': None}[status]
     allowed_values = set()
     allowed_deletes = {('raw_report', 'execution_comparison'), ('raw_report', 'execution_parameters')}
@@ -81,7 +88,7 @@ def project_execution_metadata(body, *, label='', record=False):
                 continue
             value = parent[key]
             valid = (value is flag if key == 'matches_current_strategy' else
-                     isinstance(value, str) and ('not_verified' in value if status == 'unknown' else value == status))
+                     value == (OLD_MODE if status == 'unknown' else status))
             if not valid:
                 raise MetadataProjectionError(f'inconsistent {status} marker {".".join(path + (key,))}: {value!r}')
             if path == ('raw_report', 'strategy_semantics') and key == 'matches_current_strategy':
