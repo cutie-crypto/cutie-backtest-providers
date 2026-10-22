@@ -1,5 +1,7 @@
 """JES21-R3-11c: actual built-class evidence, never name/boolean attestation."""
 import copy
+import json
+from decimal import Decimal
 import sys
 from pathlib import Path
 import pandas as pd
@@ -177,3 +179,30 @@ def test_risk_sizing_execution_evidence_is_json_serializable(monkeypatch, tmp_pa
     assert ep['risk_config']['position_size_risk_pct'] == '0.01'
     assert ep['position']['status'] == 'known'
     assert ep['position']['value'] == '0.01' and ep['position']['unit'] == 'pct_fraction'
+
+
+def test_execution_evidence_canonicalizes_all_nested_decimal_copies():
+    from strategy_execution_comparison import execution_evidence
+    params = dict(PARAMS)
+    built = p._build_ema_cross(params)
+    # Exercise copied risk, built attributes, frozen inputs and comparison items.
+    nested = {'values': [Decimal('0.0000000012300'), {'large': Decimal('1E+8')}],
+              'bool': True, 'none': None, 'int': 7, 'str': '1.2300'}
+    built['strategy']._risk = dict(built['strategy']._risk, diagnostic=copy.deepcopy(nested),
+                                  trailing_stop_pct=Decimal('0.2500'))
+    built['strategy']._ema_fast = Decimal('5.00')
+    params['diagnostic'] = copy.deepcopy(nested)
+    original_risk = copy.deepcopy(built['strategy']._risk)
+    comparison, evidence = execution_evidence(body=body(), built=built, tool_id=TOOL,
+                                             params=params, context=CONTEXT)
+    expected = {'values': ['0.00000000123', {'large': '100000000'}],
+                'bool': True, 'none': None, 'int': 7, 'str': '1.2300'}
+    assert evidence['risk_config']['diagnostic'] == expected
+    assert evidence['provider_params']['diagnostic'] == expected
+    assert evidence['provider_params']['ema_fast'] == '5'
+    assert evidence['stop_loss']['trailing_stop_pct'] == '0.25'
+    entry = next(item for item in comparison['items'] if item['path'] == 'rules.entry')
+    assert entry['executed'] == ['5', 20]
+    json.dumps({'comparison': comparison, 'evidence': evidence}, allow_nan=False)
+    assert built['strategy']._risk == original_risk
+    assert isinstance(params['diagnostic']['values'][0], Decimal)

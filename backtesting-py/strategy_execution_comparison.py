@@ -29,6 +29,17 @@ def _number(value):
         return None
 
 
+def _canonical_evidence(value):
+    """Keep copied execution facts JSON-safe using the evidence number format."""
+    if isinstance(value, Decimal):
+        return _number(value)
+    if isinstance(value, dict):
+        return {key: _canonical_evidence(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_evidence(item) for item in value]
+    return value
+
+
 def _known(kind, value, unit, source):
     number = _number(value)
     if number is None:
@@ -190,4 +201,4 @@ def execution_evidence(*, body, built=None, tool_id=None, params=None, context=N
     statuses = {i['status'] for i in items}
     status = 'mismatch' if 'mismatch' in statuses else ('unknown' if 'unknown' in statuses else 'match')
     comparison = dict(schema='execution_comparison.v1', status=status, items=items)
-    return comparison, ep
+    return _canonical_evidence(comparison), _canonical_evidence(ep)
