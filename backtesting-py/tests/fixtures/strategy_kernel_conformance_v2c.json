@@ -1,0 +1,1106 @@
+{
+  "schema": "cutie.strategy_kernel_conformance.v2c",
+  "source_of_truth": "JES21-B3b 二期 IMPL §3.3 / K1 (2026-10-25): StrategySpec v2 ema / macd / rolling_zscore; Server (S1) and Provider share this fixture verbatim",
+  "note": "All series use a fixed 1h (3600s) step starting at ts=0. `value: null` in `input` is a genuine mid-stream gap; `expected: null` is a frame the primitive must report missing. Arithmetic is cutie.decimal128.v1 (34 significant digits, ROUND_HALF_EVEN), every operation rounded. ema(window_bars=N): alpha=2/(N+1); seed at the N-th fetched value = (x_0+...+x_{N-1})/N summed left to right; afterwards ema_t = alpha*x_t + (1-alpha)*ema_{t-1}; fewer than N values -> missing; a gap breaks the chain irrecoverably (same rule as v2 rsi_wilder). macd(fast,slow,signal,output): line_t = ema(fast)_t - ema(slow)_t from the slow seed onward; signal = ema(signal) over the line series, seeded from the first line value; hist_t = line_t - signal_t; output selects line/signal/hist; a gap breaks all three irrecoverably. rolling_zscore(window_bars=N): exactly N values ending at x_t, mean = sum/N, population variance = sum((v-mean)*(v-mean))/N, z = (x_t-mean)/sqrt(variance); variance 0 -> missing (never 0); a gap inside the window -> missing until the window slides past it. Bollinger templates use population stdev (rolling(...).std(ddof=0)), so `rolling_zscore gte k` / `lte -k` is exactly touching the k-sigma band.",
+  "sha256": "5f8761de46ce2d0094c10f35c6d64928f8275e6ac32cad0049f0f65c2097c038",
+  "cases": [
+    {
+      "name": "ema_sma_seed_then_recursion",
+      "primitive": "ema",
+      "params": {
+        "window_bars": 3
+      },
+      "description": "f=0,1 < window -> missing (warmup); f=2 seeds with the SMA of the first 3; alpha=0.5 afterwards.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "11"
+        },
+        {
+          "ts": 7200,
+          "value": "13"
+        },
+        {
+          "ts": 10800,
+          "value": "12"
+        },
+        {
+          "ts": 14400,
+          "value": "15"
+        },
+        {
+          "ts": 18000,
+          "value": "14"
+        },
+        {
+          "ts": 21600,
+          "value": "16"
+        },
+        {
+          "ts": 25200,
+          "value": "18"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "11.33333333333333333333333333333333"
+        },
+        {
+          "ts": 10800,
+          "value": "11.66666666666666666666666666666666"
+        },
+        {
+          "ts": 14400,
+          "value": "13.33333333333333333333333333333333"
+        },
+        {
+          "ts": 18000,
+          "value": "13.66666666666666666666666666666666"
+        },
+        {
+          "ts": 21600,
+          "value": "14.83333333333333333333333333333333"
+        },
+        {
+          "ts": 25200,
+          "value": "16.41666666666666666666666666666666"
+        }
+      ]
+    },
+    {
+      "name": "ema_warmup_never_reached",
+      "primitive": "ema",
+      "params": {
+        "window_bars": 5
+      },
+      "description": "Only 4 fetched values for a 5-bar EMA: every frame is missing.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "11"
+        },
+        {
+          "ts": 7200,
+          "value": "12"
+        },
+        {
+          "ts": 10800,
+          "value": "13"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "ema_non_terminating_alpha_rounds_decimal128",
+      "primitive": "ema",
+      "params": {
+        "window_bars": 2
+      },
+      "description": "alpha=2/3 does not terminate: pins decimal128 HALF_EVEN rounding of every step.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "1"
+        },
+        {
+          "ts": 3600,
+          "value": "2"
+        },
+        {
+          "ts": 7200,
+          "value": "4"
+        },
+        {
+          "ts": 10800,
+          "value": "3"
+        },
+        {
+          "ts": 14400,
+          "value": "7"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": "1.5"
+        },
+        {
+          "ts": 7200,
+          "value": "3.166666666666666666666666666666667"
+        },
+        {
+          "ts": 10800,
+          "value": "3.055555555555555555555555555555556"
+        },
+        {
+          "ts": 14400,
+          "value": "5.685185185185185185185185185185186"
+        }
+      ]
+    },
+    {
+      "name": "ema_gap_breaks_chain_never_recovers",
+      "primitive": "ema",
+      "params": {
+        "window_bars": 2
+      },
+      "description": "ts=10800 is a genuine gap: it and every later frame are missing, even once 2 fresh values follow.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "12"
+        },
+        {
+          "ts": 7200,
+          "value": "11"
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": "13"
+        },
+        {
+          "ts": 18000,
+          "value": "14"
+        },
+        {
+          "ts": 21600,
+          "value": "15"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": "11"
+        },
+        {
+          "ts": 7200,
+          "value": "11"
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": null
+        },
+        {
+          "ts": 18000,
+          "value": null
+        },
+        {
+          "ts": 21600,
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "ema_constant_series",
+      "primitive": "ema",
+      "params": {
+        "window_bars": 3
+      },
+      "description": "A constant series stays exactly at the constant once seeded.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "100"
+        },
+        {
+          "ts": 3600,
+          "value": "100"
+        },
+        {
+          "ts": 7200,
+          "value": "100"
+        },
+        {
+          "ts": 10800,
+          "value": "100"
+        },
+        {
+          "ts": 14400,
+          "value": "100"
+        },
+        {
+          "ts": 18000,
+          "value": "100"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "100"
+        },
+        {
+          "ts": 10800,
+          "value": "100"
+        },
+        {
+          "ts": 14400,
+          "value": "100"
+        },
+        {
+          "ts": 18000,
+          "value": "100"
+        }
+      ]
+    },
+    {
+      "name": "rolling_zscore_population_stdev",
+      "primitive": "rolling_zscore",
+      "params": {
+        "window_bars": 4
+      },
+      "description": "Population (ddof=0) stdev, same as the Bollinger templates; sample stdev would differ on every value.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "12"
+        },
+        {
+          "ts": 7200,
+          "value": "11"
+        },
+        {
+          "ts": 10800,
+          "value": "15"
+        },
+        {
+          "ts": 14400,
+          "value": "13"
+        },
+        {
+          "ts": 18000,
+          "value": "18"
+        },
+        {
+          "ts": 21600,
+          "value": "16"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": "1.603567451474546308107320885278521"
+        },
+        {
+          "ts": 14400,
+          "value": "0.1690308509457033155019236654731891"
+        },
+        {
+          "ts": 18000,
+          "value": "1.45010473356849539295400926765799"
+        },
+        {
+          "ts": 21600,
+          "value": "0.2773500981126145610091708667284997"
+        }
+      ]
+    },
+    {
+      "name": "rolling_zscore_constant_window_is_missing",
+      "primitive": "rolling_zscore",
+      "params": {
+        "window_bars": 3
+      },
+      "description": "A window with stdev 0 is missing (never 0); values return once the window holds two distinct values.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "5"
+        },
+        {
+          "ts": 3600,
+          "value": "5"
+        },
+        {
+          "ts": 7200,
+          "value": "5"
+        },
+        {
+          "ts": 10800,
+          "value": "5"
+        },
+        {
+          "ts": 14400,
+          "value": "6"
+        },
+        {
+          "ts": 18000,
+          "value": "6"
+        },
+        {
+          "ts": 21600,
+          "value": "7"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": "1.414213562373095048801688724209699"
+        },
+        {
+          "ts": 18000,
+          "value": "0.7071067811865475244008443621048483"
+        },
+        {
+          "ts": 21600,
+          "value": "1.414213562373095048801688724209699"
+        }
+      ]
+    },
+    {
+      "name": "rolling_zscore_gap_until_window_slides_past",
+      "primitive": "rolling_zscore",
+      "params": {
+        "window_bars": 3
+      },
+      "description": "ts=7200 is a gap: every window containing it is missing; the window [3,4,5] after it is valid.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "1"
+        },
+        {
+          "ts": 3600,
+          "value": "2"
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": "4"
+        },
+        {
+          "ts": 14400,
+          "value": "6"
+        },
+        {
+          "ts": 18000,
+          "value": "5"
+        },
+        {
+          "ts": 21600,
+          "value": "9"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": null
+        },
+        {
+          "ts": 18000,
+          "value": "0"
+        },
+        {
+          "ts": 21600,
+          "value": "1.372812945967288223469137260121518"
+        }
+      ]
+    },
+    {
+      "name": "macd_line",
+      "primitive": "macd",
+      "params": {
+        "fast": 3,
+        "slow": 5,
+        "signal": 3,
+        "output": "line"
+      },
+      "description": "line = ema3 - ema5, defined from f=4 (the slow seed).",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "11"
+        },
+        {
+          "ts": 7200,
+          "value": "13"
+        },
+        {
+          "ts": 10800,
+          "value": "12"
+        },
+        {
+          "ts": 14400,
+          "value": "15"
+        },
+        {
+          "ts": 18000,
+          "value": "14"
+        },
+        {
+          "ts": 21600,
+          "value": "16"
+        },
+        {
+          "ts": 25200,
+          "value": "18"
+        },
+        {
+          "ts": 28800,
+          "value": "17"
+        },
+        {
+          "ts": 32400,
+          "value": "19"
+        },
+        {
+          "ts": 36000,
+          "value": "21"
+        },
+        {
+          "ts": 39600,
+          "value": "20"
+        },
+        {
+          "ts": 43200,
+          "value": "23"
+        },
+        {
+          "ts": 46800,
+          "value": "22"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": "1.13333333333333333333333333333333"
+        },
+        {
+          "ts": 18000,
+          "value": "0.86666666666666666666666666666666"
+        },
+        {
+          "ts": 21600,
+          "value": "0.96666666666666666666666666666666"
+        },
+        {
+          "ts": 25200,
+          "value": "1.17222222222222222222222222222221"
+        },
+        {
+          "ts": 28800,
+          "value": "0.87870370370370370370370370370369"
+        },
+        {
+          "ts": 32400,
+          "value": "0.96774691358024691358024691358024"
+        },
+        {
+          "ts": 36000,
+          "value": "1.16947016460905349794238683127572"
+        },
+        {
+          "ts": 39600,
+          "value": "0.87513288751714677640603566529492"
+        },
+        {
+          "ts": 43200,
+          "value": "1.1311649805669867398262459990855"
+        },
+        {
+          "ts": 46800,
+          "value": "0.86131484815576893766194177716811"
+        }
+      ]
+    },
+    {
+      "name": "macd_signal",
+      "primitive": "macd",
+      "params": {
+        "fast": 3,
+        "slow": 5,
+        "signal": 3,
+        "output": "signal"
+      },
+      "description": "signal = ema3 over the line series seeded from the first line value: defined from f=6.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "11"
+        },
+        {
+          "ts": 7200,
+          "value": "13"
+        },
+        {
+          "ts": 10800,
+          "value": "12"
+        },
+        {
+          "ts": 14400,
+          "value": "15"
+        },
+        {
+          "ts": 18000,
+          "value": "14"
+        },
+        {
+          "ts": 21600,
+          "value": "16"
+        },
+        {
+          "ts": 25200,
+          "value": "18"
+        },
+        {
+          "ts": 28800,
+          "value": "17"
+        },
+        {
+          "ts": 32400,
+          "value": "19"
+        },
+        {
+          "ts": 36000,
+          "value": "21"
+        },
+        {
+          "ts": 39600,
+          "value": "20"
+        },
+        {
+          "ts": 43200,
+          "value": "23"
+        },
+        {
+          "ts": 46800,
+          "value": "22"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": null
+        },
+        {
+          "ts": 18000,
+          "value": null
+        },
+        {
+          "ts": 21600,
+          "value": "0.9888888888888888888888888888888833"
+        },
+        {
+          "ts": 25200,
+          "value": "1.080555555555555555555555555555547"
+        },
+        {
+          "ts": 28800,
+          "value": "0.9796296296296296296296296296296185"
+        },
+        {
+          "ts": 32400,
+          "value": "0.9736882716049382716049382716049292"
+        },
+        {
+          "ts": 36000,
+          "value": "1.071579218106995884773662551440325"
+        },
+        {
+          "ts": 39600,
+          "value": "0.9733560528120713305898491083676225"
+        },
+        {
+          "ts": 43200,
+          "value": "1.052260516689529035208047553726561"
+        },
+        {
+          "ts": 46800,
+          "value": "0.9567876824226489864349946654473355"
+        }
+      ]
+    },
+    {
+      "name": "macd_hist",
+      "primitive": "macd",
+      "params": {
+        "fast": 3,
+        "slow": 5,
+        "signal": 3,
+        "output": "hist"
+      },
+      "description": "hist = line - signal, defined from f=6.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "11"
+        },
+        {
+          "ts": 7200,
+          "value": "13"
+        },
+        {
+          "ts": 10800,
+          "value": "12"
+        },
+        {
+          "ts": 14400,
+          "value": "15"
+        },
+        {
+          "ts": 18000,
+          "value": "14"
+        },
+        {
+          "ts": 21600,
+          "value": "16"
+        },
+        {
+          "ts": 25200,
+          "value": "18"
+        },
+        {
+          "ts": 28800,
+          "value": "17"
+        },
+        {
+          "ts": 32400,
+          "value": "19"
+        },
+        {
+          "ts": 36000,
+          "value": "21"
+        },
+        {
+          "ts": 39600,
+          "value": "20"
+        },
+        {
+          "ts": 43200,
+          "value": "23"
+        },
+        {
+          "ts": 46800,
+          "value": "22"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": null
+        },
+        {
+          "ts": 18000,
+          "value": null
+        },
+        {
+          "ts": 21600,
+          "value": "-0.0222222222222222222222222222222233"
+        },
+        {
+          "ts": 25200,
+          "value": "0.091666666666666666666666666666663"
+        },
+        {
+          "ts": 28800,
+          "value": "-0.1009259259259259259259259259259285"
+        },
+        {
+          "ts": 32400,
+          "value": "-0.0059413580246913580246913580246892"
+        },
+        {
+          "ts": 36000,
+          "value": "0.097890946502057613168724279835395"
+        },
+        {
+          "ts": 39600,
+          "value": "-0.0982231652949245541838134430727025"
+        },
+        {
+          "ts": 43200,
+          "value": "0.078904463877457704618198445358939"
+        },
+        {
+          "ts": 46800,
+          "value": "-0.0954728342668800487730528882792255"
+        }
+      ]
+    },
+    {
+      "name": "macd_signal_warmup_not_reached",
+      "primitive": "macd",
+      "params": {
+        "fast": 2,
+        "slow": 4,
+        "signal": 3,
+        "output": "signal"
+      },
+      "description": "5 values: line exists from f=3 but its 3-bar signal never seeds -> all missing.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "11"
+        },
+        {
+          "ts": 7200,
+          "value": "13"
+        },
+        {
+          "ts": 10800,
+          "value": "12"
+        },
+        {
+          "ts": 14400,
+          "value": "15"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": null
+        },
+        {
+          "ts": 14400,
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "macd_gap_breaks_chain_never_recovers",
+      "primitive": "macd",
+      "params": {
+        "fast": 2,
+        "slow": 3,
+        "signal": 2,
+        "output": "hist"
+      },
+      "description": "A gap at ts=18000 kills line, signal and hist for every later frame.",
+      "input": [
+        {
+          "ts": 0,
+          "value": "10"
+        },
+        {
+          "ts": 3600,
+          "value": "11"
+        },
+        {
+          "ts": 7200,
+          "value": "13"
+        },
+        {
+          "ts": 10800,
+          "value": "12"
+        },
+        {
+          "ts": 14400,
+          "value": "15"
+        },
+        {
+          "ts": 18000,
+          "value": null
+        },
+        {
+          "ts": 21600,
+          "value": "16"
+        },
+        {
+          "ts": 25200,
+          "value": "18"
+        },
+        {
+          "ts": 28800,
+          "value": "17"
+        },
+        {
+          "ts": 32400,
+          "value": "19"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": null
+        },
+        {
+          "ts": 10800,
+          "value": "-0.22222222222222222222222222222222"
+        },
+        {
+          "ts": 14400,
+          "value": "0.02469135802469135802469135802469"
+        },
+        {
+          "ts": 18000,
+          "value": null
+        },
+        {
+          "ts": 21600,
+          "value": null
+        },
+        {
+          "ts": 25200,
+          "value": null
+        },
+        {
+          "ts": 28800,
+          "value": null
+        },
+        {
+          "ts": 32400,
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "macd_constant_series_is_zero",
+      "primitive": "macd",
+      "params": {
+        "fast": 2,
+        "slow": 3,
+        "signal": 2,
+        "output": "line"
+      },
+      "description": "A constant series has line 0 from the slow seed onward (0, not missing: macd has no stdev).",
+      "input": [
+        {
+          "ts": 0,
+          "value": "50"
+        },
+        {
+          "ts": 3600,
+          "value": "50"
+        },
+        {
+          "ts": 7200,
+          "value": "50"
+        },
+        {
+          "ts": 10800,
+          "value": "50"
+        },
+        {
+          "ts": 14400,
+          "value": "50"
+        },
+        {
+          "ts": 18000,
+          "value": "50"
+        }
+      ],
+      "expected": [
+        {
+          "ts": 0,
+          "value": null
+        },
+        {
+          "ts": 3600,
+          "value": null
+        },
+        {
+          "ts": 7200,
+          "value": "0"
+        },
+        {
+          "ts": 10800,
+          "value": "0"
+        },
+        {
+          "ts": 14400,
+          "value": "0"
+        },
+        {
+          "ts": 18000,
+          "value": "0"
+        }
+      ]
+    }
+  ]
+}
