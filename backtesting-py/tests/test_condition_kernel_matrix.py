@@ -86,6 +86,12 @@ SELECTED_CASES = _select_cases()
 # change_24h 正动量与 ema/macd 上穿，急跌段给 rsi<30 与 rolling_zscore<=-2。
 def _close_at(ts: int) -> int:
     phase = (ts // HOUR) % 100
+    # 缓涨段 phase 17（锯齿基值 117）叠加确定性上冲尖峰到 120：把该点 20 根
+    # 滚动 zscore 推过 +2，触发 single:bollinger_touch:short 的 zscore_20>=2
+    # 做空；缓涨段的轻微上冲几乎不改变 Wilder RSI，故其余 case（尤其
+    # X+rsi:long:all）的既有成交覆盖保持，急跌段 zscore<=-2 的做多触发也不受影响。
+    if phase == 17:
+        return 120
     return 100 + phase if phase < 80 else 100 + (100 - phase) * 4
 
 
@@ -191,6 +197,12 @@ def test_condition_matrix_case(market_data, case):
     _assert_result_v2_shape(body)
     _assert_exit_kinds_aligned(body)
     _assert_trade_side(body, case["provider_params"]["strategy_spec"]["entry"]["side"])
+    # 单项必须有成交：避免 trades 为空时方向断言空成立；pair:all 两条件同时
+    # 成立在合成行情上本就少见，不要求成交。
+    if case["case_id"].startswith("single:"):
+        assert body["metrics"]["trade_count"] >= 1, (
+            case["case_id"], "单项 case 零成交"
+        )
 
 
 def test_result_keys_match_kernel_v3_envelope(market_data, monkeypatch):
