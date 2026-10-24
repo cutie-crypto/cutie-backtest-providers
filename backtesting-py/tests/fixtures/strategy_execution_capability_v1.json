@@ -233,7 +233,8 @@
     "result_schemas": ["cutie.backtest_result.v2"],
     "coverage_schemas": ["cutie.strategy_coverage_manifest.v1"],
     "trace_schemas": ["cutie.strategy_execution_trace.v1"],
-    "evidence_schemas": ["cutie.strategy_execution_evidence.v1"]
+    "evidence_schemas": ["cutie.strategy_execution_evidence.v1"],
+    "exit_capabilities": ["nullable_stop_take"]
   },
-  "sha256": "047ffadee3275cc7b6574cf879359b07515f5f4a2f599aa1f7332aa4b0959b5f"
+  "sha256": "16289c938881bf0d610f0414b880fd04972055618b642e21a15225ff118e7694"
 }

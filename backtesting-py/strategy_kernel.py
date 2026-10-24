@@ -47,6 +47,7 @@ STRATEGY_SPEC_V3_SCHEMA = "cutie.strategy_spec.v3"
 
 ERR_SPEC_INVALID = "ERR_STRATEGY_SPEC_INVALID"
 ERR_SPEC_UNSUPPORTED = "ERR_STRATEGY_SPEC_UNSUPPORTED"
+EXIT_CAPABILITY_NULLABLE_STOP_TAKE = "nullable_stop_take"
 ERR_CAPABILITY_MISMATCH = "ERR_STRATEGY_CAPABILITY_MISMATCH"
 ERR_COVERAGE_INCOMPLETE = "ERR_STRATEGY_COVERAGE_INCOMPLETE"
 ERR_BINDING_MISMATCH = "ERR_STRATEGY_EXECUTION_BINDING_MISMATCH"
@@ -275,6 +276,7 @@ _CAPABILITY_KEYS = {
     "coverage_schemas",
     "trace_schemas",
     "evidence_schemas",
+    "exit_capabilities",
 }
 
 
@@ -998,6 +1000,10 @@ def _validate_spec(
         "$.strategy_spec.exit",
     )
     for field_name in ("stop_loss", "take_profit"):
+        # Both keys must be present (exact-set above); ``null`` means "no
+        # such exit" (JES21-B3b 二期 IMPL §3.2 出场三选).
+        if exit_spec[field_name] is None:
+            continue
         rule = _exact(
             exit_spec[field_name],
             {"model", "value"},
@@ -1047,6 +1053,27 @@ def _validate_spec(
             operators,
             "$.strategy_spec.exit.signal_exit",
         )
+    if (
+        exit_spec["stop_loss"] is None
+        and exit_spec["take_profit"] is None
+        and exit_spec["time_exit_bars"] is None
+        and exit_spec["signal_exit"] is None
+    ):
+        _raise(
+            "$.strategy_spec.exit",
+            "stop_loss and take_profit are both null: signal_exit or "
+            "time_exit_bars is required",
+        )
+    if (
+        exit_spec["stop_loss"] is None
+        and exit_spec["take_profit"] is not None
+        and exit_spec["take_profit"]["model"] == "r_multiple"
+    ):
+        _raise(
+            "$.strategy_spec.exit.take_profit.model",
+            "r_multiple requires a stop_loss",
+            actual="r_multiple",
+        )
 
     risk = _exact(
         obj["risk"],
@@ -1070,6 +1097,12 @@ def _validate_spec(
     if sizing["model"] == "risk_fraction" and sizing_value > 1:
         _raise(
             "$.strategy_spec.risk.position_sizing.value", "risk_fraction must be <= 1"
+        )
+    if sizing["model"] == "risk_fraction" and exit_spec["stop_loss"] is None:
+        _raise(
+            "$.strategy_spec.risk.position_sizing.model",
+            "risk_fraction requires a stop_loss",
+            actual="risk_fraction",
         )
     if risk["max_open_positions"] != 1 or risk["allow_pyramiding"] is not False:
         _raise(
@@ -1391,12 +1424,15 @@ def _validate_kline_primary_requirements(
       series (``build_frames``' ``_primary_field_series``), which has no
       lookback beyond whatever the primary requirement itself fetched — the
       array's very first row can never have prior rows *within that same
-      array* no matter how large ``warmup_bars`` is set. A window primitive
-      needing more than the anchor bar itself, or ``rsi_wilder`` (whose seed
-      is always ``None`` for its first ``period`` timestamps, see
-      ``_rsi_wilder_series``), therefore compiles green but is guaranteed to
-      fail closed on the very first frame every single run — a config that
-      must never reach execution.
+      array* no matter how large ``warmup_bars`` is set. A rolling_sum /
+      rolling_extreme / rolling_quantile window needing more than the anchor
+      bar itself therefore compiles green but is guaranteed to fail closed on
+      the very first frame every single run — a config that must never reach
+      execution. The history primitives (``rsi_wilder`` / ``ema`` / ``macd``
+      / ``rolling_zscore``) are allowed instead: build_frames leaves them
+      unset on the primary array's first ``warmup_bars`` rows (warmup
+      frames) and requires them from the first decision frame on, so the
+      primary requirement's ``warmup_bars`` must cover their lookback.
     - a coarse feature (interval != primary timeframe)'s matched requirement
       must declare ``ohlcv_resample.v1`` in its own ``allowed_transforms``:
       §4.2 binds transform selection into the artifact hash via spec_hash,
@@ -1437,16 +1473,25 @@ def _validate_kline_primary_requirements(
                 )
             primitive = feature["primitive"]
             params = feature["params"]
-            if primitive in {"rsi_wilder", "ema", "macd", "rolling_zscore"}:
-                _raise(
-                    f"$.strategy_spec.features[{index}].primitive",
-                    f"kline.primary passthrough feature cannot use {primitive}: "
-                    "its seed is always unresolved for the array's first "
-                    "fetched row, so every run fails closed regardless of "
-                    "warmup_bars",
-                    code=ERR_SPEC_UNSUPPORTED,
-                    actual=primitive,
-                )
+            # History primitives seed off the primary array's first fetched
+            # row, so build_frames leaves them unset on the first
+            # warmup_bars rows (warmup frames, never decided on) and requires
+            # a value from the first decision frame on. The primary
+            # requirement's warmup_bars must therefore cover the primitive's
+            # own lookback; rsi_wilder's stricter 10x period floor is
+            # enforced by _validate_rsi_warmup against the same requirement.
+            if primitive in {"ema", "macd", "rolling_zscore"}:
+                lookback = primitive_lookback_bars(primitive, params)
+                if primary_requirement["warmup_bars"] < lookback:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements"
+                        f"[{primary_requirement['stream_id']}].warmup_bars",
+                        "primary K-line warmup_bars must cover the "
+                        f"kline.primary passthrough {primitive} primitive's "
+                        "lookback",
+                        required=lookback,
+                        actual=primary_requirement["warmup_bars"],
+                    )
             if (
                 primitive in {"rolling_sum", "rolling_extreme"}
                 and params["window_bars"] != 1
@@ -1782,6 +1827,10 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
         "coverage_schemas": ["cutie.strategy_coverage_manifest.v1"],
         "trace_schemas": ["cutie.strategy_execution_trace.v1"],
         "evidence_schemas": ["cutie.strategy_execution_evidence.v1"],
+        # JES21-B3b 二期 K1b: exit.stop_loss / exit.take_profit may be null
+        # (that exit is not armed) as long as a signal_exit or time_exit_bars
+        # remains.
+        "exit_capabilities": [EXIT_CAPABILITY_NULLABLE_STOP_TAKE],
     }
 
 
@@ -1960,11 +2009,12 @@ def _validate_capability(capability: Any) -> None:
         "coverage_schemas",
         "trace_schemas",
         "evidence_schemas",
+        "exit_capabilities",
     ):
         _capability_string_array(
             obj[key],
             f"$.capability.{key}",
-            nonempty=key not in {"cost_models", "data_transforms"},
+            nonempty=key not in {"cost_models", "data_transforms", "exit_capabilities"},
         )
 
     operators = obj["operators"]
@@ -2231,6 +2281,17 @@ def compile_strategy(
     _validate_capability(capability)
     requirements = artifact_manifest["capability_requirements"]
     _check_capability(requirements, capability)
+    exit_spec = strategy_spec["exit"]
+    if (
+        exit_spec["stop_loss"] is None or exit_spec["take_profit"] is None
+    ) and EXIT_CAPABILITY_NULLABLE_STOP_TAKE not in capability["exit_capabilities"]:
+        _raise(
+            "$.strategy_spec.exit",
+            "null stop_loss / take_profit is not supported by this capability",
+            code=ERR_SPEC_UNSUPPORTED,
+            required=EXIT_CAPABILITY_NULLABLE_STOP_TAKE,
+            actual=capability["exit_capabilities"],
+        )
     if strategy_spec["execution"]["cost_model"]["funding"] == "included":
         _raise(
             "$.strategy_spec.execution.cost_model.funding",
@@ -3182,6 +3243,7 @@ def _recursive_series_v2(
 
 
 _RECURSIVE_PRIMITIVES_V2 = {"rsi_wilder", "ema", "macd"}
+_PASSTHROUGH_HISTORY_PRIMITIVES = {"rsi_wilder", "ema", "macd", "rolling_zscore"}
 
 
 def build_frames(
@@ -3217,6 +3279,12 @@ def build_frames(
         if item["execution_role"] == "primary_execution_kline"
     )
     primary_rows = data_streams[primary["stream_id"]]
+    # kline.primary passthrough history primitives seed off this array's
+    # first row: the first ``warmup_bars`` rows are warmup frames (strict
+    # coverage guarantees the replay array starts at least that far before
+    # execution_start_at; StrategyKernel.evaluate never decides on them), so
+    # an unresolved value there is left unset instead of failing the run.
+    passthrough_warmup_rows = primary["warmup_bars"]
     if not primary_rows:
         _raise(
             "$.data_streams",
@@ -3447,8 +3515,15 @@ def build_frames(
                 rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
                 anchor_ts = open_at
 
+            warmup_gap_allowed = (
+                passthrough
+                and feature["primitive"] in _PASSTHROUGH_HISTORY_PRIMITIVES
+                and row_index < passthrough_warmup_rows
+            )
             if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
                 point = rsi_series_cache[feature["key"]].get(anchor_ts)
+                if (point is None or point[0] is None) and warmup_gap_allowed:
+                    continue
                 if point is None or point[0] is None:
                     _raise(
                         error_path,
@@ -3462,6 +3537,8 @@ def build_frames(
                 outcome = _evaluate_windowed_primitive(
                     feature, rows_by_ts, ordered_timestamps, anchor_ts, step, error_path
                 )
+                if outcome is None and warmup_gap_allowed:
+                    continue
                 if outcome is None:
                     _raise(
                         error_path,
@@ -4021,43 +4098,61 @@ class StrategyKernel:
         rules = state.instrument_rules
         tick = Decimal(rules["price_tick"])
         exit_spec = self.plan.strategy_spec["exit"]
+        # A null stop_loss / take_profit means that exit is not armed
+        # (JES21-B3b 二期 IMPL §3.2); the validator guarantees r_multiple and
+        # risk_fraction never run without a stop.
         stop_rule = exit_spec["stop_loss"]
-        with localcontext(_DECIMAL_CONTEXT):
-            if stop_rule["model"] == "fixed_percent":
-                ratio = Decimal(stop_rule["value"])
-                raw_stop = entry_price * (1 - ratio if side == "long" else 1 + ratio)
-            else:
-                raw_stop = pending.stop_value
-        assert raw_stop is not None
-        stop_direction = "down" if side == "long" else "up"
-        stop = self._quantize(raw_stop, tick, stop_direction)
-        take_rule = exit_spec["take_profit"]
-        with localcontext(_DECIMAL_CONTEXT):
-            if take_rule["model"] == "fixed_percent":
-                ratio = Decimal(take_rule["value"])
-                raw_take = entry_price * (1 + ratio if side == "long" else 1 - ratio)
-            elif take_rule["model"] == "r_multiple":
-                distance = abs(entry_price - stop)
-                if distance <= 0:
-                    raise KernelExecutionError(
-                        ERR_SPEC_INVALID,
-                        "$.strategy_spec.exit.take_profit",
-                        "quantized 1R is zero",
+        stop: Optional[Decimal] = None
+        if stop_rule is not None:
+            with localcontext(_DECIMAL_CONTEXT):
+                if stop_rule["model"] == "fixed_percent":
+                    ratio = Decimal(stop_rule["value"])
+                    raw_stop = entry_price * (
+                        1 - ratio if side == "long" else 1 + ratio
                     )
-                multiple = Decimal(take_rule["value"])
-                raw_take = (
-                    entry_price + multiple * distance
-                    if side == "long"
-                    else entry_price - multiple * distance
-                )
-            else:
-                raw_take = pending.take_value
-        assert raw_take is not None
-        take_direction = "up" if side == "long" else "down"
-        take = self._quantize(raw_take, tick, take_direction)
-        if (side == "long" and not stop < entry_price < take) or (
-            side == "short" and not take < entry_price < stop
-        ):
+                else:
+                    raw_stop = pending.stop_value
+            assert raw_stop is not None
+            stop_direction = "down" if side == "long" else "up"
+            stop = self._quantize(raw_stop, tick, stop_direction)
+        take_rule = exit_spec["take_profit"]
+        take: Optional[Decimal] = None
+        if take_rule is not None:
+            with localcontext(_DECIMAL_CONTEXT):
+                if take_rule["model"] == "fixed_percent":
+                    ratio = Decimal(take_rule["value"])
+                    raw_take = entry_price * (
+                        1 + ratio if side == "long" else 1 - ratio
+                    )
+                elif take_rule["model"] == "r_multiple":
+                    assert stop is not None
+                    distance = abs(entry_price - stop)
+                    if distance <= 0:
+                        raise KernelExecutionError(
+                            ERR_SPEC_INVALID,
+                            "$.strategy_spec.exit.take_profit",
+                            "quantized 1R is zero",
+                        )
+                    multiple = Decimal(take_rule["value"])
+                    raw_take = (
+                        entry_price + multiple * distance
+                        if side == "long"
+                        else entry_price - multiple * distance
+                    )
+                else:
+                    raw_take = pending.take_value
+            assert raw_take is not None
+            take_direction = "up" if side == "long" else "down"
+            take = self._quantize(raw_take, tick, take_direction)
+        stop_wrong_side = stop is not None and (
+            (side == "long" and not stop < entry_price)
+            or (side == "short" and not entry_price < stop)
+        )
+        take_wrong_side = take is not None and (
+            (side == "long" and not entry_price < take)
+            or (side == "short" and not take < entry_price)
+        )
+        if stop_wrong_side or take_wrong_side:
             raise KernelExecutionError(
                 ERR_SPEC_INVALID,
                 "$.strategy_spec.exit",
@@ -4366,14 +4461,18 @@ class StrategyKernel:
                 self.plan.strategy_spec["entry"]["condition"], state, index
             ):
                 exit_spec = self.plan.strategy_spec["exit"]
+                stop_rule = exit_spec["stop_loss"]
+                take_rule = exit_spec["take_profit"]
                 stop_value = (
-                    self._value(exit_spec["stop_loss"]["value"], state, index)
-                    if exit_spec["stop_loss"]["model"] == "feature_expression"
+                    self._value(stop_rule["value"], state, index)
+                    if stop_rule is not None
+                    and stop_rule["model"] == "feature_expression"
                     else None
                 )
                 take_value = (
-                    self._value(exit_spec["take_profit"]["value"], state, index)
-                    if exit_spec["take_profit"]["model"] == "feature_expression"
+                    self._value(take_rule["value"], state, index)
+                    if take_rule is not None
+                    and take_rule["model"] == "feature_expression"
                     else None
                 )
                 state.pending_entry = PendingEntry(index, stop_value, take_value)
@@ -5413,6 +5512,7 @@ __all__ = [
     "ERR_COVERAGE_INCOMPLETE",
     "ERR_SPEC_INVALID",
     "ERR_SPEC_UNSUPPORTED",
+    "EXIT_CAPABILITY_NULLABLE_STOP_TAKE",
     "FeatureFrame",
     "KERNEL_STATE_SNAPSHOT_SCHEMA",
     "KernelExecutionError",

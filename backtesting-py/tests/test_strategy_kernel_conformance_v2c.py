@@ -72,7 +72,6 @@ from strategy_kernel import (  # noqa: E402
     _DECIMAL_CONTEXT,
     ERR_COVERAGE_INCOMPLETE,
     ERR_SPEC_INVALID,
-    ERR_SPEC_UNSUPPORTED,
     METRICS_SOURCE_STREAMS,
     FeatureFrame,
     StrategyContractError,
@@ -83,6 +82,7 @@ from strategy_kernel import (  # noqa: E402
     build_frames,
     capability_payload,
     compile_strategy,
+    primitive_lookback_bars,
 )
 
 
@@ -265,15 +265,28 @@ def test_new_primitives_compile_on_coarse_kline_and_gate_warmup(
         ("macd", {"fast": 3, "slow": 5, "signal": 3, "output": "line"}),
     ],
 )
-def test_new_primitives_rejected_on_kline_primary_passthrough(
+def test_new_primitives_on_kline_primary_passthrough_need_primary_warmup(
     primitive: str, params: dict
 ) -> None:
+    """K1b: a passthrough history primitive compiles once the primary
+    K-line's own warmup_bars covers its lookback, and is rejected below it."""
     spec = tsk.make_spec(features=[_kline_feature(primitive, params, "1h")])
     spec["market"]["timeframe"] = "1h"
     manifest = tkp._kline_primary_manifest(spec, requirement_interval="1h")
+    lookback = primitive_lookback_bars(primitive, params)
+    primary = next(
+        item
+        for item in manifest["data_requirements"]
+        if item["execution_role"] == "primary_execution_kline"
+    )
+    primary["warmup_bars"] = lookback - 1
     with pytest.raises(StrategyContractError) as caught:
         compile_strategy(spec, manifest, capability_payload(tsk.REVISION))
-    assert caught.value.code == ERR_SPEC_UNSUPPORTED
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert caught.value.required == lookback
+    primary["warmup_bars"] = lookback
+    plan = compile_strategy(spec, manifest, capability_payload(tsk.REVISION))
+    assert plan.feature_types[f"{primitive}_close"] == "decimal"
 
 
 @pytest.mark.parametrize(
