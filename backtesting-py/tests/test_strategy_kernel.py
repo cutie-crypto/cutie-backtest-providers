@@ -178,8 +178,8 @@ def make_manifest(spec: dict) -> dict:
     if spec["exit"]["signal_exit"] is not None:
         _collect_test_condition(spec["exit"]["signal_exit"], feature_types, operators)
     for field in ("stop_loss", "take_profit"):
-        rule = spec["exit"][field]
-        if rule["model"] == "feature_expression":
+        rule = spec["exit"].get(field)
+        if rule is not None and rule["model"] == "feature_expression":
             _infer_test_value(rule["value"], feature_types, operators)
     operators = _sorted_unique_objects(
         operators,
