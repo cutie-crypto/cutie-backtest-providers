@@ -25,11 +25,8 @@ import test_strategy_kernel as tsk  # noqa: E402
 import test_strategy_kernel_primitives as tkp  # noqa: E402
 from canonical_json import canonical_json_sha256  # noqa: E402
 from strategy_kernel import (  # noqa: E402
-    ERR_CAPABILITY_MISMATCH,
     ERR_COVERAGE_INCOMPLETE,
     ERR_SPEC_INVALID,
-    ERR_SPEC_UNSUPPORTED,
-    EXIT_CAPABILITY_NULLABLE_STOP_TAKE,
     CompiledPlan,
     StrategyContractError,
     build_frames,
@@ -279,22 +276,26 @@ def test_risk_fraction_sizing_needs_a_stop() -> None:
     assert caught.value.path == "$.strategy_spec.risk.position_sizing.model"
 
 
-def test_null_exit_requires_the_declared_capability() -> None:
-    capability = capability_payload(tsk.REVISION)
-    assert capability["exit_capabilities"] == [EXIT_CAPABILITY_NULLABLE_STOP_TAKE]
-    capability["exit_capabilities"] = []
-    spec = _null_spec(time_exit_bars=3)
-    with pytest.raises(StrategyContractError) as caught:
-        compile_strategy(spec, tsk.make_manifest(spec), capability)
-    assert caught.value.code == ERR_SPEC_UNSUPPORTED
-    # A spec with both exits set does not need it.
-    full = tsk.make_spec()
-    compile_strategy(full, tsk.make_manifest(full), capability)
-    # The key itself is part of the capability exact-set.
-    del capability["exit_capabilities"]
-    with pytest.raises(StrategyContractError) as caught:
-        compile_strategy(full, tsk.make_manifest(full), capability)
-    assert caught.value.code == ERR_CAPABILITY_MISMATCH
+def test_capability_payload_top_level_keys_are_exact() -> None:
+    # 下游（服务端 utils/strategy_execution_contract.py 与已发 connector）对
+    # 能力顶层键做精确匹配：任何新增顶层键都会让服务端与已发 connector 全部拒收
+    # （unknown=[...]），因此本集合必须冻结，不得增删。
+    assert set(capability_payload(tsk.REVISION)) == {
+        "schema",
+        "provider_revision",
+        "spec_schemas",
+        "kernel_api_versions",
+        "execution_modes",
+        "operators",
+        "feature_primitives",
+        "data_sources",
+        "cost_models",
+        "data_transforms",
+        "result_schemas",
+        "coverage_schemas",
+        "trace_schemas",
+        "evidence_schemas",
+    }
 
 
 def test_both_null_time_exit_closes_on_time() -> None:

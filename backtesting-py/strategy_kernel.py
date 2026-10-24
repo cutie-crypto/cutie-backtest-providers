@@ -47,7 +47,6 @@ STRATEGY_SPEC_V3_SCHEMA = "cutie.strategy_spec.v3"
 
 ERR_SPEC_INVALID = "ERR_STRATEGY_SPEC_INVALID"
 ERR_SPEC_UNSUPPORTED = "ERR_STRATEGY_SPEC_UNSUPPORTED"
-EXIT_CAPABILITY_NULLABLE_STOP_TAKE = "nullable_stop_take"
 ERR_CAPABILITY_MISMATCH = "ERR_STRATEGY_CAPABILITY_MISMATCH"
 ERR_COVERAGE_INCOMPLETE = "ERR_STRATEGY_COVERAGE_INCOMPLETE"
 ERR_BINDING_MISMATCH = "ERR_STRATEGY_EXECUTION_BINDING_MISMATCH"
@@ -276,7 +275,6 @@ _CAPABILITY_KEYS = {
     "coverage_schemas",
     "trace_schemas",
     "evidence_schemas",
-    "exit_capabilities",
 }
 
 
@@ -1827,10 +1825,6 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
         "coverage_schemas": ["cutie.strategy_coverage_manifest.v1"],
         "trace_schemas": ["cutie.strategy_execution_trace.v1"],
         "evidence_schemas": ["cutie.strategy_execution_evidence.v1"],
-        # JES21-B3b 二期 K1b: exit.stop_loss / exit.take_profit may be null
-        # (that exit is not armed) as long as a signal_exit or time_exit_bars
-        # remains.
-        "exit_capabilities": [EXIT_CAPABILITY_NULLABLE_STOP_TAKE],
     }
 
 
@@ -2009,12 +2003,11 @@ def _validate_capability(capability: Any) -> None:
         "coverage_schemas",
         "trace_schemas",
         "evidence_schemas",
-        "exit_capabilities",
     ):
         _capability_string_array(
             obj[key],
             f"$.capability.{key}",
-            nonempty=key not in {"cost_models", "data_transforms", "exit_capabilities"},
+            nonempty=key not in {"cost_models", "data_transforms"},
         )
 
     operators = obj["operators"]
@@ -2281,17 +2274,6 @@ def compile_strategy(
     _validate_capability(capability)
     requirements = artifact_manifest["capability_requirements"]
     _check_capability(requirements, capability)
-    exit_spec = strategy_spec["exit"]
-    if (
-        exit_spec["stop_loss"] is None or exit_spec["take_profit"] is None
-    ) and EXIT_CAPABILITY_NULLABLE_STOP_TAKE not in capability["exit_capabilities"]:
-        _raise(
-            "$.strategy_spec.exit",
-            "null stop_loss / take_profit is not supported by this capability",
-            code=ERR_SPEC_UNSUPPORTED,
-            required=EXIT_CAPABILITY_NULLABLE_STOP_TAKE,
-            actual=capability["exit_capabilities"],
-        )
     if strategy_spec["execution"]["cost_model"]["funding"] == "included":
         _raise(
             "$.strategy_spec.execution.cost_model.funding",
@@ -5512,7 +5494,6 @@ __all__ = [
     "ERR_COVERAGE_INCOMPLETE",
     "ERR_SPEC_INVALID",
     "ERR_SPEC_UNSUPPORTED",
-    "EXIT_CAPABILITY_NULLABLE_STOP_TAKE",
     "FeatureFrame",
     "KERNEL_STATE_SNAPSHOT_SCHEMA",
     "KernelExecutionError",
