@@ -116,6 +116,7 @@ from strategy_kernel import (
     initial_state,
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
+    metrics_stream_parts,
     ohlcv_resample,
     sample_equity_curve,
     simulate,
@@ -1602,12 +1603,16 @@ def _fetch_artifact_metric_chunk(
     symbol: str,
     metric: str,
     interval: str,
-    exchange: str,
+    exchange: Optional[str],
     start_at: int,
     end_at: int,
     raise_on_transport_error: bool = False,
 ) -> list[dict[str, Any]]:
     """One inclusive ``/metrics`` request; every label is sent verbatim (P1).
+
+    ``exchange=None`` (``metrics.*`` streams, JES21-B3b 二期) omits the query
+    key so the center resolves the family's exchange; every other caller
+    sends exactly the pre-existing query.
 
     The caller owns label normalisation (quote-suffix stripping, exchange
     casing): the artifact path passes its historical values, the fear & greed
@@ -1630,6 +1635,8 @@ def _fetch_artifact_metric_chunk(
         "end_ts": end_at,
         "limit": 5000,
     }
+    if exchange is None:
+        del params["exchange"]
     url = f"{CENTRAL_MARKET_DATA_URL}/metrics?{urllib.parse.urlencode(params)}"
     request = urllib.request.Request(
         url,
@@ -1706,6 +1713,25 @@ def _fetch_artifact_features(
             f"$.artifact_manifest.data_requirements.{requirement['stream_id']}",
             "feature requirement does not bind a StrategySpec feature",
         )
+    metrics_parts = metrics_stream_parts(feature["source_stream"])
+    if metrics_parts is not None:
+        # JES21-B3b 二期 IMPL §3.4: the scope lives in the stream name; no
+        # exchange is sent so the central /metrics resolves it per family.
+        scope, metric = metrics_parts
+        scoped_symbol = {
+            "self": re.sub(r"(?:USDT|USDC|BUSD)$", "", symbol.upper()),
+            "market": "MARKET",
+            "btc": "BTC",
+            "eth": "ETH",
+        }[scope]
+        return _fetch_metric_series(
+            symbol=scoped_symbol,
+            exchange=None,
+            metric=metric,
+            interval=requirement["interval"],
+            start_at=start_at,
+            end_at=end_at,
+        )
     metric = feature["source_stream"].split(".", 1)[1]
     exchange = (
         "AGGREGATED"
@@ -1727,7 +1753,7 @@ def _fetch_artifact_features(
 def _fetch_metric_series(
     *,
     symbol: str,
-    exchange: str,
+    exchange: Optional[str],
     metric: str,
     interval: str,
     start_at: int,
