@@ -713,6 +713,7 @@ def test_feature_expression_prices_are_frozen_on_the_signal_frame():
         ("fixed_notional", "1000", "10"),
         ("fixed_margin", "1000", "20"),
         ("risk_fraction", "0.1", "200"),
+        ("equity_fraction", "0.5", "100"),
     ],
 )
 def test_sizing_models_are_deterministic(model: str, value: str, expected_qty: str):

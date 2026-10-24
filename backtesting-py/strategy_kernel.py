@@ -1115,7 +1115,12 @@ def _validate_spec(
         {"model", "value"},
         "$.strategy_spec.risk.position_sizing",
     )
-    if sizing["model"] not in {"fixed_notional", "fixed_margin", "risk_fraction"}:
+    if sizing["model"] not in {
+        "fixed_notional",
+        "fixed_margin",
+        "equity_fraction",
+        "risk_fraction",
+    }:
         _raise(
             "$.strategy_spec.risk.position_sizing.model",
             "unsupported model",
@@ -1124,9 +1129,10 @@ def _validate_spec(
     sizing_value = _canonical_decimal(
         sizing["value"], "$.strategy_spec.risk.position_sizing.value", positive=True
     )
-    if sizing["model"] == "risk_fraction" and sizing_value > 1:
+    if sizing["model"] in {"risk_fraction", "equity_fraction"} and sizing_value > 1:
         _raise(
-            "$.strategy_spec.risk.position_sizing.value", "risk_fraction must be <= 1"
+            "$.strategy_spec.risk.position_sizing.value",
+            f"{sizing['model']} must be <= 1",
         )
     if sizing["model"] == "risk_fraction" and exit_spec["stop_loss"] is None:
         _raise(
@@ -4264,6 +4270,11 @@ class StrategyKernel:
                     raw_qty = ctx.divide(value, entry_price)
                 elif sizing["model"] == "fixed_margin":
                     raw_qty = ctx.divide(ctx.multiply(value, leverage), entry_price)
+                elif sizing["model"] == "equity_fraction":
+                    margin_budget = ctx.multiply(state.equity, value)
+                    raw_qty = ctx.divide(
+                        ctx.multiply(margin_budget, leverage), entry_price
+                    )
                 else:
                     risk_budget = ctx.multiply(state.equity, value)
                     risk_distance = ctx.abs(ctx.subtract(entry_price, stop))
