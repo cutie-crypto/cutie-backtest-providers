@@ -93,7 +93,7 @@ def test_no_catalog_schema_publishes_the_keys_outside_the_whitelist(monkeypatch)
     # templates are wired, plus the 9 of P-PATCONF-2b2; the other 5 stay unpublished.
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     tools = TestClient(p.app).get('/catalog').json()['tools']
-    assert len(tools) == 72  # pin9: main 70 + C39 +1 + C52 +1
+    assert len(tools) == 73  # pin9: main 70 + C39 +1 + C52 +1 + K2 condition_kernel
     published = set()
     for tool in tools:
         keys = set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(tool['param_schema']['properties'])

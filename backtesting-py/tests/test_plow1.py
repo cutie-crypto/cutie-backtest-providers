@@ -157,16 +157,23 @@ EARLIER_GATE = {'macd_bearish_divergence': 'bearish divergence requires futures 
 
 def test_futures_only_set_is_the_registered_contract():
     # SHORT-PAT-4 adds the three bearish candle patterns => eight; SHORT-PAT-5 crows / bearish doji => ten.
-    assert FUTURES_ONLY == ['bearish_doji_reversal', 'bearish_engulfing', 'chan_3sell', 'double_top', 'evening_star', 'fomc_reversal',
-                            'funding_settlement_reversal', 'head_shoulders', 'macd_bearish_divergence', 'rsi_bearish_divergence', 'shooting_star',
-                            'three_black_crows', 'token_unlock_event']  # C39 +1
+    assert FUTURES_ONLY == ['bearish_doji_reversal', 'bearish_engulfing', 'chan_3sell', 'condition_kernel', 'double_top',
+                            'evening_star', 'fomc_reversal', 'funding_settlement_reversal', 'head_shoulders',
+                            'macd_bearish_divergence', 'rsi_bearish_divergence', 'shooting_star', 'three_black_crows',
+                            'token_unlock_event']  # C39 +1, K2 +1
 
 
 @pytest.mark.parametrize('name', FUTURES_ONLY)
 def test_futures_only_template_spot_rejected_before_fetch(name, monkeypatch, tmp_path):
     body, calls = _post_without_fetch(monkeypatch, tmp_path, name, {}, market='spot')
-    assert body['result_status'] == 'failed' and body['error_type'] == 'INVALID_PARAMS'
-    assert body['error_message'] == EARLIER_GATE.get(name, 'this template requires futures market')
+    if name == 'condition_kernel':
+        # K2：condition_kernel 在 Decimal v2 内核的取数前现货门被拒（spot 结果源未接），用
+        # MARKET_UNSUPPORTED 报文而非通用 INVALID_PARAMS；同样的“取数前拒绝”不变量成立。
+        assert body['result_status'] == 'failed' and body['error_type'] == 'MARKET_UNSUPPORTED'
+        assert 'spot' in body['error_message']
+    else:
+        assert body['result_status'] == 'failed' and body['error_type'] == 'INVALID_PARAMS'
+        assert body['error_message'] == EARLIER_GATE.get(name, 'this template requires futures market')
     assert 'top pattern' not in body['error_message']
     assert calls == []
 

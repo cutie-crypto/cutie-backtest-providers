@@ -10874,6 +10874,16 @@ def _condition_kernel_response(
     }
     params = request["execution_params"]
     trade_count = result_v2["metrics"]["trade_count"]
+    trades_v2 = result_v2["trades"]
+    wins = sum(1 for trade in trades_v2 if Decimal(trade["pnl"]) > 0)
+    # PIN7-E / P6：v2 内核的每笔成交都已在末根收盘结算，summary（总收益 / 胜率）必须等于逐笔盈亏和；
+    # raw_report.trade_exit_kinds 也必须逐笔对齐，与 Backtesting.py 引擎模板同形。
+    legacy_metrics = {
+        "total_return_pct": round(float(Decimal(result_v2["metrics"]["total_return"]) * 100), 2),
+        "win_rate_pct": round(wins / trade_count * 100, 2) if trade_count else 0.0,
+        "max_drawdown_pct": round(abs(float(Decimal(result_v2["metrics"]["max_drawdown"]) * 100)), 2),
+        "trade_count": trade_count,
+    }
     provider_summary = (
         f"condition_kernel on {params['symbol']} {params['timeframe']} ({params['market']}), "
         f"{data_manifest['source']}, {trade_count} trades, total_return {result_v2['metrics']['total_return']}"
@@ -10927,6 +10937,8 @@ def _condition_kernel_response(
             "diagnostics": simulation.get("diagnostics", []),
             "coverage_manifest": coverage,
             "coverage_manifest_hash": canonical_json_sha256(coverage),
+            "legacy_metrics": legacy_metrics,
+            **_trade_exit_kinds_report(trades_v2, [trade["exit_kind"] for trade in simulation["trace_trades"]]),
             "market_data_provenance": {
                 "provider_revision": PROVIDER_REVISION,
                 "source": data_manifest["source"],

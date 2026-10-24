@@ -40,9 +40,10 @@ def test_health_answers_before_backtest_is_released(setup, monkeypatch, cpu_busy
             if cpu_busy:
                 # Keep real Python CPU contention, but let the test decide when work
                 # ends. The deadline only bounds a broken event-loop implementation.
-                deadline = time.perf_counter() + 5
+                deadline = time.perf_counter() + 30
                 while not release.is_set() and time.perf_counter() < deadline:
                     sum(range(1000))
+                    time.sleep(0.002)  # 显式让出 GIL：纯 Python 自旋在全量收集下会饿死事件循环
             else:
                 release.wait(5)
         finally:

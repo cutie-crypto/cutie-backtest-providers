@@ -38,6 +38,7 @@ import test_etf_flow_follow_38 as etf38
 
 import test_exchange_netflow_52 as nf52
 import test_short_pat4_candles as short_candles
+import test_condition_kernel_tool as ckt
 
 PREFIX = 'local.backtesting_py.'
 V2_KEYS = {'seq', 'opened_at', 'closed_at', 'side', 'qty', 'entry_price', 'exit_price', 'fee', 'slippage', 'pnl'}
@@ -104,8 +105,28 @@ def unlock_run(mp, tmp):
     return post(mp, tmp)
 
 
+def condition_kernel_run(mp, tmp):
+    """K2：condition_kernel 走 Decimal v2 内核（自带 strategy_spec / data_requirements），
+    不复用 p6.post 的 Backtesting.py 取数钩子，故单独注入中心行情与 metric 桩。"""
+    mp.setattr(p, 'PROVIDER_REVISION', ckt.tsk.REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        rows = []
+        for ts in range(start_ms // 1000, end_ms // 1000, ckt.HOUR):
+            close = ckt._close_at(ts)
+            rows.append([ts * 1000, close, close + 1, close - 1, close, 1])
+        return rows
+
+    mp.setattr(p, '_fetch_from_central', fetch_klines)
+    mp.setattr(p, '_fetch_artifact_metric_chunk', lambda **kw: [])
+    envelope = ckt._envelope(ckt._rsi_spec(), [ckt._primary_requirement(20)])
+    envelope['backtest']['run_id'] = 'p6'
+    return TestClient(p.app).post('/cutie/backtest', json=envelope).json()
+
+
 SPECIAL = {
     'token_unlock_event': unlock_run,  # C39 +1: required inline events / exact UTC windows.
+    'condition_kernel': condition_kernel_run,  # K2: Decimal v2 kernel, its own params/data hooks.
 
     **{name: via(c2d) for name in c2d.NAMES},
     **{name: via(c2c) for name in ('morning_star', 'three_white_soldiers', 'bullish_doji_reversal')},
