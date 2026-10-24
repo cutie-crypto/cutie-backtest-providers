@@ -1110,9 +1110,13 @@ def _validate_spec(
         {"position_sizing", "max_open_positions", "allow_pyramiding", "leverage"},
         "$.strategy_spec.risk",
     )
+    sizing_source = risk["position_sizing"]
+    sizing_keys = {"model", "value"}
+    if isinstance(sizing_source, dict) and "basis" in sizing_source:
+        sizing_keys = {"model", "value", "basis"}
     sizing = _exact(
-        risk["position_sizing"],
-        {"model", "value"},
+        sizing_source,
+        sizing_keys,
         "$.strategy_spec.risk.position_sizing",
     )
     if sizing["model"] not in {
@@ -1134,6 +1138,19 @@ def _validate_spec(
             "$.strategy_spec.risk.position_sizing.value",
             f"{sizing['model']} must be <= 1",
         )
+    if "basis" in sizing:
+        if sizing["model"] != "risk_fraction":
+            _raise(
+                "$.strategy_spec.risk.position_sizing.basis",
+                "basis is only supported for risk_fraction",
+                actual=sizing["model"],
+            )
+        if sizing["basis"] not in {"equity", "initial"}:
+            _raise(
+                "$.strategy_spec.risk.position_sizing.basis",
+                "unsupported basis",
+                actual=sizing["basis"],
+            )
     if sizing["model"] == "risk_fraction" and exit_spec["stop_loss"] is None:
         _raise(
             "$.strategy_spec.risk.position_sizing.model",
@@ -4276,7 +4293,12 @@ class StrategyKernel:
                         ctx.multiply(margin_budget, leverage), entry_price
                     )
                 else:
-                    risk_budget = ctx.multiply(state.equity, value)
+                    basis_equity = (
+                        state.initial_capital
+                        if sizing.get("basis") == "initial"
+                        else state.equity
+                    )
+                    risk_budget = ctx.multiply(basis_equity, value)
                     risk_distance = ctx.abs(ctx.subtract(entry_price, stop))
                     raw_qty = ctx.divide(risk_budget, risk_distance)
                 step = Decimal(state.instrument_rules["qty_step"])
