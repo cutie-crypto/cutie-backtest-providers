@@ -209,7 +209,8 @@ def test_capability_payload_never_mentions_v3():
     payload_text = json.dumps(payload)
     assert "cutie.strategy_spec.v3" not in payload_text
     assert "cutie.backtest_result.v3" not in payload_text
-    assert "rolling_zscore" not in payload_text
+    # rolling_zscore is a v2 primitive since JES21-B3b 二期 K1; v3 families stay out.
+    assert "basket_ratio" not in payload_text
 
 
 # ---------------------------------------------------------------------------
