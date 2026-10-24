@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 import anyio
 import numpy as np
 import pandas as pd
-from canonical_json import canonical_decimal_str, canonical_json_sha256
+from canonical_json import canonical_decimal_str, canonical_json, canonical_json_sha256
 from strategy_liquidation_evidence import compress_hourly_evidence
 from strategy_time_layer import (
     TimeConfig, TimeContext, TimeDataGapError, fixed_timeframe_milliseconds,
@@ -99,6 +99,8 @@ from strategy_execution import (
     validate_paper_tick_request,
 )
 from strategy_kernel import (
+    ARTIFACT_DIGEST_SCHEMA,
+    ARTIFACT_MANIFEST_SCHEMA,
     COMPILER_TOOL_ID,
     ERR_CAPABILITY_MISMATCH,
     ERR_COVERAGE_INCOMPLETE,
@@ -112,6 +114,7 @@ from strategy_kernel import (
     capability_hash,
     capability_payload,
     compile_strategy_v3,
+    derive_capability_requirements,
     from_snapshot,
     in_decimal128,
     initial_state,
@@ -1939,6 +1942,270 @@ def _derive_kline_primary_feature_rows(
     ]
 
 
+def _replay_validated_artifact(
+    validated: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Fetch every declared stream, build coverage + frames and simulate one
+    validated v2 historical_replay request; returns (simulation, data_manifest,
+    coverage_manifest). Shared by the immutable-artifact path below and the
+    B3b ``condition_kernel`` tool; raises StrategyContractError /
+    KernelExecutionError fail closed (callers map them)."""
+    request = validated.request
+    params = request["execution_params"]
+    state = initial_state(validated.plan, params)
+    symbol = params["symbol"]
+    data_streams: dict[str, list[dict[str, Any]]] = {}
+    coverage_inputs: list[CoverageInput] = []
+    requirements = request["artifact_manifest"]["data_requirements"]
+    primary_requirement = next(
+        (
+            item
+            for item in requirements
+            if item["execution_role"] == "primary_execution_kline"
+        ),
+        None,
+    )
+    if primary_requirement is None:
+        raise StrategyContractError(
+            ERR_COVERAGE_INCOMPLETE, "$.data_streams", "primary K-line is missing"
+        )
+    # Primary is always fetched first (regardless of data_requirements
+    # order), and exactly once: §5.5 coarse kline.primary.<field> feature
+    # requirements below are derived from it locally via ohlcv_resample,
+    # never independently fetched, so the one fetch here is widened up
+    # front to a union range covering every derived requirement's own
+    # resample-source need too — a second, separate fetch for derivation
+    # could race a live central source against this one and resample
+    # from data the decision frames never actually saw, pinning a
+    # coverage revision (build_coverage_manifest's `primary_item.revision`,
+    # inherited verbatim onto every derived stream) that would not be
+    # true.
+    primary_step_seconds = (
+        _timeframe_milliseconds(primary_requirement["interval"]) // 1000
+    )
+    # The kernel resolves every feature lag as a *frames index* offset
+    # (StrategyKernel._value: frames[index - lag_bars]) and frames are
+    # built from the primary rows -- so the primary warmup must supply at
+    # least max_primary_lag_frames of history (cross operands need one
+    # more, see strategy_execution.max_primary_lag_frames) or a lag
+    # reference inside the first frames dies with "required lagged
+    # feature is missing" even though the lagged stream's own data was
+    # fetched (S20 golden replay 2026-07-17: primary warmup_bars=0 + cvd
+    # lag 6 -- runs whose first frames happened to short-circuit the
+    # condition passed by market luck, earlier windows failed
+    # deterministically).
+    lag_frames = max_primary_lag_frames(request["strategy_spec"])
+    declared_warmup_start = max(
+        0,
+        params["start_at"] - primary_requirement["warmup_bars"] * primary_step_seconds,
+    )
+    primary_warmup_start = max(
+        0,
+        params["start_at"]
+        - max(primary_requirement["warmup_bars"], lag_frames) * primary_step_seconds,
+    )
+    # Frames history floor for every non-primary stream too: the warmup
+    # frames the lag extension adds still need each feature's as-of value
+    # (Phase 1 review Codex HIGH-2 -- a feature whose own declared warmup
+    # is shorter than the spec's max lag left those frames without the
+    # key and the lag reference died anyway).
+    lag_history_start = max(0, params["start_at"] - lag_frames * primary_step_seconds)
+    primary_fetch_start = primary_warmup_start
+    for requirement in requirements:
+        if requirement is primary_requirement:
+            continue
+        if _kline_primary_field_for_requirement(
+            requirement, request["strategy_spec"]
+        ) is None:
+            continue
+        derived_step = _timeframe_milliseconds(requirement["interval"]) // 1000
+        derived_warmup_start = kline_primary_bucket_required_start(
+            params["start_at"], requirement["warmup_bars"], derived_step
+        )
+        primary_fetch_start = min(
+            primary_fetch_start,
+            _kline_primary_resample_source_start(derived_warmup_start, derived_step),
+        )
+    primary_fetch_rows = _fetch_artifact_klines(
+        primary_requirement, symbol, primary_fetch_start, params["end_at"]
+    )
+    # Frames get the lag-extended slice (primary_warmup_start); the
+    # coverage report keeps the manifest-declared warmup slice -- the
+    # coverage contract check demands point_count exactly equal to the
+    # declared aligned range, and the lag extension is a kernel-internal
+    # frames-history need, not a change to the declared data requirement.
+    primary_rows = [
+        row
+        for row in primary_fetch_rows
+        if primary_warmup_start <= row["open_time"] < params["end_at"]
+    ]
+    declared_rows = [
+        row for row in primary_rows if row["open_time"] >= declared_warmup_start
+    ]
+    data_streams[primary_requirement["stream_id"]] = primary_rows
+    # The revision every kline.primary.* derived stream inherits must
+    # reflect the exact rows resampled into its buckets — the full union
+    # fetch, not just the decision-frame slice — or golden_replay would
+    # pin a revision that does not correspond to the real derived data
+    # (§7.4 "revision/checksum 固定").
+    primary_fetch_checksum = canonical_json_sha256(primary_fetch_rows)
+    coverage_inputs.append(
+        CoverageInput(
+            requirement=primary_requirement,
+            checksum=primary_fetch_checksum,
+            revision=primary_fetch_checksum,
+            point_count=len(declared_rows),
+            actual_start_at=declared_rows[0]["open_time"],
+            actual_end_at=primary_rows[-1]["open_time"],
+            available_through=primary_rows[-1]["open_time"] + primary_step_seconds,
+        )
+    )
+    for requirement in requirements:
+        if requirement is primary_requirement:
+            continue
+        requirement_step = _timeframe_milliseconds(requirement["interval"]) // 1000
+        kline_primary_field = _kline_primary_field_for_requirement(
+            requirement, request["strategy_spec"]
+        )
+        if kline_primary_field is not None:
+            # Bucket-aligned: see kline_primary_bucket_required_start.
+            # An unaligned start_at - warmup_bars*step can land inside a
+            # bucket a decision frame needs in full, truncating it.
+            warmup_start = kline_primary_bucket_required_start(
+                params["start_at"], requirement["warmup_bars"], requirement_step
+            )
+        else:
+            warmup_start = max(
+                0, params["start_at"] - requirement["warmup_bars"] * requirement_step
+            )
+        # Feature streams also serve the lag-extension warmup frames
+        # (Codex HIGH-2): fetch back to the lag history floor when the
+        # declared warmup is shorter, but keep the coverage report on the
+        # declared slice (same declared-vs-frames split as the primary).
+        # Two carve-outs stay on their declared window (Kimi Phase 1
+        # high-2b, anchor stability): kline.primary-derived streams and
+        # any stream bound to a recursively-anchored primitive
+        # (rsi_wilder seeds off its fetch-window start, SPEC §7.3 --
+        # widening the fetch would silently shift every RSI value and
+        # flip golden verdicts across deployments). A shallow-warmup
+        # stream referenced at deeper lag then still dies fail-closed at
+        # runtime; the compile-time warmup>=lag floor (BACKLOG, SPEC:722
+        # "另计 lag_bars") is the contract-level fix.
+        fetch_start = warmup_start
+        if requirement["kind"] != "kline" and kline_primary_field is None:
+            # any() semantics (final review Kimi medium-2): one
+            # requirement can back several spec features (same
+            # source_stream+interval, different primitives) -- if ANY of
+            # them is recursively anchored, widening the shared fetch
+            # would shift that one's seed even though a sibling
+            # rolling_* feature would have been fine. rsi_wilder is the
+            # only recursively-seeded primitive in the catalog today.
+            recursively_anchored = any(
+                item["primitive"] == "rsi_wilder"
+                for item in request["strategy_spec"]["features"]
+                if requirement["stream_id"].startswith(item["source_stream"] + ".")
+                and item["interval"] == requirement["interval"]
+            )
+            if not recursively_anchored:
+                fetch_start = min(warmup_start, lag_history_start)
+        if kline_primary_field is not None:
+            rows = _derive_kline_primary_feature_rows(
+                primary_fetch_rows,
+                primary_step_seconds,
+                primary_fetch_checksum,
+                requirement,
+                kline_primary_field,
+                fetch_start,
+                params["end_at"],
+            )
+        elif requirement["kind"] == "kline":
+            rows = _fetch_artifact_klines(
+                requirement,
+                symbol,
+                fetch_start,
+                params["end_at"],
+            )
+        else:
+            # K1d: a metrics.* as-of stream is fetched on its own bucket
+            # grid -- from the earlier of its declared (aligned) warmup
+            # and the first primary frame's as-of point, up to the last
+            # bucket the final decision frame can read -- and its
+            # coverage slice starts at the aligned declared start.
+            fetch_end = params["end_at"]
+            metrics_window = metrics_asof_fetch_window(
+                request["strategy_spec"],
+                requirement,
+                params["start_at"],
+                params["end_at"],
+                primary_warmup_start,
+            )
+            if metrics_window is not None:
+                warmup_start, fetch_start, fetch_end = metrics_window
+            rows = _fetch_artifact_features(
+                requirement,
+                request["strategy_spec"],
+                symbol,
+                fetch_start,
+                fetch_end,
+            )
+        data_streams[requirement["stream_id"]] = rows
+        checksum = canonical_json_sha256(rows)
+        timestamp_key = "open_time" if requirement["kind"] == "kline" else "ts"
+        declared_slice = [row for row in rows if row[timestamp_key] >= warmup_start]
+        if not declared_slice:
+            raise StrategyContractError(
+                ERR_COVERAGE_INCOMPLETE,
+                f"$.coverage.{requirement['stream_id']}",
+                "stream returned no rows inside its declared warmup range",
+            )
+        coverage_inputs.append(
+            CoverageInput(
+                requirement=requirement,
+                checksum=checksum,
+                revision=checksum,
+                point_count=len(declared_slice),
+                actual_start_at=declared_slice[0][timestamp_key],
+                actual_end_at=rows[-1][timestamp_key],
+                available_through=rows[-1][timestamp_key]
+                + _timeframe_milliseconds(requirement["interval"]) // 1000,
+            )
+        )
+    expected_source = _CENTRAL_MARKET_SOURCES.get(primary_requirement["market"])
+    if primary_requirement["result_source"] != expected_source:
+        raise StrategyContractError(
+            ERR_COVERAGE_INCOMPLETE,
+            "$.artifact_manifest.data_requirements.primary.result_source",
+            "declared result source differs from the actual central adapter",
+            required=expected_source,
+            actual=primary_requirement["result_source"],
+        )
+    # SPEC §7.5: result.v2 data_manifest proves the evaluation window only;
+    # warmup_bars widens the fetch (above) so the kernel has lookback
+    # history, but must not widen the nine-key evidence the Connector
+    # cross-checks against coverage.actual_range for the primary stream.
+    primary_evaluation_rows = [
+        row
+        for row in primary_rows
+        if params["start_at"] <= row["open_time"] < params["end_at"]
+    ]
+    primary_checksum = canonical_json_sha256(primary_evaluation_rows)
+    data_manifest = {
+        "source": primary_requirement["result_source"],
+        "symbol": symbol,
+        "market": params["market"],
+        "timeframe": params["timeframe"],
+        "start_at": params["start_at"],
+        "end_at": params["end_at"],
+        "kline_count": len(primary_evaluation_rows),
+        "checksum_algo": "sha256",
+        "checksum": primary_checksum,
+    }
+    coverage = build_coverage_manifest(request, coverage_inputs, data_manifest)
+    frames = build_frames(data_streams, coverage, validated.plan)
+    simulation = simulate(validated.plan, frames, state)
+    return simulation, data_manifest, coverage
+
+
 def _run_artifact_backtest(
     body: dict[str, Any],
     capability_pair: tuple[dict[str, Any], str],
@@ -1956,258 +2223,7 @@ def _run_artifact_backtest(
             body, capability_pair[0], capability_pair[1]
         )
         request = validated.request
-        params = request["execution_params"]
-        state = initial_state(validated.plan, params)
-        symbol = params["symbol"]
-        data_streams: dict[str, list[dict[str, Any]]] = {}
-        coverage_inputs: list[CoverageInput] = []
-        requirements = request["artifact_manifest"]["data_requirements"]
-        primary_requirement = next(
-            (
-                item
-                for item in requirements
-                if item["execution_role"] == "primary_execution_kline"
-            ),
-            None,
-        )
-        if primary_requirement is None:
-            raise StrategyContractError(
-                ERR_COVERAGE_INCOMPLETE, "$.data_streams", "primary K-line is missing"
-            )
-        # Primary is always fetched first (regardless of data_requirements
-        # order), and exactly once: §5.5 coarse kline.primary.<field> feature
-        # requirements below are derived from it locally via ohlcv_resample,
-        # never independently fetched, so the one fetch here is widened up
-        # front to a union range covering every derived requirement's own
-        # resample-source need too — a second, separate fetch for derivation
-        # could race a live central source against this one and resample
-        # from data the decision frames never actually saw, pinning a
-        # coverage revision (build_coverage_manifest's `primary_item.revision`,
-        # inherited verbatim onto every derived stream) that would not be
-        # true.
-        primary_step_seconds = (
-            _timeframe_milliseconds(primary_requirement["interval"]) // 1000
-        )
-        # The kernel resolves every feature lag as a *frames index* offset
-        # (StrategyKernel._value: frames[index - lag_bars]) and frames are
-        # built from the primary rows -- so the primary warmup must supply at
-        # least max_primary_lag_frames of history (cross operands need one
-        # more, see strategy_execution.max_primary_lag_frames) or a lag
-        # reference inside the first frames dies with "required lagged
-        # feature is missing" even though the lagged stream's own data was
-        # fetched (S20 golden replay 2026-07-17: primary warmup_bars=0 + cvd
-        # lag 6 -- runs whose first frames happened to short-circuit the
-        # condition passed by market luck, earlier windows failed
-        # deterministically).
-        lag_frames = max_primary_lag_frames(request["strategy_spec"])
-        declared_warmup_start = max(
-            0,
-            params["start_at"] - primary_requirement["warmup_bars"] * primary_step_seconds,
-        )
-        primary_warmup_start = max(
-            0,
-            params["start_at"]
-            - max(primary_requirement["warmup_bars"], lag_frames) * primary_step_seconds,
-        )
-        # Frames history floor for every non-primary stream too: the warmup
-        # frames the lag extension adds still need each feature's as-of value
-        # (Phase 1 review Codex HIGH-2 -- a feature whose own declared warmup
-        # is shorter than the spec's max lag left those frames without the
-        # key and the lag reference died anyway).
-        lag_history_start = max(0, params["start_at"] - lag_frames * primary_step_seconds)
-        primary_fetch_start = primary_warmup_start
-        for requirement in requirements:
-            if requirement is primary_requirement:
-                continue
-            if _kline_primary_field_for_requirement(
-                requirement, request["strategy_spec"]
-            ) is None:
-                continue
-            derived_step = _timeframe_milliseconds(requirement["interval"]) // 1000
-            derived_warmup_start = kline_primary_bucket_required_start(
-                params["start_at"], requirement["warmup_bars"], derived_step
-            )
-            primary_fetch_start = min(
-                primary_fetch_start,
-                _kline_primary_resample_source_start(derived_warmup_start, derived_step),
-            )
-        primary_fetch_rows = _fetch_artifact_klines(
-            primary_requirement, symbol, primary_fetch_start, params["end_at"]
-        )
-        # Frames get the lag-extended slice (primary_warmup_start); the
-        # coverage report keeps the manifest-declared warmup slice -- the
-        # coverage contract check demands point_count exactly equal to the
-        # declared aligned range, and the lag extension is a kernel-internal
-        # frames-history need, not a change to the declared data requirement.
-        primary_rows = [
-            row
-            for row in primary_fetch_rows
-            if primary_warmup_start <= row["open_time"] < params["end_at"]
-        ]
-        declared_rows = [
-            row for row in primary_rows if row["open_time"] >= declared_warmup_start
-        ]
-        data_streams[primary_requirement["stream_id"]] = primary_rows
-        # The revision every kline.primary.* derived stream inherits must
-        # reflect the exact rows resampled into its buckets — the full union
-        # fetch, not just the decision-frame slice — or golden_replay would
-        # pin a revision that does not correspond to the real derived data
-        # (§7.4 "revision/checksum 固定").
-        primary_fetch_checksum = canonical_json_sha256(primary_fetch_rows)
-        coverage_inputs.append(
-            CoverageInput(
-                requirement=primary_requirement,
-                checksum=primary_fetch_checksum,
-                revision=primary_fetch_checksum,
-                point_count=len(declared_rows),
-                actual_start_at=declared_rows[0]["open_time"],
-                actual_end_at=primary_rows[-1]["open_time"],
-                available_through=primary_rows[-1]["open_time"] + primary_step_seconds,
-            )
-        )
-        for requirement in requirements:
-            if requirement is primary_requirement:
-                continue
-            requirement_step = _timeframe_milliseconds(requirement["interval"]) // 1000
-            kline_primary_field = _kline_primary_field_for_requirement(
-                requirement, request["strategy_spec"]
-            )
-            if kline_primary_field is not None:
-                # Bucket-aligned: see kline_primary_bucket_required_start.
-                # An unaligned start_at - warmup_bars*step can land inside a
-                # bucket a decision frame needs in full, truncating it.
-                warmup_start = kline_primary_bucket_required_start(
-                    params["start_at"], requirement["warmup_bars"], requirement_step
-                )
-            else:
-                warmup_start = max(
-                    0, params["start_at"] - requirement["warmup_bars"] * requirement_step
-                )
-            # Feature streams also serve the lag-extension warmup frames
-            # (Codex HIGH-2): fetch back to the lag history floor when the
-            # declared warmup is shorter, but keep the coverage report on the
-            # declared slice (same declared-vs-frames split as the primary).
-            # Two carve-outs stay on their declared window (Kimi Phase 1
-            # high-2b, anchor stability): kline.primary-derived streams and
-            # any stream bound to a recursively-anchored primitive
-            # (rsi_wilder seeds off its fetch-window start, SPEC §7.3 --
-            # widening the fetch would silently shift every RSI value and
-            # flip golden verdicts across deployments). A shallow-warmup
-            # stream referenced at deeper lag then still dies fail-closed at
-            # runtime; the compile-time warmup>=lag floor (BACKLOG, SPEC:722
-            # "另计 lag_bars") is the contract-level fix.
-            fetch_start = warmup_start
-            if requirement["kind"] != "kline" and kline_primary_field is None:
-                # any() semantics (final review Kimi medium-2): one
-                # requirement can back several spec features (same
-                # source_stream+interval, different primitives) -- if ANY of
-                # them is recursively anchored, widening the shared fetch
-                # would shift that one's seed even though a sibling
-                # rolling_* feature would have been fine. rsi_wilder is the
-                # only recursively-seeded primitive in the catalog today.
-                recursively_anchored = any(
-                    item["primitive"] == "rsi_wilder"
-                    for item in request["strategy_spec"]["features"]
-                    if requirement["stream_id"].startswith(item["source_stream"] + ".")
-                    and item["interval"] == requirement["interval"]
-                )
-                if not recursively_anchored:
-                    fetch_start = min(warmup_start, lag_history_start)
-            if kline_primary_field is not None:
-                rows = _derive_kline_primary_feature_rows(
-                    primary_fetch_rows,
-                    primary_step_seconds,
-                    primary_fetch_checksum,
-                    requirement,
-                    kline_primary_field,
-                    fetch_start,
-                    params["end_at"],
-                )
-            elif requirement["kind"] == "kline":
-                rows = _fetch_artifact_klines(
-                    requirement,
-                    symbol,
-                    fetch_start,
-                    params["end_at"],
-                )
-            else:
-                # K1d: a metrics.* as-of stream is fetched on its own bucket
-                # grid -- from the earlier of its declared (aligned) warmup
-                # and the first primary frame's as-of point, up to the last
-                # bucket the final decision frame can read -- and its
-                # coverage slice starts at the aligned declared start.
-                fetch_end = params["end_at"]
-                metrics_window = metrics_asof_fetch_window(
-                    request["strategy_spec"],
-                    requirement,
-                    params["start_at"],
-                    params["end_at"],
-                    primary_warmup_start,
-                )
-                if metrics_window is not None:
-                    warmup_start, fetch_start, fetch_end = metrics_window
-                rows = _fetch_artifact_features(
-                    requirement,
-                    request["strategy_spec"],
-                    symbol,
-                    fetch_start,
-                    fetch_end,
-                )
-            data_streams[requirement["stream_id"]] = rows
-            checksum = canonical_json_sha256(rows)
-            timestamp_key = "open_time" if requirement["kind"] == "kline" else "ts"
-            declared_slice = [row for row in rows if row[timestamp_key] >= warmup_start]
-            if not declared_slice:
-                raise StrategyContractError(
-                    ERR_COVERAGE_INCOMPLETE,
-                    f"$.coverage.{requirement['stream_id']}",
-                    "stream returned no rows inside its declared warmup range",
-                )
-            coverage_inputs.append(
-                CoverageInput(
-                    requirement=requirement,
-                    checksum=checksum,
-                    revision=checksum,
-                    point_count=len(declared_slice),
-                    actual_start_at=declared_slice[0][timestamp_key],
-                    actual_end_at=rows[-1][timestamp_key],
-                    available_through=rows[-1][timestamp_key]
-                    + _timeframe_milliseconds(requirement["interval"]) // 1000,
-                )
-            )
-        expected_source = _CENTRAL_MARKET_SOURCES.get(primary_requirement["market"])
-        if primary_requirement["result_source"] != expected_source:
-            raise StrategyContractError(
-                ERR_COVERAGE_INCOMPLETE,
-                "$.artifact_manifest.data_requirements.primary.result_source",
-                "declared result source differs from the actual central adapter",
-                required=expected_source,
-                actual=primary_requirement["result_source"],
-            )
-        # SPEC §7.5: result.v2 data_manifest proves the evaluation window only;
-        # warmup_bars widens the fetch (above) so the kernel has lookback
-        # history, but must not widen the nine-key evidence the Connector
-        # cross-checks against coverage.actual_range for the primary stream.
-        primary_evaluation_rows = [
-            row
-            for row in primary_rows
-            if params["start_at"] <= row["open_time"] < params["end_at"]
-        ]
-        primary_checksum = canonical_json_sha256(primary_evaluation_rows)
-        data_manifest = {
-            "source": primary_requirement["result_source"],
-            "symbol": symbol,
-            "market": params["market"],
-            "timeframe": params["timeframe"],
-            "start_at": params["start_at"],
-            "end_at": params["end_at"],
-            "kline_count": len(primary_evaluation_rows),
-            "checksum_algo": "sha256",
-            "checksum": primary_checksum,
-        }
-        coverage = build_coverage_manifest(request, coverage_inputs, data_manifest)
-        frames = build_frames(data_streams, coverage, validated.plan)
-        simulation = simulate(validated.plan, frames, state)
+        simulation, data_manifest, coverage = _replay_validated_artifact(validated)
         response = build_artifact_response(
             request=request,
             simulation=simulation,
@@ -7719,6 +7735,14 @@ def _build_cme_weekend_gap(params, *, initial_capital=10000.0):
     return templates.build_cme_gap(sys.modules[__name__], params, initial_capital)
 
 
+# JES21-B3b 二期 K2：指标组合（v2 条件）tool。provider_params 只收服务端编好的 v2
+# strategy_spec 与 data_requirements，provider 用自身 v2 校验器 fail closed 后在
+# Decimal v2 内核上执行（runner 分派点与 kernel_v3 同在 float 转换之前）。
+CONDITION_KERNEL_TOOL_ID = "local.backtesting_py.condition_kernel"
+CONDITION_KERNEL_RUNNER = "kernel_v2_conditions"
+CONDITION_KERNEL_ENGINE = "strategy_kernel_v2"
+
+
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     **{f"local.backtesting_py.{kind}": {
         "name": f"Local Backtesting.py {kind.replace('_', ' ').title()}",
@@ -8806,6 +8830,25 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             **_BASKET_COMMON_PARAM_SCHEMA_PROPERTIES,
         },
     },
+    # JES21-B3b 二期 K2：runner="kernel_v2_conditions" 与 kernel_v3 同理在 float 转换 /
+    # Strategy 类 / Backtest 之前分派；无 "build" 键。现货暂不支持（markets 只列 futures）。
+    CONDITION_KERNEL_TOOL_ID: {
+        "name": "Local Backtesting.py Indicator Condition Kernel",
+        "description": (
+            "Single-symbol futures backtest of a server-compiled indicator "
+            "condition combination (StrategySpec v2: all/any of RSI, EMA cross, "
+            "MACD cross, Bollinger z-score and daily as-of market metrics), long "
+            "or short, executed on the Decimal v2 strategy kernel."
+        ),
+        "strategy_family": "condition_kernel",
+        "is_default": False,
+        "runner": CONDITION_KERNEL_RUNNER,
+        "markets": ["futures"],
+        "param_schema_properties": {
+            "strategy_spec": {"type": "object"},
+            "data_requirements": {"type": "array"},
+        },
+    },
     "local.backtesting_py.vwap_reversion": {
         "name": "Local Backtesting.py Daily VWAP Reversion",
         "description": "Long-only intraday UTC daily VWAP reversion; close-confirmed entry/exit, next-open fills, daily flatten and default 2% stop. Maps to KOL 'VWAP 偏离回归'.",
@@ -8846,7 +8889,7 @@ for _tool_spec in TOOL_SPECS.values():
             "max_holding_bars": _FIXED_RISK_PARAM_SCHEMA_PROPERTIES["max_holding_bars"],
         }
         continue
-    if _tool_spec.get("runner") in ("kernel_v3", ROTATION_RUNNER):
+    if _tool_spec.get("runner") in ("kernel_v3", ROTATION_RUNNER, CONDITION_KERNEL_RUNNER):
         continue
     _tool_spec["param_schema_properties"] = {
         **_tool_spec["param_schema_properties"],
@@ -8975,10 +9018,12 @@ POSITION_SIZING_UNWIRED_TOOLS = frozenset({
     BTC_DOMINANCE_TOOL_ID,
     ROTATION_TOOL_ID,  # 10-E 轮动：v4 组合账本自管仓位，不消费定仓键（集成 D 登记）
     FEAR_GREED_TOOL_ID,  # P1 恐贪分批：每份金额由 buy_notional 定
+    CONDITION_KERNEL_TOOL_ID,  # B3b K2：仓位由 v2 spec.risk.position_sizing 定
 })
 assert POSITION_SIZING_UNWIRED_TOOLS == {
     tool for tool, spec in TOOL_SPECS.items()
-    if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3", ROTATION_RUNNER)
+    if spec.get("runner") in (SCALE_IN_OUT_RUNNER, TURTLE_RUNNER, "kernel_v3", ROTATION_RUNNER,
+                              CONDITION_KERNEL_RUNNER)
 }, "Every unwired runner must be explicitly listed"
 # RS0：每个不接定仓 runner 的「定量允许键」白名单（⊆ POSITION_SIZE_KEYS）。本期全部为空集（行为不变），
 # 某个 runner 日后接好某个定仓键，只往这里放该键；请求里不在允许键内的定仓键仍在取数前拒绝。
@@ -8993,6 +9038,7 @@ RUNNER_SIZING_ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "local.backtesting_py.portfolio_rotation": frozenset(),
     BTC_DOMINANCE_TOOL_ID: frozenset(),
     "local.backtesting_py.fear_greed_scale_in": frozenset(),
+    "local.backtesting_py.condition_kernel": frozenset(),
 }  # 字面量逐个登记：新增不接定仓的 runner 忘了登记，下面的 import 期检查报红
 
 
@@ -9022,6 +9068,7 @@ _RUNNER_SIZING_HINTS = {
     BTC_DOMINANCE_TOOL_ID: "it buys an equal-weight frozen basket and has no single-position sizing",
     ROTATION_TOOL_ID: "it rebalances to equal 1/K weights of net value and has no single-position sizing",
     FEAR_GREED_TOOL_ID: "per-lot amount is set by buy_notional and the lot count by max_lots",
+    CONDITION_KERNEL_TOOL_ID: "position sizing is set by strategy_spec.risk.position_sizing",
 }
 assert set(_RUNNER_SIZING_HINTS) == set(POSITION_SIZING_UNWIRED_TOOLS), "every unwired runner needs a sizing hint"
 
@@ -10617,6 +10664,390 @@ def _run_basket_backtest(
     return _bounded_basket_response(run_id, response_body)
 
 
+# ---------------------------------------------------------------------------
+# JES21-B3b 二期 K2：condition_kernel（runner=kernel_v2_conditions）
+# ---------------------------------------------------------------------------
+
+_CONDITION_KERNEL_PARAM_KEYS = frozenset({"strategy_spec", "data_requirements"})
+_CONDITION_KERNEL_RESULT_CONTRACT = {
+    "result_schema": "cutie.backtest_result.v2",
+    "coverage_schema": "cutie.strategy_coverage_manifest.v1",
+    "trace_schema": "cutie.strategy_execution_trace.v1",
+    "evidence_schema": "cutie.strategy_execution_evidence.v1",
+}
+
+
+def _condition_kernel_request(
+    *,
+    strategy_spec: dict[str, Any],
+    data_requirements: list[Any],
+    symbol: str,
+    market: str,
+    timeframe: str,
+    start_at: int,
+    end_at: int,
+    initial_capital: str,
+    cost_bps: dict[str, str],
+    instrument_rules: dict[str, Any],
+    capability_pair: tuple[dict[str, Any], str],
+) -> dict[str, Any]:
+    """Wrap a raw v2 spec + data requirements in the frozen historical_replay
+    request so ``validate_execution_request`` runs every v2 check the artifact
+    path runs (spec / data requirements / capability / lag warmup / range)
+    unchanged. The artifact identity, source material and nonce are
+    provider-local placeholders: no artifact exists on this path and none of
+    them is returned to the caller."""
+    spec_hash = canonical_json_sha256(strategy_spec)
+    manifest = {
+        "schema": ARTIFACT_MANIFEST_SCHEMA,
+        "artifact_kind": "declarative_strategy",
+        "strategy_spec_schema": "cutie.strategy_spec.v2",
+        "spec_hash": spec_hash,
+        "compiler": {"id": "cutie.strategy_spec.compiler", "version": "1"},
+        "kernel_contract": {
+            "api_version": "1",
+            "required_modes": ["historical_replay", "paper_tick"],
+        },
+        "capability_requirements": derive_capability_requirements(strategy_spec, data_requirements),
+        "data_requirements": data_requirements,
+        "source_materials": [{
+            "source_artifact_id": "1",
+            "role": "strategy_definition",
+            "source_sha256": spec_hash,
+            "content_sha256": spec_hash,
+            "parser_version": "1",
+            "ingestion_schema": "cutie.workbench_conditions.v1",
+            "ingestion_signature_version": "none",
+            "ingestion_key_id": "provider_params",
+            "ingestion_signature": spec_hash,
+        }],
+        "provenance_policy": "exact_set",
+    }
+    manifest_hash = canonical_json_sha256(manifest)
+    return {
+        "schema": "cutie.strategy_execution_request.v1",
+        "execution_mode": "historical_replay",
+        "run_id": "1",
+        "artifact": {
+            "artifact_id": "1",
+            "artifact_version_id": "1",
+            "version_no": 1,
+            "spec_hash": spec_hash,
+            "manifest_hash": manifest_hash,
+            "artifact_hash": canonical_json_sha256({
+                "schema": ARTIFACT_DIGEST_SCHEMA,
+                "spec_hash": spec_hash,
+                "manifest_hash": manifest_hash,
+            }),
+        },
+        "strategy_spec": strategy_spec,
+        "artifact_manifest": manifest,
+        "execution_params": {
+            "schema_version": "cutie.execution_params.v1",
+            "symbol": symbol,
+            "market": market,
+            "timeframe": timeframe,
+            "start_at": start_at,
+            "end_at": end_at,
+            "initial_capital": initial_capital,
+            "fee_bps": cost_bps["fee_bps"],
+            "slippage_bps": cost_bps["slippage_bps"],
+            "provider_tool_id": COMPILER_TOOL_ID,
+            "provider_params": {"instrument_rules": instrument_rules},
+        },
+        "expected_capability_hash": capability_pair[1],
+        "expected_provider_revision": capability_pair[0]["provider_revision"],
+        "dispatch_nonce": "condition_kernel",
+        "result_contract": dict(_CONDITION_KERNEL_RESULT_CONTRACT),
+    }
+
+
+def _condition_kernel_executed_parameters(
+    request: dict[str, Any], coverage: dict[str, Any]
+) -> dict[str, Any]:
+    """IMPL §3.7 实际执行参数：逐特征写指标、口径（scope）、粒度、数据起点与引擎，
+    只给结构化字段，中文文案由服务端生成。
+
+    granularity: ``primary``（特征周期 = 主周期）/ ``daily_asof``（metrics 日线，
+    决策 K 线收盘时取前一已收盘日）/ ``hourly``（1h）/ ``resampled``（其它由主 K 线
+    重采样的粗周期）。``data_start_at`` 是该特征所读数据流 coverage 的 actual_range
+    起点（主 K 线为评估区间起点）。"""
+    spec = request["strategy_spec"]
+    params = request["execution_params"]
+    timeframe = spec["market"]["timeframe"]
+    requirements = request["artifact_manifest"]["data_requirements"]
+    primary = next(
+        item for item in requirements if item["execution_role"] == "primary_execution_kline"
+    )
+    streams = coverage["streams"]
+
+    def coverage_stream(feature: dict[str, Any]) -> Optional[dict[str, Any]]:
+        requirement = next(
+            (
+                item for item in requirements
+                if item is not primary
+                and item["stream_id"].startswith(feature["source_stream"] + ".")
+                and item["interval"] == feature["interval"]
+            ),
+            primary,
+        )
+        exact = {
+            f"{requirement['stream_id']}.{params['symbol']}",
+            f"{feature['source_stream']}@{feature['interval']}",
+        }
+        return next(
+            (
+                stream for stream in streams
+                if stream["stream_id"] in exact
+                or stream["stream_id"].startswith(requirement["stream_id"] + ".")
+            ),
+            None,
+        )
+
+    features = []
+    for feature in spec["features"]:
+        parts = metrics_stream_parts(feature["source_stream"])
+        if feature["interval"] == timeframe:
+            granularity = "primary"
+        elif parts is not None and feature["interval"] == "1d":
+            granularity = "daily_asof"
+        elif feature["interval"] == "1h":
+            granularity = "hourly"
+        else:
+            granularity = "resampled"
+        stream = coverage_stream(feature)
+        features.append({
+            "key": feature["key"],
+            "primitive": feature["primitive"],
+            "params": deepcopy(feature["params"]),
+            "source": "metric" if parts is not None else "kline",
+            "source_stream": feature["source_stream"],
+            "scope": parts[0] if parts is not None else "self",
+            "metric": parts[1] if parts is not None else feature["source_stream"].rsplit(".", 1)[-1],
+            "interval": feature["interval"],
+            "granularity": granularity,
+            "stream_id": stream["stream_id"] if stream is not None else None,
+            "data_start_at": stream["actual_range"]["start_at"] if stream is not None else None,
+        })
+    return {
+        "engine": CONDITION_KERNEL_ENGINE,
+        "symbol": params["symbol"],
+        "market": params["market"],
+        "timeframe": timeframe,
+        "start_at": params["start_at"],
+        "end_at": params["end_at"],
+        "side": spec["entry"]["side"],
+        "leverage": spec["risk"]["leverage"],
+        "stop_loss": deepcopy(spec["exit"]["stop_loss"]),
+        "take_profit": deepcopy(spec["exit"]["take_profit"]),
+        "time_exit_bars": spec["exit"]["time_exit_bars"],
+        "signal_exit": spec["exit"]["signal_exit"] is not None,
+        "features": features,
+    }
+
+
+def _condition_kernel_response(
+    *,
+    run_id: str,
+    request: dict[str, Any],
+    spec_hash: str,
+    simulation: dict[str, Any],
+    data_manifest: dict[str, Any],
+    coverage: dict[str, Any],
+    initial_capital: Decimal,
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+) -> JSONResponse:
+    """Map one v2 replay onto the run result shape: the single-symbol template
+    keys (result.v2 ``data_manifest`` + ``result_hash``, which the Connector
+    accepts only with ``schema_version`` v2) plus the kernel_v3 envelope's
+    ``strategy_spec_json`` / ``strategy_spec_hash``. The Connector forwards
+    neither top-level spec field on a v2 result, so ``spec_hash`` and the
+    executed parameters are also carried in ``assumptions`` and the coverage
+    manifest in ``raw_report``."""
+    result_v2 = {
+        "schema_version": RESULT_V2_SCHEMA,
+        "trades": simulation["trades"],
+        "equity_curve": simulation["equity_curve"],
+        "metrics": simulation["metrics"],
+        "data_manifest": data_manifest,
+    }
+    params = request["execution_params"]
+    trade_count = result_v2["metrics"]["trade_count"]
+    provider_summary = (
+        f"condition_kernel on {params['symbol']} {params['timeframe']} ({params['market']}), "
+        f"{data_manifest['source']}, {trade_count} trades, total_return {result_v2['metrics']['total_return']}"
+    )
+    response_body = _json_safe({
+        "schema": RESPONSE_SCHEMA,
+        "result_status": "success",
+        "provider_name": PROVIDER_NAME,
+        "provider_revision": PROVIDER_REVISION,
+        "provider_run_id": f"bt_{run_id}",
+        "engine_name": ENGINE_NAME,
+        "engine_version": _engine_version(),
+        "data_source": "cutie_central_market_data",
+        "central_market_data_used": True,
+        "central_market_data_auth_mode": _central_market_data_auth_mode(),
+        "market_data_cache_hit": False,
+        "result_hash": canonical_json_sha256(result_v2),
+        "schema_version": result_v2["schema_version"],
+        "metrics": result_v2["metrics"],
+        "initial_capital": _decimal_str(initial_capital, places=2),
+        "equity_curve": result_v2["equity_curve"],
+        "trades": result_v2["trades"],
+        "data_manifest": result_v2["data_manifest"],
+        "strategy_spec_json": canonical_json(request["strategy_spec"]),
+        "strategy_spec_hash": spec_hash,
+        "assumptions": {
+            "fee_bps": _decimal_str(fee_bps, places=4),
+            "slippage_bps": _decimal_str(slippage_bps, places=4),
+            "exchange": CENTRAL_SUPPORTED_EXCHANGE,
+            "market": params["market"],
+            "strategy_family": "condition_kernel",
+            "engine": CONDITION_KERNEL_ENGINE,
+            "strategy_spec_hash": spec_hash,
+            "executed_parameters": _condition_kernel_executed_parameters(request, coverage),
+            "real_market_data": True,
+            "no_live_trading": True,
+            "funding_rate_included": False,
+            "funding_rate_note": (
+                "Futures condition-kernel backtest excludes perpetual funding rate costs; "
+                "PnL may be optimistic vs. live futures trading."
+            ),
+        },
+        "limitations": {
+            "verification": "external_unverified",
+            "verified_by_cutie": False,
+            "data_quality": "provider_reported",
+            "no_trades_executed": trade_count == 0,
+        },
+        "raw_report": {
+            "provider_summary": provider_summary,
+            "diagnostics": simulation.get("diagnostics", []),
+            "coverage_manifest": coverage,
+            "coverage_manifest_hash": canonical_json_sha256(coverage),
+            "market_data_provenance": {
+                "provider_revision": PROVIDER_REVISION,
+                "source": data_manifest["source"],
+                "central_market_data_used": True,
+                "auth_mode": _central_market_data_auth_mode(),
+                "cache_hit": False,
+            },
+        },
+    })
+    return _bounded_template_response(run_id, response_body)
+
+
+def _run_condition_kernel_backtest(
+    *,
+    run_id: str,
+    params: dict[str, Any],
+    symbol: str,
+    market: str,
+    timeframe: str,
+    start_at: int,
+    end_at: int,
+    initial_capital: Decimal,
+    kernel_initial_capital: str,
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+    envelope_cost_bps: dict[str, str],
+    instrument_rules: Any,
+) -> JSONResponse:
+    """IMPL §3.5: provider_params = {strategy_spec, data_requirements}; the
+    provider's own v2 validators fail closed (INVALID_PARAMS, never a 500),
+    then the shared artifact replay fetches every declared stream (central
+    K-line + ``metrics.*``) and runs the Decimal v2 kernel."""
+    spec = params.get("strategy_spec")
+    spec_market = spec.get("market") if isinstance(spec, dict) else None
+    if market == "spot" or (isinstance(spec_market, dict) and spec_market.get("market_type") == "spot"):
+        return _validation_failure(
+            "MARKET_UNSUPPORTED",
+            "condition_kernel does not support spot yet (spot result source pending); use market='futures'",
+        )
+    if set(params) != _CONDITION_KERNEL_PARAM_KEYS:
+        return _validation_failure(
+            "INVALID_PARAMS", "provider_params must contain exactly strategy_spec and data_requirements"
+        )
+    if not isinstance(spec, dict) or not isinstance(params["data_requirements"], list):
+        return _validation_failure(
+            "INVALID_PARAMS", "strategy_spec must be an object and data_requirements an array"
+        )
+    if not isinstance(instrument_rules, dict):
+        return _validation_failure("INVALID_PARAMS", "instrument_rules is required for condition_kernel")
+    capability_pair = _artifact_capability_pair()
+    if capability_pair is None:
+        return _business_failure(
+            run_id, "ENGINE_ERROR",
+            "condition_kernel requires an immutable provider revision (v2 capability unavailable)",
+        )
+    try:
+        request = _condition_kernel_request(
+            strategy_spec=spec,
+            data_requirements=params["data_requirements"],
+            symbol=symbol,
+            market=market,
+            timeframe=timeframe,
+            start_at=start_at,
+            end_at=end_at,
+            initial_capital=kernel_initial_capital,
+            cost_bps=envelope_cost_bps,
+            instrument_rules=instrument_rules,
+            capability_pair=capability_pair,
+        )
+        validated = validate_execution_request(request, capability_pair[0], capability_pair[1])
+    except StrategyContractError as exc:
+        return _validation_failure("INVALID_PARAMS", f"{exc.code} {exc.path}: {exc.message}")
+    except Exception as exc:  # malformed shapes the v2 validators do not type-guard
+        logger.warning("condition_kernel spec validation failed closed run_id=%s: %s", run_id, type(exc).__name__)
+        return _validation_failure(
+            "INVALID_PARAMS", f"strategy_spec failed provider v2 validation ({type(exc).__name__})"
+        )
+
+    try:
+        simulation, data_manifest, coverage = _replay_validated_artifact(validated)
+    except MarketDataFetchError as e:
+        return _business_failure(
+            run_id, e.error_type, e.public_message,
+            reason=("data_missing" if e.error_type == "NO_DATA" else "market_data_fetch_failed"),
+            market_data_provenance=e.provenance,
+        )
+    except (StrategyContractError, KernelExecutionError) as exc:
+        if exc.code == ERR_COVERAGE_INCOMPLETE:
+            return _business_failure(
+                run_id, "INSUFFICIENT_DATA", f"{exc.path}: {exc.message}", reason="data_missing"
+            )
+        return _validation_failure("INVALID_PARAMS", f"{exc.code} {exc.path}: {exc.message}")
+    except RuntimeError as e:
+        if "RATE_LIMITED" in str(e):
+            return _business_failure(
+                run_id, "RATE_LIMITED", "Exchange rate limit exceeded, please retry later",
+                reason="rate_limited",
+            )
+        logger.exception("condition_kernel replay failed")
+        return _business_failure(run_id, "ENGINE_ERROR", "condition_kernel execution failed")
+    except Exception:
+        logger.exception("condition_kernel replay failed")
+        return _business_failure(run_id, "ENGINE_ERROR", "condition_kernel execution failed")
+
+    try:
+        return _condition_kernel_response(
+            run_id=run_id,
+            request=validated.request,
+            spec_hash=validated.plan.spec_hash,
+            simulation=simulation,
+            data_manifest=data_manifest,
+            coverage=coverage,
+            initial_capital=initial_capital,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+        )
+    except Exception:
+        logger.exception("condition_kernel result mapping failed")
+        return _business_failure(run_id, "ENGINE_ERROR", "condition_kernel result mapping failed")
+
+
 @app.get("/catalog")
 async def catalog(authorization: Optional[str] = Header(default=None)):
     """Return provider tool catalog (IMPL §5.1 cutie.backtest_provider_catalog.v1)."""
@@ -10774,7 +11205,7 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
         # NaN/Infinity/指数/负数走 INVALID_PARAMS 而不是在内核路径里 500。
         basket_cost_bps: Optional[dict[str, str]] = None
         basket_capital: Optional[str] = None
-        if TOOL_SPECS.get(effective_tool_id, {}).get("runner") == "kernel_v3":
+        if TOOL_SPECS.get(effective_tool_id, {}).get("runner") in ("kernel_v3", CONDITION_KERNEL_RUNNER):
             basket_cost_bps = {
                 "fee_bps": _basket_cost_bps_str("fee_bps", fee_bps_str),
                 "slippage_bps": _basket_cost_bps_str("slippage_bps", slippage_bps_str),
@@ -10838,6 +11269,23 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
             run_id=run_id,
             strategy_family=tool_spec["strategy_family"],
             params=params,
+            market=market,
+            timeframe=timeframe,
+            start_at=start_at,
+            end_at=end_at,
+            initial_capital=initial_capital,
+            kernel_initial_capital=basket_capital,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+            envelope_cost_bps=basket_cost_bps,
+            instrument_rules=bt_req.get("instrument_rules"),
+        )
+    # JES21-B3b 二期 K2：指标组合 tool 同样在 float 转换之前分派到 Decimal v2 内核。
+    if tool_spec.get("runner") == CONDITION_KERNEL_RUNNER:
+        return _run_condition_kernel_backtest(
+            run_id=run_id,
+            params=params,
+            symbol=symbol,
             market=market,
             timeframe=timeframe,
             start_at=start_at,

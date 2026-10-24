@@ -1664,6 +1664,18 @@ def _derived_requirements(
     }
 
 
+def derive_capability_requirements(
+    strategy_spec: Any, data_requirements: Any
+) -> dict[str, Any]:
+    """B3b K2 ``condition_kernel``: the exact ``capability_requirements``
+    projection ``_validate_manifest`` demands, derived from a raw v2 spec and
+    its data requirements. Fails closed (StrategyContractError) on an invalid
+    spec or requirement list -- the same validators the artifact path runs."""
+    _, _, static = _validate_spec(strategy_spec)
+    requirements = _validate_data_requirements(strategy_spec, data_requirements)
+    return _derived_requirements(strategy_spec, static, requirements)
+
+
 def _validate_manifest(
     spec: dict[str, Any], manifest: Any, static: dict[str, list[dict[str, Any]]]
 ) -> tuple[str, str, str]:
@@ -5585,6 +5597,7 @@ __all__ = [
     "capability_payload",
     "compile_strategy",
     "compile_strategy_v3",
+    "derive_capability_requirements",
     "in_decimal128",
     "from_snapshot",
     "initial_state",
