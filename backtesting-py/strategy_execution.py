@@ -583,9 +583,15 @@ def validate_execution_request(
             params["end_at"],
             primary_frames_start(params["start_at"], primary_requirement, lag_frames),
         )
+        effective_end = params["end_at"]
         if metrics_window is not None:
             effective_start = min(effective_start, metrics_window[1])
-        data_window_seconds = params["end_at"] - effective_start
+            # K1e: the metrics fetch ends on its own bucket grid
+            # (required_end <= end_at), so budgeting the raw end_at
+            # overcounts by the part-bucket tail -- a legal 365-day
+            # [999d, 1364d) fetch reads as 365d11h and is wrongly rejected.
+            effective_end = metrics_window[2]
+        data_window_seconds = effective_end - effective_start
         if data_window_seconds > max_range_seconds:
             _error(
                 ERR_SPEC_INVALID,
@@ -988,15 +994,17 @@ def metrics_asof_fetch_window(
     ``(declared_start, fetch_start, required_end)``; ``None`` otherwise.
 
     - ``declared_start`` / ``required_end``: the coverage range, on the
-      stream's own bucket grid (``kline_primary_bucket_required_start/end``)
-      -- the first decision frame's as-of anchor is the bucket before the
-      one containing ``start_at``, the last one the bucket before the one
-      containing ``end_at``; an hourly window is not a day edge.
-    - ``fetch_start``: the earlier of ``declared_start`` and the first
-      primary frame's as-of point minus the feature's own window
+      stream's own bucket grid -- the last decision bucket is the one that
+      closed at-or-before the bucket containing ``end_at`` (an hourly window
+      is not a day edge). K1e: ``declared_start`` is the *fetch* start, not a
+      later manifest-declared bound; the Provider slices its coverage
+      evidence from the fetched rows, so both must be the same earlier bound
+      or a legal request is rejected with an empty declared slice.
+    - ``fetch_start``: the earlier of the declared aligned warmup and the
+      first primary frame's as-of point minus the feature's own window
       (``metrics_asof_fetch_start``) -- the Provider computes it, the
       declared warmup is only a lower bound. Fetch is ``[fetch_start,
-      required_end)``.
+      required_end)`` and always equals ``declared_start``.
     """
     features = _metrics_asof_features(strategy_spec, requirement)
     if not features:
@@ -1017,7 +1025,7 @@ def metrics_asof_fetch_window(
         declared_start,
         metrics_asof_fetch_start(first_frame_open_at, primary_step, step, lookback),
     )
-    return declared_start, fetch_start, kline_primary_bucket_required_end(end_at, step)
+    return fetch_start, fetch_start, kline_primary_bucket_required_end(end_at, step)
 
 
 def max_primary_lag_frames(strategy_spec: Any) -> int:
@@ -1121,7 +1129,24 @@ def build_coverage_manifest(
         metrics_asof = not primary and bool(
             _metrics_asof_features(strategy_spec, requirement)
         )
-        if derived or metrics_asof:
+        if metrics_asof:
+            # K1e: the coverage bounds are exactly the Provider's fetch
+            # range (metrics_asof_fetch_window). The lower bound is the
+            # *fetch* start, which can reach before the manifest-declared
+            # aligned warmup (a lag/deep-lookback metric); slicing from the
+            # declared bound instead would be empty whenever the two differ.
+            required_start, _, required_end = metrics_asof_fetch_window(
+                strategy_spec,
+                requirement,
+                request["execution_params"]["start_at"],
+                request["execution_params"]["end_at"],
+                primary_frames_start(
+                    request["execution_params"]["start_at"],
+                    primary_requirement,
+                    max_primary_lag_frames(strategy_spec),
+                ),
+            )
+        elif derived:
             # A coarse kline.primary requirement's required_start must be
             # bucket-aligned, not a naive offset from an unaligned start_at:
             # the as-of anchor for the first decision frame is the bucket
@@ -1134,13 +1159,6 @@ def build_coverage_manifest(
             required_start = kline_primary_bucket_required_start(
                 request["execution_params"]["start_at"], requirement["warmup_bars"], step
             )
-        else:
-            required_start = max(
-                0,
-                request["execution_params"]["start_at"]
-                - requirement["warmup_bars"] * step,
-            )
-        if derived or metrics_asof:
             # Symmetric to required_start: execution_params.end_at is a
             # primary-granularity boundary that need not land on a coarse
             # bucket edge, and the last bucket any decision frame closing
@@ -1153,6 +1171,11 @@ def build_coverage_manifest(
                 request["execution_params"]["end_at"], step
             )
         else:
+            required_start = max(
+                0,
+                request["execution_params"]["start_at"]
+                - requirement["warmup_bars"] * step,
+            )
             required_end = request["execution_params"]["end_at"]
         if (
             (required_end - required_start) % step != 0

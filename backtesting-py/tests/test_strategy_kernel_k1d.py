@@ -184,8 +184,9 @@ def test_k1d_daily_metric_fetch_covers_first_primary_warmup_frame(monkeypatch) -
     body = _post(_request(spec, manifest, 2 * DAY, 3 * DAY))
     assert body["result_status"] == "success", body.get("error_detail")
     assert min(call["start_at"] for call in calls) == 0
-    # Coverage still reports the declared (day-aligned) slice.
-    assert _metric_stream(body)["required_range"]["warmup_start_at"] == DAY
+    # K1e: coverage now reports the *fetch* start (the as-of point), which
+    # here reaches a full day before the declared warmup bound.
+    assert _metric_stream(body)["required_range"]["warmup_start_at"] == 0
 
 
 # --- finding 2: day-aligned coverage for an hourly window -------------------
@@ -250,3 +251,39 @@ def test_k1d_daily_metric_lag_in_primary_frames_executes(monkeypatch) -> None:
     assert body["result_status"] == "success", body.get("error_detail")
     # First frame (open 2d, close 2d+1h) as-of reads day 1.
     assert min(call["start_at"] for call in calls) == DAY
+
+
+# --- K1e finding 1: coverage start follows the as-of fetch start -----------
+
+
+def test_k1e_daily_metric_zero_declared_warmup_intraday_window(monkeypatch) -> None:
+    """K1e P2: 1h primary, 1d metric, window=1, declared metric warmup 0,
+    execution [40d+1h, 40d+3h). The first frame's as-of anchor needs day 39d,
+    which is fetched, so the coverage start must not be the declared day 40d
+    (that would leave the declared slice empty and reject a legal request)."""
+    _install_complete_data(monkeypatch)
+    spec = tsk.make_spec(features=[_metric_feature()], condition=_gt("fg"))
+    manifest = _manifest(spec, primary_warmup=0, metric_warmup=0)
+    body = _post(_request(spec, manifest, 40 * DAY + HOUR, 40 * DAY + 3 * HOUR))
+    assert body["result_status"] == "success", body.get("error_detail")
+    stream = _metric_stream(body)
+    assert stream["required_range"]["warmup_start_at"] == 39 * DAY
+    assert stream["actual_range"]["available_through"] == 40 * DAY
+    assert stream["point_count"] == 1
+
+
+# --- K1e finding 2: range budget uses the day-aligned fetch end ------------
+
+
+def test_k1e_daily_metric_range_budget_uses_aligned_end(monkeypatch) -> None:
+    """K1e P2: metrics warmup=1, execution [1000d+12h, 1364d+11h). The actual
+    fetch [999d, 1364d) is exactly 365 days, but budgeting the raw end_at
+    counts 365d11h and rejects a legal request; the budget must use the
+    day-aligned required_end (1364d)."""
+    _install_complete_data(monkeypatch)
+    spec = tsk.make_spec(features=[_metric_feature()], condition=_gt("fg"))
+    manifest = _manifest(spec, primary_warmup=0, metric_warmup=1)
+    body = _post(
+        _request(spec, manifest, 1000 * DAY + 12 * HOUR, 1364 * DAY + 11 * HOUR)
+    )
+    assert body["result_status"] == "success", body.get("error_detail")
