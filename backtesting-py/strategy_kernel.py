@@ -726,6 +726,38 @@ def primitive_lookback_bars(primitive: str, params: dict[str, Any]) -> int:
     return params["window_bars"]
 
 
+def per_feature_lag_needs(strategy_spec: Any) -> dict[str, int]:
+    """Per-feature-key max history need (lag_bars, +1 inside cross) across
+    every reference in the spec. Companion to
+    ``strategy_execution.max_primary_lag_frames``: that one sizes the primary
+    frames history, this one drives the per-feature floors "a feature's
+    warmup must cover how far back it is ever referenced" -- the execution
+    preflight's additive floor (final review Codex HIGH-3/MED-4) and the
+    compile-time passthrough history floor (K1d). Lives in the kernel so the
+    compile layer can use it; strategy_execution re-exports it."""
+
+    needs: dict[str, int] = {}
+
+    def walk(node: Any, inside_cross: bool) -> None:
+        if isinstance(node, dict):
+            if node.get("node") == "feature":
+                lag = node.get("lag_bars")
+                key = node.get("key")
+                if isinstance(lag, int) and not isinstance(lag, bool) and isinstance(key, str):
+                    need = lag + (1 if inside_cross else 0)
+                    if need > needs.get(key, -1):
+                        needs[key] = need
+            child_inside = inside_cross or node.get("node") == "cross"
+            for value in node.values():
+                walk(value, child_inside)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, inside_cross)
+
+    walk(strategy_spec, False)
+    return needs
+
+
 def _validate_primitive_params_v3(primitive: Any, raw_params: Any, path: str) -> None:
     """v3 primitive registry: the four v2 primitives plus ``rolling_zscore`` / ``ema``
     (SPEC_组合策略v3契约 §2.3, params exactly ``{"window_bars": <int>}``).
@@ -1450,6 +1482,7 @@ def _validate_kline_primary_requirements(
     primary_requirement = next(
         item for item in requirements if item["execution_role"] == "primary_execution_kline"
     )
+    lag_needs = per_feature_lag_needs(spec)
     for index, feature in enumerate(spec["features"]):
         source_stream = feature["source_stream"]
         if not source_stream.startswith(_KLINE_PRIMARY_PREFIX):
@@ -1488,6 +1521,25 @@ def _validate_kline_primary_requirements(
                         f"kline.primary passthrough {primitive} primitive's "
                         "lookback",
                         required=lookback,
+                        actual=primary_requirement["warmup_bars"],
+                    )
+            # K1d (Codex P2): the value first resolves at row lookback - 1,
+            # and a decision frame at row warmup_bars referenced at lag L
+            # (+1 inside cross) reads row warmup_bars - L -- so the warmup
+            # must also be >= lookback - 1 + L, or the first decision frame
+            # dies at runtime with "required lagged feature is missing".
+            if primitive in _PASSTHROUGH_HISTORY_PRIMITIVES:
+                lag_need = lag_needs.get(feature["key"], 0)
+                required = primitive_lookback_bars(primitive, params) - 1 + lag_need
+                if lag_need > 0 and primary_requirement["warmup_bars"] < required:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements"
+                        f"[{primary_requirement['stream_id']}].warmup_bars",
+                        "primary K-line warmup_bars must cover the "
+                        f"kline.primary passthrough {primitive} primitive's "
+                        "lookback - 1 plus its deepest lag reference "
+                        "(lag_bars, +1 inside cross)",
+                        required=required,
                         actual=primary_requirement["warmup_bars"],
                     )
             if (
@@ -2824,6 +2876,31 @@ def kline_primary_bucket_required_end(end_at: int, target_step: int) -> int:
     return (end_at // target_step) * target_step
 
 
+def metrics_asof_anchor(close_at: int, feature_step: int) -> int:
+    """IMPL §3.4 as-of anchor of a ``metrics.*`` stream for a frame closing at
+    ``close_at``: the latest epoch-aligned point whose ``ts + interval`` (its
+    ``available_at``) is <= ``close_at`` -- a 1d metric on 1h frames reads
+    the previous closed day; at the primary interval it is the frame's open."""
+    return (close_at // feature_step) * feature_step - feature_step
+
+
+def metrics_asof_fetch_start(
+    first_frame_open_at: int,
+    primary_step: int,
+    feature_step: int,
+    lookback_points: int,
+) -> int:
+    """K1d: earliest ``ts`` a ``metrics.*`` stream must supply so the *first
+    primary frame* resolves (warmup frames included -- a lag reference on a
+    decision frame reads the as-of value captured on that earlier frame):
+    that frame's as-of anchor minus the feature's own window
+    (``lookback_points`` points ending at the anchor). The Provider computes
+    this itself; the manifest's declared warmup is only a lower bound and
+    the earlier of the two is fetched."""
+    anchor = metrics_asof_anchor(first_frame_open_at + primary_step, feature_step)
+    return max(0, anchor - max(lookback_points - 1, 0) * feature_step)
+
+
 def ohlcv_resample(
     primary_rows: list[dict[str, Any]], primary_step: int, target_interval: str
 ) -> list[dict[str, Any]]:
@@ -3492,7 +3569,7 @@ def build_frames(
                 # day; at the primary interval this is the frame's own open.
                 rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
                 feature_step = _interval_seconds(feature["interval"])
-                anchor_ts = (close_at // feature_step) * feature_step - feature_step
+                anchor_ts = metrics_asof_anchor(close_at, feature_step)
             else:
                 rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
                 anchor_ts = open_at

@@ -93,6 +93,7 @@ from strategy_execution import (
     is_strategy_execution_intent,
     is_strategy_paper_tick_intent,
     max_primary_lag_frames,
+    metrics_asof_fetch_window,
     strategy_spec_v3_evidence,
     validate_execution_request,
     validate_paper_tick_request,
@@ -2130,12 +2131,27 @@ def _run_artifact_backtest(
                     params["end_at"],
                 )
             else:
+                # K1d: a metrics.* as-of stream is fetched on its own bucket
+                # grid -- from the earlier of its declared (aligned) warmup
+                # and the first primary frame's as-of point, up to the last
+                # bucket the final decision frame can read -- and its
+                # coverage slice starts at the aligned declared start.
+                fetch_end = params["end_at"]
+                metrics_window = metrics_asof_fetch_window(
+                    request["strategy_spec"],
+                    requirement,
+                    params["start_at"],
+                    params["end_at"],
+                    primary_warmup_start,
+                )
+                if metrics_window is not None:
+                    warmup_start, fetch_start, fetch_end = metrics_window
                 rows = _fetch_artifact_features(
                     requirement,
                     request["strategy_spec"],
                     symbol,
                     fetch_start,
-                    params["end_at"],
+                    fetch_end,
                 )
             data_streams[requirement["stream_id"]] = rows
             checksum = canonical_json_sha256(rows)
