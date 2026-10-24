@@ -217,6 +217,24 @@ def test_default_both_is_rejected_before_fetch(client):
     rejected(client, 'cci_rsi', params('ema'))
 
 
+VOLUME_SCHEMA_KEYS = {
+    'filter_volume_enabled': {'type': 'boolean', 'default': False},
+    'filter_volume_period': {'type': 'integer', 'default': 20, 'minimum': 5, 'maximum': 100},
+    'filter_volume_multiple': {'type': 'number', 'default': 1.5, 'minimum': 1, 'maximum': 5},
+}
+
+
+def test_volume_filter_schema_is_published_to_every_filter_template():
+    # JES22-B: the three volume keys join FILTER_PARAM_SCHEMA_PROPERTIES, hence every filter template.
+    for key, spec in VOLUME_SCHEMA_KEYS.items():
+        assert FILTER_PARAM_SCHEMA_PROPERTIES[key] == spec
+    templates = [key for key, value in p.TOOL_SPECS.items()
+                 if 'filter_layer_enabled' in value['param_schema_properties']]
+    assert templates
+    for key in templates:
+        assert set(VOLUME_SCHEMA_KEYS) <= set(p.TOOL_SPECS[key]['param_schema_properties']), key
+
+
 @pytest.mark.parametrize('name', EXCLUDED)
 @pytest.mark.parametrize('key,value', list(DEFAULTS.items()))
 def test_unwired_rejects_even_default_filter_keys(client, name, key, value):
