@@ -315,7 +315,8 @@ def test_v2_spec_naming_rolling_zscore_stays_capability_unsupported():
 def test_capability_payload_never_mentions_v3():
     payload = canonical_json(capability_payload(REVISION))
     assert "v3" not in payload
-    assert "rolling_zscore" not in payload
+    # rolling_zscore is a v2 primitive since JES21-B3b 二期 K1; v3 families stay out.
+    assert "basket_ratio" not in payload
 
 
 def test_v2_feature_frame_serialization_is_unchanged():

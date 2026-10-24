@@ -89,10 +89,11 @@ _KLINE_PRIMARY_FIELDS = {"open", "high", "low", "close"}
 _KLINE_PRIMARY_COARSE_INTERVALS = {"4h", "1d"}
 _KLINE_PRIMARY_COARSE_BASE_TIMEFRAME = "1h"
 # The four feature primitives §5.5 registers; param shapes are frozen cross-provider.
-# ``rolling_zscore`` is the 123 组合策略 v3 addition (SPEC_组合策略v3契约 §2.3): it
-# is compiled only by ``compile_strategy_v3`` and is deliberately absent from
-# ``capability_payload`` (v3 never enters the capability declaration), so a v2
-# spec naming it still fails the capability exact-set check.
+# ``rolling_zscore`` / ``ema`` came in with 123 组合策略 v3 (SPEC_组合策略v3契约 §2.3)
+# and are now also v2 primitives (JES21-B3b 二期 K1): v2 declares them, plus the
+# v2-only ``macd``, in ``capability_payload``. v2 recursive primitives (ema /
+# macd, like rsi_wilder) break irrecoverably on a gap; v3 keeps its own
+# re-seeding ``_ema_series_v3``. Golden: tests/fixtures/strategy_kernel_conformance_v2c.json.
 # SPEC_组合策略v3契约 §2.2 / §2.4 / §2.5 closed vocabularies.
 _STRATEGY_FAMILIES_V3 = {
     "basket_ratio_sma_cross",
@@ -127,6 +128,63 @@ _KNOWN_PRIMITIVES = {
     "rolling_zscore",
     "ema",
 }
+# v2-only primitives: never accepted by the v3 registry above.
+_KNOWN_PRIMITIVES_V2 = _KNOWN_PRIMITIVES | {"macd"}
+_MACD_OUTPUTS = {"line", "signal", "hist"}
+# JES21-B3b 二期 IMPL §3.4: ``metrics.<scope>.<metric>`` feature streams, fetched
+# from the central market_metrics_history ``/metrics`` (provider ``cutie``).
+_METRICS_PREFIX = "metrics."
+_METRICS_SCOPES = ("btc", "eth", "market", "self")
+_METRIC_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# Closed (scope, metric) set the capability declares. self/btc/eth are per-coin
+# CoinGlass families; market/btc-only rows are the daily index archive and the
+# public fear & greed series. btc_dominance is deliberately absent: its 3d
+# series is irregularly spaced and fails the contiguous-interval rule.
+_METRICS_PER_COIN = (
+    "funding_rate",
+    "funding_rate_oi_weight",
+    "futures_aggregated_cvd",
+    "global_long_short_ratio",
+    "liquidation_long",
+    "liquidation_short",
+    "open_interest_aggregated",
+    "top_long_short_ratio",
+)
+_METRICS_MARKET = ("altcoin_season_index", "fear_greed_index", "stablecoin_mcap_total")
+_METRICS_BTC_ONLY = (
+    "ahr999",
+    "bubble_index",
+    "golden_ratio_multiple",
+    "lth_mvrv",
+    "ma_200w_multiple",
+    "nupl",
+    "pi_cycle_ratio",
+    "puell_multiple",
+    "rainbow_band",
+    "sth_mvrv",
+)
+METRICS_SOURCE_STREAMS = tuple(
+    sorted(
+        {f"metrics.{scope}.{metric}" for scope in ("self", "btc", "eth") for metric in _METRICS_PER_COIN}
+        | {f"metrics.market.{metric}" for metric in _METRICS_MARKET}
+        | {f"metrics.btc.{metric}" for metric in _METRICS_BTC_ONLY},
+        key=lambda value: value.encode("utf-16-be"),
+    )
+)
+
+
+def metrics_stream_parts(source_stream: str) -> Optional[tuple[str, str]]:
+    """``metrics.<scope>.<metric>`` -> ``(scope, metric)``; ``None`` otherwise."""
+    if not source_stream.startswith(_METRICS_PREFIX):
+        return None
+    parts = source_stream.split(".")
+    if (
+        len(parts) != 3
+        or parts[1] not in _METRICS_SCOPES
+        or _METRIC_NAME_RE.fullmatch(parts[2]) is None
+    ):
+        return None
+    return parts[1], parts[2]
 
 _SPEC_KEYS = {
     "schema",
@@ -557,6 +615,14 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
     _canonical_scalar_tree(obj["params"], f"{path}.params")
     _validate_primitive_params(obj["primitive"], obj["params"], path)
     source_stream = obj["source_stream"]
+    if source_stream.startswith(_METRICS_PREFIX) and metrics_stream_parts(
+        source_stream
+    ) is None:
+        _raise(
+            f"{path}.source_stream",
+            "metrics stream must be metrics.<self|market|btc|eth>.<metric>",
+            actual=source_stream,
+        )
     if source_stream.startswith(_KLINE_PRIMARY_PREFIX):
         field = source_stream[len(_KLINE_PRIMARY_PREFIX) :]
         if field not in _KLINE_PRIMARY_FIELDS:
@@ -624,6 +690,40 @@ def _validate_primitive_params(primitive: Any, raw_params: Any, path: str) -> No
         )
         if params["mode"] not in {"min", "max"}:
             _raise(f"{path}.params.mode", "must be min or max", actual=params["mode"])
+    elif primitive in {"ema", "rolling_zscore"}:
+        # A one-bar zscore window has stdev 0 on every bar; a one-bar EMA is
+        # the raw value. Both start at 2, same as v3.
+        params = _exact(raw_params, {"window_bars"}, f"{path}.params")
+        _safe_int(
+            params["window_bars"],
+            f"{path}.params.window_bars",
+            minimum=2,
+            maximum=10000,
+        )
+    elif primitive == "macd":
+        params = _exact(
+            raw_params, {"fast", "slow", "signal", "output"}, f"{path}.params"
+        )
+        fast = _safe_int(params["fast"], f"{path}.params.fast", minimum=2, maximum=1000)
+        _safe_int(params["slow"], f"{path}.params.slow", minimum=fast + 1, maximum=1000)
+        _safe_int(params["signal"], f"{path}.params.signal", minimum=2, maximum=1000)
+        if params["output"] not in _MACD_OUTPUTS:
+            _raise(
+                f"{path}.params.output",
+                "must be line, signal or hist",
+                actual=params["output"],
+            )
+
+
+def primitive_lookback_bars(primitive: str, params: dict[str, Any]) -> int:
+    """Source bars a v2 history primitive needs before its first value."""
+    if primitive == "macd":
+        return params["slow"] + params["signal"] - 1
+    if primitive == "rsi_wilder":
+        return params["period"] + 1
+    if primitive == "rolling_quantile":
+        return params["min_periods"]
+    return params["window_bars"]
 
 
 def _validate_primitive_params_v3(primitive: Any, raw_params: Any, path: str) -> None:
@@ -1337,10 +1437,10 @@ def _validate_kline_primary_requirements(
                 )
             primitive = feature["primitive"]
             params = feature["params"]
-            if primitive == "rsi_wilder":
+            if primitive in {"rsi_wilder", "ema", "macd", "rolling_zscore"}:
                 _raise(
                     f"$.strategy_spec.features[{index}].primitive",
-                    "kline.primary passthrough feature cannot use rsi_wilder: "
+                    f"kline.primary passthrough feature cannot use {primitive}: "
                     "its seed is always unresolved for the array's first "
                     "fetched row, so every run fails closed regardless of "
                     "warmup_bars",
@@ -1404,6 +1504,17 @@ def _validate_kline_primary_requirements(
                         "coarse kline.primary requirement's warmup_bars must "
                         "be at least the primitive's window_bars",
                         required=window_bars,
+                        actual=requirement["warmup_bars"],
+                    )
+            elif primitive in {"ema", "macd", "rolling_zscore"}:
+                lookback = primitive_lookback_bars(primitive, params)
+                if requirement["warmup_bars"] < lookback:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements[{requirement['stream_id']}]"
+                        ".warmup_bars",
+                        "coarse kline.primary requirement's warmup_bars must "
+                        f"cover the {primitive} primitive's lookback",
+                        required=lookback,
                         actual=requirement["warmup_bars"],
                     )
             elif primitive == "rolling_quantile":
@@ -1524,33 +1635,57 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
     """
     if _REVISION_RE.fullmatch(provider_revision) is None:
         raise ValueError("provider_revision must be 7..64 lowercase hex")
+    # Only operators StrategyKernel._value / _condition / _ctx_op evaluate
+    # (JES21-B3b 二期 K1). div is decimal-only (the validator rejects integer
+    # div); the binary signatures are the ones the declaration can carry.
+    # Every operator gets fresh signature dicts: callers mutate the payload
+    # (tests extend one operator's signatures), so nothing may be shared.
+    def signatures(return_types: dict[str, str]) -> list[dict[str, Any]]:
+        return [
+            {"arg_types": [arg_type, arg_type], "return_type": return_type}
+            for arg_type, return_type in return_types.items()
+        ]
+
+    numeric = {"decimal": "decimal", "integer": "integer"}
+    ordered = {"decimal": "boolean", "integer": "boolean"}
     operators = [
-        {
-            "node": "arithmetic",
-            "op": "add",
-            "version": "1",
-            "signatures": [
-                {"arg_types": ["decimal", "decimal"], "return_type": "decimal"},
-                {"arg_types": ["integer", "integer"], "return_type": "integer"},
-            ],
-        },
-        {
-            "node": "compare",
-            "op": "gt",
-            "version": "1",
-            "signatures": [
-                {"arg_types": ["decimal", "decimal"], "return_type": "boolean"},
-                {"arg_types": ["integer", "integer"], "return_type": "boolean"},
-            ],
-        },
+        {"node": "arithmetic", "op": op, "version": "1", "signatures": signatures(kinds)}
+        for op, kinds in (
+            ("add", numeric),
+            ("div", {"decimal": "decimal"}),
+            ("mul", numeric),
+            ("sub", numeric),
+        )
+    ]
+    operators += [
+        {"node": "compare", "op": op, "version": "1", "signatures": signatures(ordered)}
+        for op in ("gt", "gte", "lt", "lte")
+    ]
+    operators += [
         {
             "node": "cross",
-            "op": "crosses_above",
+            "op": op,
             "version": "1",
-            "signatures": [
-                {"arg_types": ["decimal", "decimal"], "return_type": "boolean"},
-            ],
-        },
+            "signatures": signatures({"decimal": "boolean"}),
+        }
+        for op in ("crosses_above", "crosses_below")
+    ]
+    kline_streams = [
+        "kline.primary.close",
+        "kline.primary.high",
+        "kline.primary.low",
+        "kline.primary.open",
+    ]
+    history_primitives = [
+        {
+            "primitive": primitive,
+            "version": "1",
+            "source_streams": list(kline_streams),
+            "intervals": ["1d", "1h", "4h"],
+            "value_kinds": ["price"],
+            "output_type": "decimal",
+        }
+        for primitive in ("ema", "macd")
     ]
     return {
         "schema": CAPABILITY_SCHEMA,
@@ -1559,19 +1694,18 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
         "kernel_api_versions": ["1"],
         "execution_modes": ["historical_replay", "paper_tick"],
         "operators": operators,
-        "feature_primitives": [
+        "feature_primitives": history_primitives
+        + [
             {
                 "primitive": "rolling_extreme",
                 "version": "1",
                 "source_streams": [
                     "coinglass.futures_cvd",
-                    "kline.primary.close",
-                    "kline.primary.high",
-                    "kline.primary.low",
-                    "kline.primary.open",
+                    *kline_streams,
+                    *METRICS_SOURCE_STREAMS,
                 ],
                 "intervals": ["1d", "1h", "4h"],
-                "value_kinds": ["flow", "price"],
+                "value_kinds": ["flow", "level", "price"],
                 "output_type": "decimal",
             },
             {
@@ -1591,9 +1725,17 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
             {
                 "primitive": "rolling_sum",
                 "version": "1",
-                "source_streams": ["coinglass.futures_cvd"],
+                "source_streams": ["coinglass.futures_cvd", *METRICS_SOURCE_STREAMS],
                 "intervals": ["1d", "1h"],
-                "value_kinds": ["flow"],
+                "value_kinds": ["flow", "level"],
+                "output_type": "decimal",
+            },
+            {
+                "primitive": "rolling_zscore",
+                "version": "1",
+                "source_streams": list(kline_streams),
+                "intervals": ["1d", "1h", "4h"],
+                "value_kinds": ["price"],
                 "output_type": "decimal",
             },
             {
@@ -1621,6 +1763,13 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
             },
             {
                 "provider": "coinglass",
+                "storage_source": "market_metrics_history",
+                "kinds": ["feature"],
+                "markets": ["futures"],
+                "result_sources": [],
+            },
+            {
+                "provider": "cutie",
                 "storage_source": "market_metrics_history",
                 "kinds": ["feature"],
                 "markets": ["futures"],
@@ -2936,6 +3085,105 @@ def _rsi_wilder_series(
     return series
 
 
+def _ema_values_v2(
+    values: list[Optional[Decimal]], window: int
+) -> list[Optional[Decimal]]:
+    """v2 ``ema``: SMA seed of the first ``window`` fetched values, then
+    ``alpha*x + (1-alpha)*ema`` with ``alpha = 2/(window+1)``, every step in
+    decimal128. A gap breaks the chain irrecoverably (v2 rsi_wilder rule);
+    v3's ``_ema_series_v3`` re-seeds instead and is left untouched."""
+    out: list[Optional[Decimal]] = []
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        alpha = ctx.divide(Decimal(2), Decimal(window + 1))
+        keep = ctx.subtract(Decimal(1), alpha)
+        broken = False
+        seed: list[Decimal] = []
+        previous: Optional[Decimal] = None
+        for value in values:
+            if broken or value is None:
+                broken = True
+                out.append(None)
+                continue
+            if previous is None:
+                seed.append(value)
+                if len(seed) < window:
+                    out.append(None)
+                    continue
+                total = Decimal(0)
+                for item in seed:
+                    total = ctx.add(total, item)
+                previous = ctx.divide(total, Decimal(window))
+            else:
+                previous = ctx.add(
+                    ctx.multiply(alpha, value), ctx.multiply(keep, previous)
+                )
+            out.append(+previous)
+    return out
+
+
+def _macd_values_v2(
+    values: list[Optional[Decimal]], fast: int, slow: int, signal: int, output: str
+) -> list[Optional[Decimal]]:
+    """v2 ``macd``: line = ema(fast) − ema(slow); signal = ema(signal) over
+    the line series seeded from its first value; hist = line − signal."""
+    fast_ema = _ema_values_v2(values, fast)
+    slow_ema = _ema_values_v2(values, slow)
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        line = [
+            ctx.subtract(f, s) if f is not None and s is not None else None
+            for f, s in zip(fast_ema, slow_ema)
+        ]
+        if output == "line":
+            return line
+        first = next((i for i, v in enumerate(line) if v is not None), len(line))
+        signal_series = [None] * first + _ema_values_v2(line[first:], signal)
+        if output == "signal":
+            return signal_series
+        return [
+            ctx.subtract(a, b) if a is not None and b is not None else None
+            for a, b in zip(line, signal_series)
+        ]
+
+
+def _recursive_series_v2(
+    feature: dict[str, Any],
+    rows_by_ts: dict[int, tuple[Any, int, str]],
+    ordered_timestamps: list[int],
+    error_path: str,
+) -> dict[int, tuple[Optional[Decimal], int]]:
+    """Precompute a whole-stream recursive v2 primitive (rsi_wilder / ema /
+    macd) once per feature: ``{ts: (value_or_None, availability_ceiling)}``."""
+    params = feature["params"]
+    if feature["primitive"] == "rsi_wilder":
+        return _rsi_wilder_series(
+            rows_by_ts, ordered_timestamps, params["period"], error_path
+        )
+    parsed: list[Optional[Decimal]] = []
+    ceilings: list[int] = []
+    running_ceiling = 0
+    for ts in ordered_timestamps:
+        raw_value, available_at, _revision = rows_by_ts[ts]
+        running_ceiling = max(running_ceiling, available_at)
+        ceilings.append(running_ceiling)
+        try:
+            parsed.append(_decimal(raw_value, error_path))
+        except KernelExecutionError:
+            parsed.append(None)
+    if feature["primitive"] == "ema":
+        series = _ema_values_v2(parsed, params["window_bars"])
+    else:
+        series = _macd_values_v2(
+            parsed, params["fast"], params["slow"], params["signal"], params["output"]
+        )
+    return {
+        ts: (value, ceilings[index] if value is not None else 0)
+        for index, (ts, value) in enumerate(zip(ordered_timestamps, series))
+    }
+
+
+_RECURSIVE_PRIMITIVES_V2 = {"rsi_wilder", "ema", "macd"}
+
+
 def build_frames(
     data_streams: dict[str, list[dict[str, Any]]],
     coverage_manifest: dict[str, Any],
@@ -3111,12 +3359,12 @@ def build_frames(
     feature_revision: dict[str, str] = {}
     for feature in plan.strategy_spec["features"]:
         if _is_kline_primary_passthrough(feature):
-            if feature["primitive"] == "rsi_wilder":
+            if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
                 field = feature["source_stream"][len(_KLINE_PRIMARY_PREFIX) :]
-                rsi_series_cache[feature["key"]] = _rsi_wilder_series(
+                rsi_series_cache[feature["key"]] = _recursive_series_v2(
+                    feature,
                     _primary_field_series(field),
                     primary_ordered_ts,
-                    feature["params"]["period"],
                     f"$.data_streams.{feature['source_stream']}",
                 )
             continue
@@ -3124,11 +3372,11 @@ def build_frames(
         feature_revision[feature["key"]] = next(
             iter(rows_by_ts.values()), (None, None, "")
         )[2]
-        if feature["primitive"] == "rsi_wilder":
-            rsi_series_cache[feature["key"]] = _rsi_wilder_series(
+        if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
+            rsi_series_cache[feature["key"]] = _recursive_series_v2(
+                feature,
                 rows_by_ts,
                 ordered_timestamps,
-                feature["params"]["period"],
                 f"$.data_streams.{feature['source_stream']}",
             )
 
@@ -3163,7 +3411,7 @@ def build_frames(
         }
         revisions: dict[str, str] = {}
         for feature in plan.strategy_spec["features"]:
-            if feature["primitive"] not in _KNOWN_PRIMITIVES:
+            if feature["primitive"] not in _KNOWN_PRIMITIVES_V2:
                 _raise(
                     f"$.strategy_spec.features[{feature['key']}].primitive",
                     "primitive is not implemented",
@@ -3187,11 +3435,19 @@ def build_frames(
                 feature_step = _interval_seconds(feature["interval"])
                 bucket_close = (close_at // feature_step) * feature_step
                 anchor_ts = bucket_close - feature_step
+            elif metrics_stream_parts(feature["source_stream"]) is not None:
+                # IMPL §3.4 as-of: the latest epoch-aligned metric point whose
+                # ``ts + interval`` (its available_at) is <= this frame's
+                # close — a 1d metric on 1h frames reads the previous closed
+                # day; at the primary interval this is the frame's own open.
+                rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
+                feature_step = _interval_seconds(feature["interval"])
+                anchor_ts = (close_at // feature_step) * feature_step - feature_step
             else:
                 rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
                 anchor_ts = open_at
 
-            if feature["primitive"] == "rsi_wilder":
+            if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
                 point = rsi_series_cache[feature["key"]].get(anchor_ts)
                 if point is None or point[0] is None:
                     _raise(

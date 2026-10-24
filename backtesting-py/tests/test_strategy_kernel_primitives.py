@@ -1225,6 +1225,10 @@ def test_capability_advertises_the_three_new_primitives_and_ohlcv_resample() -> 
         "rolling_quantile",
         "rsi_wilder",
         "rolling_extreme",
+        # JES21-B3b 二期 K1
+        "ema",
+        "macd",
+        "rolling_zscore",
     }
     assert capability["data_transforms"] == ["ohlcv_resample.v1"]
     for item in capability["feature_primitives"]:

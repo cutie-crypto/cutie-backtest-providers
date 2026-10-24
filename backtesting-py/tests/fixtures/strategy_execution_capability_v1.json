@@ -13,8 +13,55 @@
         "op": "add",
         "version": "1",
         "signatures": [
-          {"arg_types": ["decimal", "decimal"], "return_type": "decimal"},
-          {"arg_types": ["integer", "integer"], "return_type": "integer"}
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "decimal"
+          },
+          {
+            "arg_types": ["integer", "integer"],
+            "return_type": "integer"
+          }
+        ]
+      },
+      {
+        "node": "arithmetic",
+        "op": "div",
+        "version": "1",
+        "signatures": [
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "decimal"
+          }
+        ]
+      },
+      {
+        "node": "arithmetic",
+        "op": "mul",
+        "version": "1",
+        "signatures": [
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "decimal"
+          },
+          {
+            "arg_types": ["integer", "integer"],
+            "return_type": "integer"
+          }
+        ]
+      },
+      {
+        "node": "arithmetic",
+        "op": "sub",
+        "version": "1",
+        "signatures": [
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "decimal"
+          },
+          {
+            "arg_types": ["integer", "integer"],
+            "return_type": "integer"
+          }
         ]
       },
       {
@@ -22,8 +69,59 @@
         "op": "gt",
         "version": "1",
         "signatures": [
-          {"arg_types": ["decimal", "decimal"], "return_type": "boolean"},
-          {"arg_types": ["integer", "integer"], "return_type": "boolean"}
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "boolean"
+          },
+          {
+            "arg_types": ["integer", "integer"],
+            "return_type": "boolean"
+          }
+        ]
+      },
+      {
+        "node": "compare",
+        "op": "gte",
+        "version": "1",
+        "signatures": [
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "boolean"
+          },
+          {
+            "arg_types": ["integer", "integer"],
+            "return_type": "boolean"
+          }
+        ]
+      },
+      {
+        "node": "compare",
+        "op": "lt",
+        "version": "1",
+        "signatures": [
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "boolean"
+          },
+          {
+            "arg_types": ["integer", "integer"],
+            "return_type": "boolean"
+          }
+        ]
+      },
+      {
+        "node": "compare",
+        "op": "lte",
+        "version": "1",
+        "signatures": [
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "boolean"
+          },
+          {
+            "arg_types": ["integer", "integer"],
+            "return_type": "boolean"
+          }
         ]
       },
       {
@@ -31,35 +129,53 @@
         "op": "crosses_above",
         "version": "1",
         "signatures": [
-          {"arg_types": ["decimal", "decimal"], "return_type": "boolean"}
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "boolean"
+          }
+        ]
+      },
+      {
+        "node": "cross",
+        "op": "crosses_below",
+        "version": "1",
+        "signatures": [
+          {
+            "arg_types": ["decimal", "decimal"],
+            "return_type": "boolean"
+          }
         ]
       }
     ],
     "feature_primitives": [
       {
+        "primitive": "ema",
+        "version": "1",
+        "source_streams": ["kline.primary.close", "kline.primary.high", "kline.primary.low", "kline.primary.open"],
+        "intervals": ["1d", "1h", "4h"],
+        "value_kinds": ["price"],
+        "output_type": "decimal"
+      },
+      {
+        "primitive": "macd",
+        "version": "1",
+        "source_streams": ["kline.primary.close", "kline.primary.high", "kline.primary.low", "kline.primary.open"],
+        "intervals": ["1d", "1h", "4h"],
+        "value_kinds": ["price"],
+        "output_type": "decimal"
+      },
+      {
         "primitive": "rolling_extreme",
         "version": "1",
-        "source_streams": [
-          "coinglass.futures_cvd",
-          "kline.primary.close",
-          "kline.primary.high",
-          "kline.primary.low",
-          "kline.primary.open"
-        ],
+        "source_streams": ["coinglass.futures_cvd", "kline.primary.close", "kline.primary.high", "kline.primary.low", "kline.primary.open", "metrics.btc.ahr999", "metrics.btc.bubble_index", "metrics.btc.funding_rate", "metrics.btc.funding_rate_oi_weight", "metrics.btc.futures_aggregated_cvd", "metrics.btc.global_long_short_ratio", "metrics.btc.golden_ratio_multiple", "metrics.btc.liquidation_long", "metrics.btc.liquidation_short", "metrics.btc.lth_mvrv", "metrics.btc.ma_200w_multiple", "metrics.btc.nupl", "metrics.btc.open_interest_aggregated", "metrics.btc.pi_cycle_ratio", "metrics.btc.puell_multiple", "metrics.btc.rainbow_band", "metrics.btc.sth_mvrv", "metrics.btc.top_long_short_ratio", "metrics.eth.funding_rate", "metrics.eth.funding_rate_oi_weight", "metrics.eth.futures_aggregated_cvd", "metrics.eth.global_long_short_ratio", "metrics.eth.liquidation_long", "metrics.eth.liquidation_short", "metrics.eth.open_interest_aggregated", "metrics.eth.top_long_short_ratio", "metrics.market.altcoin_season_index", "metrics.market.fear_greed_index", "metrics.market.stablecoin_mcap_total", "metrics.self.funding_rate", "metrics.self.funding_rate_oi_weight", "metrics.self.futures_aggregated_cvd", "metrics.self.global_long_short_ratio", "metrics.self.liquidation_long", "metrics.self.liquidation_short", "metrics.self.open_interest_aggregated", "metrics.self.top_long_short_ratio"],
         "intervals": ["1d", "1h", "4h"],
-        "value_kinds": ["flow", "price"],
+        "value_kinds": ["flow", "level", "price"],
         "output_type": "decimal"
       },
       {
         "primitive": "rolling_quantile",
         "version": "1",
-        "source_streams": [
-          "coinglass.futures_cvd",
-          "kline.primary.close",
-          "kline.primary.high",
-          "kline.primary.low",
-          "kline.primary.open"
-        ],
+        "source_streams": ["coinglass.futures_cvd", "kline.primary.close", "kline.primary.high", "kline.primary.low", "kline.primary.open"],
         "intervals": ["1d", "1h", "4h"],
         "value_kinds": ["flow", "price"],
         "output_type": "decimal"
@@ -67,21 +183,23 @@
       {
         "primitive": "rolling_sum",
         "version": "1",
-        "source_streams": ["coinglass.futures_cvd"],
+        "source_streams": ["coinglass.futures_cvd", "metrics.btc.ahr999", "metrics.btc.bubble_index", "metrics.btc.funding_rate", "metrics.btc.funding_rate_oi_weight", "metrics.btc.futures_aggregated_cvd", "metrics.btc.global_long_short_ratio", "metrics.btc.golden_ratio_multiple", "metrics.btc.liquidation_long", "metrics.btc.liquidation_short", "metrics.btc.lth_mvrv", "metrics.btc.ma_200w_multiple", "metrics.btc.nupl", "metrics.btc.open_interest_aggregated", "metrics.btc.pi_cycle_ratio", "metrics.btc.puell_multiple", "metrics.btc.rainbow_band", "metrics.btc.sth_mvrv", "metrics.btc.top_long_short_ratio", "metrics.eth.funding_rate", "metrics.eth.funding_rate_oi_weight", "metrics.eth.futures_aggregated_cvd", "metrics.eth.global_long_short_ratio", "metrics.eth.liquidation_long", "metrics.eth.liquidation_short", "metrics.eth.open_interest_aggregated", "metrics.eth.top_long_short_ratio", "metrics.market.altcoin_season_index", "metrics.market.fear_greed_index", "metrics.market.stablecoin_mcap_total", "metrics.self.funding_rate", "metrics.self.funding_rate_oi_weight", "metrics.self.futures_aggregated_cvd", "metrics.self.global_long_short_ratio", "metrics.self.liquidation_long", "metrics.self.liquidation_short", "metrics.self.open_interest_aggregated", "metrics.self.top_long_short_ratio"],
         "intervals": ["1d", "1h"],
-        "value_kinds": ["flow"],
+        "value_kinds": ["flow", "level"],
+        "output_type": "decimal"
+      },
+      {
+        "primitive": "rolling_zscore",
+        "version": "1",
+        "source_streams": ["kline.primary.close", "kline.primary.high", "kline.primary.low", "kline.primary.open"],
+        "intervals": ["1d", "1h", "4h"],
+        "value_kinds": ["price"],
         "output_type": "decimal"
       },
       {
         "primitive": "rsi_wilder",
         "version": "1",
-        "source_streams": [
-          "coinglass.futures_cvd",
-          "kline.primary.close",
-          "kline.primary.high",
-          "kline.primary.low",
-          "kline.primary.open"
-        ],
+        "source_streams": ["coinglass.futures_cvd", "kline.primary.close", "kline.primary.high", "kline.primary.low", "kline.primary.open"],
         "intervals": ["1d", "1h", "4h"],
         "value_kinds": ["flow", "price"],
         "output_type": "decimal"
@@ -101,6 +219,13 @@
         "kinds": ["feature"],
         "markets": ["futures"],
         "result_sources": []
+      },
+      {
+        "provider": "cutie",
+        "storage_source": "market_metrics_history",
+        "kinds": ["feature"],
+        "markets": ["futures"],
+        "result_sources": []
       }
     ],
     "cost_models": ["cutie.execution_cost.v1"],
@@ -110,5 +235,5 @@
     "trace_schemas": ["cutie.strategy_execution_trace.v1"],
     "evidence_schemas": ["cutie.strategy_execution_evidence.v1"]
   },
-  "sha256": "4e1760a3d6fa9ee5325d680acc830eb860f185d5c9dc05b6dbe5fd0d646bbad1"
+  "sha256": "047ffadee3275cc7b6574cf879359b07515f5f4a2f599aa1f7332aa4b0959b5f"
 }

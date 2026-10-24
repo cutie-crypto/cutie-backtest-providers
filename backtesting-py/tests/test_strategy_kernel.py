@@ -428,7 +428,7 @@ def test_provider_capability_fixture_exact_payload_and_hash():
     assert fixture["capability"]["data_transforms"] == ["ohlcv_resample.v1"]
     assert (
         fixture["sha256"]
-        == "4e1760a3d6fa9ee5325d680acc830eb860f185d5c9dc05b6dbe5fd0d646bbad1"
+        == "047ffadee3275cc7b6574cf879359b07515f5f4a2f599aa1f7332aa4b0959b5f"
     )
 
 
@@ -464,7 +464,8 @@ def test_unknown_spec_key_fails_closed_as_invalid():
 
 
 def test_valid_but_unadvertised_operator_is_unsupported_not_defaulted():
-    spec = make_spec(condition=_condition("gte"))
+    # gte became advertised with JES21-B3b 二期 K1; eq stays valid but unadvertised.
+    spec = make_spec(condition=_condition("eq"))
     with pytest.raises(StrategyContractError) as caught:
         compile_spec(spec)
     assert caught.value.code == ERR_SPEC_UNSUPPORTED
