@@ -64,6 +64,17 @@ def risk_quantity(*, capital, risk_pct, fill_price, initial_stop, qty_step):
     return qty
 
 
+def entry_margin_after_fees(*, qty, fill_price, leverage, fee_bps, slippage_bps, equity):
+    """Reserve entry fee/slippage in addition to margin. L affects only margin.
+
+    Returns the margin; rejects when margin + entry costs exceed equity."""
+    margin = qty * fill_price / leverage
+    costs = qty * fill_price * (fee_bps + slippage_bps) / 10000
+    if margin + costs > equity:
+        raise SizingRejected('insufficient_funds_after_fees')
+    return margin
+
+
 class PositionSizingMixin:
     def _sizing_install(self):
         from dataclasses import replace
@@ -133,11 +144,9 @@ class PositionSizingMixin:
                         qty = (Decimal(str(notional)) / price / step).to_integral_value(rounding=ROUND_FLOOR) * step
                         if qty < step:
                             raise SizingRejected('quantity_below_step')
-                    # Reserve entry fee/slippage in addition to margin. L affects only margin.
-                    margin = qty * price / self._risk.get('leverage', 1)
-                    costs = qty * price * (fee + slip) / 10000
-                    if margin + costs > equity:
-                        raise SizingRejected('insufficient_funds_after_fees')
+                    margin = entry_margin_after_fees(
+                        qty=qty, fill_price=price, leverage=self._risk.get('leverage', 1),
+                        fee_bps=fee, slippage_bps=slip, equity=equity)
                     units = (qty / scale).to_integral_value(rounding=ROUND_FLOOR)
                     if units < 1 or units * scale != qty:
                         raise SizingRejected('quantity_below_engine_step')

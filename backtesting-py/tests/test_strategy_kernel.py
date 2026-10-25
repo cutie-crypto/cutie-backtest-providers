@@ -712,8 +712,10 @@ def test_feature_expression_prices_are_frozen_on_the_signal_frame():
     [
         ("fixed_notional", "1000", "10"),
         ("fixed_margin", "1000", "20"),
-        ("risk_fraction", "0.1", "200"),
-        ("equity_fraction", "0.5", "100"),
+        # risk 500 / 止损距 5 = 100；保证金 5000 + 入场费用 15 <= 10000。0.1 风险
+        # （200 份，保证金 10000 + 费用 30）按模板口径拒单，见 test_kernel_sizing_k3。
+        # equity_fraction 与模板的逐值对拍也在 test_kernel_sizing_k3。
+        ("risk_fraction", "0.05", "100"),
     ],
 )
 def test_sizing_models_are_deterministic(model: str, value: str, expected_qty: str):
