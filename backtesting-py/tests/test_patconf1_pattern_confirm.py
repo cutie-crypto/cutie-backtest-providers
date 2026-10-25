@@ -84,7 +84,8 @@ def test_pattern_confirm_schema_is_two_keys_apart_from_published_filter_keys():
     assert PATTERN_CONFIRM_PARAM_SCHEMA_PROPERTIES == {
         'filter_pattern_confirm_enabled': {'type': 'boolean', 'default': False},
         'filter_pattern_confirm_bars': {'type': 'integer', 'default': 2, 'minimum': 1, 'maximum': 5}}
-    assert len(FILTER_PARAM_SCHEMA_PROPERTIES) == 10
+    # JES22-B adds the three volume filter keys to the published filter schema (10 -> 13).
+    assert len(FILTER_PARAM_SCHEMA_PROPERTIES) == 13
     assert not set(PATTERN_CONFIRM_SCHEMA_KEYS) & set(FILTER_PARAM_SCHEMA_PROPERTIES)
 
 
