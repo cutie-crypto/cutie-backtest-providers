@@ -3,6 +3,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 import pandas as pd
+import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -128,6 +129,42 @@ def test_calendar_dst_half_days_holidays_and_no_overnight(monkeypatch, tmp_path)
             for y in (2024, 2025, 2026)] == [252, 250, 251]
 
 
+@pytest.mark.parametrize('day', [
+    '2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31',
+    '2027-06-18', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24',
+])
+def test_calendar_2027_holidays(day):
+    assert not etf.is_trading_day(date.fromisoformat(day))
+    assert etf.session(date.fromisoformat(day)) is None
+
+
+@pytest.mark.parametrize('day,previous,opened,closed', [
+    ('2027-11-26', '2027-11-24', '14:30', '18:00'),
+    ('2027-07-02', '2027-07-01', '13:30', '20:00'),
+    ('2027-12-31', '2027-12-30', '14:30', '21:00'),
+])
+def test_calendar_2027_session_closes(monkeypatch, tmp_path, day, previous, opened, closed):
+    data = frame(day, (pd.Timestamp(day) + pd.Timedelta(days=1)).isoformat())
+    body, _ = run(monkeypatch, tmp_path, data, {previous: 400000000})
+    assert [(t['opened_at'], t['closed_at']) for t in body['trades']] == [
+        (ts(day + ' ' + opened), ts(day + ' ' + closed))]
+    report = body['raw_report']['etf_flow_follow']
+    assert report['fills'][0]['reason'] == 'us_session_close'
+    assert report['fills'][0]['flow_ts'] == ts(previous)
+    assert report['calendar']['last_date'] == '2027-12-31'
+
+
+def test_calendar_2027_trading_day_count():
+    days = [d.date() for d in pd.date_range('2027-01-01', '2027-12-31')]
+    # 365 days - 104 weekend days - 10 weekday holidays = 251 sessions (half day counts as one).
+    assert sum(d.weekday() < 5 for d in days) == 261
+    assert sum(etf.is_trading_day(d) for d in days) == 261 - 10 == 251
+
+
+def test_calendar_2027_first_session_uses_previous_year_flow():
+    assert etf.session(date(2027, 1, 4))['flow_ts'] == ts('2026-12-31')
+
+
 def test_available_time_boundary_rejects_future_row(monkeypatch, tmp_path):
     config = etf.EtfFlowConfig.parse({})
     event = etf.session(date(2026, 3, 9))
@@ -215,7 +252,7 @@ def test_calendar_coverage_fails_before_fetch(monkeypatch, tmp_path):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, '_fetch_ohlcv', forbidden)
     monkeypatch.setattr(p, '_fetch_artifact_metric_chunk', forbidden)
-    for start, end in [('2023-12-31', '2024-01-02'), ('2026-12-31', '2027-01-02'), ('2024-01-02', '2024-01-03')]:
+    for start, end in [('2023-12-31', '2024-01-02'), ('2027-12-31', '2028-01-02'), ('2028-01-01', '2028-01-02'), ('2028-01-03', '2028-01-04'), ('2024-01-02', '2024-01-03')]:
         body = post(frame(start, end))
         assert (body['error_type'], body['limitations']['reason']) == ('INSUFFICIENT_DATA', 'etf_calendar_unavailable')
 

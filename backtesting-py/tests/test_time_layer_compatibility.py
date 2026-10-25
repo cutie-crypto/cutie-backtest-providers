@@ -73,6 +73,8 @@ BASELINE['single'].update(OI_BASELINE['single'])
 OI_CASES = {'oi_breakout'}
 
 ETF38_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_etf38_off.json').read_text())
+# S5-7 日历补 2027 只改 raw_report.etf_flow_follow.calendar.last_date，2026-10-25
+ETF38_BASELINE['raw_report'] = '9f041cba73bea513cfafc606f5c197904007dd301c39e6cd318de587012470b7'
 ETF38 = {'etf_flow_follow'}
 
 EXNF52_BASELINE = json.loads((Path(__file__).parent / 'fixtures/exchange_netflow_52_time_off.json').read_text())
