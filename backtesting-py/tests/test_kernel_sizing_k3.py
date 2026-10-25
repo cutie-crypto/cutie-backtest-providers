@@ -44,16 +44,29 @@ WIN_FRAMES = [
 ]
 
 
-def _spec(*, model: str, value: str, side: str = "long", basis: str | None = None) -> dict:
-    spec = tsk.make_spec(sizing_model=model, sizing_value=value, side=side)
+def _spec(*, model: str, value: str, side: str = "long", basis: str | None = None,
+          fee: str | None = None, slip: str | None = None, leverage: str | None = None,
+          time_exit_bars: int | None = None) -> dict:
+    spec = tsk.make_spec(sizing_model=model, sizing_value=value, side=side,
+                         time_exit_bars=time_exit_bars)
     if basis is not None:
         spec["risk"]["position_sizing"]["basis"] = basis
+    if leverage is not None:
+        spec["risk"]["leverage"] = leverage
+    cost = spec["execution"]["cost_model"]
+    if fee is not None:
+        cost["fee_bps"] = fee
+    if slip is not None:
+        cost["slippage_bps"] = slip
     return spec
 
 
 def _kernel(spec: dict, frames: list, *, initial: Decimal, equity: Decimal):
     plan = tsk.compile_spec(spec)
-    state = tsk.initial_state(plan, tsk.execution_params(sizing_capital=str(initial)))
+    params = tsk.execution_params(sizing_capital=str(initial))
+    cost = spec["execution"]["cost_model"]
+    params["fee_bps"], params["slippage_bps"] = cost["fee_bps"], cost["slippage_bps"]
+    state = tsk.initial_state(plan, params)
     # 模拟此前已有盈亏：当前权益与初始资金不同，暴露 basis 口径差异。
     state.equity = equity
     return tsk.simulate(plan, frames, state)
@@ -68,6 +81,14 @@ def _kernel_entry(spec: dict, *, initial: Decimal, equity: Decimal):
 
 def _template_entry(spec: dict, params: dict, *, initial: Decimal, equity: Decimal):
     """在模板引擎里以 next-open 开一笔，返回 (用户单位数量 | None, 拒单原因)。"""
+    qtys, reasons = _template_run(spec, params, initial=initial, equity=equity)
+    return (qtys[0] if qtys else None), reasons
+
+
+def _template_run(spec: dict, params: dict, *, initial: Decimal, equity: Decimal,
+                  round_trips: int = 1):
+    """模板引擎独立跑：bar 1、5 发开仓信号（next-open 成交），bar 3 平仓；价格恒定。
+    返回 (各笔用户单位数量, 拒单原因)。"""
     cost = spec["execution"]["cost_model"]
     fee, slip = Decimal(cost["fee_bps"]), Decimal(cost["slippage_bps"])
     leverage = int(spec["risk"]["leverage"])
@@ -87,7 +108,10 @@ def _template_entry(spec: dict, params: dict, *, initial: Decimal, equity: Decim
             self._risk_init()
 
         def next(self):
-            if not self.position and len(self.data) - 1 == 1:
+            bar = len(self.data) - 1
+            if self.position and round_trips > 1 and bar == 3:
+                self.position.close()
+            elif not self.position and bar in (1, 5)[:round_trips]:
                 self._risk_buy() if side == "long" else self._risk_sell()
 
     Template._sizing_scale = Template._isolated_equity_scale = step
@@ -96,8 +120,8 @@ def _template_entry(spec: dict, params: dict, *, initial: Decimal, equity: Decim
     Template._isolated_slippage_bps = slip
     price = float(FLAT_FRAMES[1].values["open"])
     data = pd.DataFrame(
-        dict(Open=[price] * 6, Close=[price] * 6, High=[price] * 6, Low=[price] * 6, Volume=1),
-        index=pd.date_range("2026-01-01", periods=6, freq="h"),
+        dict(Open=[price] * 8, Close=[price] * 8, High=[price] * 8, Low=[price] * 8, Volume=1),
+        index=pd.date_range("2026-01-01", periods=8, freq="h"),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -106,11 +130,10 @@ def _template_entry(spec: dict, params: dict, *, initial: Decimal, equity: Decim
             exclusive_orders=True, finalize_trades=True,
             **provider._leverage_backtest_kwargs(leverage),
         ).run()
-    trades = result["_trades"]
-    qty = abs(Decimal(str(trades.iloc[0].Size))) * step if len(trades) else None
+    qtys = [abs(Decimal(str(size))) * step for size in result["_trades"].Size]
     report = getattr(result["_strategy"], "_sizing_report", None)
     reasons = [r["reason"] for r in report["rejections"]] if report else []
-    return qty, reasons
+    return qtys, reasons
 
 
 # (名称, 内核 sizing, 模板参数)。模板参数里 position_size_pct 是百分数，内核是比例。
@@ -167,21 +190,66 @@ def test_percentage_entry_reserves_commission(name, side):
     assert qty is not None and qty < gross
 
 
-@pytest.mark.parametrize("model,value,basis,params", [
-    ("equity_fraction", "0.5", None, {"position_size_pct": 50}),
-    ("risk_fraction", "0.05", "equity", {"position_size_risk_pct": 5, "compound": True}),
-    ("risk_fraction", "0.05", "initial", {"position_size_risk_pct": 5, "compound": False}),
-])
-def test_second_trade_sized_on_kernel_equity_matches_template(model, value, basis, params):
-    # 第二笔按第一笔平仓后的内核权益重新折算，期望值同样由模板现场算出。
-    spec = _spec(model=model, value=value, basis=basis)
+# 内核两笔平价往返：frame 1 开仓、time_exit 按 frame 1 收盘平仓，frame 2 再开、finalize 平仓。
+ROUND_TRIP_FRAMES = [
+    tsk.frame(0),
+    tsk.frame(1, open_="100", high="100.1", low="99.9", close="100"),
+    tsk.frame(2, open_="100", high="100.1", low="99.9", close="100"),
+]
+HALF = ("equity_fraction", "0.5", None, {"position_size_pct": 50})
+RISK_INITIAL = ("risk_fraction", "0.02", "initial", {"position_size_risk_pct": 2, "compound": False})
+RISK_EQUITY = ("risk_fraction", "0.02", "equity", {"position_size_risk_pct": 2, "compound": True})
+
+
+def _both_runs(sizing, *, side="long", fee="10", slip="5", leverage="2"):
+    """两条路径从同一起点（权益 = 初始资金 10000）各自独立跑完两笔，互不借用对方权益。"""
+    model, value, basis, params = sizing
+    spec = _spec(model=model, value=value, side=side, basis=basis, fee=fee, slip=slip,
+                 leverage=leverage, time_exit_bars=1)
     initial = Decimal("10000")
-    result = _kernel(spec, WIN_FRAMES, initial=initial, equity=initial)
-    first, second = result["trades"][:2]
-    equity_after = initial + Decimal(first["pnl"])
-    assert (Decimal(first["qty"]), []) == _template_entry(spec, params, initial=initial, equity=initial)
-    expected, _ = _template_entry(spec, params, initial=initial, equity=equity_after)
-    assert Decimal(second["qty"]) == expected
+    kernel = _kernel(spec, ROUND_TRIP_FRAMES, initial=initial, equity=initial)
+    template, _ = _template_run(spec, params, initial=initial, equity=initial, round_trips=2)
+    return [Decimal(t["qty"]) for t in kernel["trades"]], template
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+@pytest.mark.parametrize("leverage", ["1", "2"])
+@pytest.mark.parametrize("sizing", [HALF, RISK_INITIAL, RISK_EQUITY], ids=["half", "risk_initial", "risk_equity"])
+def test_two_round_trips_match_template_without_slippage(sizing, leverage, side):
+    kernel, template = _both_runs(sizing, side=side, slip="0", leverage=leverage)
+    assert len(kernel) == 2
+    assert kernel == template
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+@pytest.mark.parametrize("sizing", [HALF, RISK_INITIAL, RISK_EQUITY], ids=["half", "risk_initial", "risk_equity"])
+def test_two_round_trips_match_template_with_slippage_and_leverage(sizing, side):
+    # 杠杆 > 1 时模板按逐仓结算滑点并计入后续定量，两路一致（半仓 99.900 -> 99.600）。
+    kernel, template = _both_runs(sizing, side=side, slip="5", leverage="2")
+    assert len(kernel) == 2
+    assert kernel == template
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_known_gap_slippage_not_settled_by_template_at_leverage_one(side):
+    # 已知差异（模板怪癖，已登记待 Owner 定，内核不照抄）：杠杆 1 + 比例仓位时，
+    # 模板的滑点只进报表、不扣现金，第二笔按未扣滑点的权益定量；内核扣了滑点。
+    # 模板哪天修了，这条会红，届时改成逐值相等。
+    kernel, template = _both_runs(HALF, side=side, slip="5", leverage="1")
+    assert kernel[0] == template[0] == Decimal("49.950")
+    assert template[1] == Decimal("49.900")
+    assert kernel[1] == Decimal("49.875")
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_known_gap_full_equity_sentinel(side):
+    # 已知差异（模板怪癖，已登记待 Owner 定，内核不照抄）：模板不写仓位时用
+    # backtesting.py 的 _FULL_EQUITY = 1 - ε 哨兵，零费用、整除时少一个 qty_step；
+    # 内核按口径取比例 1。模板哪天修了，这条会红，届时改成逐值相等。
+    spec = _spec(model="equity_fraction", value="1", side=side, fee="0", slip="0")
+    capital = dict(initial=Decimal("10000"), equity=Decimal("10000"))
+    assert _template_entry(spec, {}, **capital) == (Decimal("199.999"), [])
+    assert _kernel_entry(spec, **capital) == (Decimal("200"), [])
 
 
 def test_risk_fraction_default_basis_matches_explicit_equity():
