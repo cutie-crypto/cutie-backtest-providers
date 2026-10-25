@@ -22,6 +22,9 @@ FILTER_PARAM_SCHEMA_PROPERTIES = {
     'filter_supertrend_enabled': {'type': 'boolean', 'default': False},
     'filter_supertrend_atr_period': {'type': 'integer', 'default': 10, 'minimum': 5, 'maximum': 30},
     'filter_supertrend_multiplier': {'type': 'number', 'default': 3, 'minimum': 1, 'maximum': 6},
+    'filter_volume_enabled': {'type': 'boolean', 'default': False},
+    'filter_volume_period': {'type': 'integer', 'default': 20, 'minimum': 5, 'maximum': 100},
+    'filter_volume_multiple': {'type': 'number', 'default': 1.5, 'minimum': 1, 'maximum': 5},
 }
 # P-PATCONF-1: pattern confirmation is not a bar mask; a template must defer its own signal through
 # pattern_confirm_entries(). Kept apart from FILTER_PARAM_SCHEMA_PROPERTIES (published to every filter
@@ -47,6 +50,9 @@ class FilterConfig:
     supertrend_multiplier: float = 3
     pattern_confirm_enabled: bool = False
     pattern_confirm_bars: int = 2
+    volume_enabled: bool = False
+    volume_period: int = 20
+    volume_multiple: float = 1.5
 
     @classmethod
     def parse(cls, params: Mapping[str, Any]) -> FilterConfig:
@@ -72,7 +78,7 @@ class FilterConfig:
         if not values['filter_layer_enabled'] and any(values[k] != s['default'] for k, s in _PARSED_FILTER_PROPERTIES.items()):
             raise ValueError('INVALID_PARAMS:non-default filter parameters require filter_layer_enabled=true')
         groups = {'ema': ('period',), 'macd': ('fast', 'slow'), 'supertrend': ('atr_period', 'multiplier'),
-                  'pattern_confirm': ('bars',)}
+                  'pattern_confirm': ('bars',), 'volume': ('period', 'multiple')}
         for name, options in groups.items():
             if not values[f'filter_{name}_enabled'] and any(
                 values[f'filter_{name}_{option}'] != _PARSED_FILTER_PROPERTIES[f'filter_{name}_{option}']['default']
@@ -84,6 +90,9 @@ class FilterConfig:
         indicator_filters = ('ema', 'macd', 'supertrend')
         if values['filter_timeframe'] and not any(values[f'filter_{name}_enabled'] for name in indicator_filters):
             raise ValueError('INVALID_PARAMS:filter_timeframe requires an ema, macd or supertrend filter')
+        # JES22-B v1: the volume predicate is always computed on the primary timeframe.
+        if values['filter_timeframe'] and values['filter_volume_enabled']:
+            raise ValueError('INVALID_PARAMS:filter_volume cannot be combined with filter_timeframe')
         if values['filter_macd_fast'] >= values['filter_macd_slow']:
             raise ValueError('INVALID_PARAMS:filter_macd_fast must be less than filter_macd_slow')
         return cls(**{key.removeprefix('filter_').replace('layer_enabled', 'enabled'): value for key, value in values.items()})
@@ -98,7 +107,8 @@ class FilterConfig:
     def required_bars(self) -> int:
         return max(self.ema_period if self.ema_enabled else 0,
                    3 * self.macd_slow if self.macd_enabled else 0,
-                   self.supertrend_atr_period + 1 if self.supertrend_enabled else 0)
+                   self.supertrend_atr_period + 1 if self.supertrend_enabled else 0,
+                   self.volume_period + 1 if self.volume_enabled else 0)
 
     def report(self, direction: str = 'long') -> dict[str, Any]:
         short = _is_short(direction)
@@ -117,6 +127,11 @@ class FilterConfig:
                 rule=('close < signal_bar_low' if short else 'close > signal_bar_high'),
                 window=f'signal_bar+1..signal_bar+{self.pattern_confirm_bars}', timeframe='primary',
                 entry='first_confirming_bar_close_then_next_open', unconfirmed='discard_signal')
+        if self.volume_enabled:
+            # JES22-B: direction-neutral; higher volume always permits an entry.
+            predicates['volume'] = dict(rule='volume > multiple * mean(prev period)',
+                                        period=self.volume_period, multiple=self.volume_multiple,
+                                        timeframe='primary')
         return dict(combine='AND', direction=direction, clock='closed_signal_bar',
                     scope='entry_only', fill='next_bar_open', required_bars=self.required_bars,
                     blocked_signal='discard_without_replay', predicates=predicates)
@@ -151,8 +166,21 @@ def entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertrend: Cal
         trend = supertrend(columns['High'], columns['Low'], close,
                            config.supertrend_atr_period, config.supertrend_multiplier)['trend']
         allowed &= np.isfinite(trend) & (trend == 1)
+    if config.volume_enabled:
+        allowed &= _volume_mask(config, columns)
     allowed[:max(0, config.required_bars - 1)] = False
     return allowed
+
+
+def _volume_mask(config: FilterConfig, columns: Mapping[str, Any]) -> np.ndarray:
+    """Direction-neutral volume gate: volume[i] strictly above k * mean(volume[i-N .. i-1]).
+
+    The average excludes the signal bar itself (rolling(N).mean().shift(1)) and must be present
+    and positive; a NaN or zero average never passes (warmup, gappy or zero-volume runs).
+    """
+    volume = np.asarray(columns['Volume'], dtype='float64')
+    average = pd.Series(volume).rolling(config.volume_period).mean().shift(1).to_numpy()
+    return np.isfinite(volume) & np.isfinite(average) & (average > 0) & (volume > config.volume_multiple * average)
 
 
 def _short_entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertrend: Callable) -> np.ndarray:
@@ -170,6 +198,8 @@ def _short_entry_mask(config: FilterConfig, columns: Mapping[str, Any], supertre
         trend = supertrend(columns['High'], columns['Low'], close,
                            config.supertrend_atr_period, config.supertrend_multiplier)['trend']
         allowed &= np.isfinite(trend) & (trend == -1)
+    if config.volume_enabled:
+        allowed &= _volume_mask(config, columns)
     allowed[:max(0, config.required_bars - 1)] = False
     return allowed
 
