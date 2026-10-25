@@ -34,6 +34,11 @@ from canonical_json import (
     canonical_json_sha256,
     normalize_numbers_for_hash,
 )
+from strategy_position_sizing import (
+    SizingRejected,
+    entry_margin_after_fees,
+    risk_quantity,
+)
 
 STRATEGY_SPEC_SCHEMA = "cutie.strategy_spec.v2"
 ARTIFACT_MANIFEST_SCHEMA = "cutie.strategy_artifact_manifest.v1"
@@ -4281,33 +4286,67 @@ class StrategyKernel:
         sizing = self.plan.strategy_spec["risk"]["position_sizing"]
         leverage = Decimal(self.plan.strategy_spec["risk"]["leverage"])
         value = Decimal(sizing["value"])
+        cost_model = self.plan.strategy_spec["execution"]["cost_model"]
+        fee_bps = Decimal(cost_model["fee_bps"])
+        step = Decimal(state.instrument_rules["qty_step"])
         try:
             with localcontext(_DECIMAL_CONTEXT) as ctx:
-                if sizing["model"] == "fixed_notional":
-                    raw_qty = ctx.divide(value, entry_price)
-                elif sizing["model"] == "fixed_margin":
-                    raw_qty = ctx.divide(ctx.multiply(value, leverage), entry_price)
-                elif sizing["model"] == "equity_fraction":
-                    margin_budget = ctx.multiply(state.equity, value)
-                    raw_qty = ctx.divide(
-                        ctx.multiply(margin_budget, leverage), entry_price
-                    )
-                else:
+                if sizing["model"] == "risk_fraction":
+                    # Same functions as the template's PositionSizingMixin:
+                    # risk_quantity floors to qty_step, then the entry must
+                    # afford margin + entry fee + slippage. basis initial is
+                    # the template's compound=False, equity is compound=True.
                     basis_equity = (
                         state.initial_capital
                         if sizing.get("basis") == "initial"
                         else state.equity
                     )
-                    risk_budget = ctx.multiply(basis_equity, value)
-                    risk_distance = ctx.abs(ctx.subtract(entry_price, stop))
-                    raw_qty = ctx.divide(risk_budget, risk_distance)
-                step = Decimal(state.instrument_rules["qty_step"])
-                qty = ctx.multiply(
-                    ctx.divide(raw_qty, step).to_integral_value(rounding=ROUND_FLOOR),
-                    step,
-                )
+                    qty = risk_quantity(
+                        capital=basis_equity,
+                        risk_pct=value,
+                        fill_price=entry_price,
+                        initial_stop=stop,
+                        qty_step=step,
+                    )
+                    margin = entry_margin_after_fees(
+                        qty=qty,
+                        fill_price=entry_price,
+                        leverage=leverage,
+                        fee_bps=fee_bps,
+                        slippage_bps=Decimal(cost_model["slippage_bps"]),
+                        equity=state.equity,
+                    )
+                else:
+                    if sizing["model"] == "fixed_notional":
+                        raw_qty = ctx.divide(value, entry_price)
+                    elif sizing["model"] == "fixed_margin":
+                        raw_qty = ctx.divide(ctx.multiply(value, leverage), entry_price)
+                    else:
+                        # equity_fraction = the template's fractional
+                        # buy(size=f) / unsized buy() (f = 1): backtesting.py
+                        # Broker._process_orders sizes against
+                        # price + commission per unit, i.e.
+                        # floor(equity * L * f / (price * (1 + fee))).
+                        # Slippage is report-only there, so it is not reserved.
+                        price_plus_commission = ctx.add(
+                            entry_price,
+                            ctx.divide(ctx.multiply(entry_price, fee_bps), Decimal(10000)),
+                        )
+                        raw_qty = ctx.divide(
+                            ctx.multiply(ctx.multiply(state.equity, leverage), value),
+                            price_plus_commission,
+                        )
+                    qty = ctx.multiply(
+                        ctx.divide(raw_qty, step).to_integral_value(rounding=ROUND_FLOOR),
+                        step,
+                    )
+                    margin = ctx.divide(ctx.multiply(qty, entry_price), leverage)
                 order_notional = ctx.multiply(qty, entry_price)
-                margin = ctx.divide(order_notional, leverage)
+        except SizingRejected as exc:
+            state.diagnostics.append(
+                {"frame_index": index, "kind": "order_rejected", "reason": str(exc)}
+            )
+            return
         except ArithmeticError as exc:
             raise KernelExecutionError(
                 ERR_SPEC_INVALID,
