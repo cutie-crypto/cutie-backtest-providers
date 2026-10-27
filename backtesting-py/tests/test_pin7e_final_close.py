@@ -195,7 +195,11 @@ def test_last_bar_names_no_stop_exit(monkeypatch, tmp_path, direction, layer, ri
 
 # ---------------------------------------------------------------- every engine-path v2 tool
 
-NON_ENGINE_RUNNERS = {p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, 'kernel_v3', p.ROTATION_RUNNER}
+# condition_kernel 走 Decimal v2 内核（strategy_kernel_v2），不经过 backtesting.py 的 Backtest.run，
+# 所以 record_runs 抓不到 frame，无法从这里取到 Close[-1] 作对照；其末端收盘结算不变量已在 P6 与
+# test_condition_kernel_tool 覆盖。
+NON_ENGINE_RUNNERS = {p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, 'kernel_v3', p.ROTATION_RUNNER,
+                      p.CONDITION_KERNEL_RUNNER}
 ENGINE_TOOLS = sorted(tool.removeprefix(PREFIX) for tool, spec in p.TOOL_SPECS.items()
                       if spec.get('runner') not in NON_ENGINE_RUNNERS)
 

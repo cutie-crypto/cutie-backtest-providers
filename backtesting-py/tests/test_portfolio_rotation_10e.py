@@ -370,6 +370,7 @@ def test_catalog_existing_entries_byte_identical():
         'local.backtesting_py.etf_flow_follow',  # C38
 
         'local.backtesting_py.exchange_netflow',  # C52 +1
+        'local.backtesting_py.condition_kernel',  # K2
     }
     entry = api._catalog_tool(TOOL_ID, api.TOOL_SPECS[TOOL_ID], symbols)
     assert entry['markets'] == ['spot']

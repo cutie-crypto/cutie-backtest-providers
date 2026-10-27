@@ -147,6 +147,7 @@ UNWIRED_OWN_PARAMS = {
     'basket_ratio_zscore': ('margin_per_leg',), 'portfolio_rotation': ('1/K',),
     'fear_greed_scale_in': ('buy_notional', 'max_lots'),  # P1
     'btc_dominance_rotation': ('equal-weight',),  # C48: basket weights, no single-position sizing
+    'condition_kernel': ('strategy_spec.risk.position_sizing',),  # K2: sizing lives inside strategy_spec
 }
 
 
@@ -216,7 +217,8 @@ def test_runner_sizing_allowed_keys_assert_checks_subset_and_coverage():
 def test_allowed_keys_literal_keyset_equals_unwired_runner_set():
     # 真实模块级对象：字面量 dict 的键集必须等于由 TOOL_SPECS runner 字段推出的未接 runner 集合
     runners = {tool for tool, spec in p.TOOL_SPECS.items()
-               if spec.get('runner') in (p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, 'kernel_v3', p.ROTATION_RUNNER)}
+               if spec.get('runner') in (p.SCALE_IN_OUT_RUNNER, p.TURTLE_RUNNER, 'kernel_v3', p.ROTATION_RUNNER,
+                                         p.CONDITION_KERNEL_RUNNER)}
     assert set(p.RUNNER_SIZING_ALLOWED_KEYS) == runners == set(p.POSITION_SIZING_UNWIRED_TOOLS)
     assert all(v == frozenset() for v in p.RUNNER_SIZING_ALLOWED_KEYS.values())
 
@@ -245,7 +247,8 @@ def test_catalog_and_builders_cover_actual_mixins():
             assert issubclass(cls, p._FixedRiskMixin)
             assert cls._risk['compound'] is False
     assert p.POSITION_SIZING_UNWIRED_TOOLS == {tool for tool,spec in p.TOOL_SPECS.items()
-        if spec.get('runner') in (p.TURTLE_RUNNER,p.SCALE_IN_OUT_RUNNER,'kernel_v3',p.ROTATION_RUNNER)}
+        if spec.get('runner') in (p.TURTLE_RUNNER,p.SCALE_IN_OUT_RUNNER,'kernel_v3',p.ROTATION_RUNNER,
+                                  p.CONDITION_KERNEL_RUNNER)}
 
 
 @pytest.mark.usefixtures('legacy_risk_layer_default')

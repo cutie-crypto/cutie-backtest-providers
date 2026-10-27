@@ -93,6 +93,7 @@ def test_catalog_declares_futures_market(client):
                                "local.backtesting_py.chan_3sell", "local.backtesting_py.fomc_reversal",
                                "local.backtesting_py.funding_settlement_reversal",  # P2
                                "local.backtesting_py.token_unlock_event",  # C39 +1
+                               "local.backtesting_py.condition_kernel",  # K2
                                # SHORT-PAT-4
                                "local.backtesting_py.bearish_engulfing", "local.backtesting_py.shooting_star",
                                "local.backtesting_py.evening_star",

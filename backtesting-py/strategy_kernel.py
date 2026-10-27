@@ -34,6 +34,11 @@ from canonical_json import (
     canonical_json_sha256,
     normalize_numbers_for_hash,
 )
+from strategy_position_sizing import (
+    SizingRejected,
+    entry_margin_after_fees,
+    risk_quantity,
+)
 
 STRATEGY_SPEC_SCHEMA = "cutie.strategy_spec.v2"
 ARTIFACT_MANIFEST_SCHEMA = "cutie.strategy_artifact_manifest.v1"
@@ -89,10 +94,11 @@ _KLINE_PRIMARY_FIELDS = {"open", "high", "low", "close"}
 _KLINE_PRIMARY_COARSE_INTERVALS = {"4h", "1d"}
 _KLINE_PRIMARY_COARSE_BASE_TIMEFRAME = "1h"
 # The four feature primitives §5.5 registers; param shapes are frozen cross-provider.
-# ``rolling_zscore`` is the 123 组合策略 v3 addition (SPEC_组合策略v3契约 §2.3): it
-# is compiled only by ``compile_strategy_v3`` and is deliberately absent from
-# ``capability_payload`` (v3 never enters the capability declaration), so a v2
-# spec naming it still fails the capability exact-set check.
+# ``rolling_zscore`` / ``ema`` came in with 123 组合策略 v3 (SPEC_组合策略v3契约 §2.3)
+# and are now also v2 primitives (JES21-B3b 二期 K1): v2 declares them, plus the
+# v2-only ``macd``, in ``capability_payload``. v2 recursive primitives (ema /
+# macd, like rsi_wilder) break irrecoverably on a gap; v3 keeps its own
+# re-seeding ``_ema_series_v3``. Golden: tests/fixtures/strategy_kernel_conformance_v2c.json.
 # SPEC_组合策略v3契约 §2.2 / §2.4 / §2.5 closed vocabularies.
 _STRATEGY_FAMILIES_V3 = {
     "basket_ratio_sma_cross",
@@ -127,6 +133,76 @@ _KNOWN_PRIMITIVES = {
     "rolling_zscore",
     "ema",
 }
+# v2-only primitives: never accepted by the v3 registry above.
+_KNOWN_PRIMITIVES_V2 = _KNOWN_PRIMITIVES | {"macd"}
+_MACD_OUTPUTS = {"line", "signal", "hist"}
+# JES21-B3b 二期 IMPL §3.4: ``metrics.<scope>.<metric>`` feature streams, fetched
+# from the central market_metrics_history ``/metrics`` (provider ``cutie``).
+_METRICS_PREFIX = "metrics."
+_METRICS_SCOPES = ("btc", "eth", "market", "self")
+_METRIC_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# Closed (scope, metric) set the capability declares. self/btc/eth are per-coin
+# CoinGlass families; market/btc-only rows are the daily index archive and the
+# public fear & greed series. btc_dominance is deliberately absent: its 3d
+# series is irregularly spaced and fails the contiguous-interval rule.
+_METRICS_PER_COIN = (
+    "funding_rate",
+    "funding_rate_oi_weight",
+    "futures_aggregated_cvd",
+    "global_long_short_ratio",
+    "liquidation_long",
+    "liquidation_short",
+    "open_interest_aggregated",
+    "top_long_short_ratio",
+)
+# 三期 IMPL §1.5.4: server-side 1d→1h stitched streams. The central /metrics
+# serves them only at interval=1h; self/btc/eth scope like the per-coin rows.
+_METRICS_PER_COIN_STITCHED = (
+    "funding_rate_1h_stitched",
+    "global_long_short_ratio_1h_stitched",
+    "liquidation_long_24h_stitched",
+    "liquidation_short_24h_stitched",
+    "open_interest_aggregated_1h_stitched",
+)
+_METRICS_MARKET = ("altcoin_season_index", "fear_greed_index", "stablecoin_mcap_total")
+_METRICS_BTC_ONLY = (
+    "ahr999",
+    "bubble_index",
+    "golden_ratio_multiple",
+    "lth_mvrv",
+    "ma_200w_multiple",
+    "nupl",
+    "pi_cycle_ratio",
+    "puell_multiple",
+    "rainbow_band",
+    "sth_mvrv",
+)
+METRICS_SOURCE_STREAMS = tuple(
+    sorted(
+        {
+            f"metrics.{scope}.{metric}"
+            for scope in ("self", "btc", "eth")
+            for metric in (*_METRICS_PER_COIN, *_METRICS_PER_COIN_STITCHED)
+        }
+        | {f"metrics.market.{metric}" for metric in _METRICS_MARKET}
+        | {f"metrics.btc.{metric}" for metric in _METRICS_BTC_ONLY},
+        key=lambda value: value.encode("utf-16-be"),
+    )
+)
+
+
+def metrics_stream_parts(source_stream: str) -> Optional[tuple[str, str]]:
+    """``metrics.<scope>.<metric>`` -> ``(scope, metric)``; ``None`` otherwise."""
+    if not source_stream.startswith(_METRICS_PREFIX):
+        return None
+    parts = source_stream.split(".")
+    if (
+        len(parts) != 3
+        or parts[1] not in _METRICS_SCOPES
+        or _METRIC_NAME_RE.fullmatch(parts[2]) is None
+    ):
+        return None
+    return parts[1], parts[2]
 
 _SPEC_KEYS = {
     "schema",
@@ -557,6 +633,25 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
     _canonical_scalar_tree(obj["params"], f"{path}.params")
     _validate_primitive_params(obj["primitive"], obj["params"], path)
     source_stream = obj["source_stream"]
+    if source_stream.startswith(_METRICS_PREFIX) and metrics_stream_parts(
+        source_stream
+    ) is None:
+        _raise(
+            f"{path}.source_stream",
+            "metrics stream must be metrics.<self|market|btc|eth>.<metric>",
+            actual=source_stream,
+        )
+    stitched_parts = metrics_stream_parts(source_stream)
+    if (
+        stitched_parts is not None
+        and stitched_parts[1] in _METRICS_PER_COIN_STITCHED
+        and obj["interval"] != "1h"
+    ):
+        _raise(
+            f"{path}.interval",
+            "stitched metrics stream requires interval 1h",
+            actual=obj["interval"],
+        )
     if source_stream.startswith(_KLINE_PRIMARY_PREFIX):
         field = source_stream[len(_KLINE_PRIMARY_PREFIX) :]
         if field not in _KLINE_PRIMARY_FIELDS:
@@ -624,6 +719,72 @@ def _validate_primitive_params(primitive: Any, raw_params: Any, path: str) -> No
         )
         if params["mode"] not in {"min", "max"}:
             _raise(f"{path}.params.mode", "must be min or max", actual=params["mode"])
+    elif primitive in {"ema", "rolling_zscore"}:
+        # A one-bar zscore window has stdev 0 on every bar; a one-bar EMA is
+        # the raw value. Both start at 2, same as v3.
+        params = _exact(raw_params, {"window_bars"}, f"{path}.params")
+        _safe_int(
+            params["window_bars"],
+            f"{path}.params.window_bars",
+            minimum=2,
+            maximum=10000,
+        )
+    elif primitive == "macd":
+        params = _exact(
+            raw_params, {"fast", "slow", "signal", "output"}, f"{path}.params"
+        )
+        fast = _safe_int(params["fast"], f"{path}.params.fast", minimum=2, maximum=1000)
+        _safe_int(params["slow"], f"{path}.params.slow", minimum=fast + 1, maximum=1000)
+        _safe_int(params["signal"], f"{path}.params.signal", minimum=2, maximum=1000)
+        if params["output"] not in _MACD_OUTPUTS:
+            _raise(
+                f"{path}.params.output",
+                "must be line, signal or hist",
+                actual=params["output"],
+            )
+
+
+def primitive_lookback_bars(primitive: str, params: dict[str, Any]) -> int:
+    """Source bars a v2 history primitive needs before its first value."""
+    if primitive == "macd":
+        return params["slow"] + params["signal"] - 1
+    if primitive == "rsi_wilder":
+        return params["period"] + 1
+    if primitive == "rolling_quantile":
+        return params["min_periods"]
+    return params["window_bars"]
+
+
+def per_feature_lag_needs(strategy_spec: Any) -> dict[str, int]:
+    """Per-feature-key max history need (lag_bars, +1 inside cross) across
+    every reference in the spec. Companion to
+    ``strategy_execution.max_primary_lag_frames``: that one sizes the primary
+    frames history, this one drives the per-feature floors "a feature's
+    warmup must cover how far back it is ever referenced" -- the execution
+    preflight's additive floor (final review Codex HIGH-3/MED-4) and the
+    compile-time passthrough history floor (K1d). Lives in the kernel so the
+    compile layer can use it; strategy_execution re-exports it."""
+
+    needs: dict[str, int] = {}
+
+    def walk(node: Any, inside_cross: bool) -> None:
+        if isinstance(node, dict):
+            if node.get("node") == "feature":
+                lag = node.get("lag_bars")
+                key = node.get("key")
+                if isinstance(lag, int) and not isinstance(lag, bool) and isinstance(key, str):
+                    need = lag + (1 if inside_cross else 0)
+                    if need > needs.get(key, -1):
+                        needs[key] = need
+            child_inside = inside_cross or node.get("node") == "cross"
+            for value in node.values():
+                walk(value, child_inside)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, inside_cross)
+
+    walk(strategy_spec, False)
+    return needs
 
 
 def _validate_primitive_params_v3(primitive: Any, raw_params: Any, path: str) -> None:
@@ -898,6 +1059,10 @@ def _validate_spec(
         "$.strategy_spec.exit",
     )
     for field_name in ("stop_loss", "take_profit"):
+        # Both keys must be present (exact-set above); ``null`` means "no
+        # such exit" (JES21-B3b 二期 IMPL §3.2 出场三选).
+        if exit_spec[field_name] is None:
+            continue
         rule = _exact(
             exit_spec[field_name],
             {"model", "value"},
@@ -947,18 +1112,48 @@ def _validate_spec(
             operators,
             "$.strategy_spec.exit.signal_exit",
         )
+    if (
+        exit_spec["stop_loss"] is None
+        and exit_spec["take_profit"] is None
+        and exit_spec["time_exit_bars"] is None
+        and exit_spec["signal_exit"] is None
+    ):
+        _raise(
+            "$.strategy_spec.exit",
+            "stop_loss and take_profit are both null: signal_exit or "
+            "time_exit_bars is required",
+        )
+    if (
+        exit_spec["stop_loss"] is None
+        and exit_spec["take_profit"] is not None
+        and exit_spec["take_profit"]["model"] == "r_multiple"
+    ):
+        _raise(
+            "$.strategy_spec.exit.take_profit.model",
+            "r_multiple requires a stop_loss",
+            actual="r_multiple",
+        )
 
     risk = _exact(
         obj["risk"],
         {"position_sizing", "max_open_positions", "allow_pyramiding", "leverage"},
         "$.strategy_spec.risk",
     )
+    sizing_source = risk["position_sizing"]
+    sizing_keys = {"model", "value"}
+    if isinstance(sizing_source, dict) and "basis" in sizing_source:
+        sizing_keys = {"model", "value", "basis"}
     sizing = _exact(
-        risk["position_sizing"],
-        {"model", "value"},
+        sizing_source,
+        sizing_keys,
         "$.strategy_spec.risk.position_sizing",
     )
-    if sizing["model"] not in {"fixed_notional", "fixed_margin", "risk_fraction"}:
+    if sizing["model"] not in {
+        "fixed_notional",
+        "fixed_margin",
+        "equity_fraction",
+        "risk_fraction",
+    }:
         _raise(
             "$.strategy_spec.risk.position_sizing.model",
             "unsupported model",
@@ -967,9 +1162,29 @@ def _validate_spec(
     sizing_value = _canonical_decimal(
         sizing["value"], "$.strategy_spec.risk.position_sizing.value", positive=True
     )
-    if sizing["model"] == "risk_fraction" and sizing_value > 1:
+    if sizing["model"] in {"risk_fraction", "equity_fraction"} and sizing_value > 1:
         _raise(
-            "$.strategy_spec.risk.position_sizing.value", "risk_fraction must be <= 1"
+            "$.strategy_spec.risk.position_sizing.value",
+            f"{sizing['model']} must be <= 1",
+        )
+    if "basis" in sizing:
+        if sizing["model"] != "risk_fraction":
+            _raise(
+                "$.strategy_spec.risk.position_sizing.basis",
+                "basis is only supported for risk_fraction",
+                actual=sizing["model"],
+            )
+        if sizing["basis"] not in {"equity", "initial"}:
+            _raise(
+                "$.strategy_spec.risk.position_sizing.basis",
+                "unsupported basis",
+                actual=sizing["basis"],
+            )
+    if sizing["model"] == "risk_fraction" and exit_spec["stop_loss"] is None:
+        _raise(
+            "$.strategy_spec.risk.position_sizing.model",
+            "risk_fraction requires a stop_loss",
+            actual="risk_fraction",
         )
     if risk["max_open_positions"] != 1 or risk["allow_pyramiding"] is not False:
         _raise(
@@ -1291,12 +1506,15 @@ def _validate_kline_primary_requirements(
       series (``build_frames``' ``_primary_field_series``), which has no
       lookback beyond whatever the primary requirement itself fetched — the
       array's very first row can never have prior rows *within that same
-      array* no matter how large ``warmup_bars`` is set. A window primitive
-      needing more than the anchor bar itself, or ``rsi_wilder`` (whose seed
-      is always ``None`` for its first ``period`` timestamps, see
-      ``_rsi_wilder_series``), therefore compiles green but is guaranteed to
-      fail closed on the very first frame every single run — a config that
-      must never reach execution.
+      array* no matter how large ``warmup_bars`` is set. A rolling_sum /
+      rolling_extreme / rolling_quantile window needing more than the anchor
+      bar itself therefore compiles green but is guaranteed to fail closed on
+      the very first frame every single run — a config that must never reach
+      execution. The history primitives (``rsi_wilder`` / ``ema`` / ``macd``
+      / ``rolling_zscore``) are allowed instead: build_frames leaves them
+      unset on the primary array's first ``warmup_bars`` rows (warmup
+      frames) and requires them from the first decision frame on, so the
+      primary requirement's ``warmup_bars`` must cover their lookback.
     - a coarse feature (interval != primary timeframe)'s matched requirement
       must declare ``ohlcv_resample.v1`` in its own ``allowed_transforms``:
       §4.2 binds transform selection into the artifact hash via spec_hash,
@@ -1316,6 +1534,7 @@ def _validate_kline_primary_requirements(
     primary_requirement = next(
         item for item in requirements if item["execution_role"] == "primary_execution_kline"
     )
+    lag_needs = per_feature_lag_needs(spec)
     for index, feature in enumerate(spec["features"]):
         source_stream = feature["source_stream"]
         if not source_stream.startswith(_KLINE_PRIMARY_PREFIX):
@@ -1337,16 +1556,44 @@ def _validate_kline_primary_requirements(
                 )
             primitive = feature["primitive"]
             params = feature["params"]
-            if primitive == "rsi_wilder":
-                _raise(
-                    f"$.strategy_spec.features[{index}].primitive",
-                    "kline.primary passthrough feature cannot use rsi_wilder: "
-                    "its seed is always unresolved for the array's first "
-                    "fetched row, so every run fails closed regardless of "
-                    "warmup_bars",
-                    code=ERR_SPEC_UNSUPPORTED,
-                    actual=primitive,
-                )
+            # History primitives seed off the primary array's first fetched
+            # row, so build_frames leaves them unset on the first
+            # warmup_bars rows (warmup frames, never decided on) and requires
+            # a value from the first decision frame on. The primary
+            # requirement's warmup_bars must therefore cover the primitive's
+            # own lookback; rsi_wilder's stricter 10x period floor is
+            # enforced by _validate_rsi_warmup against the same requirement.
+            if primitive in {"ema", "macd", "rolling_zscore"}:
+                lookback = primitive_lookback_bars(primitive, params)
+                if primary_requirement["warmup_bars"] < lookback:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements"
+                        f"[{primary_requirement['stream_id']}].warmup_bars",
+                        "primary K-line warmup_bars must cover the "
+                        f"kline.primary passthrough {primitive} primitive's "
+                        "lookback",
+                        required=lookback,
+                        actual=primary_requirement["warmup_bars"],
+                    )
+            # K1d (Codex P2): the value first resolves at row lookback - 1,
+            # and a decision frame at row warmup_bars referenced at lag L
+            # (+1 inside cross) reads row warmup_bars - L -- so the warmup
+            # must also be >= lookback - 1 + L, or the first decision frame
+            # dies at runtime with "required lagged feature is missing".
+            if primitive in _PASSTHROUGH_HISTORY_PRIMITIVES:
+                lag_need = lag_needs.get(feature["key"], 0)
+                required = primitive_lookback_bars(primitive, params) - 1 + lag_need
+                if lag_need > 0 and primary_requirement["warmup_bars"] < required:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements"
+                        f"[{primary_requirement['stream_id']}].warmup_bars",
+                        "primary K-line warmup_bars must cover the "
+                        f"kline.primary passthrough {primitive} primitive's "
+                        "lookback - 1 plus its deepest lag reference "
+                        "(lag_bars, +1 inside cross)",
+                        required=required,
+                        actual=primary_requirement["warmup_bars"],
+                    )
             if (
                 primitive in {"rolling_sum", "rolling_extreme"}
                 and params["window_bars"] != 1
@@ -1406,6 +1653,17 @@ def _validate_kline_primary_requirements(
                         required=window_bars,
                         actual=requirement["warmup_bars"],
                     )
+            elif primitive in {"ema", "macd", "rolling_zscore"}:
+                lookback = primitive_lookback_bars(primitive, params)
+                if requirement["warmup_bars"] < lookback:
+                    _raise(
+                        f"$.artifact_manifest.data_requirements[{requirement['stream_id']}]"
+                        ".warmup_bars",
+                        "coarse kline.primary requirement's warmup_bars must "
+                        f"cover the {primitive} primitive's lookback",
+                        required=lookback,
+                        actual=requirement["warmup_bars"],
+                    )
             elif primitive == "rolling_quantile":
                 min_periods = params["min_periods"]
                 if requirement["warmup_bars"] < min_periods:
@@ -1456,6 +1714,18 @@ def _derived_requirements(
         "trace_schemas": ["cutie.strategy_execution_trace.v1"],
         "evidence_schemas": ["cutie.strategy_execution_evidence.v1"],
     }
+
+
+def derive_capability_requirements(
+    strategy_spec: Any, data_requirements: Any
+) -> dict[str, Any]:
+    """B3b K2 ``condition_kernel``: the exact ``capability_requirements``
+    projection ``_validate_manifest`` demands, derived from a raw v2 spec and
+    its data requirements. Fails closed (StrategyContractError) on an invalid
+    spec or requirement list -- the same validators the artifact path runs."""
+    _, _, static = _validate_spec(strategy_spec)
+    requirements = _validate_data_requirements(strategy_spec, data_requirements)
+    return _derived_requirements(strategy_spec, static, requirements)
 
 
 def _validate_manifest(
@@ -1524,33 +1794,57 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
     """
     if _REVISION_RE.fullmatch(provider_revision) is None:
         raise ValueError("provider_revision must be 7..64 lowercase hex")
+    # Only operators StrategyKernel._value / _condition / _ctx_op evaluate
+    # (JES21-B3b 二期 K1). div is decimal-only (the validator rejects integer
+    # div); the binary signatures are the ones the declaration can carry.
+    # Every operator gets fresh signature dicts: callers mutate the payload
+    # (tests extend one operator's signatures), so nothing may be shared.
+    def signatures(return_types: dict[str, str]) -> list[dict[str, Any]]:
+        return [
+            {"arg_types": [arg_type, arg_type], "return_type": return_type}
+            for arg_type, return_type in return_types.items()
+        ]
+
+    numeric = {"decimal": "decimal", "integer": "integer"}
+    ordered = {"decimal": "boolean", "integer": "boolean"}
     operators = [
-        {
-            "node": "arithmetic",
-            "op": "add",
-            "version": "1",
-            "signatures": [
-                {"arg_types": ["decimal", "decimal"], "return_type": "decimal"},
-                {"arg_types": ["integer", "integer"], "return_type": "integer"},
-            ],
-        },
-        {
-            "node": "compare",
-            "op": "gt",
-            "version": "1",
-            "signatures": [
-                {"arg_types": ["decimal", "decimal"], "return_type": "boolean"},
-                {"arg_types": ["integer", "integer"], "return_type": "boolean"},
-            ],
-        },
+        {"node": "arithmetic", "op": op, "version": "1", "signatures": signatures(kinds)}
+        for op, kinds in (
+            ("add", numeric),
+            ("div", {"decimal": "decimal"}),
+            ("mul", numeric),
+            ("sub", numeric),
+        )
+    ]
+    operators += [
+        {"node": "compare", "op": op, "version": "1", "signatures": signatures(ordered)}
+        for op in ("gt", "gte", "lt", "lte")
+    ]
+    operators += [
         {
             "node": "cross",
-            "op": "crosses_above",
+            "op": op,
             "version": "1",
-            "signatures": [
-                {"arg_types": ["decimal", "decimal"], "return_type": "boolean"},
-            ],
-        },
+            "signatures": signatures({"decimal": "boolean"}),
+        }
+        for op in ("crosses_above", "crosses_below")
+    ]
+    kline_streams = [
+        "kline.primary.close",
+        "kline.primary.high",
+        "kline.primary.low",
+        "kline.primary.open",
+    ]
+    history_primitives = [
+        {
+            "primitive": primitive,
+            "version": "1",
+            "source_streams": list(kline_streams),
+            "intervals": ["1d", "1h", "4h"],
+            "value_kinds": ["price"],
+            "output_type": "decimal",
+        }
+        for primitive in ("ema", "macd")
     ]
     return {
         "schema": CAPABILITY_SCHEMA,
@@ -1559,19 +1853,18 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
         "kernel_api_versions": ["1"],
         "execution_modes": ["historical_replay", "paper_tick"],
         "operators": operators,
-        "feature_primitives": [
+        "feature_primitives": history_primitives
+        + [
             {
                 "primitive": "rolling_extreme",
                 "version": "1",
                 "source_streams": [
                     "coinglass.futures_cvd",
-                    "kline.primary.close",
-                    "kline.primary.high",
-                    "kline.primary.low",
-                    "kline.primary.open",
+                    *kline_streams,
+                    *METRICS_SOURCE_STREAMS,
                 ],
                 "intervals": ["1d", "1h", "4h"],
-                "value_kinds": ["flow", "price"],
+                "value_kinds": ["flow", "level", "price"],
                 "output_type": "decimal",
             },
             {
@@ -1591,9 +1884,17 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
             {
                 "primitive": "rolling_sum",
                 "version": "1",
-                "source_streams": ["coinglass.futures_cvd"],
+                "source_streams": ["coinglass.futures_cvd", *METRICS_SOURCE_STREAMS],
                 "intervals": ["1d", "1h"],
-                "value_kinds": ["flow"],
+                "value_kinds": ["flow", "level"],
+                "output_type": "decimal",
+            },
+            {
+                "primitive": "rolling_zscore",
+                "version": "1",
+                "source_streams": list(kline_streams),
+                "intervals": ["1d", "1h", "4h"],
+                "value_kinds": ["price"],
                 "output_type": "decimal",
             },
             {
@@ -1621,6 +1922,13 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
             },
             {
                 "provider": "coinglass",
+                "storage_source": "market_metrics_history",
+                "kinds": ["feature"],
+                "markets": ["futures"],
+                "result_sources": [],
+            },
+            {
+                "provider": "cutie",
                 "storage_source": "market_metrics_history",
                 "kinds": ["feature"],
                 "markets": ["futures"],
@@ -2632,6 +2940,31 @@ def kline_primary_bucket_required_end(end_at: int, target_step: int) -> int:
     return (end_at // target_step) * target_step
 
 
+def metrics_asof_anchor(close_at: int, feature_step: int) -> int:
+    """IMPL §3.4 as-of anchor of a ``metrics.*`` stream for a frame closing at
+    ``close_at``: the latest epoch-aligned point whose ``ts + interval`` (its
+    ``available_at``) is <= ``close_at`` -- a 1d metric on 1h frames reads
+    the previous closed day; at the primary interval it is the frame's open."""
+    return (close_at // feature_step) * feature_step - feature_step
+
+
+def metrics_asof_fetch_start(
+    first_frame_open_at: int,
+    primary_step: int,
+    feature_step: int,
+    lookback_points: int,
+) -> int:
+    """K1d: earliest ``ts`` a ``metrics.*`` stream must supply so the *first
+    primary frame* resolves (warmup frames included -- a lag reference on a
+    decision frame reads the as-of value captured on that earlier frame):
+    that frame's as-of anchor minus the feature's own window
+    (``lookback_points`` points ending at the anchor). The Provider computes
+    this itself; the manifest's declared warmup is only a lower bound and
+    the earlier of the two is fetched."""
+    anchor = metrics_asof_anchor(first_frame_open_at + primary_step, feature_step)
+    return max(0, anchor - max(lookback_points - 1, 0) * feature_step)
+
+
 def ohlcv_resample(
     primary_rows: list[dict[str, Any]], primary_step: int, target_interval: str
 ) -> list[dict[str, Any]]:
@@ -2936,6 +3269,106 @@ def _rsi_wilder_series(
     return series
 
 
+def _ema_values_v2(
+    values: list[Optional[Decimal]], window: int
+) -> list[Optional[Decimal]]:
+    """v2 ``ema``: SMA seed of the first ``window`` fetched values, then
+    ``alpha*x + (1-alpha)*ema`` with ``alpha = 2/(window+1)``, every step in
+    decimal128. A gap breaks the chain irrecoverably (v2 rsi_wilder rule);
+    v3's ``_ema_series_v3`` re-seeds instead and is left untouched."""
+    out: list[Optional[Decimal]] = []
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        alpha = ctx.divide(Decimal(2), Decimal(window + 1))
+        keep = ctx.subtract(Decimal(1), alpha)
+        broken = False
+        seed: list[Decimal] = []
+        previous: Optional[Decimal] = None
+        for value in values:
+            if broken or value is None:
+                broken = True
+                out.append(None)
+                continue
+            if previous is None:
+                seed.append(value)
+                if len(seed) < window:
+                    out.append(None)
+                    continue
+                total = Decimal(0)
+                for item in seed:
+                    total = ctx.add(total, item)
+                previous = ctx.divide(total, Decimal(window))
+            else:
+                previous = ctx.add(
+                    ctx.multiply(alpha, value), ctx.multiply(keep, previous)
+                )
+            out.append(+previous)
+    return out
+
+
+def _macd_values_v2(
+    values: list[Optional[Decimal]], fast: int, slow: int, signal: int, output: str
+) -> list[Optional[Decimal]]:
+    """v2 ``macd``: line = ema(fast) − ema(slow); signal = ema(signal) over
+    the line series seeded from its first value; hist = line − signal."""
+    fast_ema = _ema_values_v2(values, fast)
+    slow_ema = _ema_values_v2(values, slow)
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        line = [
+            ctx.subtract(f, s) if f is not None and s is not None else None
+            for f, s in zip(fast_ema, slow_ema)
+        ]
+        if output == "line":
+            return line
+        first = next((i for i, v in enumerate(line) if v is not None), len(line))
+        signal_series = [None] * first + _ema_values_v2(line[first:], signal)
+        if output == "signal":
+            return signal_series
+        return [
+            ctx.subtract(a, b) if a is not None and b is not None else None
+            for a, b in zip(line, signal_series)
+        ]
+
+
+def _recursive_series_v2(
+    feature: dict[str, Any],
+    rows_by_ts: dict[int, tuple[Any, int, str]],
+    ordered_timestamps: list[int],
+    error_path: str,
+) -> dict[int, tuple[Optional[Decimal], int]]:
+    """Precompute a whole-stream recursive v2 primitive (rsi_wilder / ema /
+    macd) once per feature: ``{ts: (value_or_None, availability_ceiling)}``."""
+    params = feature["params"]
+    if feature["primitive"] == "rsi_wilder":
+        return _rsi_wilder_series(
+            rows_by_ts, ordered_timestamps, params["period"], error_path
+        )
+    parsed: list[Optional[Decimal]] = []
+    ceilings: list[int] = []
+    running_ceiling = 0
+    for ts in ordered_timestamps:
+        raw_value, available_at, _revision = rows_by_ts[ts]
+        running_ceiling = max(running_ceiling, available_at)
+        ceilings.append(running_ceiling)
+        try:
+            parsed.append(_decimal(raw_value, error_path))
+        except KernelExecutionError:
+            parsed.append(None)
+    if feature["primitive"] == "ema":
+        series = _ema_values_v2(parsed, params["window_bars"])
+    else:
+        series = _macd_values_v2(
+            parsed, params["fast"], params["slow"], params["signal"], params["output"]
+        )
+    return {
+        ts: (value, ceilings[index] if value is not None else 0)
+        for index, (ts, value) in enumerate(zip(ordered_timestamps, series))
+    }
+
+
+_RECURSIVE_PRIMITIVES_V2 = {"rsi_wilder", "ema", "macd"}
+_PASSTHROUGH_HISTORY_PRIMITIVES = {"rsi_wilder", "ema", "macd", "rolling_zscore"}
+
+
 def build_frames(
     data_streams: dict[str, list[dict[str, Any]]],
     coverage_manifest: dict[str, Any],
@@ -2969,6 +3402,12 @@ def build_frames(
         if item["execution_role"] == "primary_execution_kline"
     )
     primary_rows = data_streams[primary["stream_id"]]
+    # kline.primary passthrough history primitives seed off this array's
+    # first row: the first ``warmup_bars`` rows are warmup frames (strict
+    # coverage guarantees the replay array starts at least that far before
+    # execution_start_at; StrategyKernel.evaluate never decides on them), so
+    # an unresolved value there is left unset instead of failing the run.
+    passthrough_warmup_rows = primary["warmup_bars"]
     if not primary_rows:
         _raise(
             "$.data_streams",
@@ -3111,12 +3550,12 @@ def build_frames(
     feature_revision: dict[str, str] = {}
     for feature in plan.strategy_spec["features"]:
         if _is_kline_primary_passthrough(feature):
-            if feature["primitive"] == "rsi_wilder":
+            if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
                 field = feature["source_stream"][len(_KLINE_PRIMARY_PREFIX) :]
-                rsi_series_cache[feature["key"]] = _rsi_wilder_series(
+                rsi_series_cache[feature["key"]] = _recursive_series_v2(
+                    feature,
                     _primary_field_series(field),
                     primary_ordered_ts,
-                    feature["params"]["period"],
                     f"$.data_streams.{feature['source_stream']}",
                 )
             continue
@@ -3124,11 +3563,11 @@ def build_frames(
         feature_revision[feature["key"]] = next(
             iter(rows_by_ts.values()), (None, None, "")
         )[2]
-        if feature["primitive"] == "rsi_wilder":
-            rsi_series_cache[feature["key"]] = _rsi_wilder_series(
+        if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
+            rsi_series_cache[feature["key"]] = _recursive_series_v2(
+                feature,
                 rows_by_ts,
                 ordered_timestamps,
-                feature["params"]["period"],
                 f"$.data_streams.{feature['source_stream']}",
             )
 
@@ -3163,7 +3602,7 @@ def build_frames(
         }
         revisions: dict[str, str] = {}
         for feature in plan.strategy_spec["features"]:
-            if feature["primitive"] not in _KNOWN_PRIMITIVES:
+            if feature["primitive"] not in _KNOWN_PRIMITIVES_V2:
                 _raise(
                     f"$.strategy_spec.features[{feature['key']}].primitive",
                     "primitive is not implemented",
@@ -3187,12 +3626,27 @@ def build_frames(
                 feature_step = _interval_seconds(feature["interval"])
                 bucket_close = (close_at // feature_step) * feature_step
                 anchor_ts = bucket_close - feature_step
+            elif metrics_stream_parts(feature["source_stream"]) is not None:
+                # IMPL §3.4 as-of: the latest epoch-aligned metric point whose
+                # ``ts + interval`` (its available_at) is <= this frame's
+                # close — a 1d metric on 1h frames reads the previous closed
+                # day; at the primary interval this is the frame's own open.
+                rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
+                feature_step = _interval_seconds(feature["interval"])
+                anchor_ts = metrics_asof_anchor(close_at, feature_step)
             else:
                 rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
                 anchor_ts = open_at
 
-            if feature["primitive"] == "rsi_wilder":
+            warmup_gap_allowed = (
+                passthrough
+                and feature["primitive"] in _PASSTHROUGH_HISTORY_PRIMITIVES
+                and row_index < passthrough_warmup_rows
+            )
+            if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
                 point = rsi_series_cache[feature["key"]].get(anchor_ts)
+                if (point is None or point[0] is None) and warmup_gap_allowed:
+                    continue
                 if point is None or point[0] is None:
                     _raise(
                         error_path,
@@ -3206,6 +3660,8 @@ def build_frames(
                 outcome = _evaluate_windowed_primitive(
                     feature, rows_by_ts, ordered_timestamps, anchor_ts, step, error_path
                 )
+                if outcome is None and warmup_gap_allowed:
+                    continue
                 if outcome is None:
                     _raise(
                         error_path,
@@ -3765,43 +4221,61 @@ class StrategyKernel:
         rules = state.instrument_rules
         tick = Decimal(rules["price_tick"])
         exit_spec = self.plan.strategy_spec["exit"]
+        # A null stop_loss / take_profit means that exit is not armed
+        # (JES21-B3b 二期 IMPL §3.2); the validator guarantees r_multiple and
+        # risk_fraction never run without a stop.
         stop_rule = exit_spec["stop_loss"]
-        with localcontext(_DECIMAL_CONTEXT):
-            if stop_rule["model"] == "fixed_percent":
-                ratio = Decimal(stop_rule["value"])
-                raw_stop = entry_price * (1 - ratio if side == "long" else 1 + ratio)
-            else:
-                raw_stop = pending.stop_value
-        assert raw_stop is not None
-        stop_direction = "down" if side == "long" else "up"
-        stop = self._quantize(raw_stop, tick, stop_direction)
-        take_rule = exit_spec["take_profit"]
-        with localcontext(_DECIMAL_CONTEXT):
-            if take_rule["model"] == "fixed_percent":
-                ratio = Decimal(take_rule["value"])
-                raw_take = entry_price * (1 + ratio if side == "long" else 1 - ratio)
-            elif take_rule["model"] == "r_multiple":
-                distance = abs(entry_price - stop)
-                if distance <= 0:
-                    raise KernelExecutionError(
-                        ERR_SPEC_INVALID,
-                        "$.strategy_spec.exit.take_profit",
-                        "quantized 1R is zero",
+        stop: Optional[Decimal] = None
+        if stop_rule is not None:
+            with localcontext(_DECIMAL_CONTEXT):
+                if stop_rule["model"] == "fixed_percent":
+                    ratio = Decimal(stop_rule["value"])
+                    raw_stop = entry_price * (
+                        1 - ratio if side == "long" else 1 + ratio
                     )
-                multiple = Decimal(take_rule["value"])
-                raw_take = (
-                    entry_price + multiple * distance
-                    if side == "long"
-                    else entry_price - multiple * distance
-                )
-            else:
-                raw_take = pending.take_value
-        assert raw_take is not None
-        take_direction = "up" if side == "long" else "down"
-        take = self._quantize(raw_take, tick, take_direction)
-        if (side == "long" and not stop < entry_price < take) or (
-            side == "short" and not take < entry_price < stop
-        ):
+                else:
+                    raw_stop = pending.stop_value
+            assert raw_stop is not None
+            stop_direction = "down" if side == "long" else "up"
+            stop = self._quantize(raw_stop, tick, stop_direction)
+        take_rule = exit_spec["take_profit"]
+        take: Optional[Decimal] = None
+        if take_rule is not None:
+            with localcontext(_DECIMAL_CONTEXT):
+                if take_rule["model"] == "fixed_percent":
+                    ratio = Decimal(take_rule["value"])
+                    raw_take = entry_price * (
+                        1 + ratio if side == "long" else 1 - ratio
+                    )
+                elif take_rule["model"] == "r_multiple":
+                    assert stop is not None
+                    distance = abs(entry_price - stop)
+                    if distance <= 0:
+                        raise KernelExecutionError(
+                            ERR_SPEC_INVALID,
+                            "$.strategy_spec.exit.take_profit",
+                            "quantized 1R is zero",
+                        )
+                    multiple = Decimal(take_rule["value"])
+                    raw_take = (
+                        entry_price + multiple * distance
+                        if side == "long"
+                        else entry_price - multiple * distance
+                    )
+                else:
+                    raw_take = pending.take_value
+            assert raw_take is not None
+            take_direction = "up" if side == "long" else "down"
+            take = self._quantize(raw_take, tick, take_direction)
+        stop_wrong_side = stop is not None and (
+            (side == "long" and not stop < entry_price)
+            or (side == "short" and not entry_price < stop)
+        )
+        take_wrong_side = take is not None and (
+            (side == "long" and not entry_price < take)
+            or (side == "short" and not take < entry_price)
+        )
+        if stop_wrong_side or take_wrong_side:
             raise KernelExecutionError(
                 ERR_SPEC_INVALID,
                 "$.strategy_spec.exit",
@@ -3836,23 +4310,67 @@ class StrategyKernel:
         sizing = self.plan.strategy_spec["risk"]["position_sizing"]
         leverage = Decimal(self.plan.strategy_spec["risk"]["leverage"])
         value = Decimal(sizing["value"])
+        cost_model = self.plan.strategy_spec["execution"]["cost_model"]
+        fee_bps = Decimal(cost_model["fee_bps"])
+        step = Decimal(state.instrument_rules["qty_step"])
         try:
             with localcontext(_DECIMAL_CONTEXT) as ctx:
-                if sizing["model"] == "fixed_notional":
-                    raw_qty = ctx.divide(value, entry_price)
-                elif sizing["model"] == "fixed_margin":
-                    raw_qty = ctx.divide(ctx.multiply(value, leverage), entry_price)
+                if sizing["model"] == "risk_fraction":
+                    # Same functions as the template's PositionSizingMixin:
+                    # risk_quantity floors to qty_step, then the entry must
+                    # afford margin + entry fee + slippage. basis initial is
+                    # the template's compound=False, equity is compound=True.
+                    basis_equity = (
+                        state.initial_capital
+                        if sizing.get("basis") == "initial"
+                        else state.equity
+                    )
+                    qty = risk_quantity(
+                        capital=basis_equity,
+                        risk_pct=value,
+                        fill_price=entry_price,
+                        initial_stop=stop,
+                        qty_step=step,
+                    )
+                    margin = entry_margin_after_fees(
+                        qty=qty,
+                        fill_price=entry_price,
+                        leverage=leverage,
+                        fee_bps=fee_bps,
+                        slippage_bps=Decimal(cost_model["slippage_bps"]),
+                        equity=state.equity,
+                    )
                 else:
-                    risk_budget = ctx.multiply(state.equity, value)
-                    risk_distance = ctx.abs(ctx.subtract(entry_price, stop))
-                    raw_qty = ctx.divide(risk_budget, risk_distance)
-                step = Decimal(state.instrument_rules["qty_step"])
-                qty = ctx.multiply(
-                    ctx.divide(raw_qty, step).to_integral_value(rounding=ROUND_FLOOR),
-                    step,
-                )
+                    if sizing["model"] == "fixed_notional":
+                        raw_qty = ctx.divide(value, entry_price)
+                    elif sizing["model"] == "fixed_margin":
+                        raw_qty = ctx.divide(ctx.multiply(value, leverage), entry_price)
+                    else:
+                        # equity_fraction = the template's fractional
+                        # buy(size=f) / unsized buy() (f = 1): backtesting.py
+                        # Broker._process_orders sizes against
+                        # price + commission per unit, i.e.
+                        # floor(equity * L * f / (price * (1 + fee))).
+                        # Slippage is report-only there, so it is not reserved.
+                        price_plus_commission = ctx.add(
+                            entry_price,
+                            ctx.divide(ctx.multiply(entry_price, fee_bps), Decimal(10000)),
+                        )
+                        raw_qty = ctx.divide(
+                            ctx.multiply(ctx.multiply(state.equity, leverage), value),
+                            price_plus_commission,
+                        )
+                    qty = ctx.multiply(
+                        ctx.divide(raw_qty, step).to_integral_value(rounding=ROUND_FLOOR),
+                        step,
+                    )
+                    margin = ctx.divide(ctx.multiply(qty, entry_price), leverage)
                 order_notional = ctx.multiply(qty, entry_price)
-                margin = ctx.divide(order_notional, leverage)
+        except SizingRejected as exc:
+            state.diagnostics.append(
+                {"frame_index": index, "kind": "order_rejected", "reason": str(exc)}
+            )
+            return
         except ArithmeticError as exc:
             raise KernelExecutionError(
                 ERR_SPEC_INVALID,
@@ -4110,14 +4628,18 @@ class StrategyKernel:
                 self.plan.strategy_spec["entry"]["condition"], state, index
             ):
                 exit_spec = self.plan.strategy_spec["exit"]
+                stop_rule = exit_spec["stop_loss"]
+                take_rule = exit_spec["take_profit"]
                 stop_value = (
-                    self._value(exit_spec["stop_loss"]["value"], state, index)
-                    if exit_spec["stop_loss"]["model"] == "feature_expression"
+                    self._value(stop_rule["value"], state, index)
+                    if stop_rule is not None
+                    and stop_rule["model"] == "feature_expression"
                     else None
                 )
                 take_value = (
-                    self._value(exit_spec["take_profit"]["value"], state, index)
-                    if exit_spec["take_profit"]["model"] == "feature_expression"
+                    self._value(take_rule["value"], state, index)
+                    if take_rule is not None
+                    and take_rule["model"] == "feature_expression"
                     else None
                 )
                 state.pending_entry = PendingEntry(index, stop_value, take_value)
@@ -5171,6 +5693,7 @@ __all__ = [
     "capability_payload",
     "compile_strategy",
     "compile_strategy_v3",
+    "derive_capability_requirements",
     "in_decimal128",
     "from_snapshot",
     "initial_state",

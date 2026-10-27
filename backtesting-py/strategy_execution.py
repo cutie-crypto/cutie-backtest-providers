@@ -28,6 +28,10 @@ from strategy_kernel import (
     in_decimal128,
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
+    metrics_asof_fetch_start,
+    metrics_stream_parts,
+    per_feature_lag_needs,
+    primitive_lookback_bars,
 )
 
 EXECUTION_REQUEST_SCHEMA = "cutie.strategy_execution_request.v1"
@@ -495,6 +499,20 @@ def validate_execution_request(
         need = feature_needs.get(feature["key"], 0)
         if need <= 0:
             continue
+        if (
+            feature["interval"] != primary_timeframe
+            and metrics_stream_parts(feature["source_stream"]) is not None
+        ):
+            # K1d / IMPL §3.3 N 日变化: a daily as-of ``metrics.*`` feature
+            # referenced at lag_bars=L reads the as-of value captured on the
+            # primary frame L bars earlier (the kernel's frames-index lag),
+            # so the lag counts primary frames, not metric buckets. Its
+            # history is not sized by the declared warmup either: the
+            # Provider fetches back to the first primary frame's as-of point
+            # (metrics_asof_fetch_start) and the primary frames are already
+            # widened to max_primary_lag_frames. Every other coarse stream
+            # stays banned below.
+            continue
         if feature["interval"] != primary_timeframe:
             _error(
                 ERR_SPEC_INVALID,
@@ -536,6 +554,11 @@ def validate_execution_request(
                     },
                     actual=requirement["warmup_bars"],
                 )
+    primary_requirement = next(
+        item
+        for item in plan.artifact_manifest["data_requirements"]
+        if item["execution_role"] == "primary_execution_kline"
+    )
     for index, requirement in enumerate(plan.artifact_manifest["data_requirements"]):
         step_seconds = _interval_seconds(requirement["interval"])
         # Phase 1 review (Codex HIGH-1): the provider widens the primary
@@ -550,7 +573,25 @@ def validate_execution_request(
             0,
             params["start_at"] - warmup_bars * step_seconds,
         )
-        data_window_seconds = params["end_at"] - effective_start
+        # K1d: a daily as-of metrics.* stream is fetched back to the first
+        # primary frame's as-of point (the Provider's own fetch range), which
+        # can reach past its declared warmup -- budget that same range.
+        metrics_window = metrics_asof_fetch_window(
+            plan.strategy_spec,
+            requirement,
+            params["start_at"],
+            params["end_at"],
+            primary_frames_start(params["start_at"], primary_requirement, lag_frames),
+        )
+        effective_end = params["end_at"]
+        if metrics_window is not None:
+            effective_start = min(effective_start, metrics_window[1])
+            # K1e: the metrics fetch ends on its own bucket grid
+            # (required_end <= end_at), so budgeting the raw end_at
+            # overcounts by the part-bucket tail -- a legal 365-day
+            # [999d, 1364d) fetch reads as 365d11h and is wrongly rejected.
+            effective_end = metrics_window[2]
+        data_window_seconds = effective_end - effective_start
         if data_window_seconds > max_range_seconds:
             _error(
                 ERR_SPEC_INVALID,
@@ -916,35 +957,75 @@ def _primitive_warmup_floor(feature: dict[str, Any]) -> int:
     return 0
 
 
-def per_feature_lag_needs(strategy_spec: Any) -> dict[str, int]:
-    """Per-feature-key max history need (lag_bars, +1 inside cross) across
-    every reference in the spec. Companion to ``max_primary_lag_frames``:
-    that one sizes the primary frames history, this one drives the
-    preflight floor "a feature's declared warmup must cover how far back it
-    is ever referenced" (final review Codex HIGH-3/MED-4 -- without it a
-    shallow-warmup feature referenced at deeper lag compiles green and dies
-    deterministically at runtime, taking the whole run's evidence with it)."""
+def primary_frames_start(
+    start_at: int, primary_requirement: dict[str, Any], lag_frames: int
+) -> int:
+    """Open time of the first primary frame the kernel builds: the declared
+    primary warmup widened to the spec's max lag (frames history), shared by
+    the preflight range budget and the Provider's primary fetch."""
+    step = _interval_seconds(primary_requirement["interval"])
+    return max(0, start_at - max(primary_requirement["warmup_bars"], lag_frames) * step)
 
-    needs: dict[str, int] = {}
 
-    def walk(node: Any, inside_cross: bool) -> None:
-        if isinstance(node, dict):
-            if node.get("node") == "feature":
-                lag = node.get("lag_bars")
-                key = node.get("key")
-                if isinstance(lag, int) and not isinstance(lag, bool) and isinstance(key, str):
-                    need = lag + (1 if inside_cross else 0)
-                    if need > needs.get(key, -1):
-                        needs[key] = need
-            child_inside = inside_cross or node.get("node") == "cross"
-            for value in node.values():
-                walk(value, child_inside)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value, inside_cross)
+def _metrics_asof_features(
+    strategy_spec: dict[str, Any], requirement: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """StrategySpec features a ``metrics.*`` feature requirement backs
+    (IMPL §3.4 as-of streams); empty for every other requirement."""
+    if requirement["kind"] != "feature":
+        return []
+    return [
+        feature
+        for feature in strategy_spec["features"]
+        if requirement["stream_id"].startswith(feature["source_stream"] + ".")
+        and feature["interval"] == requirement["interval"]
+        and metrics_stream_parts(feature["source_stream"]) is not None
+    ]
 
-    walk(strategy_spec, False)
-    return needs
+
+def metrics_asof_fetch_window(
+    strategy_spec: dict[str, Any],
+    requirement: dict[str, Any],
+    start_at: int,
+    end_at: int,
+    first_frame_open_at: int,
+) -> Optional[tuple[int, int, int]]:
+    """K1d contract for a ``metrics.*`` as-of requirement:
+    ``(declared_start, fetch_start, required_end)``; ``None`` otherwise.
+
+    - ``declared_start`` / ``required_end``: the coverage range, on the
+      stream's own bucket grid -- the last decision bucket is the one that
+      closed at-or-before the bucket containing ``end_at`` (an hourly window
+      is not a day edge). K1e: ``declared_start`` is the *fetch* start, not a
+      later manifest-declared bound; the Provider slices its coverage
+      evidence from the fetched rows, so both must be the same earlier bound
+      or a legal request is rejected with an empty declared slice.
+    - ``fetch_start``: the earlier of the declared aligned warmup and the
+      first primary frame's as-of point minus the feature's own window
+      (``metrics_asof_fetch_start``) -- the Provider computes it, the
+      declared warmup is only a lower bound. Fetch is ``[fetch_start,
+      required_end)`` and always equals ``declared_start``.
+    """
+    features = _metrics_asof_features(strategy_spec, requirement)
+    if not features:
+        return None
+    step = _interval_seconds(requirement["interval"])
+    declared_start = kline_primary_bucket_required_start(
+        start_at, requirement["warmup_bars"], step
+    )
+    lookback = max(
+        max(
+            primitive_lookback_bars(feature["primitive"], feature["params"]),
+            feature["params"].get("window_bars", 0),
+        )
+        for feature in features
+    )
+    primary_step = _interval_seconds(strategy_spec["market"]["timeframe"])
+    fetch_start = min(
+        declared_start,
+        metrics_asof_fetch_start(first_frame_open_at, primary_step, step, lookback),
+    )
+    return fetch_start, fetch_start, kline_primary_bucket_required_end(end_at, step)
 
 
 def max_primary_lag_frames(strategy_spec: Any) -> int:
@@ -1042,7 +1123,30 @@ def build_coverage_manifest(
         primary = requirement["execution_role"] == "primary_execution_kline"
         step = _interval_seconds(requirement["interval"])
         derived = not primary and _is_kline_primary_derived(strategy_spec, requirement)
-        if derived:
+        # K1d: a metrics.* as-of stream is read on the same bucket grid as a
+        # coarse kline.primary one (metrics_asof_fetch_window), so its
+        # coverage range is aligned the same way.
+        metrics_asof = not primary and bool(
+            _metrics_asof_features(strategy_spec, requirement)
+        )
+        if metrics_asof:
+            # K1e: the coverage bounds are exactly the Provider's fetch
+            # range (metrics_asof_fetch_window). The lower bound is the
+            # *fetch* start, which can reach before the manifest-declared
+            # aligned warmup (a lag/deep-lookback metric); slicing from the
+            # declared bound instead would be empty whenever the two differ.
+            required_start, _, required_end = metrics_asof_fetch_window(
+                strategy_spec,
+                requirement,
+                request["execution_params"]["start_at"],
+                request["execution_params"]["end_at"],
+                primary_frames_start(
+                    request["execution_params"]["start_at"],
+                    primary_requirement,
+                    max_primary_lag_frames(strategy_spec),
+                ),
+            )
+        elif derived:
             # A coarse kline.primary requirement's required_start must be
             # bucket-aligned, not a naive offset from an unaligned start_at:
             # the as-of anchor for the first decision frame is the bucket
@@ -1055,13 +1159,6 @@ def build_coverage_manifest(
             required_start = kline_primary_bucket_required_start(
                 request["execution_params"]["start_at"], requirement["warmup_bars"], step
             )
-        else:
-            required_start = max(
-                0,
-                request["execution_params"]["start_at"]
-                - requirement["warmup_bars"] * step,
-            )
-        if derived:
             # Symmetric to required_start: execution_params.end_at is a
             # primary-granularity boundary that need not land on a coarse
             # bucket edge, and the last bucket any decision frame closing
@@ -1074,6 +1171,11 @@ def build_coverage_manifest(
                 request["execution_params"]["end_at"], step
             )
         else:
+            required_start = max(
+                0,
+                request["execution_params"]["start_at"]
+                - requirement["warmup_bars"] * step,
+            )
             required_end = request["execution_params"]["end_at"]
         if (
             (required_end - required_start) % step != 0

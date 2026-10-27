@@ -1,8 +1,9 @@
 """C38 synthetic 15m candles + mocked central metrics, real HTTP path, no network."""
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import pandas as pd
+import pytest
 from backtesting import Backtest
 from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -128,6 +129,80 @@ def test_calendar_dst_half_days_holidays_and_no_overnight(monkeypatch, tmp_path)
             for y in (2024, 2025, 2026)] == [252, 250, 251]
 
 
+@pytest.mark.parametrize('day', [
+    '2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31',
+    '2027-06-18', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24',
+])
+def test_calendar_2027_holidays(day):
+    assert not etf.is_trading_day(date.fromisoformat(day))
+    assert etf.session(date.fromisoformat(day)) is None
+
+
+@pytest.mark.parametrize('day,previous,opened,closed', [
+    ('2027-11-26', '2027-11-24', '14:30', '18:00'),
+    ('2027-07-02', '2027-07-01', '13:30', '20:00'),
+    ('2027-12-31', '2027-12-30', '14:30', '21:00'),
+])
+def test_calendar_2027_session_closes(monkeypatch, tmp_path, day, previous, opened, closed):
+    data = frame(day, (pd.Timestamp(day) + pd.Timedelta(days=1)).isoformat())
+    body, _ = run(monkeypatch, tmp_path, data, {previous: 400000000})
+    assert [(t['opened_at'], t['closed_at']) for t in body['trades']] == [
+        (ts(day + ' ' + opened), ts(day + ' ' + closed))]
+    report = body['raw_report']['etf_flow_follow']
+    assert report['fills'][0]['reason'] == 'us_session_close'
+    assert report['fills'][0]['flow_ts'] == ts(previous)
+    assert report['calendar']['last_date'] == etf.CALENDAR_LAST.isoformat() == '2030-12-31'
+
+
+def test_calendar_2027_trading_day_count():
+    days = [d.date() for d in pd.date_range('2027-01-01', '2027-12-31')]
+    # 365 days - 104 weekend days - 10 weekday holidays = 251 sessions (half day counts as one).
+    assert sum(d.weekday() < 5 for d in days) == 261
+    assert sum(etf.is_trading_day(d) for d in days) == 261 - 10 == 251
+
+
+def test_calendar_2027_first_session_uses_previous_year_flow():
+    assert etf.session(date(2027, 1, 4))['flow_ts'] == ts('2026-12-31')
+
+
+# NYSE official tables 2024-2027 (the hand-copied calendar before S5-7 rule generation).
+OFFICIAL_HOLIDAYS = {
+    2024: ['2024-01-01', '2024-01-15', '2024-02-19', '2024-03-29', '2024-05-27',
+           '2024-06-19', '2024-07-04', '2024-09-02', '2024-11-28', '2024-12-25'],
+    2025: ['2025-01-01', '2025-01-09', '2025-01-20', '2025-02-17', '2025-04-18',
+           '2025-05-26', '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25'],
+    2026: ['2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03', '2026-05-25',
+           '2026-06-19', '2026-07-03', '2026-09-07', '2026-11-26', '2026-12-25'],
+    2027: ['2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31',
+           '2027-06-18', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24'],
+}
+OFFICIAL_HALF_DAYS = {
+    2024: ['2024-07-03', '2024-11-29', '2024-12-24'],
+    2025: ['2025-07-03', '2025-11-28', '2025-12-24'],
+    2026: ['2026-11-27', '2026-12-24'],
+    2027: ['2027-11-26'],
+}
+
+
+@pytest.mark.parametrize('year', sorted(OFFICIAL_HOLIDAYS))
+def test_rule_calendar_matches_official_tables_day_for_day(year):
+    assert sorted(d.isoformat() for d in etf.HOLIDAYS if d.year == year) == OFFICIAL_HOLIDAYS[year]
+    assert sorted(d.isoformat() for d in etf.HALF_DAYS if d.year == year) == OFFICIAL_HALF_DAYS[year]
+
+
+def test_rule_calendar_known_shifts_beyond_official_tables():
+    # Jan 1 2028 is a Saturday: NYSE does not close Fri 2027-12-31; Jan 1 2033 Saturday likewise.
+    assert etf.is_trading_day(date(2027, 12, 31)) and date(2028, 1, 1) not in etf.HOLIDAYS
+    # Jan 1 2029 Monday; Juneteenth 2028 Monday; Christmas 2028 Monday; Good Friday 2028-04-14.
+    for day in ('2029-01-01', '2028-06-19', '2028-12-25', '2028-04-14', '2029-03-30', '2030-04-19'):
+        assert not etf.is_trading_day(date.fromisoformat(day))
+
+
+def test_calendar_covers_today_plus_400_days():
+    # Guard (S5-7, Owner 10-27): extend CALENDAR_LAST before backtests near today start failing closed.
+    assert etf.CALENDAR_LAST >= date.today() + timedelta(days=400)
+
+
 def test_available_time_boundary_rejects_future_row(monkeypatch, tmp_path):
     config = etf.EtfFlowConfig.parse({})
     event = etf.session(date(2026, 3, 9))
@@ -215,7 +290,7 @@ def test_calendar_coverage_fails_before_fetch(monkeypatch, tmp_path):
     monkeypatch.setattr(p, 'AUTH_TOKEN', '')
     monkeypatch.setattr(p, '_fetch_ohlcv', forbidden)
     monkeypatch.setattr(p, '_fetch_artifact_metric_chunk', forbidden)
-    for start, end in [('2023-12-31', '2024-01-02'), ('2026-12-31', '2027-01-02'), ('2024-01-02', '2024-01-03')]:
+    for start, end in [('2023-12-31', '2024-01-02'), ('2030-12-31', '2031-01-02'), ('2031-01-01', '2031-01-02'), ('2031-01-03', '2031-01-04'), ('2024-01-02', '2024-01-03')]:
         body = post(frame(start, end))
         assert (body['error_type'], body['limitations']['reason']) == ('INSUFFICIENT_DATA', 'etf_calendar_unavailable')
 

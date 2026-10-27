@@ -611,13 +611,10 @@ def test_kline_primary_passthrough_rsi_wilder_does_not_keyerror() -> None:
     entirely in that precompute loop), so a passthrough kline.primary
     rsi_wilder feature's per-frame lookup KeyError'd on a cache key that was
     never inserted — an unhandled Python exception, not a structured
-    fail-closed error. ``compile_strategy`` now rejects a passthrough
-    rsi_wilder feature outright (see
-    test_rsi_wilder_warmup_check_uses_primary_warmup_for_a_passthrough_feature),
-    since frame 0 is guaranteed to fail closed every run regardless of
-    warmup_bars — so this hand-builds a CompiledPlan bypassing that gate to
-    keep defense-in-depth coverage on build_frames itself never crashing
-    with a bare KeyError if some future path ever reaches it.
+    fail-closed error. This hand-builds a CompiledPlan whose primary
+    warmup_bars is 0 (below the 10x period compile gate), so frame 0 is a
+    decision frame that cannot resolve: build_frames must fail closed with a
+    structured error, never a bare KeyError.
 
     frame 0 (the array's very first row, whatever primary_requirement's
     warmup_bars happens to fetch) can never itself have `period` prior rows
@@ -995,14 +992,13 @@ def test_rsi_wilder_warmup_check_uses_primary_warmup_for_a_passthrough_feature()
     assert caught.value.code == ERR_SPEC_INVALID
     assert caught.value.required == 30
 
-    # Satisfying the warmup gate no longer makes this compile: the
-    # passthrough + rsi_wilder combination itself is now rejected.
+    # JES21-B3b 二期 K1b: satisfying the warmup gate makes it compile again —
+    # build_frames leaves the first warmup_bars rows unset (warmup frames)
+    # and requires the value from the first decision frame on.
     primary_requirement["warmup_bars"] = 30
     manifest["spec_hash"] = canonical_json_sha256(spec)
-    with pytest.raises(StrategyContractError) as caught:
-        compile_strategy(spec, manifest, capability_payload(REVISION))
-    assert caught.value.code == ERR_SPEC_UNSUPPORTED
-    assert caught.value.path == "$.strategy_spec.features[0].primitive"
+    plan = compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert plan.feature_types["rsi_close"] == "decimal"
 
 
 @pytest.mark.parametrize("primitive", ["rolling_sum", "rolling_extreme"])
@@ -1225,6 +1221,10 @@ def test_capability_advertises_the_three_new_primitives_and_ohlcv_resample() -> 
         "rolling_quantile",
         "rsi_wilder",
         "rolling_extreme",
+        # JES21-B3b 二期 K1
+        "ema",
+        "macd",
+        "rolling_zscore",
     }
     assert capability["data_transforms"] == ["ohlcv_resample.v1"]
     for item in capability["feature_primitives"]:

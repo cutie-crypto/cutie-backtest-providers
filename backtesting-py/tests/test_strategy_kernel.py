@@ -178,8 +178,8 @@ def make_manifest(spec: dict) -> dict:
     if spec["exit"]["signal_exit"] is not None:
         _collect_test_condition(spec["exit"]["signal_exit"], feature_types, operators)
     for field in ("stop_loss", "take_profit"):
-        rule = spec["exit"][field]
-        if rule["model"] == "feature_expression":
+        rule = spec["exit"].get(field)
+        if rule is not None and rule["model"] == "feature_expression":
             _infer_test_value(rule["value"], feature_types, operators)
     operators = _sorted_unique_objects(
         operators,
@@ -428,7 +428,7 @@ def test_provider_capability_fixture_exact_payload_and_hash():
     assert fixture["capability"]["data_transforms"] == ["ohlcv_resample.v1"]
     assert (
         fixture["sha256"]
-        == "4e1760a3d6fa9ee5325d680acc830eb860f185d5c9dc05b6dbe5fd0d646bbad1"
+        == "1349f70783dbaa6f743ce1d833f47cb315cbe6eda3c1dc0f980779142ccbb326"
     )
 
 
@@ -464,7 +464,8 @@ def test_unknown_spec_key_fails_closed_as_invalid():
 
 
 def test_valid_but_unadvertised_operator_is_unsupported_not_defaulted():
-    spec = make_spec(condition=_condition("gte"))
+    # gte became advertised with JES21-B3b 二期 K1; eq stays valid but unadvertised.
+    spec = make_spec(condition=_condition("eq"))
     with pytest.raises(StrategyContractError) as caught:
         compile_spec(spec)
     assert caught.value.code == ERR_SPEC_UNSUPPORTED
@@ -711,7 +712,10 @@ def test_feature_expression_prices_are_frozen_on_the_signal_frame():
     [
         ("fixed_notional", "1000", "10"),
         ("fixed_margin", "1000", "20"),
-        ("risk_fraction", "0.1", "200"),
+        # risk 500 / 止损距 5 = 100；保证金 5000 + 入场费用 15 <= 10000。0.1 风险
+        # （200 份，保证金 10000 + 费用 30）按模板口径拒单，见 test_kernel_sizing_k3。
+        # equity_fraction 与模板的逐值对拍也在 test_kernel_sizing_k3。
+        ("risk_fraction", "0.05", "100"),
     ],
 )
 def test_sizing_models_are_deterministic(model: str, value: str, expected_qty: str):
