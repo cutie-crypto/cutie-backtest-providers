@@ -155,6 +155,15 @@ _METRICS_PER_COIN = (
     "open_interest_aggregated",
     "top_long_short_ratio",
 )
+# 三期 IMPL §1.5.4: server-side 1d→1h stitched streams. The central /metrics
+# serves them only at interval=1h; self/btc/eth scope like the per-coin rows.
+_METRICS_PER_COIN_STITCHED = (
+    "funding_rate_1h_stitched",
+    "global_long_short_ratio_1h_stitched",
+    "liquidation_long_24h_stitched",
+    "liquidation_short_24h_stitched",
+    "open_interest_aggregated_1h_stitched",
+)
 _METRICS_MARKET = ("altcoin_season_index", "fear_greed_index", "stablecoin_mcap_total")
 _METRICS_BTC_ONLY = (
     "ahr999",
@@ -170,7 +179,11 @@ _METRICS_BTC_ONLY = (
 )
 METRICS_SOURCE_STREAMS = tuple(
     sorted(
-        {f"metrics.{scope}.{metric}" for scope in ("self", "btc", "eth") for metric in _METRICS_PER_COIN}
+        {
+            f"metrics.{scope}.{metric}"
+            for scope in ("self", "btc", "eth")
+            for metric in (*_METRICS_PER_COIN, *_METRICS_PER_COIN_STITCHED)
+        }
         | {f"metrics.market.{metric}" for metric in _METRICS_MARKET}
         | {f"metrics.btc.{metric}" for metric in _METRICS_BTC_ONLY},
         key=lambda value: value.encode("utf-16-be"),
@@ -627,6 +640,17 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
             f"{path}.source_stream",
             "metrics stream must be metrics.<self|market|btc|eth>.<metric>",
             actual=source_stream,
+        )
+    stitched_parts = metrics_stream_parts(source_stream)
+    if (
+        stitched_parts is not None
+        and stitched_parts[1] in _METRICS_PER_COIN_STITCHED
+        and obj["interval"] != "1h"
+    ):
+        _raise(
+            f"{path}.interval",
+            "stitched metrics stream requires interval 1h",
+            actual=obj["interval"],
         )
     if source_stream.startswith(_KLINE_PRIMARY_PREFIX):
         field = source_stream[len(_KLINE_PRIMARY_PREFIX) :]

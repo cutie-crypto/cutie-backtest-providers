@@ -55,7 +55,7 @@ INSTRUMENT_RULES = {
 }
 # 能力 hash：与 tests/fixtures/strategy_execution_capability_v1.json 的 sha256 一致
 # （test_strategy_kernel.test_provider_capability_fixture_exact_payload_and_hash 钉死）。
-CAPABILITY_HASH = "047ffadee3275cc7b6574cf879359b07515f5f4a2f599aa1f7332aa4b0959b5f"
+CAPABILITY_HASH = "1349f70783dbaa6f743ce1d833f47cb315cbe6eda3c1dc0f980779142ccbb326"
 # kernel_v3 信封顶层键（照 test_condition_kernel_tool.test_result_keys_match_kernel_v3_envelope：
 # basket 的复数 manifests 换成单标的 data_manifest + result_hash）。
 V3_KEYS = frozenset({

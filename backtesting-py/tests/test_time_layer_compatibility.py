@@ -73,8 +73,9 @@ BASELINE['single'].update(OI_BASELINE['single'])
 OI_CASES = {'oi_breakout'}
 
 ETF38_BASELINE = json.loads((Path(__file__).parent / 'fixtures/time_layer_etf38_off.json').read_text())
-# S5-7 日历补 2027 只改 raw_report.etf_flow_follow.calendar.last_date，2026-10-25
-ETF38_BASELINE['raw_report'] = '9f041cba73bea513cfafc606f5c197904007dd301c39e6cd318de587012470b7'
+# S5-7 日历只改 raw_report.etf_flow_follow.calendar.last_date：2026-10-25 补到 2027-12-31；
+# 2026-10-27 改按 NYSE 规则生成、覆盖到 2030-12-31（整份 raw_report 逐字段比对，仅此一处不同）
+ETF38_BASELINE['raw_report'] = '8582b7939c82726493db66a095ad23ddf56819c9e5cf1050f098fc5863b9c97e'
 ETF38 = {'etf_flow_follow'}
 
 EXNF52_BASELINE = json.loads((Path(__file__).parent / 'fixtures/exchange_netflow_52_time_off.json').read_text())
