@@ -177,6 +177,11 @@ _METRICS_BTC_ONLY = (
     "rainbow_band",
     "sth_mvrv",
 )
+# SRV52b-2b: AGGREGATED daily exchange netflow (coin units), BTC / ETH only. The
+# central /metrics carries short (<=3 day) upstream gaps forward server-side
+# (balance carried, netflow 0) and leaves longer gaps open, so the contiguous
+# rule below still fails closed on them.
+_METRICS_BTC_ETH = ("exchange_netflow",)
 METRICS_SOURCE_STREAMS = tuple(
     sorted(
         {
@@ -185,7 +190,8 @@ METRICS_SOURCE_STREAMS = tuple(
             for metric in (*_METRICS_PER_COIN, *_METRICS_PER_COIN_STITCHED)
         }
         | {f"metrics.market.{metric}" for metric in _METRICS_MARKET}
-        | {f"metrics.btc.{metric}" for metric in _METRICS_BTC_ONLY},
+        | {f"metrics.btc.{metric}" for metric in _METRICS_BTC_ONLY}
+        | {f"metrics.{scope}.{metric}" for scope in ("btc", "eth") for metric in _METRICS_BTC_ETH},
         key=lambda value: value.encode("utf-16-be"),
     )
 )
