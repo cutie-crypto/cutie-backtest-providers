@@ -524,8 +524,9 @@ def validate_execution_request(
             )
         # SPEC §5.5 warmup 推导公式（2026-07-17 增补）: 每个 feature 的历史需求
         # 按该 feature 自己的 interval 计数 -- primitive 自身下限（rsi_wilder=
-        # 10x period / rolling_sum,rolling_extreme=window_bars / rolling_quantile
-        # =min_periods）与 lag_bars 是加法关系，"另计" 不是二选一的独立地板。
+        # 10x period / rolling_sum,rolling_extreme,rolling_mean=window_bars /
+        # rolling_quantile=min_periods）与 lag_bars 是加法关系，"另计" 不是
+        # 二选一的独立地板。
         # primitive_floor 的取值来源与 strategy_kernel.py 的 A 层 compile 校验
         # 同源（_validate_rsi_warmup 的 10*period、_validate_kline_primary_
         # requirements 的 window_bars/min_periods 两分支），避免两处对 SPEC 的
@@ -948,7 +949,13 @@ def _primitive_warmup_floor(feature: dict[str, Any]) -> int:
     """
     primitive = feature["primitive"]
     params = feature["params"]
-    if primitive in {"rolling_sum", "rolling_extreme"}:
+    if primitive in {"rolling_sum", "rolling_extreme", "rolling_mean"}:
+        # PROV-ROLLING-MEAN-1107: SMA shares rolling_sum/rolling_extreme's
+        # full-window warmup rule (no min_periods leniency), so its additive
+        # lag floor starts from window_bars -- a non-passthrough stream (e.g.
+        # coinglass.futures_cvd) has no compile-time requirement row to carry
+        # that floor, and omitting it here let preflight pass a window the
+        # kernel then dies on with ERR_COVERAGE_INCOMPLETE.
         return params["window_bars"]
     if primitive == "rolling_quantile":
         return params["min_periods"]

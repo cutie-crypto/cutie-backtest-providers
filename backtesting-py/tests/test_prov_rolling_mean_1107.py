@@ -21,10 +21,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import cutie_backtesting_provider as provider  # noqa: E402
 import test_strategy_kernel as tsk  # noqa: E402
 import test_strategy_kernel_primitives as tkp  # noqa: E402
 from strategy_kernel import (  # noqa: E402
@@ -226,6 +228,217 @@ def test_rolling_mean_compare_close() -> None:
         9: True,
     }
     assert min(index for index, hit in hits.items() if hit) == 4
+
+
+def test_rolling_mean_coarse_kline(monkeypatch) -> None:
+    """4h ``rolling_mean`` on a 1h decision clock: warmup_bars gate and as-of
+    alignment must behave exactly like the same-scenario ``ema`` (both are
+    window_bars primitives routed through the same coarse-warmup branch and
+    the same as-of anchor), so the two runs are compared directly."""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [[i * 3_600_000, 100, 200, 50, 100 + i, 1] for i in range(24)]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+
+    def build(primitive: str, warmup_bars: int) -> tuple[dict, dict]:
+        feature = {
+            "key": f"close_4h_{primitive}",
+            "primitive": primitive,
+            "primitive_version": "1",
+            "source_stream": "kline.primary.close",
+            "interval": "4h",
+            "value_kind": "price",
+            "output_type": "decimal",
+            "params": {"window_bars": 2},
+            "required": True,
+        }
+        condition = {
+            "node": "compare",
+            "op": "gt",
+            "left": {"node": "feature", "key": feature["key"], "lag_bars": 0},
+            "right": {"node": "literal", "value_type": "decimal", "value": "50"},
+        }
+        spec = tsk.make_spec(condition=condition, features=[feature])
+        manifest = tkp._kline_primary_manifest(
+            spec, requirement_interval="4h", warmup_bars=warmup_bars
+        )
+        return spec, manifest
+
+    bodies: dict[str, dict] = {}
+    for primitive in ("ema", "rolling_mean"):
+        # lookback = window_bars = 2; one bucket short must reject identically.
+        spec, manifest = build(primitive, warmup_bars=1)
+        with pytest.raises(StrategyContractError) as caught:
+            compile_strategy(spec, manifest, capability_payload(tsk.REVISION))
+        assert caught.value.code == ERR_SPEC_INVALID
+        assert caught.value.required == 2
+
+        spec, manifest = build(primitive, warmup_bars=2)
+        request = tkp._kline_primary_request(
+            spec, manifest, start_at=57_600, end_at=86_400
+        )
+        response = TestClient(provider.app).post(
+            "/cutie/backtest",
+            json=request,
+            headers={"X-Cutie-Connector-Version": "1.2.3"},
+        )
+        assert response.status_code == 200
+        bodies[primitive] = response.json()
+        assert bodies[primitive]["result_status"] == "success", bodies[primitive]
+
+    derivations = []
+    for primitive, body in bodies.items():
+        coverage = body["coverage_manifest"]
+        derived = next(
+            stream
+            for stream in coverage["streams"]
+            if stream["stream_id"] == "kline.primary.close@4h"
+        )
+        derivations.append(
+            (
+                primitive,
+                derived["point_count"],
+                coverage["transforms"],
+                derived["revision"],
+            )
+        )
+    # as-of alignment + resample derivation are primitive-independent here.
+    assert {item[1] for item in derivations} == {4}
+    assert derivations[0][2] == derivations[1][2]
+    assert derivations[0][3] == derivations[1][3]
+    # Same visible bucket, same signal: the trades must line up bar for bar.
+    assert bodies["ema"]["trades"] == bodies["rolling_mean"]["trades"]
+    assert bodies["rolling_mean"]["trades"], "bucket values 100+ clear the 50 bar"
+
+
+CVD_STREAM_ID = "coinglass.futures_cvd.1h"
+
+
+def _cvd_sma_lag_request(warmup_bars: int) -> dict:
+    """``coinglass.futures_cvd`` + rolling_mean(window_bars=20) referenced at
+    lag_bars=1: SPEC §5.5's additive floor is 20 + 1 = 21, counted on the
+    feature stream's own requirement (no primary passthrough row to carry it)."""
+    feature = {
+        "key": "cvd_sma20_1h",
+        "primitive": "rolling_mean",
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": 20},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "cvd_sma20_1h", "lag_bars": 1},
+        "right": {"node": "literal", "value_type": "decimal", "value": "0.5"},
+    }
+    request = tsk.build_request(
+        tsk.make_spec(condition=condition, features=[feature])
+    )
+    tsk.set_request_warmup(request, CVD_STREAM_ID, warmup_bars)
+    request["execution_params"]["start_at"] = 21 * HOUR
+    request["execution_params"]["end_at"] = 23 * HOUR
+    return request
+
+
+def test_rolling_mean_feature_stream_lag_warmup_rejected(monkeypatch) -> None:
+    """agy review HIGH: the execution preflight's per-primitive warmup floor
+    missed ``rolling_mean``, so a non-passthrough stream (cvd) declaring
+    warmup_bars=5 for rolling_mean(window_bars=20)+lag_bars=1 passed preflight
+    and then died at runtime with ERR_COVERAGE_INCOMPLETE. It must reject as
+    ERR_SPEC_INVALID before any data access."""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError(
+            "rolling_mean's additive lag floor must be checked before data access"
+        )
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fail_if_fetched)
+
+    request = _cvd_sma_lag_request(warmup_bars=5)
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert "warmup_bars" in body["error_detail"]["path"]
+    assert body["error_detail"]["required"] == {
+        "primitive_floor": 20,
+        "lag_need": 1,
+        "total": 21,
+    }
+
+
+def test_rolling_mean_feature_stream_lag_warmup_ok(monkeypatch) -> None:
+    """Companion acceptance case: the same cvd SMA20 window at lag_bars=1
+    executes once warmup_bars covers primitive_floor + lag (21)."""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+
+    def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
+        return [
+            [ts * 1000, 100, 101, 99, 100, 1]
+            for ts in range(start_ms // 1000, end_ms // 1000, HOUR)
+        ]
+
+    def fetch_metric_chunk(*, symbol, metric, interval, exchange, start_at, end_at):
+        return [
+            {"ts": ts, "value": "1"} for ts in range(start_at, end_at + 1, HOUR)
+        ]
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fetch_metric_chunk)
+
+    request = _cvd_sma_lag_request(warmup_bars=21)
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_status"] == "success", body.get("error_message")
+
+
+def test_rolling_mean_primary_lag_compile_gate() -> None:
+    """kline.primary passthrough rolling_mean(window_bars=3) referenced at
+    lag_bars=2 first resolves at row lookback-1, so the primary warmup must
+    cover lookback - 1 + lag = 4 (K1d); 3 (the bare window floor) rejects."""
+    feature = _feature("sma3", "rolling_mean", {"window_bars": 3})
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "sma3", "lag_bars": 2},
+        "right": {"node": "literal", "value_type": "decimal", "value": "0"},
+    }
+    spec = tsk.make_spec(condition=condition, features=[feature])
+    manifest = tkp._kline_primary_manifest(spec, requirement_interval="1h")
+    primary = next(
+        item
+        for item in manifest["data_requirements"]
+        if item["execution_role"] == "primary_execution_kline"
+    )
+    primary["warmup_bars"] = 3
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(tsk.REVISION))
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert "warmup_bars" in caught.value.path
+    assert caught.value.required == 4
+
+    primary["warmup_bars"] = 4
+    plan = compile_strategy(spec, manifest, capability_payload(tsk.REVISION))
+    assert plan.feature_types["sma3"] == "decimal"
 
 
 def test_capability_declares_rolling_mean() -> None:
