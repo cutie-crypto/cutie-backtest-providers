@@ -428,7 +428,7 @@ def test_provider_capability_fixture_exact_payload_and_hash():
     assert fixture["capability"]["data_transforms"] == ["ohlcv_resample.v1"]
     assert (
         fixture["sha256"]
-        == "75f5c65144fa77776b6943fdda1cd21227bddddfb35901d01ca904324253735b"
+        == "4878fa4abd60a4c0b143eca24d4aeed4bd33fd4e22b90a4d1e49d3e65e7b4c72"
     )
 
 

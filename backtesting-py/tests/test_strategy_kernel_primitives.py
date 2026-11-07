@@ -1225,6 +1225,8 @@ def test_capability_advertises_the_three_new_primitives_and_ohlcv_resample() -> 
         "ema",
         "macd",
         "rolling_zscore",
+        # PROV-ROLLING-MEAN-1107
+        "rolling_mean",
     }
     assert capability["data_transforms"] == ["ohlcv_resample.v1"]
     for item in capability["feature_primitives"]:

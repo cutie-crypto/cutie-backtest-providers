@@ -127,6 +127,7 @@ _KLINE_LEG_PREFIX_V3 = "kline.leg."
 _KLINE_LEG_FIELDS_V3 = {"open", "high", "low", "close"}
 _KNOWN_PRIMITIVES = {
     "rolling_sum",
+    "rolling_mean",
     "rolling_quantile",
     "rsi_wilder",
     "rolling_extreme",
@@ -725,6 +726,18 @@ def _validate_primitive_params(primitive: Any, raw_params: Any, path: str) -> No
         )
         if params["mode"] not in {"min", "max"}:
             _raise(f"{path}.params.mode", "must be min or max", actual=params["mode"])
+    elif primitive == "rolling_mean":
+        # PROV-ROLLING-MEAN-1107: SMA = same-window sum / window_bars, the
+        # operator TokenBeep's "close gt SMA100" atom needs. window_bars
+        # bounds follow ``ema`` (2..10000): a one-bar mean is the raw value,
+        # so the shortest meaningful window starts at 2.
+        params = _exact(raw_params, {"window_bars"}, f"{path}.params")
+        _safe_int(
+            params["window_bars"],
+            f"{path}.params.window_bars",
+            minimum=2,
+            maximum=10000,
+        )
     elif primitive in {"ema", "rolling_zscore"}:
         # A one-bar zscore window has stdev 0 on every bar; a one-bar EMA is
         # the raw value. Both start at 2, same as v3.
@@ -1517,10 +1530,11 @@ def _validate_kline_primary_requirements(
       bar itself therefore compiles green but is guaranteed to fail closed on
       the very first frame every single run — a config that must never reach
       execution. The history primitives (``rsi_wilder`` / ``ema`` / ``macd``
-      / ``rolling_zscore``) are allowed instead: build_frames leaves them
-      unset on the primary array's first ``warmup_bars`` rows (warmup
-      frames) and requires them from the first decision frame on, so the
-      primary requirement's ``warmup_bars`` must cover their lookback.
+      / ``rolling_zscore`` / ``rolling_mean``) are allowed instead:
+      build_frames leaves them unset on the primary array's first
+      ``warmup_bars`` rows (warmup frames) and requires them from the first
+      decision frame on, so the primary requirement's ``warmup_bars`` must
+      cover their lookback.
     - a coarse feature (interval != primary timeframe)'s matched requirement
       must declare ``ohlcv_resample.v1`` in its own ``allowed_transforms``:
       §4.2 binds transform selection into the artifact hash via spec_hash,
@@ -1569,7 +1583,7 @@ def _validate_kline_primary_requirements(
             # requirement's warmup_bars must therefore cover the primitive's
             # own lookback; rsi_wilder's stricter 10x period floor is
             # enforced by _validate_rsi_warmup against the same requirement.
-            if primitive in {"ema", "macd", "rolling_zscore"}:
+            if primitive in {"ema", "macd", "rolling_zscore", "rolling_mean"}:
                 lookback = primitive_lookback_bars(primitive, params)
                 if primary_requirement["warmup_bars"] < lookback:
                     _raise(
@@ -1659,7 +1673,7 @@ def _validate_kline_primary_requirements(
                         required=window_bars,
                         actual=requirement["warmup_bars"],
                     )
-            elif primitive in {"ema", "macd", "rolling_zscore"}:
+            elif primitive in {"ema", "macd", "rolling_zscore", "rolling_mean"}:
                 lookback = primitive_lookback_bars(primitive, params)
                 if requirement["warmup_bars"] < lookback:
                     _raise(
@@ -1864,6 +1878,23 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
             {
                 "primitive": "rolling_extreme",
                 "version": "1",
+                "source_streams": [
+                    "coinglass.futures_cvd",
+                    *kline_streams,
+                    *METRICS_SOURCE_STREAMS,
+                ],
+                "intervals": ["1d", "1h", "4h"],
+                "value_kinds": ["flow", "level", "price"],
+                "output_type": "decimal",
+            },
+            {
+                "primitive": "rolling_mean",
+                "version": "1",
+                # PROV-ROLLING-MEAN-1107: SMA is advertised for the same
+                # windowed source surface as rolling_extreme, kline.primary.*
+                # included -- "close gt rolling_mean(close, N)" is the atom
+                # this primitive exists for, and it is a passthrough feature
+                # whose primary warmup_bars must cover window_bars.
                 "source_streams": [
                     "coinglass.futures_cvd",
                     *kline_streams,
@@ -3107,13 +3138,31 @@ def _evaluate_windowed_primitive(
     step: int,
     error_path: str,
 ) -> Optional[tuple[Decimal, int]]:
-    """Dispatch ``rolling_sum``/``rolling_extreme``/``rolling_quantile`` per
-    their frozen §5.5 semantics, plus v3 ``rolling_zscore``. ``rsi_wilder`` is precomputed separately (its
+    """Dispatch ``rolling_sum``/``rolling_mean``/``rolling_extreme``/
+    ``rolling_quantile`` per their frozen §5.5 semantics, plus v3
+    ``rolling_zscore``. ``rsi_wilder`` is precomputed separately (its
     recursive seed needs the stream's full fetched history, not a fixed
     window) — see ``_rsi_wilder_series``.
     """
     primitive = feature["primitive"]
     params = feature["params"]
+    if primitive == "rolling_mean":
+        window_bars = params["window_bars"]
+        result = _stream_lookback(
+            ordered_timestamps, rows_by_ts, anchor_ts, step, window_bars, error_path
+        )
+        if result is None:
+            return None
+        values, ceiling = result
+        # PROV-ROLLING-MEAN-1107: SMA shares ``rolling_sum``'s warmup rule --
+        # a window that is not yet full is a missing value, never a partial
+        # average (``rolling_quantile`` is the only primitive with a
+        # ``min_periods`` leniency).
+        if len(values) != window_bars:
+            return None
+        with localcontext(_DECIMAL_CONTEXT) as ctx:
+            mean = +ctx.divide(sum(values, Decimal(0)), Decimal(window_bars))
+        return mean, ceiling
     if primitive == "rolling_sum":
         window_bars = params["window_bars"]
         result = _stream_lookback(
@@ -3372,7 +3421,16 @@ def _recursive_series_v2(
 
 
 _RECURSIVE_PRIMITIVES_V2 = {"rsi_wilder", "ema", "macd"}
-_PASSTHROUGH_HISTORY_PRIMITIVES = {"rsi_wilder", "ema", "macd", "rolling_zscore"}
+_PASSTHROUGH_HISTORY_PRIMITIVES = {
+    "rsi_wilder",
+    "ema",
+    "macd",
+    "rolling_zscore",
+    # PROV-ROLLING-MEAN-1107: unlike rolling_sum/rolling_extreme, a wide
+    # window is legal on kline.primary passthrough features (compile enforces
+    # primary warmup_bars >= window_bars), so its warmup rows may stay unset.
+    "rolling_mean",
+}
 
 
 def build_frames(
