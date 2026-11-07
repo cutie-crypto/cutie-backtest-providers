@@ -497,8 +497,6 @@ def validate_execution_request(
     primary_timeframe = request["strategy_spec"]["market"]["timeframe"]
     for feature in request["strategy_spec"]["features"]:
         need = feature_needs.get(feature["key"], 0)
-        if need <= 0:
-            continue
         if (
             feature["interval"] != primary_timeframe
             and metrics_stream_parts(feature["source_stream"]) is not None
@@ -513,7 +511,13 @@ def validate_execution_request(
             # widened to max_primary_lag_frames. Every other coarse stream
             # stays banned below.
             continue
-        if feature["interval"] != primary_timeframe:
+        # R2 (agy HIGH): the coarse-interval ban only speaks to lag
+        # references; the warmup floor below must NOT be gated on need > 0.
+        # A lag_bars=0 feature still needs the primitive's own history
+        # (window_bars / min_periods / 10x period), and skipping the check
+        # made an under-declared requirement die at runtime as
+        # ERR_COVERAGE_INCOMPLETE instead of failing closed here.
+        if feature["interval"] != primary_timeframe and need > 0:
             _error(
                 ERR_SPEC_INVALID,
                 f"$.strategy_spec.features[{feature['key']}].lag_bars",
@@ -533,6 +537,8 @@ def validate_execution_request(
         # 解读分叉。
         primitive_floor = _primitive_warmup_floor(feature)
         required_warmup = primitive_floor + need
+        if required_warmup <= 0:
+            continue
         for requirement in plan.artifact_manifest["data_requirements"]:
             if requirement["execution_role"] != "feature_input":
                 continue
@@ -546,7 +552,8 @@ def validate_execution_request(
                     f"$.artifact_manifest.data_requirements[{requirement['stream_id']}].warmup_bars",
                     "feature warmup_bars must cover the primitive's own "
                     "warmup floor plus the deepest lag reference (lag_bars, "
-                    "+1 inside cross) -- SPEC 另计 lag_bars is additive, not "
+                    "+1 inside cross; lag_bars may be 0, the floor still "
+                    "binds) -- SPEC 另计 lag_bars is additive, not "
                     "an independent floor",
                     required={
                         "primitive_floor": primitive_floor,

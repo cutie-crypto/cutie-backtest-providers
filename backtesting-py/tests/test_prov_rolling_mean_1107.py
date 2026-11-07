@@ -232,13 +232,30 @@ def test_rolling_mean_compare_close() -> None:
 
 def test_rolling_mean_coarse_kline(monkeypatch) -> None:
     """4h ``rolling_mean`` on a 1h decision clock: warmup_bars gate and as-of
-    alignment must behave exactly like the same-scenario ``ema`` (both are
-    window_bars primitives routed through the same coarse-warmup branch and
-    the same as-of anchor), so the two runs are compared directly."""
+    alignment, pinned on hand-computed first-entry frames that differ from the
+    same-scenario ``ema`` (both are window_bars primitives routed through the
+    same coarse-warmup branch and as-of anchor).
+
+    Bucket closes (4h buckets over 24 hourly bars) fall then rise:
+      b0..b5 = 120, 100, 80, 100, 120, 140     threshold = 95
+    The as-of value visible on the 16h frames is the b2/b3 pair, on the 19h
+    frames the b3/b4 pair:
+      rolling_mean(2) @16h = (80+100)/2      = 90     <= 95  -> no entry
+      rolling_mean(2) @19h = (100+120)/2     = 110    >  95  -> entry
+      ema(2)          @16h = seed(120+100)/2 = 110,
+                            110 + 2/3*(80-110) = 90,
+                            90  + 2/3*(100-90) = 96.666...  > 95 -> entry
+    So the first entry *frame* is 16h for ema and 19h for rolling_mean; both
+    fill on the next bar open (17h -> 120, 20h -> 140). The old fixture let
+    every frame clear the bar, so the two runs trivially matched.
+    """
     monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
 
+    bucket_closes = (120, 100, 80, 100, 120, 140)
+    closes = [close for close in bucket_closes for _ in range(4)]
+
     def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
-        return [[i * 3_600_000, 100, 200, 50, 100 + i, 1] for i in range(24)]
+        return [[i * 3_600_000, close, close, close, close, 1] for i, close in enumerate(closes)]
 
     monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
 
@@ -258,7 +275,7 @@ def test_rolling_mean_coarse_kline(monkeypatch) -> None:
             "node": "compare",
             "op": "gt",
             "left": {"node": "feature", "key": feature["key"], "lag_bars": 0},
-            "right": {"node": "literal", "value_type": "decimal", "value": "50"},
+            "right": {"node": "literal", "value_type": "decimal", "value": "95"},
         }
         spec = tsk.make_spec(condition=condition, features=[feature])
         manifest = tkp._kline_primary_manifest(
@@ -275,7 +292,9 @@ def test_rolling_mean_coarse_kline(monkeypatch) -> None:
         assert caught.value.code == ERR_SPEC_INVALID
         assert caught.value.required == 2
 
-        spec, manifest = build(primitive, warmup_bars=2)
+        # warmup_bars=4 pulls the fetched history back to 0h, so all six
+        # buckets reach the kernel and the recursions above are reproducible.
+        spec, manifest = build(primitive, warmup_bars=4)
         request = tkp._kline_primary_request(
             spec, manifest, start_at=57_600, end_at=86_400
         )
@@ -288,6 +307,7 @@ def test_rolling_mean_coarse_kline(monkeypatch) -> None:
         bodies[primitive] = response.json()
         assert bodies[primitive]["result_status"] == "success", bodies[primitive]
 
+    # as-of alignment + resample derivation are primitive-independent here.
     derivations = []
     for primitive, body in bodies.items():
         coverage = body["coverage_manifest"]
@@ -297,20 +317,23 @@ def test_rolling_mean_coarse_kline(monkeypatch) -> None:
             if stream["stream_id"] == "kline.primary.close@4h"
         )
         derivations.append(
-            (
-                primitive,
-                derived["point_count"],
-                coverage["transforms"],
-                derived["revision"],
-            )
+            (primitive, derived["point_count"], coverage["transforms"], derived["revision"])
         )
-    # as-of alignment + resample derivation are primitive-independent here.
-    assert {item[1] for item in derivations} == {4}
+    assert {item[1] for item in derivations} == {6}
     assert derivations[0][2] == derivations[1][2]
     assert derivations[0][3] == derivations[1][3]
-    # Same visible bucket, same signal: the trades must line up bar for bar.
-    assert bodies["ema"]["trades"] == bodies["rolling_mean"]["trades"]
-    assert bodies["rolling_mean"]["trades"], "bucket values 100+ clear the 50 bar"
+
+    # First entry frame: 16h (frame_index 0 -> fill frame_index 1) for ema,
+    # 19h (frame_index 3 -> fill frame_index 4) for rolling_mean -- exactly the
+    # values derived from the 4h buckets in the docstring above.
+    ema_body = bodies["ema"]
+    sma_body = bodies["rolling_mean"]
+    assert ema_body["trades"][0]["opened_at"] == 57_600 + 1 * HOUR
+    assert sma_body["trades"][0]["opened_at"] == 57_600 + 4 * HOUR
+    # ... and they fill on the next bar open with the bucket close in force.
+    assert ema_body["trades"][0]["entry_price"] == "120"
+    assert sma_body["trades"][0]["entry_price"] == "140"
+    assert ema_body["trades"] != sma_body["trades"]
 
 
 CVD_STREAM_ID = "coinglass.futures_cvd.1h"
@@ -377,6 +400,107 @@ def test_rolling_mean_feature_stream_lag_warmup_rejected(monkeypatch) -> None:
         "primitive_floor": 20,
         "lag_need": 1,
         "total": 21,
+    }
+
+
+def _cvd_sma_no_lag_request(primitive: str, window_bars: int) -> dict:
+    """Same shape as ``_cvd_sma_lag_request`` but referenced at ``lag_bars=0``:
+    the additive lag term is 0, so SPEC §5.5's floor is the primitive's own
+    history only (window_bars + 0)."""
+    feature = {
+        "key": "cvd_sma20_1h",
+        "primitive": primitive,
+        "primitive_version": "1",
+        "source_stream": "coinglass.futures_cvd",
+        "interval": "1h",
+        "value_kind": "flow",
+        "output_type": "decimal",
+        "params": {"window_bars": window_bars},
+        "required": True,
+    }
+    condition = {
+        "node": "compare",
+        "op": "gt",
+        "left": {"node": "feature", "key": "cvd_sma20_1h", "lag_bars": 0},
+        "right": {"node": "literal", "value_type": "decimal", "value": "0.5"},
+    }
+    request = tsk.build_request(
+        tsk.make_spec(condition=condition, features=[feature])
+    )
+    request["execution_params"]["start_at"] = 21 * HOUR
+    request["execution_params"]["end_at"] = 23 * HOUR
+    return request
+
+
+def test_rolling_mean_feature_stream_no_lag_warmup_rejected(monkeypatch) -> None:
+    """agy review R2 HIGH: the preflight used to ``continue`` on
+    ``need <= 0``, so a feature stream referenced only at ``lag_bars=0``
+    skipped the primitive floor entirely. ``rolling_mean(window_bars=20)`` on
+    ``coinglass.futures_cvd`` with manifest ``warmup_bars=5`` then died at
+    runtime as ERR_COVERAGE_INCOMPLETE (the kernel has no SMA at all for the
+    first 20 rows). It must fail closed as ERR_SPEC_INVALID before data
+    access. Reverting R2's decoupling makes this test red."""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError(
+            "the primitive warmup floor must be checked before data access"
+        )
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fail_if_fetched)
+
+    request = _cvd_sma_no_lag_request("rolling_mean", window_bars=20)
+    tsk.set_request_warmup(request, CVD_STREAM_ID, 5)
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert "warmup_bars" in body["error_detail"]["path"]
+    # lag_bars=0 -> lag_need 0, but the primitive floor still binds.
+    assert body["error_detail"]["required"] == {
+        "primitive_floor": 20,
+        "lag_need": 0,
+        "total": 20,
+    }
+    assert body["error_detail"]["actual"] == 5
+
+
+def test_rolling_sum_feature_stream_no_lag_warmup_rejected(monkeypatch) -> None:
+    """Same shape for ``rolling_sum``: the ``need <= 0`` short-circuit hid the
+    existing gap for every floored primitive (rolling_sum / rolling_extreme /
+    rolling_quantile / rsi_wilder), not just rolling_mean."""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError(
+            "the primitive warmup floor must be checked before data access"
+        )
+
+    monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
+    monkeypatch.setattr(provider, "_fetch_artifact_metric_chunk", fail_if_fetched)
+
+    request = _cvd_sma_no_lag_request("rolling_sum", window_bars=20)
+    tsk.set_request_warmup(request, CVD_STREAM_ID, 5)
+    response = TestClient(provider.app).post(
+        "/cutie/backtest",
+        json=request,
+        headers={"X-Cutie-Connector-Version": "1.2.3"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error_type"] == ERR_SPEC_INVALID
+    assert "warmup_bars" in body["error_detail"]["path"]
+    assert body["error_detail"]["required"] == {
+        "primitive_floor": 20,
+        "lag_need": 0,
+        "total": 20,
     }
 
 
