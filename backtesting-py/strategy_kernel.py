@@ -214,16 +214,18 @@ _METRICS_BTC_ONLY = (
 # rule below still fails closed on them.
 _METRICS_BTC_ETH = ("exchange_netflow",)
 # PROV-CG-1108: BTC daily flow — the CG-A ``coinbase_premium_index`` stream.
-# ETF flow (``etf_flow``) is deliberately not registered: upstream only has rows
-# on US trading days, so the generic v2 path would fail closed on any weekend
-# with ERR_COVERAGE_INCOMPLETE (trading-calendar alignment is a separate item).
+# PROV-ETF-FLOW-1108: ``etf_flow`` is registered again now that the central
+# /metrics zero-fills non-trading days (weekends and NYSE holidays) on the
+# JES-T20-ETF-A path; the upstream row set only covers US trading days, so
+# continuity is the central side's contract, not ours. Weekday rows the
+# collector actually misses stay as open gaps, and the generic contiguous rule
+# keeps failing closed on them with ERR_COVERAGE_INCOMPLETE — that is the
+# intended behaviour, no trading-calendar alignment and no carry-forward here.
 # No per-stream availability config exists: every fetched row carries
 # ``available_at = ts + interval step`` and 1d streams are read through the
-# ``daily_asof`` anchor, so the value only becomes visible from the next UTC day
-# (T+1 as-of). The stream is 1d-only (enforced in ``_validate_feature``) and
-# continuity is the same contiguous rule as every other metric stream: open gaps
-# fail closed, no carry-forward here.
-_METRICS_BTC_FLOWS = ("coinbase_premium_index",)
+# ``daily_asof`` anchor, so the value only becomes visible at T+1 00:00 UTC.
+# Both streams are 1d-only (enforced in ``_validate_feature``).
+_METRICS_BTC_FLOWS = ("coinbase_premium_index", "etf_flow")
 METRICS_SOURCE_STREAMS = tuple(
     sorted(
         {
