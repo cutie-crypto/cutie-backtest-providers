@@ -719,7 +719,8 @@ def _process_fingerprint() -> str:
 
 
 # F7 修（Kimi review）：server 侧 handlers/internal/market_data.py 的 MAX_KLINE_RANGE_SECONDS
-# 单次请求跨度上限是 90 天，但 provider 的回测区间最长可达 365 天（EXECUTION_MAX_RANGE_DAYS）。
+# 单次请求跨度上限是 90 天，但 provider 的回测区间最长可达 1080 天（EXECUTION_MAX_RANGE_DAYS，
+# 日内周期仍按 EXECUTION_INTRADAY_MAX_RANGE_DAYS 限 365 天）。
 # 此前 _fetch_from_central 整段区间打一次请求，长区间回测一律被 server 参数校验拒绝
 # （ERR_INVALID_PARAMS），直接回退 ccxt——中心缓存对长区间 spot 回测形同虚设，白建了
 # Step 7.2 的月度分片缓存却用不上。改为按 90 天分片串行请求再拼接。

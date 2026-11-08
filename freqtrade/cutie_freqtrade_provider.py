@@ -62,7 +62,10 @@ RESPONSE_SCHEMA = "cutie.external_backtest.response.v1"
 DEFAULT_PORT = 8766
 DEFAULT_EXCHANGE = os.environ.get("CUTIE_FREQTRADE_DEFAULT_EXCHANGE", "okx").lower()
 EXECUTION_TIMEOUT_MS = BACKTEST_TIMEOUT * 1000
-EXECUTION_MAX_RANGE_DAYS = 365
+# Catalog advertisement only: this provider validates local data coverage, not
+# the requested span (see run_backtest), so 1080 is the day-scale ceiling the
+# artifact provider enforces for timeframe >= 1d; intraday keeps 365 there.
+EXECUTION_MAX_RANGE_DAYS = 1080
 
 SUPPORTED_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 TIMEFRAME_SECONDS = {
