@@ -3,12 +3,14 @@
 CG-A (self scope): 大户持仓比、资金费率成交量加权、单交易对多空爆仓, plus the
 server-side ``*_1h_stitched`` variants. CG-B (self scope): taker buy/sell volume
 and basis close/change, which had no base stream before, plus the stitched
-``futures_aggregated_cvd`` row. BTC-only daily flows: ``coinbase_premium_index``
-and ``etf_flow`` — the provider stamps ``available_at = ts + interval step``, so a
-1d row is only visible from the next UTC day (T+1 as-of after the US close).
+``futures_aggregated_cvd`` row. BTC-only daily flow: ``coinbase_premium_index`` —
+the provider stamps ``available_at = ts + interval step``, so a 1d row is only
+visible from the next UTC day (T+1 as-of), and the stream is 1d-only.
 
 Anything outside the list (near names such as ``coinbase_premium``) stays
-unsupported: the capability gate rejects the requirement.
+unsupported: the capability gate rejects the requirement. ``etf_flow`` is
+deliberately not registered (upstream has no rows on non-trading days, so the
+contiguous rule would fail closed across a weekend).
 """
 
 import json
@@ -40,7 +42,7 @@ SELF_STITCHED = (
     "metrics.self.liquidation_short_pair_1h_stitched",
     "metrics.self.top_long_short_position_ratio_1h_stitched",
 )
-BTC_FLOWS = ("metrics.btc.coinbase_premium_index", "metrics.btc.etf_flow")
+BTC_FLOWS = ("metrics.btc.coinbase_premium_index",)
 NEW_STREAMS = (*SELF_BASE, *SELF_STITCHED, *BTC_FLOWS)
 NEAR_MISS = (
     "metrics.btc.coinbase_premium",
@@ -128,14 +130,27 @@ def test_capability_declaration_and_golden_list_the_new_streams():
     text = json.dumps(golden["capability"])
     for stream in NEW_STREAMS:
         assert stream in text
+    assert "metrics.btc.etf_flow" not in streams
+    assert "metrics.btc.etf_flow" not in text
     assert golden["sha256"] == kernel.capability_hash(golden["capability"])
+
+
+def test_etf_flow_not_registered():
+    stream = "metrics.btc.etf_flow"
+    assert stream not in kernel.METRICS_SOURCE_STREAMS
+    payload = kernel.capability_payload("0" * 40)
+    streams = {s for item in payload["feature_primitives"] for s in item.get("source_streams", ())}
+    assert stream not in streams
+    requirement = _requirements(_feature_requirement(stream, "1d", "flow"))
+    with pytest.raises(kernel.StrategyContractError) as excinfo:
+        kernel._check_capability(requirement, payload)
+    assert excinfo.value.code == kernel.ERR_SPEC_UNSUPPORTED
 
 
 def test_capability_gate_accepts_new_streams():
     capability = kernel.capability_payload("0" * 40)
     features = [
-        _feature_requirement(stream, "1h" if stream.endswith("_1h_stitched") else "1d",
-                             "flow" if "etf_flow" in stream else "level")
+        _feature_requirement(stream, "1h" if stream.endswith("_1h_stitched") else "1d")
         for stream in NEW_STREAMS
     ]
     kernel._check_capability(_requirements(*features), capability)
@@ -156,6 +171,15 @@ def test_stitched_streams_are_1h_only():
         with pytest.raises(kernel.StrategyContractError) as caught:
             kernel._validate_feature(_feature(stream, "1d"), 0)
         assert caught.value.path == "$.strategy_spec.features[0].interval"
+
+
+def test_btc_daily_flow_rejects_1h():
+    stream = "metrics.btc.coinbase_premium_index"
+    kernel._validate_feature(_feature(stream, "1d"), 0)
+    with pytest.raises(kernel.StrategyContractError) as caught:
+        kernel._validate_feature(_feature(stream, "1h"), 0)
+    assert caught.value.code == kernel.ERR_SPEC_INVALID
+    assert caught.value.path == "$.strategy_spec.features[0].interval"
 
 
 def _stub(monkeypatch, rows, calls):

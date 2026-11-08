@@ -213,14 +213,17 @@ _METRICS_BTC_ONLY = (
 # (balance carried, netflow 0) and leaves longer gaps open, so the contiguous
 # rule below still fails closed on them.
 _METRICS_BTC_ETH = ("exchange_netflow",)
-# PROV-CG-1108: US-session daily flows, BTC only — the CG-A ``coinbase_premium``
-# atom and the dev ``etf_netflow`` atom both declare scope=btc. No per-stream
-# availability config exists: every fetched row carries
+# PROV-CG-1108: BTC daily flow — the CG-A ``coinbase_premium_index`` stream.
+# ETF flow (``etf_flow``) is deliberately not registered: upstream only has rows
+# on US trading days, so the generic v2 path would fail closed on any weekend
+# with ERR_COVERAGE_INCOMPLETE (trading-calendar alignment is a separate item).
+# No per-stream availability config exists: every fetched row carries
 # ``available_at = ts + interval step`` and 1d streams are read through the
 # ``daily_asof`` anchor, so the value only becomes visible from the next UTC day
-# (T+1 as-of after the US close). Continuity is the same contiguous rule as every
-# other metric stream: open gaps fail closed, no carry-forward here.
-_METRICS_BTC_FLOWS = ("coinbase_premium_index", "etf_flow")
+# (T+1 as-of). The stream is 1d-only (enforced in ``_validate_feature``) and
+# continuity is the same contiguous rule as every other metric stream: open gaps
+# fail closed, no carry-forward here.
+_METRICS_BTC_FLOWS = ("coinbase_premium_index",)
 METRICS_SOURCE_STREAMS = tuple(
     sorted(
         {
@@ -693,15 +696,25 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
             "metrics stream must be metrics.<self|market|btc|eth>.<metric>",
             actual=source_stream,
         )
-    stitched_parts = metrics_stream_parts(source_stream)
+    metric_parts = metrics_stream_parts(source_stream)
     if (
-        stitched_parts is not None
-        and stitched_parts[1] in _METRICS_STITCHED
+        metric_parts is not None
+        and metric_parts[1] in _METRICS_STITCHED
         and obj["interval"] != "1h"
     ):
         _raise(
             f"{path}.interval",
             "stitched metrics stream requires interval 1h",
+            actual=obj["interval"],
+        )
+    if (
+        metric_parts is not None
+        and metric_parts[1] in _METRICS_BTC_FLOWS
+        and obj["interval"] != "1d"
+    ):
+        _raise(
+            f"{path}.interval",
+            "BTC daily metrics stream requires interval 1d",
             actual=obj["interval"],
         )
     if source_stream.startswith(_KLINE_PRIMARY_PREFIX):
