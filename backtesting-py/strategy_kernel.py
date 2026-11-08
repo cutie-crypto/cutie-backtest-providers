@@ -165,6 +165,36 @@ _METRICS_PER_COIN_STITCHED = (
     "liquidation_short_24h_stitched",
     "open_interest_aggregated_1h_stitched",
 )
+# PROV-CG-1108: CoinGlass CG-A/CG-B families whose atom scope is ``self`` only (the
+# atoms pin symbols=self, see workbench_condition_registry ``*_pair`` /
+# top_long_short_position_ratio / funding_rate_vol_weight and the CG-B basis +
+# taker-imbalance atoms). CG-B's taker buy/sell volume and basis close/change had
+# no published base stream before this release, so base and stitched are both new
+# for them; futures_aggregated_cvd's base row already ships at every per-coin scope.
+_METRICS_SELF_ONLY = (
+    "funding_rate_vol_weight",
+    "futures_aggregated_taker_buy_volume",
+    "futures_aggregated_taker_sell_volume",
+    "futures_basis_change",
+    "futures_basis_close",
+    "liquidation_long_pair",
+    "liquidation_short_pair",
+    "top_long_short_position_ratio",
+)
+# Server-side 1d→1h stitch (``metric_hourly_stitch.VIRTUAL_METRICS``) for the same
+# self-scope families, plus futures_aggregated_cvd; 1h-only like the per-coin rows.
+_METRICS_SELF_STITCHED = (
+    "funding_rate_vol_weight_1h_stitched",
+    "futures_aggregated_cvd_1h_stitched",
+    "futures_aggregated_taker_buy_volume_1h_stitched",
+    "futures_aggregated_taker_sell_volume_1h_stitched",
+    "futures_basis_change_1h_stitched",
+    "futures_basis_close_1h_stitched",
+    "liquidation_long_pair_1h_stitched",
+    "liquidation_short_pair_1h_stitched",
+    "top_long_short_position_ratio_1h_stitched",
+)
+_METRICS_STITCHED = (*_METRICS_PER_COIN_STITCHED, *_METRICS_SELF_STITCHED)
 _METRICS_MARKET = ("altcoin_season_index", "fear_greed_index", "stablecoin_mcap_total")
 _METRICS_BTC_ONLY = (
     "ahr999",
@@ -183,6 +213,14 @@ _METRICS_BTC_ONLY = (
 # (balance carried, netflow 0) and leaves longer gaps open, so the contiguous
 # rule below still fails closed on them.
 _METRICS_BTC_ETH = ("exchange_netflow",)
+# PROV-CG-1108: US-session daily flows, BTC only — the CG-A ``coinbase_premium``
+# atom and the dev ``etf_netflow`` atom both declare scope=btc. No per-stream
+# availability config exists: every fetched row carries
+# ``available_at = ts + interval step`` and 1d streams are read through the
+# ``daily_asof`` anchor, so the value only becomes visible from the next UTC day
+# (T+1 as-of after the US close). Continuity is the same contiguous rule as every
+# other metric stream: open gaps fail closed, no carry-forward here.
+_METRICS_BTC_FLOWS = ("coinbase_premium_index", "etf_flow")
 METRICS_SOURCE_STREAMS = tuple(
     sorted(
         {
@@ -190,8 +228,15 @@ METRICS_SOURCE_STREAMS = tuple(
             for scope in ("self", "btc", "eth")
             for metric in (*_METRICS_PER_COIN, *_METRICS_PER_COIN_STITCHED)
         }
+        | {
+            f"metrics.self.{metric}"
+            for metric in (*_METRICS_SELF_ONLY, *_METRICS_SELF_STITCHED)
+        }
         | {f"metrics.market.{metric}" for metric in _METRICS_MARKET}
-        | {f"metrics.btc.{metric}" for metric in _METRICS_BTC_ONLY}
+        | {
+            f"metrics.btc.{metric}"
+            for metric in (*_METRICS_BTC_ONLY, *_METRICS_BTC_FLOWS)
+        }
         | {f"metrics.{scope}.{metric}" for scope in ("btc", "eth") for metric in _METRICS_BTC_ETH},
         key=lambda value: value.encode("utf-16-be"),
     )
@@ -651,7 +696,7 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
     stitched_parts = metrics_stream_parts(source_stream)
     if (
         stitched_parts is not None
-        and stitched_parts[1] in _METRICS_PER_COIN_STITCHED
+        and stitched_parts[1] in _METRICS_STITCHED
         and obj["interval"] != "1h"
     ):
         _raise(
