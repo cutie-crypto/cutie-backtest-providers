@@ -205,6 +205,8 @@ def evaluate_cci_rsi(params: dict[str, Any], bars: list[Bar], direction: str) ->
     cci_overbought = float(params.get("cci_overbought", 100))
     rsi_oversold = float(params.get("rsi_oversold", 30))
     rsi_overbought = float(params.get("rsi_overbought", 70))
+    # J4-P2：rsi_optional=True 时入场只看 CCI（与 provider _build_cci_rsi 同口径）。
+    rsi_optional = params.get("rsi_optional", False) is True
     if not bars:
         return None
 
@@ -219,9 +221,9 @@ def evaluate_cci_rsi(params: dict[str, Any], bars: list[Bar], direction: str) ->
         return None
 
     if direction == "long":
-        satisfied = cci_v < cci_oversold and rsi_v < rsi_oversold
+        satisfied = cci_v < cci_oversold and (rsi_optional or rsi_v < rsi_oversold)
     elif direction == "short":
-        satisfied = cci_v > cci_overbought and rsi_v > rsi_overbought
+        satisfied = cci_v > cci_overbought and (rsi_optional or rsi_v > rsi_overbought)
     else:
         return None
     if not satisfied:

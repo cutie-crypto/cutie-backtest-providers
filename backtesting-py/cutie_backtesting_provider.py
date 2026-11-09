@@ -4904,11 +4904,13 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
         rsi_overbought = float(params.get("rsi_overbought", 70))
     except (ValueError, TypeError):
         raise ValueError("INVALID_PARAMS:cci/rsi params must be numbers")
+    # J4-P2：rsi_optional=True 时入场只看 CCI，不再强制 RSI 超买超卖边界。
+    rsi_optional = params.get("rsi_optional", False) is True
     if cci_period < 2 or rsi_period < 2:
         raise ValueError("INVALID_PARAMS:cci_period and rsi_period must be >= 2")
     if cci_oversold >= cci_overbought:
         raise ValueError("INVALID_PARAMS:cci_oversold must be < cci_overbought")
-    if not (0 < rsi_oversold < rsi_overbought < 100):
+    if not rsi_optional and not (0 < rsi_oversold < rsi_overbought < 100):
         raise ValueError("INVALID_PARAMS:require 0 < rsi_oversold < rsi_overbought < 100")
 
     direction = params.get("direction", "both")
@@ -4953,9 +4955,17 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
                 return
             # Dual-indicator mean-reversion, long & short (KOL 'CCI+RSI 双指标超买超卖').
             if not self.position:
-                if direction in {"both", "long"} and cci < cci_oversold and rsi < rsi_oversold:
+                if (
+                    direction in {"both", "long"}
+                    and cci < cci_oversold
+                    and (rsi_optional or rsi < rsi_oversold)
+                ):
                     self._risk_buy()
-                elif direction in {"both", "short"} and cci > cci_overbought and rsi > rsi_overbought:
+                elif (
+                    direction in {"both", "short"}
+                    and cci > cci_overbought
+                    and (rsi_optional or rsi > rsi_overbought)
+                ):
                     self._risk_sell()
             elif self.position.is_long:
                 if cci > 0 or rsi > 50:
@@ -8469,6 +8479,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "cci_overbought": {"type": "number", "default": 100, "minimum": 0, "maximum": 500},
             "rsi_oversold": {"type": "number", "default": 30, "minimum": 1, "maximum": 49},
             "rsi_overbought": {"type": "number", "default": 70, "minimum": 51, "maximum": 99},
+            "rsi_optional": {"type": "boolean", "default": False},
             "exchange": {"type": "string", "default": DEFAULT_EXCHANGE},
         },
     },
