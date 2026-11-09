@@ -2088,9 +2088,13 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
             {
                 "primitive": "rolling_sum",
                 "version": "1",
+                # JES-J4-P1-CAPABILITY-R1: kline.primary.volume is deliberately
+                # absent. A wide volume sum cannot be built on the 1h
+                # passthrough path (window_bars=1 gate), so declaring it would
+                # advertise an unusable capability. Volume confirmation uses
+                # rolling_mean/rolling_std, which do open kline.primary.volume.
                 "source_streams": [
                     "coinglass.futures_cvd",
-                    "kline.primary.volume",
                     *METRICS_SOURCE_STREAMS,
                 ],
                 "intervals": ["1d", "1h", "1w"],

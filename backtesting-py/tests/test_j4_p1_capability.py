@@ -17,6 +17,13 @@
 - ``test_volume_resample_sums``：修前 ``ohlcv_resample`` 不产出 volume，红。
 - ``test_capability_declares_min_max_abs``：修前 capability operators 不含
   min/max/abs，红。
+
+JES-J4-P1-CAPABILITY-R1（撤销 ``rolling_sum`` 的成交量声明）追加两条：
+
+- ``test_rolling_sum_does_not_declare_volume``：修前 ``rolling_sum`` 的
+  ``source_streams`` 含 ``kline.primary.volume``，红。
+- ``test_rolling_sum_volume_spec_rejected_by_capability``：修前 ``window_bars=1``
+  的 volume 规格能编译通过，红。
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ import test_strategy_kernel_primitives as tkp  # noqa: E402
 from canonical_json import canonical_decimal_str  # noqa: E402
 from strategy_kernel import (  # noqa: E402
     ERR_SPEC_INVALID,
+    ERR_SPEC_UNSUPPORTED,
     StrategyContractError,
     _DECIMAL_CONTEXT,
     _atr_wilder_series,
@@ -452,3 +460,80 @@ def test_capability_declares_min_max_abs() -> None:
             ["decimal", "decimal"],
             ["integer", "integer"],
         ]
+
+
+def _feature_primitive(capability: dict, primitive: str) -> dict:
+    return next(
+        item
+        for item in capability["feature_primitives"]
+        if item["primitive"] == primitive
+    )
+
+
+def test_rolling_sum_does_not_declare_volume() -> None:
+    """``rolling_sum`` must not advertise ``kline.primary.volume``.
+
+    修前为什么红：J4-P1 让 ``rolling_sum`` 的 ``source_streams`` 带上了
+    ``kline.primary.volume``，可 1h 直通路径上 ``window_bars > 1`` 仍被
+    ``ERR_STRATEGY_SPEC_UNSUPPORTED`` 拒绝，等于声明了用不了的能力。量能确认
+    只走 ``rolling_mean``，所以这里断言 volume 只剩 ``rolling_mean`` 声明。
+    """
+    capability = capability_payload(REVISION)
+    _validate_capability(capability)
+    assert "kline.primary.volume" not in _feature_primitive(
+        capability, "rolling_sum"
+    )["source_streams"]
+    assert "kline.primary.volume" in _feature_primitive(
+        capability, "rolling_mean"
+    )["source_streams"]
+    # 度量流不受影响：rolling_sum 仍覆盖 cvd 与 metrics。
+    assert "coinglass.futures_cvd" in _feature_primitive(
+        capability, "rolling_sum"
+    )["source_streams"]
+
+
+def test_rolling_sum_volume_spec_rejected_by_capability() -> None:
+    """A ``rolling_sum`` over ``kline.primary.volume`` is rejected because the
+    capability no longer declares it.
+
+    修前为什么红：声明里带着 volume，``window_bars=1`` 的规格能一路编译通过，
+    ``compile_strategy`` 不抛错；撤销声明后同一份规格被
+    ``capability_requirements.features[0]`` 拒掉。``window_bars=5`` 则先被
+    直通门禁拒绝——这正是撤销声明的理由。
+    """
+    feature = _feature(
+        "vol_sum5",
+        "rolling_sum",
+        {"window_bars": 5},
+        source_stream="kline.primary.volume",
+        value_kind="flow",
+    )
+    spec = tsk.make_spec(features=[feature])
+    manifest = tkp._kline_primary_manifest(spec, requirement_interval="1h")
+    next(
+        item
+        for item in manifest["data_requirements"]
+        if item["execution_role"] == "primary_execution_kline"
+    )["warmup_bars"] = 5
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(spec, manifest, capability_payload(REVISION))
+    assert caught.value.code == ERR_SPEC_UNSUPPORTED
+    assert caught.value.path.endswith("features[0].params.window_bars")
+
+    narrow = _feature(
+        "vol_sum1",
+        "rolling_sum",
+        {"window_bars": 1},
+        source_stream="kline.primary.volume",
+        value_kind="flow",
+    )
+    narrow_spec = tsk.make_spec(features=[narrow])
+    narrow_manifest = tkp._kline_primary_manifest(
+        narrow_spec, requirement_interval="1h"
+    )
+    with pytest.raises(StrategyContractError) as caught:
+        compile_strategy(
+            narrow_spec, narrow_manifest, capability_payload(REVISION)
+        )
+    assert caught.value.code == ERR_SPEC_UNSUPPORTED
+    assert caught.value.path.endswith("capability_requirements.features[0]")
