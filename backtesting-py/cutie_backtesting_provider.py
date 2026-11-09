@@ -4919,7 +4919,8 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
 
     from backtesting import Strategy
 
-    min_bars = max(cci_period, rsi_period) * 3 + 1
+    # J4-P2：CCI 单独成立时 RSI 腿不参与任何判定，预热门槛也只按 CCI 算（cci_period*3+1）。
+    min_bars = (cci_period if rsi_optional else max(cci_period, rsi_period)) * 3 + 1
 
     class CciRsiStrategy(_FixedRiskMixin, Strategy):
         _risk = risk
@@ -4951,7 +4952,8 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
                 return
             cci = self.cci[-1]
             rsi = self.rsi[-1]
-            if not (math.isfinite(cci) and math.isfinite(rsi)):
+            # J4-P2：rsi_optional=True 时 RSI 腿不参与判定，也不再要求它有限。
+            if not (math.isfinite(cci) and (rsi_optional or math.isfinite(rsi))):
                 return
             # Dual-indicator mean-reversion, long & short (KOL 'CCI+RSI 双指标超买超卖').
             if not self.position:
@@ -4968,10 +4970,12 @@ def _build_cci_rsi(params: dict[str, Any], *, initial_capital: float = 10000.0) 
                 ):
                     self._risk_sell()
             elif self.position.is_long:
-                if cci > 0 or rsi > 50:
+                # J4-P2：rsi_optional=True 时出场只看 CCI 回到 0 轴，避免 CCI 超卖入场后
+                # 因 RSI 本来就 > 50 在下一根被秒平。
+                if cci > 0 or (not rsi_optional and rsi > 50):
                     self.position.close()
             elif self.position.is_short:
-                if cci < 0 or rsi < 50:
+                if cci < 0 or (not rsi_optional and rsi < 50):
                     self.position.close()
 
     return {
