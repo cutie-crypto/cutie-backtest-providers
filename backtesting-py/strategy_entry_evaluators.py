@@ -205,6 +205,8 @@ def evaluate_cci_rsi(params: dict[str, Any], bars: list[Bar], direction: str) ->
     cci_overbought = float(params.get("cci_overbought", 100))
     rsi_oversold = float(params.get("rsi_oversold", 30))
     rsi_overbought = float(params.get("rsi_overbought", 70))
+    # J4-P2：rsi_optional=True 时入场只看 CCI（与 provider _build_cci_rsi 同口径）。
+    rsi_optional = params.get("rsi_optional", False) is True
     if not bars:
         return None
 
@@ -215,13 +217,16 @@ def evaluate_cci_rsi(params: dict[str, Any], bars: list[Bar], direction: str) ->
     rsi = rsi_series(closes, rsi_period)
     i = len(bars) - 1
     cci_v, rsi_v = cci[i], rsi[i]
-    if cci_v is None or rsi_v is None or not math.isfinite(cci_v) or not math.isfinite(rsi_v):
+    # J4-P2：rsi_optional=True 时预热只看 CCI，RSI 腿不参与也不再要求有限。
+    if cci_v is None or not math.isfinite(cci_v):
+        return None
+    if not rsi_optional and (rsi_v is None or not math.isfinite(rsi_v)):
         return None
 
     if direction == "long":
-        satisfied = cci_v < cci_oversold and rsi_v < rsi_oversold
+        satisfied = cci_v < cci_oversold and (rsi_optional or rsi_v < rsi_oversold)
     elif direction == "short":
-        satisfied = cci_v > cci_overbought and rsi_v > rsi_overbought
+        satisfied = cci_v > cci_overbought and (rsi_optional or rsi_v > rsi_overbought)
     else:
         return None
     if not satisfied:
@@ -234,21 +239,28 @@ def evaluate_cci_rsi(params: dict[str, Any], bars: list[Bar], direction: str) ->
 
 
 def evaluate_cci_rsi_exit(params: dict[str, Any], bars: list[Bar], position_direction: str) -> Optional[TriggerResult]:
-    """provider 持仓出场：多仓 CCI > 0 或 RSI > 50，空仓对称；watcher 负责边沿。"""
+    """provider 持仓出场：多仓 CCI > 0 或 RSI > 50，空仓对称；watcher 负责边沿。
+
+    `rsi_optional=True`（J4-P2）：RSI 腿不参与出场，只按 CCI 回到 0 轴平仓，与 provider
+    `_build_cci_rsi` 同口径；否则 CCI 超卖入场而 RSI 本就 > 50 时会在同一根/下一根秒平。
+    """
     if not bars:
         return None
     cci_period = int(params.get("cci_period", 20) or 20)
     rsi_period = int(params.get("rsi_period", 14) or 14)
+    rsi_optional = params.get("rsi_optional", False) is True
     closes = [bar.close for bar in bars]
     cci_v = cci_series([bar.high for bar in bars], [bar.low for bar in bars], closes, cci_period)[-1]
     rsi_v = rsi_series(closes, rsi_period)[-1]
-    if cci_v is None or not math.isfinite(cci_v) or not math.isfinite(rsi_v):
+    if cci_v is None or not math.isfinite(cci_v):
+        return None
+    if not rsi_optional and (rsi_v is None or not math.isfinite(rsi_v)):
         return None
     # 固定阈值与 backtest_tool_router 的模板出场校验一致，不读取入场阈值参数。
     if position_direction == "long":
-        satisfied = cci_v > 0 or rsi_v > 50
+        satisfied = cci_v > 0 or (not rsi_optional and rsi_v > 50)
     elif position_direction == "short":
-        satisfied = cci_v < 0 or rsi_v < 50
+        satisfied = cci_v < 0 or (not rsi_optional and rsi_v < 50)
     else:
         return None
     if not satisfied:
@@ -561,7 +573,10 @@ def required_warmup_bars(strategy_type: str, params: dict[str, Any]) -> Optional
     if strategy_type == "cci_rsi":
         cci_period = int(params.get("cci_period", 20) or 20)
         rsi_period = int(params.get("rsi_period", 14) or 14)
-        # provider min_bars = max(cci_period, rsi_period) * 3 + 1（Wilder EWM 收敛所需 buffer）。
+        # provider min_bars = max(cci_period, rsi_period) * 3 + 1（Wilder EWM 收敛所需 buffer）；
+        # J4-P2：rsi_optional=True 时 RSI 腿不参与，预热只按 cci_period * 3 + 1。
+        if params.get("rsi_optional", False) is True:
+            return cci_period * 3 + 1
         return max(cci_period, rsi_period) * 3 + 1
     if strategy_type == "roc":
         settings = roc_settings(params)

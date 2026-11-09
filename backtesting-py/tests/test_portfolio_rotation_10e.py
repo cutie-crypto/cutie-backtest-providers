@@ -342,6 +342,12 @@ def test_catalog_existing_entries_byte_identical():
             orb = api.TOOL_SPECS['local.backtesting_py.opening_range_breakout']['param_schema_properties']
             assert current.get('exchange') == orb['exchange'], tool_id
             entry['param_schema']['properties'] = {k: v for k, v in current.items() if k != 'exchange'}
+        # J4-P2-CCI：cci_rsi 新增 rsi_optional（CCI 可单独成立、默认 false 行为不变），是唯一允许的差异。
+        if tool_id == 'local.backtesting_py.cci_rsi':
+            current = entry['param_schema']['properties']
+            assert current.get('rsi_optional') == {'type': 'boolean', 'default': False}, tool_id
+            entry['param_schema']['properties'] = {
+                k: v for k, v in current.items() if k != 'rsi_optional'}
         # Q46：执行超时由 120000 改为共享常量（对齐 connector 硬上限 300000），是唯一允许的差异；换回基线值后仍须逐字节相同。
         assert entry['execution']['timeout_ms'] == api.EXECUTION_TIMEOUT_MS == 300000, tool_id
         entry['execution']['timeout_ms'] = baseline.EXECUTION_TIMEOUT_MS
