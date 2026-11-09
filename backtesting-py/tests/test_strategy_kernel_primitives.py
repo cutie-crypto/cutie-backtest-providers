@@ -163,8 +163,22 @@ def test_ohlcv_resample_bucket_open_zero_lookahead_boundary() -> None:
     ]
     buckets = ohlcv_resample(full_primary, 3600, "4h")
     assert buckets == [
-        {"open_time": 0, "open": "100", "high": "101", "low": "99", "close": "103"},
-        {"open_time": 14400, "open": "100", "high": "101", "low": "99", "close": "107"},
+        {
+            "open_time": 0,
+            "open": "100",
+            "high": "101",
+            "low": "99",
+            "close": "103",
+            "volume": "4",
+        },
+        {
+            "open_time": 14400,
+            "open": "100",
+            "high": "101",
+            "low": "99",
+            "close": "107",
+            "volume": "4",
+        },
     ]
 
     feature = {
@@ -1227,6 +1241,9 @@ def test_capability_advertises_the_three_new_primitives_and_ohlcv_resample() -> 
         "rolling_zscore",
         # PROV-ROLLING-MEAN-1107
         "rolling_mean",
+        # JES-J4-P1
+        "atr_wilder",
+        "rolling_std",
     }
     assert capability["data_transforms"] == ["ohlcv_resample.v1"]
     for item in capability["feature_primitives"]:

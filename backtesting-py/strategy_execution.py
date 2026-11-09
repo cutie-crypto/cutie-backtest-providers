@@ -993,18 +993,22 @@ def _primitive_warmup_floor(feature: dict[str, Any]) -> int:
     """
     primitive = feature["primitive"]
     params = feature["params"]
-    if primitive in {"rolling_sum", "rolling_extreme", "rolling_mean"}:
+    if primitive in {"rolling_sum", "rolling_extreme", "rolling_mean", "rolling_std"}:
         # PROV-ROLLING-MEAN-1107: SMA shares rolling_sum/rolling_extreme's
         # full-window warmup rule (no min_periods leniency), so its additive
         # lag floor starts from window_bars -- a non-passthrough stream (e.g.
         # coinglass.futures_cvd) has no compile-time requirement row to carry
         # that floor, and omitting it here let preflight pass a window the
         # kernel then dies on with ERR_COVERAGE_INCOMPLETE.
+        # JES-J4-P1: rolling_std follows the same rule.
         return params["window_bars"]
     if primitive == "rolling_quantile":
         return params["min_periods"]
     if primitive == "rsi_wilder":
         return 10 * params["period"]
+    if primitive == "atr_wilder":
+        # JES-J4-P1: TR_1 needs c_0; the Wilder seed averages period TRs.
+        return params["period"] + 1
     return 0
 
 

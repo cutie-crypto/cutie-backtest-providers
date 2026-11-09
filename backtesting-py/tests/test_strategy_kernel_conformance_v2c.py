@@ -123,10 +123,13 @@ def test_capability_declares_only_runtime_operators_and_new_primitives() -> None
     _validate_capability(capability)
     ops = {(item["node"], item["op"]) for item in capability["operators"]}
     assert ops == {
+        ("arithmetic", "abs"),
         ("arithmetic", "add"),
         ("arithmetic", "sub"),
         ("arithmetic", "mul"),
         ("arithmetic", "div"),
+        ("arithmetic", "max"),
+        ("arithmetic", "min"),
         ("compare", "gt"),
         ("compare", "gte"),
         ("compare", "lt"),

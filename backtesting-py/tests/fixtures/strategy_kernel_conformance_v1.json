@@ -521,63 +521,72 @@
           "open": "100",
           "high": "105",
           "low": "95",
-          "close": "102"
+          "close": "102",
+          "volume": "1"
         },
         {
           "open_time": 3600,
           "open": "101",
           "high": "106",
           "low": "96",
-          "close": "103"
+          "close": "103",
+          "volume": "1"
         },
         {
           "open_time": 7200,
           "open": "102",
           "high": "107",
           "low": "97",
-          "close": "104"
+          "close": "104",
+          "volume": "1"
         },
         {
           "open_time": 10800,
           "open": "103",
           "high": "108",
           "low": "98",
-          "close": "105"
+          "close": "105",
+          "volume": "1"
         },
         {
           "open_time": 14400,
           "open": "104",
           "high": "109",
           "low": "99",
-          "close": "106"
+          "close": "106",
+          "volume": "1"
         },
         {
           "open_time": 18000,
           "open": "105",
           "high": "110",
           "low": "100",
-          "close": "107"
+          "close": "107",
+          "volume": "1"
         },
         {
           "open_time": 21600,
           "open": "106",
           "high": "111",
           "low": "101",
-          "close": "108"
+          "close": "108",
+          "volume": "1"
         },
         {
           "open_time": 25200,
           "open": "107",
           "high": "112",
           "low": "102",
-          "close": "109"
+          "close": "109",
+          "volume": "1"
         },
         {
           "open_time": 28800,
           "open": "108",
           "high": "113",
           "low": "103",
-          "close": "110"
+          "close": "110",
+          "volume": "1"
         }
       ],
       "expected": [
@@ -586,14 +595,16 @@
           "open": "100",
           "high": "108",
           "low": "95",
-          "close": "105"
+          "close": "105",
+          "volume": "4"
         },
         {
           "open_time": 14400,
           "open": "104",
           "high": "112",
           "low": "99",
-          "close": "109"
+          "close": "109",
+          "volume": "4"
         }
       ]
     },
@@ -611,168 +622,192 @@
           "open": "100",
           "high": "1000",
           "low": "1",
-          "close": "200"
+          "close": "200",
+          "volume": "1"
         },
         {
           "open_time": 3600,
           "open": "101",
           "high": "1000",
           "low": "1",
-          "close": "201"
+          "close": "201",
+          "volume": "1"
         },
         {
           "open_time": 7200,
           "open": "102",
           "high": "1000",
           "low": "1",
-          "close": "202"
+          "close": "202",
+          "volume": "1"
         },
         {
           "open_time": 10800,
           "open": "103",
           "high": "1000",
           "low": "1",
-          "close": "203"
+          "close": "203",
+          "volume": "1"
         },
         {
           "open_time": 14400,
           "open": "104",
           "high": "1000",
           "low": "1",
-          "close": "204"
+          "close": "204",
+          "volume": "1"
         },
         {
           "open_time": 18000,
           "open": "105",
           "high": "1000",
           "low": "1",
-          "close": "205"
+          "close": "205",
+          "volume": "1"
         },
         {
           "open_time": 21600,
           "open": "106",
           "high": "1000",
           "low": "1",
-          "close": "206"
+          "close": "206",
+          "volume": "1"
         },
         {
           "open_time": 25200,
           "open": "107",
           "high": "1000",
           "low": "1",
-          "close": "207"
+          "close": "207",
+          "volume": "1"
         },
         {
           "open_time": 28800,
           "open": "108",
           "high": "1000",
           "low": "1",
-          "close": "208"
+          "close": "208",
+          "volume": "1"
         },
         {
           "open_time": 32400,
           "open": "109",
           "high": "1000",
           "low": "1",
-          "close": "209"
+          "close": "209",
+          "volume": "1"
         },
         {
           "open_time": 36000,
           "open": "110",
           "high": "1000",
           "low": "1",
-          "close": "210"
+          "close": "210",
+          "volume": "1"
         },
         {
           "open_time": 39600,
           "open": "111",
           "high": "1000",
           "low": "1",
-          "close": "211"
+          "close": "211",
+          "volume": "1"
         },
         {
           "open_time": 43200,
           "open": "112",
           "high": "1000",
           "low": "1",
-          "close": "212"
+          "close": "212",
+          "volume": "1"
         },
         {
           "open_time": 46800,
           "open": "113",
           "high": "1000",
           "low": "1",
-          "close": "213"
+          "close": "213",
+          "volume": "1"
         },
         {
           "open_time": 50400,
           "open": "114",
           "high": "1000",
           "low": "1",
-          "close": "214"
+          "close": "214",
+          "volume": "1"
         },
         {
           "open_time": 54000,
           "open": "115",
           "high": "1000",
           "low": "1",
-          "close": "215"
+          "close": "215",
+          "volume": "1"
         },
         {
           "open_time": 57600,
           "open": "116",
           "high": "1000",
           "low": "1",
-          "close": "216"
+          "close": "216",
+          "volume": "1"
         },
         {
           "open_time": 61200,
           "open": "117",
           "high": "1000",
           "low": "1",
-          "close": "217"
+          "close": "217",
+          "volume": "1"
         },
         {
           "open_time": 64800,
           "open": "118",
           "high": "1000",
           "low": "1",
-          "close": "218"
+          "close": "218",
+          "volume": "1"
         },
         {
           "open_time": 68400,
           "open": "119",
           "high": "1000",
           "low": "1",
-          "close": "219"
+          "close": "219",
+          "volume": "1"
         },
         {
           "open_time": 72000,
           "open": "120",
           "high": "1000",
           "low": "1",
-          "close": "220"
+          "close": "220",
+          "volume": "1"
         },
         {
           "open_time": 75600,
           "open": "121",
           "high": "1000",
           "low": "1",
-          "close": "221"
+          "close": "221",
+          "volume": "1"
         },
         {
           "open_time": 79200,
           "open": "122",
           "high": "1000",
           "low": "1",
-          "close": "222"
+          "close": "222",
+          "volume": "1"
         },
         {
           "open_time": 82800,
           "open": "123",
           "high": "1000",
           "low": "1",
-          "close": "223"
+          "close": "223",
+          "volume": "1"
         }
       ],
       "expected": [
@@ -781,7 +816,8 @@
           "open": "100",
           "high": "1000",
           "low": "1",
-          "close": "223"
+          "close": "223",
+          "volume": "24"
         }
       ]
     }

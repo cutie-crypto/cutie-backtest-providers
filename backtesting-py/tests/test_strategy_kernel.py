@@ -428,7 +428,7 @@ def test_provider_capability_fixture_exact_payload_and_hash():
     assert fixture["capability"]["data_transforms"] == ["ohlcv_resample.v1"]
     assert (
         fixture["sha256"]
-        == "ef9a4aa895b024a3077a629c1e57c9e538411d0fb6a82264928ffb467991e4c6"
+        == "167d62c4b720aadc3bf18765f91d05f31e80d51e7453cccc0c84b659f366f58b"
     )
 
 
@@ -445,7 +445,10 @@ def test_malformed_nested_capability_fails_as_capability_mismatch():
 
 def test_capability_cannot_overclaim_an_invalid_operator_arity():
     capability = capability_payload(REVISION)
-    capability["operators"][0]["signatures"][0]["arg_types"] = ["decimal"]
+    binary = next(
+        item for item in capability["operators"] if item["op"] == "add"
+    )
+    binary["signatures"][0]["arg_types"] = ["decimal"]
 
     with pytest.raises(StrategyContractError) as caught:
         compile_strategy(make_spec(), make_manifest(make_spec()), capability)
