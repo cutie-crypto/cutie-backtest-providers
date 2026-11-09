@@ -1192,6 +1192,10 @@ def test_execution_identity_bounds_fail_closed(monkeypatch, field_path, value):
 def test_artifact_range_limit_allows_exactly_365_days(monkeypatch):
     monkeypatch.setattr(provider, "PROVIDER_REVISION", REVISION)
     calls: list[tuple[int, int]] = []
+    # Real positive start (2023-01-01): with start_at=0 the
+    # ``max(0, start_at - warmup)`` clamp hides warmup from the window budget.
+    base = 1672531200
+    day_seconds = 24 * 60 * 60
 
     def fetch_klines(exchange, market, symbol, timeframe, start_ms, end_ms):
         calls.append((start_ms, end_ms))
@@ -1199,7 +1203,8 @@ def test_artifact_range_limit_allows_exactly_365_days(monkeypatch):
 
     monkeypatch.setattr(provider, "_fetch_from_central", fetch_klines)
     request = build_request(make_spec())
-    request["execution_params"]["end_at"] = 365 * 24 * 60 * 60
+    request["execution_params"]["start_at"] = base
+    request["execution_params"]["end_at"] = base + 365 * day_seconds
 
     response = TestClient(provider.app).post(
         "/cutie/backtest",
@@ -1207,7 +1212,7 @@ def test_artifact_range_limit_allows_exactly_365_days(monkeypatch):
         headers={"X-Cutie-Connector-Version": "1.2.3"},
     )
 
-    assert calls == [(0, request["execution_params"]["end_at"] * 1000)]
+    assert calls == [(base * 1000, request["execution_params"]["end_at"] * 1000)]
     assert response.status_code == 200
     assert response.json()["error_type"] == ERR_COVERAGE_INCOMPLETE
 
@@ -1227,7 +1232,9 @@ def test_artifact_range_over_365_days_fails_before_data_access(
 
     monkeypatch.setattr(provider, "_fetch_from_central", fail_if_fetched)
     request = build_request(make_spec())
-    request["execution_params"]["end_at"] = range_seconds
+    # Real positive start: start_at=0 would clamp the warmup-widened start.
+    request["execution_params"]["start_at"] = 1672531200
+    request["execution_params"]["end_at"] = 1672531200 + range_seconds
 
     response = TestClient(provider.app).post(
         "/cutie/backtest",

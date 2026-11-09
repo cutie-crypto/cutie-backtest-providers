@@ -312,11 +312,11 @@ def test_execution_range_freqtrade_catalog_advertises_1080():
     assert provider.EXECUTION_MAX_RANGE_DAYS == 1080
 
 
-def test_execution_range_freqtrade_1d_1080_reaches_freqtrade(monkeypatch, tmp_path):
-    """1d、1080 天：没有区间闸门，覆盖够就直接进 freqtrade。
+def test_execution_range_freqtrade_1d_1080_accepted(monkeypatch, tmp_path):
+    """1d、1080 天：区间闸门放行，覆盖够就直接进 freqtrade。
 
-    修前也绿——freqtrade 的入口从来只有本地数据覆盖检查，没有按区间的拒绝。
-    这条钉的是「1080 天上限放开后，日线 1080 天不会被自家校验误拒」。
+    修前也绿（本 provider 原本没有区间闸门）。这条钉的是「1080 天上限放开后，
+    日线 1080 天不会被新加的闸门误拒」。
     """
     start = _ts("2026-01-01T00:00:00")
     end = start + 1080 * DAY
@@ -330,14 +330,13 @@ def test_execution_range_freqtrade_1d_1080_reaches_freqtrade(monkeypatch, tmp_pa
     assert body["limitations"]["reason"] == "freqtrade_no_data"
 
 
-def test_execution_range_freqtrade_1h_366_has_no_range_gate(monkeypatch, tmp_path):
-    """1h、366 天：本 provider 没有区间闸门，超 365 天照旧放行到 freqtrade。
+def test_execution_range_freqtrade_1h_366_rejected(monkeypatch, tmp_path):
+    """1h、366 天：必须被区间闸门拒，且不得启动 freqtrade 子进程。
 
-    JES-T15 的按周期上限只加在 artifact provider 的统一校验入口
-    （strategy_execution.validate_execution_request）；freqtrade 是独立进程、
-    既有代码只有本地数据覆盖检查（_inspect_local_data_coverage），没有可复用的
-    「区间超限」错误路径。给它新造一个闸门会改变既有错误契约、并可能挡掉
-    现在合法的长区间日内回测，故本仓只改目录声明（1080），不动校验行为。
+    修前红：入口只有本地数据覆盖检查，没有区间闸门，366 天 1h 会照旧一路
+    跑到 freqtrade。JES-T15 声明日内限 365，catalog 又只声明一个 1080，所以
+    闸门必须落在 run_backtest 的参数校验阶段（对齐 artifact provider 的
+    ``INVALID_PARAMS`` 结构），否则日内会被敞开到 1080。
     """
     start = _ts("2026-01-01T00:00:00")
     end = start + 366 * DAY
@@ -346,5 +345,13 @@ def test_execution_range_freqtrade_1h_366_has_no_range_gate(monkeypatch, tmp_pat
 
     body = TestClient(provider.app).post("/cutie/backtest", json=_body("1h", start, end)).json()
 
-    assert spawned
-    assert body["limitations"]["reason"] == "freqtrade_no_data"
+    assert not spawned, "366 天 1h 必须在区间闸门被拒，不得启动 freqtrade"
+    assert body["result_status"] == "failed"
+    assert body["error_type"] == "INVALID_PARAMS"
+    assert body["limitations"]["reason"] == "range_exceeds_max_range_days"
+    assert body["raw_report"]["range_limit"] == {
+        "timeframe": "1h",
+        "max_range_days": 365,
+        "requested_range_seconds": 366 * DAY,
+    }
+    assert "at most 365 days" in body["error_message"]

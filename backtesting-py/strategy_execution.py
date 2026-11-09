@@ -390,10 +390,11 @@ def validate_execution_request(
             "end_at must be greater than start_at",
         )
     range_seconds = params["end_at"] - params["start_at"]
-    # JES-T15: the budget is per-timeframe (>= 1d: 1080 days, < 1d: 365 days)
-    # and both range checks in this validator -- the request span here and the
-    # warmup-widened adapter window below -- must read the same number, so it
-    # is resolved once from the request's own (later binding-checked) timeframe.
+    # JES-T15: the budget is per-timeframe (>= 1d: 1080 days, < 1d: 365 days).
+    # This request-span check reads the request's own (later binding-checked)
+    # primary timeframe; the per-stream window check below budgets each
+    # requirement by its OWN interval (JES-T15-R1), so a 1d run cannot lend its
+    # 1080-day budget to a 1h feature stream.
     max_range_days = max_range_days_for_timeframe(params["timeframe"])
     max_range_seconds = max_range_days * _DAY_SECONDS
     if range_seconds > max_range_seconds:
@@ -584,6 +585,14 @@ def validate_execution_request(
     )
     for index, requirement in enumerate(plan.artifact_manifest["data_requirements"]):
         step_seconds = _interval_seconds(requirement["interval"])
+        # JES-T15-R1: each stream is budgeted by its OWN interval. A 1d run
+        # carrying a 1h feature stream must not lend that stream the 1080-day
+        # day-scale budget, and a 1h run carrying a 1d stream's warmup must not
+        # inherit the 365-day intraday budget.
+        requirement_max_range_days = max_range_days_for_timeframe(
+            requirement["interval"]
+        )
+        requirement_max_range_seconds = requirement_max_range_days * _DAY_SECONDS
         # Phase 1 review (Codex HIGH-1): the provider widens the primary
         # fetch by the spec's max feature lag (frames history for the
         # kernel's index-based lag resolution) -- the range budget must
@@ -615,12 +624,12 @@ def validate_execution_request(
             # [999d, 1364d) fetch reads as 365d11h and is wrongly rejected.
             effective_end = metrics_window[2]
         data_window_seconds = effective_end - effective_start
-        if data_window_seconds > max_range_seconds:
+        if data_window_seconds > requirement_max_range_seconds:
             _error(
                 ERR_SPEC_INVALID,
                 f"$.artifact_manifest.data_requirements[{index}].warmup_bars",
                 "warmup expands adapter data window beyond the Provider maximum",
-                required={"max_range_days": max_range_days},
+                required={"max_range_days": requirement_max_range_days},
                 actual={
                     "effective_start": effective_start,
                     "end_at": params["end_at"],
@@ -1768,21 +1777,23 @@ def build_result_v3(
 def max_range_days_for_timeframe(timeframe: Any) -> int:
     """Range budget for a run, keyed by its primary timeframe.
 
-    ``>= 1d`` (1d/3d/1w/...) gets ``EXECUTION_MAX_RANGE_DAYS`` (1080); anything
-    finer-grained (m/h) keeps the 365-day intraday budget. An unparseable
-    timeframe falls back to the intraday budget, i.e. exactly the pre-JES-T15
-    behaviour -- the timeframe's own validity is reported by compile_strategy,
-    never widened by this helper.
+    ``>= 1d`` (1d/3d/1w/1M/...) gets ``EXECUTION_MAX_RANGE_DAYS`` (1080);
+    anything finer-grained (m/h) keeps the 365-day intraday budget. An
+    unparseable timeframe falls back to the intraday budget, i.e. exactly the
+    pre-JES-T15 behaviour -- the timeframe's own validity is reported by
+    compile_strategy, never widened by this helper.
     """
     if isinstance(timeframe, str) and len(timeframe) > 1:
         digits, unit = timeframe[:-1], timeframe[-1]
-        if (
-            digits.isdigit()
-            and not digits.startswith("0")
-            and unit in _INTERVAL_UNIT_SECONDS
-            and int(digits) * _INTERVAL_UNIT_SECONDS[unit] >= _DAY_SECONDS
-        ):
-            return EXECUTION_MAX_RANGE_DAYS
+        if digits.isdigit() and not digits.startswith("0"):
+            # ``M`` is the provider's 30-day month (same convention as the
+            # catalog's _timeframe_milliseconds) -- always ``>= 1d``, so a
+            # monthly run must never fall into the intraday 365-day bucket.
+            step = (
+                30 * _DAY_SECONDS if unit == "M" else _INTERVAL_UNIT_SECONDS.get(unit)
+            )
+            if step is not None and int(digits) * step >= _DAY_SECONDS:
+                return EXECUTION_MAX_RANGE_DAYS
     return EXECUTION_INTRADAY_MAX_RANGE_DAYS
 
 

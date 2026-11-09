@@ -62,10 +62,11 @@ RESPONSE_SCHEMA = "cutie.external_backtest.response.v1"
 DEFAULT_PORT = 8766
 DEFAULT_EXCHANGE = os.environ.get("CUTIE_FREQTRADE_DEFAULT_EXCHANGE", "okx").lower()
 EXECUTION_TIMEOUT_MS = BACKTEST_TIMEOUT * 1000
-# Catalog advertisement only: this provider validates local data coverage, not
-# the requested span (see run_backtest), so 1080 is the day-scale ceiling the
-# artifact provider enforces for timeframe >= 1d; intraday keeps 365 there.
+# Catalog advertisement only: this provider validates local data coverage plus
+# the per-timeframe range gate in run_backtest. 1080 is the day-scale ceiling
+# the artifact provider enforces for timeframe >= 1d; intraday keeps 365.
 EXECUTION_MAX_RANGE_DAYS = 1080
+EXECUTION_INTRADAY_MAX_RANGE_DAYS = 365
 
 SUPPORTED_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 TIMEFRAME_SECONDS = {
@@ -77,6 +78,21 @@ TIMEFRAME_SECONDS = {
     "4h": 4 * 60 * 60,
     "1d": 24 * 60 * 60,
 }
+
+
+def _max_range_days_for_timeframe(timeframe: str) -> int:
+    """Same split as the artifact provider's max_range_days_for_timeframe.
+
+    ``>= 1d`` gets 1080 days, everything finer keeps the 365-day intraday budget.
+    The catalog cannot express a per-timeframe limit, so this gate is what keeps
+    the advertised 1080 honest for intraday runs.
+    """
+    step = TIMEFRAME_SECONDS.get(timeframe)
+    if step is not None and step >= 24 * 60 * 60:
+        return EXECUTION_MAX_RANGE_DAYS
+    return EXECUTION_INTRADAY_MAX_RANGE_DAYS
+
+
 ERROR_OUTPUT_LIMIT = 1000
 
 logger = logging.getLogger("cutie_freqtrade_provider")
@@ -1206,6 +1222,32 @@ async def run_backtest(request: Request, authorization: Optional[str] = Header(N
             engine_version=engine_version,
             error_type="INVALID_PARAMS",
             error_message="end_at must be after start_at",
+        )
+
+    # JES-T15: the catalog advertises a single 1080-day ceiling, so the split
+    # (>= 1d: 1080, < 1d: 365) must be enforced here too -- otherwise intraday
+    # requests inherit the day-scale budget and can spawn a 25,920-bar 1h run.
+    requested_range_seconds = end_at - start_at
+    max_range_days = _max_range_days_for_timeframe(timeframe)
+    if requested_range_seconds > max_range_days * 24 * 60 * 60:
+        return _business_failure(
+            run_id=run_id,
+            engine_version=engine_version,
+            error_type="INVALID_PARAMS",
+            error_message=(
+                f"Requested range is {requested_range_seconds} seconds "
+                f"({requested_range_seconds / (24 * 60 * 60):.1f} days), but "
+                f"timeframe {timeframe} allows at most {max_range_days} days. "
+                "Reduce the backtest range and retry."
+            ),
+            reason="range_exceeds_max_range_days",
+            raw_report={
+                "range_limit": {
+                    "timeframe": timeframe,
+                    "max_range_days": max_range_days,
+                    "requested_range_seconds": requested_range_seconds,
+                }
+            },
         )
 
     # Parse decimal values
