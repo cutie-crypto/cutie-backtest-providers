@@ -576,7 +576,7 @@ def test_capability_declares_rolling_mean() -> None:
     assert item["version"] == "1"
     # 客户用例是 close 序列 -> SMA，能力声明的 source_streams 必须含 close。
     assert "kline.primary.close" in item["source_streams"]
-    assert set(item["intervals"]) == {"1d", "1h", "4h"}
+    assert set(item["intervals"]) == {"1d", "1h", "1w", "4h"}
     assert item["output_type"] == "decimal"
 
     fixture = json.loads(CAPABILITY_FIXTURE.read_text(encoding="utf-8"))

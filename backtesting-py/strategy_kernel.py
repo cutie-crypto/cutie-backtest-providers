@@ -90,9 +90,23 @@ def in_decimal128(func: _F) -> _F:
 
 # SPEC §5.5 (2026-07-17 增补, 62-2b Phase 1): kline-sourced feature namespace.
 _KLINE_PRIMARY_PREFIX = "kline.primary."
-_KLINE_PRIMARY_FIELDS = {"open", "high", "low", "close"}
-_KLINE_PRIMARY_COARSE_INTERVALS = {"4h", "1d"}
-_KLINE_PRIMARY_COARSE_BASE_TIMEFRAME = "1h"
+_KLINE_PRIMARY_FIELDS = {"open", "high", "low", "close", "volume"}
+_KLINE_PRIMARY_COARSE_INTERVALS = {"4h", "1d", "1w"}
+# Primary decision timeframes that may reference a coarse kline.primary feature,
+# and the coarse targets each one permits (JES-J4-P1, 2026-11-09): 1w is now a
+# resample target, and a 15m/4h primary may reference the daily bucket. Targets
+# stay strictly coarser than the primary timeframe so every bucket is a whole
+# number of primary bars.
+_KLINE_PRIMARY_COARSE_TARGETS = {
+    "15m": {"1d", "1w"},
+    "1h": {"4h", "1d", "1w"},
+    "4h": {"1d", "1w"},
+    "1d": {"1w"},
+}
+# Binance weekly bars open Monday 00:00 UTC, but epoch 0 is a Thursday, so the
+# weekly bucket grid needs a 4-day offset on the otherwise epoch-aligned floor.
+_WEEK_STEP_SECONDS = 7 * 86400
+_WEEK_GRID_OFFSET_SECONDS = 4 * 86400
 # The four feature primitives §5.5 registers; param shapes are frozen cross-provider.
 # ``rolling_zscore`` / ``ema`` came in with 123 组合策略 v3 (SPEC_组合策略v3契约 §2.3)
 # and are now also v2 primitives (JES21-B3b 二期 K1): v2 declares them, plus the
@@ -129,7 +143,9 @@ _KNOWN_PRIMITIVES = {
     "rolling_sum",
     "rolling_mean",
     "rolling_quantile",
+    "rolling_std",
     "rsi_wilder",
+    "atr_wilder",
     "rolling_extreme",
     "rolling_zscore",
     "ema",
@@ -724,13 +740,14 @@ def _validate_feature(item: Any, index: int) -> tuple[str, str]:
         if field not in _KLINE_PRIMARY_FIELDS:
             _raise(
                 f"{path}.source_stream",
-                "kline.primary field must be open/high/low/close",
+                "kline.primary field must be open/high/low/close/volume",
                 actual=source_stream,
             )
-        if obj["value_kind"] != "price":
+        required_kind = "flow" if field == "volume" else "price"
+        if obj["value_kind"] != required_kind:
             _raise(
                 f"{path}.value_kind",
-                "kline.primary source requires price value_kind",
+                f"kline.primary {field} source requires {required_kind} value_kind",
                 actual=obj["value_kind"],
             )
     return key, obj["output_type"]
@@ -798,6 +815,21 @@ def _validate_primitive_params(primitive: Any, raw_params: Any, path: str) -> No
             minimum=2,
             maximum=10000,
         )
+    elif primitive == "rolling_std":
+        # JES-J4-P1: population stdev over the same window as ema/rolling_mean
+        # (2..10000), matching ``rolling_zscore``'s population-variance rule.
+        params = _exact(raw_params, {"window_bars"}, f"{path}.params")
+        _safe_int(
+            params["window_bars"],
+            f"{path}.params.window_bars",
+            minimum=2,
+            maximum=10000,
+        )
+    elif primitive == "atr_wilder":
+        # JES-J4-P1: Wilder ATR over TR = max(h-l, |h-c_{-1}|, |l-c_{-1}|);
+        # period bounds match rsi_wilder.
+        params = _exact(raw_params, {"period"}, f"{path}.params")
+        _safe_int(params["period"], f"{path}.params.period", minimum=2, maximum=1000)
     elif primitive in {"ema", "rolling_zscore"}:
         # A one-bar zscore window has stdev 0 on every bar; a one-bar EMA is
         # the raw value. Both start at 2, same as v3.
@@ -828,6 +860,10 @@ def primitive_lookback_bars(primitive: str, params: dict[str, Any]) -> int:
     if primitive == "macd":
         return params["slow"] + params["signal"] - 1
     if primitive == "rsi_wilder":
+        return params["period"] + 1
+    if primitive == "atr_wilder":
+        # TR_1 needs c_0, and the Wilder seed averages period TRs, so the first
+        # value lands on source bar index ``period`` = period + 1 fetched bars.
         return params["period"] + 1
     if primitive == "rolling_quantile":
         return params["min_periods"]
@@ -1087,22 +1123,43 @@ def _validate_spec(
         _raise("$.strategy_spec.features", "must be sorted and duplicate-free by key")
     for index, feature in enumerate(obj["features"]):
         source_stream = feature["source_stream"]
+        # JES-J4-P1: ATR reads high/low/close together off the primary K-line
+        # series, which only exists at the decision timeframe (a coarse derived
+        # stream carries one projected field). Reject fail-closed at compile.
+        if feature["primitive"] == "atr_wilder" and (
+            not source_stream.startswith(_KLINE_PRIMARY_PREFIX)
+            or feature["interval"] != market["timeframe"]
+        ):
+            _raise(
+                f"$.strategy_spec.features[{index}].interval",
+                "atr_wilder requires a kline.primary source at the primary "
+                "decision timeframe",
+                required={
+                    "source_stream_prefix": _KLINE_PRIMARY_PREFIX,
+                    "interval": market["timeframe"],
+                },
+                actual={
+                    "source_stream": source_stream,
+                    "interval": feature["interval"],
+                },
+            )
         if not source_stream.startswith(_KLINE_PRIMARY_PREFIX):
             continue
         if feature["interval"] == market["timeframe"]:
             continue
-        # §5.5 as-of rule: coarse kline.primary features are Phase-1 gated to a
-        # 1h primary decision timeframe resampled to 4h/1d targets only.
-        if (
-            market["timeframe"] != _KLINE_PRIMARY_COARSE_BASE_TIMEFRAME
-            or feature["interval"] not in _KLINE_PRIMARY_COARSE_INTERVALS
-        ):
+        # §5.5 as-of rule: a coarse kline.primary feature is resampled from the
+        # primary K-line, so the target must be one of the declared coarse
+        # intervals and strictly coarser than (a whole multiple of) the
+        # primary timeframe. JES-J4-P1 adds 1w and lets a 15m/4h primary
+        # reference the daily bucket.
+        allowed_targets = _KLINE_PRIMARY_COARSE_TARGETS.get(market["timeframe"])
+        if allowed_targets is None or feature["interval"] not in allowed_targets:
             _raise(
                 f"$.strategy_spec.features[{index}].interval",
-                "kline.primary coarse feature requires a 1h primary timeframe "
-                "and a 4h/1d target interval",
+                "kline.primary coarse feature requires a supported primary "
+                "timeframe and a coarser target interval",
                 required={
-                    "primary_timeframe": _KLINE_PRIMARY_COARSE_BASE_TIMEFRAME,
+                    "primary_timeframes": sorted(_KLINE_PRIMARY_COARSE_TARGETS),
                     "target_intervals": sorted(_KLINE_PRIMARY_COARSE_INTERVALS),
                 },
                 actual={
@@ -1643,7 +1700,14 @@ def _validate_kline_primary_requirements(
             # requirement's warmup_bars must therefore cover the primitive's
             # own lookback; rsi_wilder's stricter 10x period floor is
             # enforced by _validate_rsi_warmup against the same requirement.
-            if primitive in {"ema", "macd", "rolling_zscore", "rolling_mean"}:
+            if primitive in {
+                "ema",
+                "macd",
+                "rolling_zscore",
+                "rolling_mean",
+                "rolling_std",
+                "atr_wilder",
+            }:
                 lookback = primitive_lookback_bars(primitive, params)
                 if primary_requirement["warmup_bars"] < lookback:
                     _raise(
@@ -1733,7 +1797,13 @@ def _validate_kline_primary_requirements(
                         required=window_bars,
                         actual=requirement["warmup_bars"],
                     )
-            elif primitive in {"ema", "macd", "rolling_zscore", "rolling_mean"}:
+            elif primitive in {
+                "ema",
+                "macd",
+                "rolling_zscore",
+                "rolling_mean",
+                "rolling_std",
+            }:
                 lookback = primitive_lookback_bars(primitive, params)
                 if requirement["warmup_bars"] < lookback:
                     _raise(
@@ -1887,11 +1957,26 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
 
     numeric = {"decimal": "decimal", "integer": "integer"}
     ordered = {"decimal": "boolean", "integer": "boolean"}
+    # JES-J4-P1: min/max/abs are evaluated by _ctx_op already; advertise them
+    # now so TokenBeep can author abs(std) / min(a, b) / max(a, b) atoms.
     operators = [
+        {
+            "node": "arithmetic",
+            "op": "abs",
+            "version": "1",
+            "signatures": [
+                {"arg_types": [arg_type], "return_type": arg_type}
+                for arg_type in ("decimal", "integer")
+            ],
+        }
+    ]
+    operators += [
         {"node": "arithmetic", "op": op, "version": "1", "signatures": signatures(kinds)}
         for op, kinds in (
             ("add", numeric),
             ("div", {"decimal": "decimal"}),
+            ("max", numeric),
+            ("min", numeric),
             ("mul", numeric),
             ("sub", numeric),
         )
@@ -1915,12 +2000,15 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
         "kline.primary.low",
         "kline.primary.open",
     ]
+    # JES-J4-P1: volume is now a first-class kline.primary field (flow kind);
+    # rolling_mean/rolling_std may read it, and 1w is a resample target.
+    kline_value_streams = [*kline_streams, "kline.primary.volume"]
     history_primitives = [
         {
             "primitive": primitive,
             "version": "1",
             "source_streams": list(kline_streams),
-            "intervals": ["1d", "1h", "4h"],
+            "intervals": ["1d", "1h", "1w", "4h"],
             "value_kinds": ["price"],
             "output_type": "decimal",
         }
@@ -1933,8 +2021,18 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
         "kernel_api_versions": ["1"],
         "execution_modes": ["historical_replay", "paper_tick"],
         "operators": operators,
-        "feature_primitives": history_primitives
-        + [
+        "feature_primitives": [
+            {
+                "primitive": "atr_wilder",
+                "version": "1",
+                # JES-J4-P1: ATR reads high/low/close off the primary K-line
+                # together; compile restricts it to the primary timeframe.
+                "source_streams": list(kline_streams),
+                "intervals": ["1d", "1h", "1w", "4h"],
+                "value_kinds": ["price"],
+                "output_type": "decimal",
+            },
+            *history_primitives,
             {
                 "primitive": "rolling_extreme",
                 "version": "1",
@@ -1943,7 +2041,7 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
                     *kline_streams,
                     *METRICS_SOURCE_STREAMS,
                 ],
-                "intervals": ["1d", "1h", "4h"],
+                "intervals": ["1d", "1h", "1w", "4h"],
                 "value_kinds": ["flow", "level", "price"],
                 "output_type": "decimal",
             },
@@ -1957,10 +2055,10 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
                 # whose primary warmup_bars must cover window_bars.
                 "source_streams": [
                     "coinglass.futures_cvd",
-                    *kline_streams,
+                    *kline_value_streams,
                     *METRICS_SOURCE_STREAMS,
                 ],
-                "intervals": ["1d", "1h", "4h"],
+                "intervals": ["1d", "1h", "1w", "4h"],
                 "value_kinds": ["flow", "level", "price"],
                 "output_type": "decimal",
             },
@@ -1974,15 +2072,28 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
                     "kline.primary.low",
                     "kline.primary.open",
                 ],
-                "intervals": ["1d", "1h", "4h"],
+                "intervals": ["1d", "1h", "1w", "4h"],
+                "value_kinds": ["flow", "price"],
+                "output_type": "decimal",
+            },
+            {
+                "primitive": "rolling_std",
+                "version": "1",
+                # JES-J4-P1: population stdev, same window bounds as ema.
+                "source_streams": [*kline_value_streams],
+                "intervals": ["1d", "1h", "1w", "4h"],
                 "value_kinds": ["flow", "price"],
                 "output_type": "decimal",
             },
             {
                 "primitive": "rolling_sum",
                 "version": "1",
-                "source_streams": ["coinglass.futures_cvd", *METRICS_SOURCE_STREAMS],
-                "intervals": ["1d", "1h"],
+                "source_streams": [
+                    "coinglass.futures_cvd",
+                    "kline.primary.volume",
+                    *METRICS_SOURCE_STREAMS,
+                ],
+                "intervals": ["1d", "1h", "1w"],
                 "value_kinds": ["flow", "level"],
                 "output_type": "decimal",
             },
@@ -1990,7 +2101,7 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
                 "primitive": "rolling_zscore",
                 "version": "1",
                 "source_streams": list(kline_streams),
-                "intervals": ["1d", "1h", "4h"],
+                "intervals": ["1d", "1h", "1w", "4h"],
                 "value_kinds": ["price"],
                 "output_type": "decimal",
             },
@@ -2004,7 +2115,7 @@ def capability_payload(provider_revision: str) -> dict[str, Any]:
                     "kline.primary.low",
                     "kline.primary.open",
                 ],
-                "intervals": ["1d", "1h", "4h"],
+                "intervals": ["1d", "1h", "1w", "4h"],
                 "value_kinds": ["flow", "price"],
                 "output_type": "decimal",
             },
@@ -2997,6 +3108,20 @@ def _decimal(value: Any, path: str) -> Decimal:
         )
 
 
+def _bucket_grid_offset(step: int) -> int:
+    """Epoch offset of a bucket grid. Weekly bars open Monday 00:00 UTC while
+    epoch 0 is a Thursday, so the weekly grid is shifted 4 days; every other
+    interval is epoch-aligned."""
+    return _WEEK_GRID_OFFSET_SECONDS if step == _WEEK_STEP_SECONDS else 0
+
+
+def _bucket_floor(timestamp: int, step: int) -> int:
+    """Open time of the bucket containing ``timestamp`` on the interval's own
+    UTC grid (Monday-aligned for 1w)."""
+    offset = _bucket_grid_offset(step)
+    return ((timestamp - offset) // step) * step + offset
+
+
 def kline_primary_bucket_required_start(
     start_at: int, warmup_bars: int, target_step: int
 ) -> int:
@@ -3017,7 +3142,7 @@ def kline_primary_bucket_required_start(
     ``warmup_bars`` directly from an unaligned ``start_at`` can land inside
     a bucket that a decision frame needs in full, silently truncating it.
     """
-    bucket_grid_start = (start_at // target_step) * target_step
+    bucket_grid_start = _bucket_floor(start_at, target_step)
     return max(0, bucket_grid_start - warmup_bars * target_step)
 
 
@@ -3034,7 +3159,7 @@ def kline_primary_bucket_required_end(end_at: int, target_step: int) -> int:
     mid-bucket, even though the coarse stream is genuinely complete for
     every decision frame that actually needs it.
     """
-    return (end_at // target_step) * target_step
+    return _bucket_floor(end_at, target_step)
 
 
 def metrics_asof_anchor(close_at: int, feature_step: int) -> int:
@@ -3072,9 +3197,10 @@ def ohlcv_resample(
     ``primary_step``-spaced bars is present in ``primary_rows`` — a bucket
     missing any input bar is silently dropped (never partially aggregated),
     which downstream becomes a feature-missing gap per §5.5, never a fabricated
-    value. Output rows carry ``open_time`` = bucket open, matching the primary
-    K-line row shape (``open/high/low/close``, no ``volume``: only price
-    fields are ever consumed downstream via ``kline.primary.<field>``).
+    value. Output rows carry ``open_time`` = bucket open on the interval's own
+    UTC grid (Monday 00:00 UTC for 1w) and ``open/high/low/close/volume``;
+    volume is the bucket sum so a coarse ``kline.primary.volume`` feature can
+    read it.
     """
     target_step = _interval_seconds(target_interval)
     if target_step <= 0 or target_step % primary_step != 0:
@@ -3088,7 +3214,7 @@ def ohlcv_resample(
     by_open_time = {row["open_time"]: row for row in primary_rows}
     bucket_members: dict[int, list[int]] = {}
     for open_time in by_open_time:
-        bucket_open = (open_time // target_step) * target_step
+        bucket_open = _bucket_floor(open_time, target_step)
         bucket_members.setdefault(bucket_open, []).append(open_time)
     output: list[dict[str, Any]] = []
     for bucket_open in sorted(bucket_members):
@@ -3105,11 +3231,16 @@ def ohlcv_resample(
                 _decimal(bar["low"], "$.transform.ohlcv_resample.low") for bar in bars
             )
             close_value = _decimal(bars[-1]["close"], "$.transform.ohlcv_resample.close")
-            open_value, high_value, low_value, close_value = (
+            volume_value = sum(
+                (_decimal(bar["volume"], "$.transform.ohlcv_resample.volume") for bar in bars),
+                Decimal(0),
+            )
+            open_value, high_value, low_value, close_value, volume_value = (
                 +open_value,
                 +high_value,
                 +low_value,
                 +close_value,
+                +volume_value,
             )
         output.append(
             {
@@ -3118,6 +3249,7 @@ def ohlcv_resample(
                 "high": canonical_decimal_str(high_value),
                 "low": canonical_decimal_str(low_value),
                 "close": canonical_decimal_str(close_value),
+                "volume": canonical_decimal_str(volume_value),
             }
         )
     return output
@@ -3198,11 +3330,11 @@ def _evaluate_windowed_primitive(
     step: int,
     error_path: str,
 ) -> Optional[tuple[Decimal, int]]:
-    """Dispatch ``rolling_sum``/``rolling_mean``/``rolling_extreme``/
-    ``rolling_quantile`` per their frozen §5.5 semantics, plus v3
-    ``rolling_zscore``. ``rsi_wilder`` is precomputed separately (its
-    recursive seed needs the stream's full fetched history, not a fixed
-    window) — see ``_rsi_wilder_series``.
+    """Dispatch ``rolling_sum``/``rolling_mean``/``rolling_std``/
+    ``rolling_extreme``/``rolling_quantile`` per their frozen §5.5 semantics,
+    plus v3 ``rolling_zscore``. ``rsi_wilder``/``atr_wilder`` are precomputed
+    separately (their recursive seeds need the stream's full fetched history,
+    not a fixed window) — see ``_rsi_wilder_series`` / ``_atr_wilder_series``.
     """
     primitive = feature["primitive"]
     params = feature["params"]
@@ -3223,6 +3355,33 @@ def _evaluate_windowed_primitive(
         with localcontext(_DECIMAL_CONTEXT) as ctx:
             mean = +ctx.divide(sum(values, Decimal(0)), Decimal(window_bars))
         return mean, ceiling
+    if primitive == "rolling_std":
+        window_bars = params["window_bars"]
+        result = _stream_lookback(
+            ordered_timestamps, rows_by_ts, anchor_ts, step, window_bars, error_path
+        )
+        if result is None:
+            return None
+        values, ceiling = result
+        if len(values) != window_bars:
+            return None
+        # JES-J4-P1: population stdev (same variance rule as rolling_zscore);
+        # a constant window is a real 0, never a structured gap.
+        with localcontext(_DECIMAL_CONTEXT) as ctx:
+            count = Decimal(window_bars)
+            mean = ctx.divide(sum(values, Decimal(0)), count)
+            variance = ctx.divide(
+                sum(
+                    (
+                        ctx.multiply(ctx.subtract(v, mean), ctx.subtract(v, mean))
+                        for v in values
+                    ),
+                    Decimal(0),
+                ),
+                count,
+            )
+            stdev = +ctx.sqrt(variance)
+        return stdev, ceiling
     if primitive == "rolling_sum":
         window_bars = params["window_bars"]
         result = _stream_lookback(
@@ -3384,6 +3543,88 @@ def _rsi_wilder_series(
     return series
 
 
+def _atr_wilder_series(
+    rows_by_ts: dict[int, dict[str, Any]],
+    ordered_timestamps: list[int],
+    primary_step: int,
+    period: int,
+    error_path: str,
+) -> dict[int, tuple[Optional[Decimal], int]]:
+    """JES-J4-P1 ``atr_wilder``: TR_t = max(h-l, |h-c_{t-1}|, |l-c_{t-1}|);
+    seed = simple average of TR_1..TR_period; Wilder recursion afterward. The
+    first value therefore lands on source bar index ``period`` (period + 1
+    fetched bars). A missing/invalid OHLC sample breaks the recursive chain
+    irrecoverably from that point on, and availability uses the primary bar's
+    close ceiling (open_time + primary step)."""
+    series: dict[int, tuple[Optional[Decimal], int]] = {}
+    n = len(ordered_timestamps)
+    if n < period + 1:
+        for ts in ordered_timestamps:
+            series[ts] = (None, 0)
+        return series
+    parsed: list[Optional[tuple[Decimal, Decimal, Decimal]]] = []
+    ceilings: list[int] = []
+    running_ceiling = 0
+    for ts in ordered_timestamps:
+        row = rows_by_ts[ts]
+        running_ceiling = max(running_ceiling, ts + primary_step)
+        ceilings.append(running_ceiling)
+        try:
+            parsed.append(
+                (
+                    _decimal(row["high"], error_path),
+                    _decimal(row["low"], error_path),
+                    _decimal(row["close"], error_path),
+                )
+            )
+        except (KernelExecutionError, KeyError):
+            parsed.append(None)
+    for ts in ordered_timestamps[:period]:
+        series[ts] = (None, 0)
+    tr_values: list[Optional[Decimal]] = [None]
+    broken = False
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        for index in range(1, n):
+            if broken or parsed[index] is None or parsed[index - 1] is None:
+                broken = True
+                tr_values.append(None)
+                continue
+            high_value, low_value, _close_value = parsed[index]
+            previous_close = parsed[index - 1][2]
+            true_range = max(
+                ctx.subtract(high_value, low_value),
+                ctx.abs(ctx.subtract(high_value, previous_close)),
+                ctx.abs(ctx.subtract(low_value, previous_close)),
+            )
+            tr_values.append(+true_range)
+        average: Optional[Decimal] = None
+        for index in range(period, n):
+            ts = ordered_timestamps[index]
+            if tr_values[index] is None:
+                average = None
+                series[ts] = (None, 0)
+                continue
+            if index == period:
+                window = tr_values[1 : period + 1]
+                if any(value is None for value in window):
+                    average = None
+                    series[ts] = (None, 0)
+                    continue
+                average = ctx.divide(sum(window, Decimal(0)), Decimal(period))
+            else:
+                if average is None:
+                    series[ts] = (None, 0)
+                    continue
+                average = ctx.divide(
+                    ctx.add(
+                        ctx.multiply(average, Decimal(period - 1)), tr_values[index]
+                    ),
+                    Decimal(period),
+                )
+            series[ts] = (+average, ceilings[index])
+    return series
+
+
 def _ema_values_v2(
     values: list[Optional[Decimal]], window: int
 ) -> list[Optional[Decimal]]:
@@ -3481,8 +3722,13 @@ def _recursive_series_v2(
 
 
 _RECURSIVE_PRIMITIVES_V2 = {"rsi_wilder", "ema", "macd"}
+# Features whose value is computed once over the whole fetched range and then
+# looked up per frame. ATR needs high/low/close together, so it is precomputed
+# from the raw primary rows in build_frames alongside the recursive series.
+_PRECOMPUTED_SERIES_PRIMITIVES = _RECURSIVE_PRIMITIVES_V2 | {"atr_wilder"}
 _PASSTHROUGH_HISTORY_PRIMITIVES = {
     "rsi_wilder",
+    "atr_wilder",
     "ema",
     "macd",
     "rolling_zscore",
@@ -3490,6 +3736,8 @@ _PASSTHROUGH_HISTORY_PRIMITIVES = {
     # window is legal on kline.primary passthrough features (compile enforces
     # primary warmup_bars >= window_bars), so its warmup rows may stay unset.
     "rolling_mean",
+    # JES-J4-P1: same warmup rule as rolling_mean.
+    "rolling_std",
 }
 
 
@@ -3664,19 +3912,29 @@ def build_frames(
             }
         return _primary_field_cache[field]
 
-    # rsi_wilder's Wilder recursion needs the stream's full fetched history;
+    # Recursive/Atr Wilder series need the stream's full fetched history;
     # precompute once per feature (not once per decision frame). A passthrough
     # kline.primary feature has no feature_streams entry of its own (it reads
-    # the primary series directly) but still needs its RSI series precomputed
+    # the primary series directly) but still needs its series precomputed
     # from that same synthetic per-field series, or the per-frame lookup below
     # would KeyError on a cache that was never populated for it.
-    rsi_series_cache: dict[str, dict[int, tuple[Optional[Decimal], int]]] = {}
+    precomputed_series_cache: dict[
+        str, dict[int, tuple[Optional[Decimal], int]]
+    ] = {}
     feature_revision: dict[str, str] = {}
     for feature in plan.strategy_spec["features"]:
         if _is_kline_primary_passthrough(feature):
-            if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
+            if feature["primitive"] == "atr_wilder":
+                precomputed_series_cache[feature["key"]] = _atr_wilder_series(
+                    {row["open_time"]: row for row in primary_rows},
+                    primary_ordered_ts,
+                    timeframe_seconds,
+                    feature["params"]["period"],
+                    f"$.data_streams.{feature['source_stream']}",
+                )
+            elif feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
                 field = feature["source_stream"][len(_KLINE_PRIMARY_PREFIX) :]
-                rsi_series_cache[feature["key"]] = _recursive_series_v2(
+                precomputed_series_cache[feature["key"]] = _recursive_series_v2(
                     feature,
                     _primary_field_series(field),
                     primary_ordered_ts,
@@ -3688,7 +3946,7 @@ def build_frames(
             iter(rows_by_ts.values()), (None, None, "")
         )[2]
         if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
-            rsi_series_cache[feature["key"]] = _recursive_series_v2(
+            precomputed_series_cache[feature["key"]] = _recursive_series_v2(
                 feature,
                 rows_by_ts,
                 ordered_timestamps,
@@ -3748,7 +4006,7 @@ def build_frames(
                 # close (== available_at) is <= this decision frame's close.
                 rows_by_ts, ordered_timestamps = feature_streams[feature["key"]]
                 feature_step = _interval_seconds(feature["interval"])
-                bucket_close = (close_at // feature_step) * feature_step
+                bucket_close = _bucket_floor(close_at, feature_step)
                 anchor_ts = bucket_close - feature_step
             elif metrics_stream_parts(feature["source_stream"]) is not None:
                 # IMPL §3.4 as-of: the latest epoch-aligned metric point whose
@@ -3767,8 +4025,8 @@ def build_frames(
                 and feature["primitive"] in _PASSTHROUGH_HISTORY_PRIMITIVES
                 and row_index < passthrough_warmup_rows
             )
-            if feature["primitive"] in _RECURSIVE_PRIMITIVES_V2:
-                point = rsi_series_cache[feature["key"]].get(anchor_ts)
+            if feature["primitive"] in _PRECOMPUTED_SERIES_PRIMITIVES:
+                point = precomputed_series_cache[feature["key"]].get(anchor_ts)
                 if (point is None or point[0] is None) and warmup_gap_allowed:
                     continue
                 if point is None or point[0] is None:
