@@ -93,6 +93,7 @@ from strategy_execution import (
     is_strategy_execution_intent,
     is_strategy_paper_tick_intent,
     max_primary_lag_frames,
+    max_range_days_for_timeframe,
     metrics_asof_fetch_window,
     strategy_spec_v3_evidence,
     validate_execution_request,
@@ -9199,7 +9200,11 @@ def _catalog_tool(tool_id: str, spec: dict[str, Any], supported_symbols: list[st
         "execution": {
             "mode": "sync",
             "timeout_ms": EXECUTION_TIMEOUT_MS,
-            "max_range_days": EXECUTION_MAX_RANGE_DAYS,
+            # A tool may opt into a wider budget than the shared day-scale cap
+            # (portfolio rotation declares 5000); everything else advertises
+            # the shared 1080 and is narrowed per timeframe at run time by
+            # _template_max_range_days().
+            "max_range_days": spec.get("max_range_days", EXECUTION_MAX_RANGE_DAYS),
             "max_bars": CATALOG_MAX_BARS_EXCHANGE,
             "max_parallel_runs": 1,
             "async_supported": False,
@@ -11116,6 +11121,24 @@ async def run_backtest(
     )
 
 
+def _template_max_range_days(tool_id: str, timeframe: Any) -> int:
+    """Range ceiling for one template run, keyed by its primary timeframe.
+
+    The per-timeframe budget (>= 1d: 1080 days, intraday: 365) is the Provider
+    backstop for the catalog's shared 1080-day declaration: the catalog has to
+    over-advertise because it is timeframe-agnostic, so the run entry must
+    narrow it. A tool that explicitly declares a *wider* budget than the shared
+    cap (portfolio rotation: 5000) opted out of that narrowing and keeps its
+    declaration -- otherwise a legal long-range tool would be rejected here.
+    """
+    declared = TOOL_SPECS.get(tool_id, {}).get("max_range_days")
+    if not isinstance(declared, int) or isinstance(declared, bool) or declared <= 0:
+        declared = EXECUTION_MAX_RANGE_DAYS
+    if declared > EXECUTION_MAX_RANGE_DAYS:
+        return declared
+    return min(declared, max_range_days_for_timeframe(timeframe))
+
+
 def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
     """Original runner, including validation, I/O, CPU work and error mapping."""
     # SPEC §17.5: paper_tick's own explicit schema+execution_mode probe must
@@ -11208,6 +11231,21 @@ def _run_backtest_sync(body: Any, x_cutie_connector_version: Optional[str]):
         return _validation_failure("INVALID_PARAMS", "start_at and end_at must be integers (unix seconds)")
     if start_at >= end_at:
         return _validation_failure("INVALID_PARAMS", "start_at must be before end_at")
+
+    # --- Enforce the per-timeframe range ceiling (JES-T15-S2) ---
+    # The catalog declares one max_range_days for the whole tool, so an intraday
+    # template run at 1080 days used to sail straight into the fetch layer
+    # (25920 x 1h bars / 103680 x 15m bars, a central 5000-bar reject, a CCXT
+    # fallback pagination storm and a 300s serial hold of _BACKTEST_LIMITER).
+    max_range_days = _template_max_range_days(effective_tool_id, timeframe)
+    range_seconds = end_at - start_at
+    if range_seconds > max_range_days * 86400:
+        return _validation_failure(
+            "INVALID_PARAMS",
+            f"Requested range is {range_seconds}s ({range_seconds / 86400:.1f} days), "
+            f"but timeframe {timeframe} allows at most {max_range_days} days. "
+            "Reduce the range and retry.",
+        )
 
     # --- Parse Decimal fields ---
     try:

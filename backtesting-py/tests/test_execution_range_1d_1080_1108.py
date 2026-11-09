@@ -260,6 +260,8 @@ def test_execution_range_1d_with_1h_stream_over_365_rejected(monkeypatch):
 
     修前红：循环里所有流共用主周期的 1080 天额度，366 天 + 2 根 1h 预热的
     1h 流被放行（断言「必须被拒」因此失败）。
+    归因：请求跨度 366 天本身就超过 1h 流的 365 天，所以错误路径指 ``interval``
+    而不是 ``warmup_bars``（JES-T15-S2 第 2 项）。
     """
     monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
     _no_fetch(monkeypatch)
@@ -278,9 +280,43 @@ def test_execution_range_1d_with_1h_stream_over_365_rejected(monkeypatch):
     # coinglass...cvd.1h 在 [1]。
     assert (
         body["error_detail"]["path"]
-        == "$.artifact_manifest.data_requirements[1].warmup_bars"
+        == "$.artifact_manifest.data_requirements[1].interval"
     )
     assert body["error_detail"]["required"] == {"max_range_days": 365}, body
+    assert body["error_detail"]["actual"] == {"range_seconds": 366 * DAY}, body
+
+
+def test_execution_range_1d_with_1h_stream_error_points_interval(monkeypatch):
+    """JES-T15-S2：请求区间本身超限时，错误必须指向 ``interval``。
+
+    修前红：同一场景一律抛 ``warmup_bars`` + "warmup expands adapter data
+    window ..."，把「含日内流的策略整体区间不得超 365 天」误报成预热太深——
+    即使 warmup_bars=0 也照抛。
+    """
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+    _no_fetch(monkeypatch)
+    body = _post(
+        _request("1d", BASE, BASE + 500 * DAY, feature_interval="1h", feature_warmup=1)
+    )
+
+    assert body["error_type"] == ERR_SPEC_INVALID, body
+    detail = body["error_detail"]
+    assert detail["path"] == "$.artifact_manifest.data_requirements[1].interval", detail
+    assert detail["required"] == {"max_range_days": 365}, detail
+    assert detail["actual"] == {"range_seconds": 500 * DAY}, detail
+
+
+def test_execution_range_warmup_overflow_keeps_warmup_path(monkeypatch):
+    """只有预热撑开窗口时才保留 warmup_bars 归因（1d/1080 + 20 根预热）。"""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+    _no_fetch(monkeypatch)
+    body = _post(_request("1d", BASE, BASE + 1080 * DAY, primary_warmup=20))
+
+    assert body["error_type"] == ERR_SPEC_INVALID, body
+    detail = body["error_detail"]
+    assert detail["path"] == "$.artifact_manifest.data_requirements[0].warmup_bars", detail
+    assert detail["required"] == {"max_range_days": 1080}, detail
+    assert detail["actual"]["effective_start"] == BASE - 20 * DAY, detail
 
 
 def test_execution_range_1h_with_1d_stream_365_accepted(monkeypatch):
@@ -335,3 +371,129 @@ def test_execution_range_1d_1080_with_real_warmup_rejected(monkeypatch):
         == "$.artifact_manifest.data_requirements[0].warmup_bars"
     )
     assert body["error_detail"]["required"] == {"max_range_days": 1080}
+
+
+# --- JES-T15-S2: template (exchange-param) entry has its own range gate ------
+# The artifact path above validates via strategy_execution; template tools take
+# ``_run_backtest_sync``'s exchange-param branch, which used to check only
+# ``start_at < end_at``. The catalog has to advertise a timeframe-agnostic 1080,
+# so the run entry narrows it per timeframe (intraday 365).
+
+TEMPLATE_TOOL = "local.backtesting_py.turtle"
+
+
+def _template_body(
+    timeframe: str,
+    start_at: int,
+    end_at: int,
+    *,
+    tool: str = TEMPLATE_TOOL,
+    params: dict | None = None,
+) -> dict:
+    return {
+        "backtest": {
+            "run_id": "range_template",
+            "provider_tool_id": tool,
+            "provider_params": {} if params is None else params,
+            "symbol": "BTCUSDT",
+            "market": "spot",
+            "timeframe": timeframe,
+            "start_at": start_at,
+            "end_at": end_at,
+            "initial_capital": "100000",
+            "fee_bps": "0",
+            "slippage_bps": "0",
+        }
+    }
+
+
+def _template_no_fetch(monkeypatch) -> None:
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("range validation must happen before data access")
+
+    monkeypatch.setattr(provider, "_fetch_ohlcv", fail_if_fetched)
+
+
+def _template_stub_fetch(monkeypatch) -> list[tuple[int, int]]:
+    calls: list[tuple[int, int]] = []
+
+    def fetch(exchange, market, symbol, timeframe, start_ms, end_ms):
+        calls.append((start_ms, end_ms))
+        import pandas as pd
+
+        return pd.DataFrame(
+            {"Open": [100.0], "High": [101.0], "Low": [99.0], "Close": [100.0], "Volume": [1.0]},
+            index=pd.DatetimeIndex([pd.Timestamp(start_ms, unit="s")]),
+        )
+
+    monkeypatch.setattr(provider, "_fetch_ohlcv", fetch)
+    return calls
+
+
+def test_execution_range_template_1h_366_rejected(monkeypatch):
+    """模板入口 1h/366 天必须被拒。修前红：模板入口只校验 start_at < end_at。"""
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+    _template_no_fetch(monkeypatch)
+    body = _post(_template_body("1h", BASE, BASE + 366 * DAY))
+
+    assert body["result_status"] == "failed", body
+    assert body["error_type"] == "INVALID_PARAMS", body
+    assert "365" in body["error_message"], body
+    assert "366.0 days" in body["error_message"], body
+
+
+def _assert_template_accepted(monkeypatch, timeframe: str, range_days: int) -> dict:
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+    calls = _template_stub_fetch(monkeypatch)
+    body = _post(_template_body(timeframe, BASE, BASE + range_days * DAY))
+
+    # 模板路径的 _fetch_ohlcv 收秒级时间戳（artifact 路径是毫秒）。
+    assert calls == [(BASE, BASE + range_days * DAY)]
+    assert not (
+        body.get("error_type") == "INVALID_PARAMS"
+        and "Requested range is" in body.get("error_message", "")
+    ), body
+    return body
+
+
+def test_execution_range_template_1d_1080_accepted(monkeypatch):
+    """模板入口 1d/1080 天必须通过（回归锚点，修前亦绿）。"""
+    _assert_template_accepted(monkeypatch, "1d", 1080)
+
+
+def test_execution_range_template_1h_365_accepted(monkeypatch):
+    """模板入口 1h/365 天必须通过（边界，修前亦绿）。"""
+    _assert_template_accepted(monkeypatch, "1h", 365)
+
+
+def test_execution_range_template_self_declared_limit_not_rejected(monkeypatch):
+    """自己声明了更大 max_range_days 的工具（轮动 5000）不得被周期上限误拒。
+
+    变异点：若闸门对所有工具一律套 max_range_days_for_timeframe（忽略
+    TOOL_SPEC 的 max_range_days 声明），1h/366 天会在这里被拒 -> 本用例如。
+    """
+    monkeypatch.setattr(provider, "PROVIDER_REVISION", tsk.REVISION)
+    wide_spec = dict(provider.TOOL_SPECS[TEMPLATE_TOOL])
+    wide_spec["max_range_days"] = 5000
+    monkeypatch.setitem(provider.TOOL_SPECS, TEMPLATE_TOOL, wide_spec)
+    calls = _template_stub_fetch(monkeypatch)
+    body = _post(_template_body("1h", BASE, BASE + 366 * DAY))
+
+    assert provider._template_max_range_days(TEMPLATE_TOOL, "1h") == 5000
+    assert calls, "声明 5000 天的工具不得被 365 天周期上限误拒"
+    assert not (
+        body["error_type"] == "INVALID_PARAMS"
+        and "Requested range is" in body["error_message"]
+    ), body
+
+
+def test_execution_range_template_rotation_catalog_keeps_5000():
+    """轮动目录声明仍是 5000，且运行期闸门读同一个声明值。"""
+    import portfolio_rotation_http as rotation
+
+    assert rotation.TOOL_SPEC["max_range_days"] == 5000
+    entry = provider._catalog_tool(
+        rotation.TOOL_ID, provider.TOOL_SPECS[rotation.TOOL_ID], []
+    )
+    assert entry["execution"]["max_range_days"] == 5000
+    assert provider._template_max_range_days(rotation.TOOL_ID, "1d") == 5000

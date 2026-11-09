@@ -624,6 +624,19 @@ def validate_execution_request(
             # [999d, 1364d) fetch reads as 365d11h and is wrongly rejected.
             effective_end = metrics_window[2]
         data_window_seconds = effective_end - effective_start
+        # JES-T15-S2: attribute the breach to the right cause. A request span
+        # that already exceeds this stream's own budget is an ``interval``
+        # limit -- setting warmup_bars to 0 would not help, so blaming warmup
+        # sends the caller after the wrong knob.
+        if range_seconds > requirement_max_range_seconds:
+            _error(
+                ERR_SPEC_INVALID,
+                f"$.artifact_manifest.data_requirements[{index}].interval",
+                "request range exceeds the maximum this data stream interval "
+                "supports",
+                required={"max_range_days": requirement_max_range_days},
+                actual={"range_seconds": range_seconds},
+            )
         if data_window_seconds > requirement_max_range_seconds:
             _error(
                 ERR_SPEC_INVALID,
