@@ -145,13 +145,17 @@ _KNOWN_PRIMITIVES = {
     "rolling_quantile",
     "rolling_std",
     "rsi_wilder",
-    "atr_wilder",
     "rolling_extreme",
     "rolling_zscore",
     "ema",
 }
-# v2-only primitives: never accepted by the v3 registry above.
-_KNOWN_PRIMITIVES_V2 = _KNOWN_PRIMITIVES | {"macd"}
+# v2-only primitives: never accepted by the v3 registry above. ``atr_wilder``
+# belongs here (JES-J4-P1-CAPABILITY-R2): it reads high/low/close together off
+# the primary K-line, while a v3 feature source is a one-dimensional scalar
+# series -- the v3 evaluator has no ATR path and ``_primitive_series_v3`` would
+# fall through to ``params["window_bars"]`` on ATR's ``{"period": N}`` and die
+# with a KeyError. Rejecting it at compile keeps the fail-closed invariant.
+_KNOWN_PRIMITIVES_V2 = _KNOWN_PRIMITIVES | {"macd", "atr_wilder"}
 _MACD_OUTPUTS = {"line", "signal", "hist"}
 # JES21-B3b 二期 IMPL §3.4: ``metrics.<scope>.<metric>`` feature streams, fetched
 # from the central market_metrics_history ``/metrics`` (provider ``cutie``).
@@ -903,8 +907,12 @@ def per_feature_lag_needs(strategy_spec: Any) -> dict[str, int]:
 
 
 def _validate_primitive_params_v3(primitive: Any, raw_params: Any, path: str) -> None:
-    """v3 primitive registry: the four v2 primitives plus ``rolling_zscore`` / ``ema``
+    """v3 primitive registry: the v2 primitives v3 can actually evaluate, plus
+    ``rolling_zscore`` / ``ema``
     (SPEC_组合策略v3契约 §2.3, params exactly ``{"window_bars": <int>}``).
+
+    v2-only primitives (``macd``, ``atr_wilder``) stay out of ``_KNOWN_PRIMITIVES``
+    so they are rejected here as ``unknown primitive`` at compile time.
 
     A one-bar window has population stdev 0 on every bar and could never
     yield a value, so ``window_bars`` starts at 2.

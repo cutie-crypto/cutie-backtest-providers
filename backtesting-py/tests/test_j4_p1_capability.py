@@ -24,6 +24,14 @@ JES-J4-P1-CAPABILITY-R1（撤销 ``rolling_sum`` 的成交量声明）追加两�
   ``source_streams`` 含 ``kline.primary.volume``，红。
 - ``test_rolling_sum_volume_spec_rejected_by_capability``：修前 ``window_bars=1``
   的 volume 规格能编译通过，红。
+
+JES-J4-P1-CAPABILITY-R2（``atr_wilder`` 只属于 v2）追加三条：
+
+- ``test_atr_wilder_rejected_by_v3_compile``：修前 ``atr_wilder`` 在 v3 白名单
+  里，含它的 v3 spec 编译放行，运行时 ``params["window_bars"]`` 抛 KeyError，红。
+- ``test_atr_wilder_still_compiles_on_v2``：移出 v3 白名单不能伤到 v2 路径。
+- ``test_rolling_std_v3_evaluates_or_rejected``：核对 ``rolling_std`` 在 v3 的
+  ``window_bars`` 求值路径可用，可用就留下并断言数值。
 """
 
 from __future__ import annotations
@@ -38,20 +46,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import test_strategy_kernel as tsk  # noqa: E402
+import test_strategy_kernel_basket as tsb  # noqa: E402
 import test_strategy_kernel_primitives as tkp  # noqa: E402
 from canonical_json import canonical_decimal_str  # noqa: E402
 from strategy_kernel import (  # noqa: E402
     ERR_SPEC_INVALID,
     ERR_SPEC_UNSUPPORTED,
+    _KNOWN_PRIMITIVES,
+    _KNOWN_PRIMITIVES_V2,
     StrategyContractError,
+    StrategySpecV3Error,
     _DECIMAL_CONTEXT,
     _atr_wilder_series,
     _evaluate_windowed_primitive,
+    _primitive_series_v3,
     _validate_capability,
     _validate_primitive_params,
     build_frames,
+    build_frames_v3,
     capability_payload,
     compile_strategy,
+    compile_strategy_v3,
     kline_primary_bucket_required_end,
     kline_primary_bucket_required_start,
     ohlcv_resample,
@@ -537,3 +552,164 @@ def test_rolling_sum_volume_spec_rejected_by_capability() -> None:
         )
     assert caught.value.code == ERR_SPEC_UNSUPPORTED
     assert caught.value.path.endswith("capability_requirements.features[0]")
+
+
+# ------------------------------------------ R2: ``atr_wilder`` 只属于 v2
+
+# ``atr_wilder`` 需要 high/low/close 三个字段一起算 TR，而 v3 的特征源是一维
+# 标量序列（单 leg 字段或 derived 特征）。v3 的求值器没有 ATR 分支，
+# ``_primitive_series_v3`` 会把它当滑动窗口原语读 ``params["window_bars"]``，
+# 而 ATR 的参数是 ``{"period": N}`` —— 编译放行就等于换一个 KeyError 崩溃。
+
+
+def _v3_atr_feature(period: int = 3, key: str = "atr3") -> dict:
+    return {
+        "key": key,
+        "primitive": "atr_wilder",
+        "primitive_version": "1",
+        "source_stream": "kline.leg.a.close",
+        "interval": "4h",
+        "value_kind": "price",
+        "output_type": "decimal",
+        "params": {"period": period},
+        "required": True,
+    }
+
+
+def _v3_spec_with(feature: dict) -> dict:
+    """§2.7 ``sma_cross_basic`` spec plus one primitive feature.
+
+    该原语直接进 entry 条件（大于 0.5），规格里不留悬空特征。
+    """
+    spec = tsb.example_spec()
+    spec["features"] = [feature, *spec["features"]]
+    spec["features"].sort(key=lambda item: item["key"].encode("utf-16-be"))
+    spec["entry"]["condition"] = {
+        "node": "compare",
+        "op": "gt",
+        "left": tsb._feature(feature["key"]),
+        "right": tsb._dec("0.5"),
+    }
+    return spec
+
+
+def test_atr_wilder_rejected_by_v3_compile() -> None:
+    """``atr_wilder`` 不得留在 v3 原语白名单里。
+
+    修前为什么红：``atr_wilder`` 挂在 ``_KNOWN_PRIMITIVES`` 上，下面这份 v3
+    规格 ``compile_strategy_v3`` 直接放行，直到 ``build_frames_v3`` 才在
+    ``_primitive_series_v3`` 里读 ``params["window_bars"]`` 抛未捕获的
+    ``KeyError``。变异点：把 ``atr_wilder`` 放回 ``_KNOWN_PRIMITIVES``，本用例
+    的编译断言立即红。
+    """
+    assert "atr_wilder" not in _KNOWN_PRIMITIVES
+    assert "atr_wilder" in _KNOWN_PRIMITIVES_V2
+
+    spec = _v3_spec_with(_v3_atr_feature())
+    with pytest.raises(StrategySpecV3Error) as caught:
+        compile_strategy_v3(spec)
+    assert caught.value.code == ERR_SPEC_INVALID
+    assert caught.value.path.endswith(".primitive")
+    assert caught.value.detail()["actual"] == "atr_wilder"
+
+    # 白名单放行的后果留证：v3 求值器对 ATR 只有 KeyError 一条路。
+    with pytest.raises(KeyError) as key_error:
+        _primitive_series_v3(
+            {"key": "atr3", "primitive": "atr_wilder", "params": {"period": 3}},
+            [(Decimal(1), None), (Decimal(2), None)],
+        )
+    assert key_error.value.args == ("window_bars",)
+
+
+def test_atr_wilder_still_compiles_on_v2() -> None:
+    """从 v3 白名单移出不能伤到 v2：ATR 仍能编译并算出值。
+
+    v2 里 ATR 读 ``kline.primary`` 的 high/low/close，走
+    ``_atr_wilder_series`` 预计算路径；这里断言编译通过且第 3 根起的 ATR 等于
+    手算的 Wilder 种子值。
+    """
+    rows = _primary_rows(_atr_rows())
+    period = 3
+    features = [
+        _feature("atr3", "atr_wilder", {"period": period}),
+        _feature(
+            "close_now",
+            "rolling_extreme",
+            {"window_bars": 1, "mode": "max"},
+        ),
+    ]
+    spec = tsk.make_spec(
+        condition={
+            "node": "compare",
+            "op": "lt",
+            "left": {"node": "feature", "key": "atr3", "lag_bars": 0},
+            "right": {"node": "feature", "key": "close_now", "lag_bars": 0},
+        },
+        features=features,
+    )
+    manifest = tkp._kline_primary_manifest(spec, requirement_interval="1h")
+    next(
+        item
+        for item in manifest["data_requirements"]
+        if item["execution_role"] == "primary_execution_kline"
+    )["warmup_bars"] = 4
+    plan = compile_strategy(spec, manifest, capability_payload(REVISION))
+    frames = build_frames({PRIMARY_STREAM: rows}, COVERAGE, plan)
+    with localcontext(_DECIMAL_CONTEXT):
+        seed = +((Decimal(5) + Decimal(2) + Decimal("1.5")) / Decimal(period))
+    # build_frames 的暖机帧（前 3 根）不出值，第 4 根即 source bar 3 起。
+    atr_values = [frame.values.get("atr3") for frame in frames]
+    assert atr_values[:3] == [None] * 3
+    assert Decimal(atr_values[3]) == seed
+
+
+def test_rolling_std_v3_evaluates_or_rejected() -> None:
+    """``rolling_std`` 在 v3 是可用的，所以留在白名单里并断言数值。
+
+    它和 ``ema``/``rolling_zscore`` 一样吃 ``{"window_bars": N}``，
+    ``_primitive_series_v3`` 的滑动窗口分支能直接求值。修前若把 ``atr_wilder``
+    移出而顺手误伤 ``rolling_std``，编译或求值会直接红。
+    """
+    assert "rolling_std" in _KNOWN_PRIMITIVES
+    spec = _v3_spec_with(
+        {
+            "key": "ratio_std3",
+            "primitive": "rolling_std",
+            "primitive_version": "1",
+            "source_stream": "feature:ratio",
+            "interval": "4h",
+            "value_kind": "level",
+            "output_type": "decimal",
+            "params": {"window_bars": 3},
+            "required": True,
+        }
+    )
+    plan = compile_strategy_v3(spec)
+    closes = ["2", "4", "4", "4", "5", "5", "7", "9", "1"]
+    frames = build_frames_v3(
+        {"a": tsb._rows(closes), "b": tsb._rows(["1"] * len(closes))}, plan
+    )
+    values = [frame.values["ratio_std3"] for frame in frames.frames]
+    # 3 根窗口前不出值。
+    assert values[:2] == [None, None]
+    window = [Decimal(close) for close in closes[:3]]
+    with localcontext(_DECIMAL_CONTEXT) as ctx:
+        count = Decimal(3)
+        mean = ctx.divide(sum(window, Decimal(0)), count)
+        variance = ctx.divide(
+            sum(
+                (
+                    ctx.multiply(ctx.subtract(v, mean), ctx.subtract(v, mean))
+                    for v in window
+                ),
+                Decimal(0),
+            ),
+            count,
+        )
+        expected = +ctx.sqrt(variance)
+    assert Decimal(values[2]) == expected
+    # 常数窗口给 0，而不是缺口。
+    flat = build_frames_v3(
+        {"a": tsb._rows(["5"] * 4), "b": tsb._rows(["1"] * 4)}, plan
+    )
+    assert flat.frames[-1].values["ratio_std3"] == "0"
