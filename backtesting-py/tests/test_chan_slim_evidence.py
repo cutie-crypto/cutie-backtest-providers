@@ -148,8 +148,11 @@ def test_over_limit_failure_keeps_fetched_provenance():
 
 def test_over_limit_http_failure_reports_real_source(monkeypatch):
     # The debug report of a long run is far beyond the callback limit; the fetch did happen.
+    # JES-T15-S2: 8760 hourly bars = exactly 365 days, i.e. the intraday range
+    # ceiling -- the run must still be a real long run that overflows the 1MB
+    # raw_report evidence, without tripping the new range gate first.
     monkeypatch.setenv(DEBUG_ENV, '1')
-    data = walk(20000)
+    data = walk(8760)
     data.attrs.update(cutie_data_source='ccxt:binanceus(test-injected)', cutie_central_market_data_used=False,
                       cutie_market_data_cache_hit=True)
     body = request({}, data, 'spot')

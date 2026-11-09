@@ -7,6 +7,9 @@ from portfolio_rotation import (
 )
 
 TOOL_ID = 'local.backtesting_py.portfolio_rotation'
+# 轮动自带的长区间预算（>= 共享的 1080 日尺度上限）：TOOL_SPEC 声明一次，
+# rotation_catalog 与 provider 的运行期闸门 _template_max_range_days 都读这同一个值。
+MAX_RANGE_DAYS = 5000
 # EXT-901：服务端 external-result 只认 raw_report_json 为 v4 七键本体（键集严格，API-CONTRACT.md「独立组合回测 v4」）；
 # connector 原样转发 raw_report，所以成功回包的 raw_report 必须就是这七键。
 RAW_REPORT_V4_KEYS = ('schema_version', 'fills', 'snapshots', 'equity_curve', 'btc_benchmark', 'metrics', 'input_manifests')
@@ -17,6 +20,7 @@ TOOL_SPEC = {
     'description': 'Fixed frozen pool, weekly BTC-relative seven-day momentum, equal-weight spot rotation with optional BTC EMA200 portfolio risk.',
     'strategy_family': 'portfolio_rotation', 'runner': RUNNER, 'is_default': False,
     'markets': ['spot'], 'timeframes': ['1d'],
+    'max_range_days': MAX_RANGE_DAYS,
     'param_schema_properties': {
         'coin_pool': {
             'type': 'object', 'additionalProperties': False,
@@ -48,7 +52,7 @@ def rotation_catalog(entry):
     entry['param_schema']['required'] = ['coin_pool']
     # Q46（Codex 复审 P2）：轮动自己按 EXECUTION_SECONDS 截止（见 handle 里的 deadline），目录声明
     # 必须等于运行时实际预算，不能沿用共享的 300s——否则 connector 等 300s、provider 120s 就自行失败。
-    entry['execution'].update(timeout_ms=EXECUTION_SECONDS * 1000, max_bars=20000, max_range_days=5000)
+    entry['execution'].update(timeout_ms=EXECUTION_SECONDS * 1000, max_bars=20000, max_range_days=MAX_RANGE_DAYS)
     entry['output_schema'] = {'schema_version': 'cutie.backtest_result.v4',
                               'metrics': ['total_return', 'max_drawdown', 'fill_count', 'trade_count'],
                               'artifacts': [], 'series': ['equity_curve', 'btc_benchmark'],

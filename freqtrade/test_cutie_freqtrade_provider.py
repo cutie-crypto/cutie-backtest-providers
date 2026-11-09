@@ -259,3 +259,99 @@ def test_freqtrade_exit_error_response_keeps_tail_after_coverage_passes(monkeypa
     assert "No data found. Terminating." in body["error_message"]
     assert "BEGIN_OF_LOG_SHOULD_BE_DROPPED" not in body["error_message"]
     assert observed_config["dataformat_ohlcv"] == "json"
+
+
+# ---------------------------------------------------------------------------
+# JES-T15: 日线 1080 天 / 日内 365 天的分区上限
+# ---------------------------------------------------------------------------
+
+DAY = 24 * 60 * 60
+
+
+def _body(timeframe: str, start_at: int, end_at: int) -> dict:
+    body = _request_body(start_at, end_at)
+    body["backtest"]["timeframe"] = timeframe
+    return body
+
+
+def _configure_local_data(monkeypatch, tmp_path: Path, timeframe: str, start_at: int, end_at: int) -> None:
+    """写出一个恰好覆盖 [start_at, end_at) 的时间帧文件（只含首末两根）。"""
+    userdir = tmp_path / "user_data"
+    strategy_dir = userdir / "strategies"
+    strategy_dir.mkdir(parents=True)
+    (strategy_dir / "SampleStrategy.py").write_text(
+        "class SampleStrategy(IStrategy):\n    pass\n",
+        encoding="utf-8",
+    )
+    data_dir = userdir / "data" / "okx"
+    data_dir.mkdir(parents=True)
+    step = provider.TIMEFRAME_SECONDS[timeframe]
+    rows = [
+        [start_at * 1000, 1, 1, 1, 1, 1],
+        [(end_at - step) * 1000, 1, 1, 1, 1, 1],
+    ]
+    (data_dir / f"BTC_USDT-{timeframe}.json").write_text(json.dumps(rows), encoding="utf-8")
+    monkeypatch.setattr(provider, "FREQTRADE_USERDIR", userdir)
+    monkeypatch.setattr(provider, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setattr(provider, "_get_engine_version", lambda: "2026.1")
+
+
+def _spy_freqtrade(monkeypatch) -> list[list]:
+    spawned: list[list] = []
+
+    def record(command, **kwargs):
+        spawned.append(command)
+        return SimpleNamespace(returncode=2, stdout="", stderr="No data found. Terminating.")
+
+    monkeypatch.setattr(provider.subprocess, "run", record)
+    return spawned
+
+
+def test_execution_range_freqtrade_catalog_advertises_1080():
+    """目录里的 max_range_days 与 artifact provider 的日线上限对齐（1080）。"""
+    assert provider.EXECUTION_MAX_RANGE_DAYS == 1080
+
+
+def test_execution_range_freqtrade_1d_1080_accepted(monkeypatch, tmp_path):
+    """1d、1080 天：区间闸门放行，覆盖够就直接进 freqtrade。
+
+    修前也绿（本 provider 原本没有区间闸门）。这条钉的是「1080 天上限放开后，
+    日线 1080 天不会被新加的闸门误拒」。
+    """
+    start = _ts("2026-01-01T00:00:00")
+    end = start + 1080 * DAY
+    _configure_local_data(monkeypatch, tmp_path, "1d", start, end)
+    spawned = _spy_freqtrade(monkeypatch)
+
+    body = TestClient(provider.app).post("/cutie/backtest", json=_body("1d", start, end)).json()
+
+    assert spawned, "1080 天日线必须一路走到 freqtrade，而不是被区间校验挡下"
+    assert body["error_type"] == "NO_DATA"
+    assert body["limitations"]["reason"] == "freqtrade_no_data"
+
+
+def test_execution_range_freqtrade_1h_366_rejected(monkeypatch, tmp_path):
+    """1h、366 天：必须被区间闸门拒，且不得启动 freqtrade 子进程。
+
+    修前红：入口只有本地数据覆盖检查，没有区间闸门，366 天 1h 会照旧一路
+    跑到 freqtrade。JES-T15 声明日内限 365，catalog 又只声明一个 1080，所以
+    闸门必须落在 run_backtest 的参数校验阶段（对齐 artifact provider 的
+    ``INVALID_PARAMS`` 结构），否则日内会被敞开到 1080。
+    """
+    start = _ts("2026-01-01T00:00:00")
+    end = start + 366 * DAY
+    _configure_local_data(monkeypatch, tmp_path, "1h", start, end)
+    spawned = _spy_freqtrade(monkeypatch)
+
+    body = TestClient(provider.app).post("/cutie/backtest", json=_body("1h", start, end)).json()
+
+    assert not spawned, "366 天 1h 必须在区间闸门被拒，不得启动 freqtrade"
+    assert body["result_status"] == "failed"
+    assert body["error_type"] == "INVALID_PARAMS"
+    assert body["limitations"]["reason"] == "range_exceeds_max_range_days"
+    assert body["raw_report"]["range_limit"] == {
+        "timeframe": "1h",
+        "max_range_days": 365,
+        "requested_range_seconds": 366 * DAY,
+    }
+    assert "at most 365 days" in body["error_message"]

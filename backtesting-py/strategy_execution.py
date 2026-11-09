@@ -35,7 +35,17 @@ from strategy_kernel import (
 )
 
 EXECUTION_REQUEST_SCHEMA = "cutie.strategy_execution_request.v1"
-EXECUTION_MAX_RANGE_DAYS = 365
+# Day-scale runs (timeframe >= 1d) may span 1080 days: 12 x 90-day central
+# chunks / 36 whole months, i.e. the slice grid the frontend already produces
+# (1095 would be trimmed to 1080 there). Intraday runs keep the previous
+# 365-day budget: 1d of 1h bars is only 24 bars per day, so 1080 days of 1h is
+# 25920 bars -- far beyond the advertised max_bars (5000). One constant feeds
+# both the catalog advertisement (max_range_days) and the validator, and the
+# per-timeframe narrowing lives in max_range_days_for_timeframe().
+EXECUTION_MAX_RANGE_DAYS = 1080
+EXECUTION_INTRADAY_MAX_RANGE_DAYS = 365
+_INTERVAL_UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+_DAY_SECONDS = 86400
 # SPEC §17: paper_tick wire types, additive to the frozen 62-2 historical_replay
 # request/result above -- independent schema/key sets, zero shared validation
 # path with _REQUEST_KEYS/validate_execution_request (§17.5 "探测/校验独立于
@@ -380,13 +390,19 @@ def validate_execution_request(
             "end_at must be greater than start_at",
         )
     range_seconds = params["end_at"] - params["start_at"]
-    max_range_seconds = EXECUTION_MAX_RANGE_DAYS * 24 * 60 * 60
+    # JES-T15: the budget is per-timeframe (>= 1d: 1080 days, < 1d: 365 days).
+    # This request-span check reads the request's own (later binding-checked)
+    # primary timeframe; the per-stream window check below budgets each
+    # requirement by its OWN interval (JES-T15-R1), so a 1d run cannot lend its
+    # 1080-day budget to a 1h feature stream.
+    max_range_days = max_range_days_for_timeframe(params["timeframe"])
+    max_range_seconds = max_range_days * _DAY_SECONDS
     if range_seconds > max_range_seconds:
         _error(
             ERR_SPEC_INVALID,
             "$.execution_params",
             "range exceeds the advertised Provider maximum",
-            required={"max_range_days": EXECUTION_MAX_RANGE_DAYS},
+            required={"max_range_days": max_range_days},
             actual={"range_seconds": range_seconds},
         )
     _canonical_decimal(
@@ -569,6 +585,14 @@ def validate_execution_request(
     )
     for index, requirement in enumerate(plan.artifact_manifest["data_requirements"]):
         step_seconds = _interval_seconds(requirement["interval"])
+        # JES-T15-R1: each stream is budgeted by its OWN interval. A 1d run
+        # carrying a 1h feature stream must not lend that stream the 1080-day
+        # day-scale budget, and a 1h run carrying a 1d stream's warmup must not
+        # inherit the 365-day intraday budget.
+        requirement_max_range_days = max_range_days_for_timeframe(
+            requirement["interval"]
+        )
+        requirement_max_range_seconds = requirement_max_range_days * _DAY_SECONDS
         # Phase 1 review (Codex HIGH-1): the provider widens the primary
         # fetch by the spec's max feature lag (frames history for the
         # kernel's index-based lag resolution) -- the range budget must
@@ -600,12 +624,25 @@ def validate_execution_request(
             # [999d, 1364d) fetch reads as 365d11h and is wrongly rejected.
             effective_end = metrics_window[2]
         data_window_seconds = effective_end - effective_start
-        if data_window_seconds > max_range_seconds:
+        # JES-T15-S2: attribute the breach to the right cause. A request span
+        # that already exceeds this stream's own budget is an ``interval``
+        # limit -- setting warmup_bars to 0 would not help, so blaming warmup
+        # sends the caller after the wrong knob.
+        if range_seconds > requirement_max_range_seconds:
+            _error(
+                ERR_SPEC_INVALID,
+                f"$.artifact_manifest.data_requirements[{index}].interval",
+                "request range exceeds the maximum this data stream interval "
+                "supports",
+                required={"max_range_days": requirement_max_range_days},
+                actual={"range_seconds": range_seconds},
+            )
+        if data_window_seconds > requirement_max_range_seconds:
             _error(
                 ERR_SPEC_INVALID,
                 f"$.artifact_manifest.data_requirements[{index}].warmup_bars",
                 "warmup expands adapter data window beyond the Provider maximum",
-                required={"max_range_days": EXECUTION_MAX_RANGE_DAYS},
+                required={"max_range_days": requirement_max_range_days},
                 actual={
                     "effective_start": effective_start,
                     "end_at": params["end_at"],
@@ -1750,6 +1787,29 @@ def build_result_v3(
     return result
 
 
+def max_range_days_for_timeframe(timeframe: Any) -> int:
+    """Range budget for a run, keyed by its primary timeframe.
+
+    ``>= 1d`` (1d/3d/1w/1M/...) gets ``EXECUTION_MAX_RANGE_DAYS`` (1080);
+    anything finer-grained (m/h) keeps the 365-day intraday budget. An
+    unparseable timeframe falls back to the intraday budget, i.e. exactly the
+    pre-JES-T15 behaviour -- the timeframe's own validity is reported by
+    compile_strategy, never widened by this helper.
+    """
+    if isinstance(timeframe, str) and len(timeframe) > 1:
+        digits, unit = timeframe[:-1], timeframe[-1]
+        if digits.isdigit() and not digits.startswith("0"):
+            # ``M`` is the provider's 30-day month (same convention as the
+            # catalog's _timeframe_milliseconds) -- always ``>= 1d``, so a
+            # monthly run must never fall into the intraday 365-day bucket.
+            step = (
+                30 * _DAY_SECONDS if unit == "M" else _INTERVAL_UNIT_SECONDS.get(unit)
+            )
+            if step is not None and int(digits) * step >= _DAY_SECONDS:
+                return EXECUTION_MAX_RANGE_DAYS
+    return EXECUTION_INTRADAY_MAX_RANGE_DAYS
+
+
 def _interval_seconds(interval: str) -> int:
     return (
         int(interval[:-1]) * {"m": 60, "h": 3600, "d": 86400, "w": 604800}[interval[-1]]
@@ -1759,6 +1819,7 @@ def _interval_seconds(interval: str) -> int:
 __all__ = [
     "CoverageInput",
     "ERR_PAPER_STATE_MISMATCH",
+    "EXECUTION_INTRADAY_MAX_RANGE_DAYS",
     "EXECUTION_MAX_RANGE_DAYS",
     "EXECUTION_REQUEST_SCHEMA",
     "PAPER_TICK_REQUEST_SCHEMA",
@@ -1777,6 +1838,7 @@ __all__ = [
     "build_paper_tick_coverage_manifest",
     "is_strategy_execution_intent",
     "is_strategy_paper_tick_intent",
+    "max_range_days_for_timeframe",
     "strategy_spec_v3_evidence",
     "validate_execution_request",
     "validate_paper_tick_request",
